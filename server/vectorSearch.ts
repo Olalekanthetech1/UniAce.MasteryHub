@@ -3,6 +3,7 @@ import { GoogleGenAI } from '@google/genai';
 import admin from 'firebase-admin';
 import { getDb } from './firebaseAdmin';
 import { DynamicKeyRotator } from './providers';
+import { inspectAndScrubUntrustedText } from './promptShield';
 
 export interface SearchResult {
   content: string;
@@ -87,8 +88,10 @@ export async function findRelevantContentSemantic(query: string, limit: number =
 
     return snapshot.docs.map(doc => {
       const data = doc.data();
+      const rawContent = data.content || '';
+      const scrubbed = inspectAndScrubUntrustedText(rawContent, 'rag_chunk');
       return {
-        content: data.content || '',
+        content: scrubbed.sanitizedText,
         source: data.source || data.course_code || 'Knowledge Base',
         type: (data.type as any) || 'question',
         score: 1.0 // findNearest ranks by similarity descending

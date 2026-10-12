@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { 
   Send, Plus, Mic, MicOff, Image as ImageIcon, 
-  FileText, X, Sparkles, Sigma, HelpCircle, ArrowUp 
+  FileText, X, Sparkles, Sigma, HelpCircle, ArrowUp, Square 
 } from 'lucide-react';
 import { MathSymbolPalette } from './MathSymbolPalette';
 
@@ -26,6 +26,7 @@ interface ChatInputBarProps {
   hintsRequestedCount: number;
   onRequestAdaptiveSolution?: () => void;
   activeTopicTitle?: string;
+  onAbortStream?: () => void;
 }
 
 export const ChatInputBar: React.FC<ChatInputBarProps> = ({
@@ -49,6 +50,7 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
   hintsRequestedCount,
   onRequestAdaptiveSolution,
   activeTopicTitle,
+  onAbortStream,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isListening, setIsListening] = useState(false);
@@ -288,16 +290,27 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
             {isListening ? <MicOff size={18} /> : <Mic size={18} />}
           </button>
 
-          {/* Send Button */}
-          <button
-            type="button"
-            disabled={isLoading || (!input.trim() && !selectedImage && !pdfText)}
-            onClick={() => onSend()}
-            className="p-2.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl disabled:opacity-40 disabled:hover:bg-emerald-500 transition-all shadow-md shadow-emerald-500/20 active:scale-95 shrink-0"
-            title="Send Message (Enter)"
-          >
-            <ArrowUp size={18} />
-          </button>
+          {/* Send or Stop Stream Button */}
+          {isLoading && onAbortStream ? (
+            <button
+              type="button"
+              onClick={onAbortStream}
+              className="p-2.5 bg-rose-500 hover:bg-rose-600 text-white rounded-xl transition-all shadow-md shadow-rose-500/20 active:scale-95 shrink-0"
+              title="Stop Generation & Refund Unused Sparks"
+            >
+              <Square size={18} className="fill-current" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={isLoading || (!input.trim() && !selectedImage && !pdfText)}
+              onClick={() => onSend()}
+              className="p-2.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl disabled:opacity-40 disabled:hover:bg-emerald-500 transition-all shadow-md shadow-emerald-500/20 active:scale-95 shrink-0"
+              title="Send Message (Enter)"
+            >
+              <ArrowUp size={18} />
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -1,4 +1,5 @@
 import admin from 'firebase-admin';
+import { dbTelemetry } from './dbTelemetry';
 
 interface ProviderMetrics {
   requests: number;
@@ -19,6 +20,7 @@ class TelemetryService {
   private hourlyHistory: HourlyMetrics[] = [];
   private flushInterval: NodeJS.Timeout | null = null;
   private isInitialized: boolean = false;
+  private isDirty: boolean = false;
 
   constructor() {
     this.resetMetrics();
@@ -42,7 +44,6 @@ class TelemetryService {
   async initialize() {
     if (this.isInitialized) return;
     try {
-      // Check if admin is initialized
       try {
         admin.app();
       } catch (e) {
@@ -55,7 +56,6 @@ class TelemetryService {
       if (doc.exists) {
         const data = doc.data();
         if (data && data.metrics) {
-          // Merge with initial zeroes to ensure all providers exist
           this.metrics = { ...this.metrics, ...data.metrics };
           console.log('[Telemetry] Initialized from Firestore');
         }
@@ -64,7 +64,6 @@ class TelemetryService {
       this.startFlushing();
     } catch (e) {
       console.error('[Telemetry] Initialization failed:', e);
-      // Still start flushing even if init fails
       this.startFlushing();
     }
   }
@@ -77,8 +76,8 @@ class TelemetryService {
     this.metrics[provider].tokens += tokens;
     this.metrics[provider].latencySum += latencyMs;
     if (isError) this.metrics[provider].errors++;
+    this.isDirty = true;
 
-    // Update hourly history
     const now = new Date();
     const hour = now.getHours().toString().padStart(2, '0') + ':00';
     let currentHour = this.hourlyHistory.find(h => h.time === hour);
@@ -94,27 +93,6 @@ class TelemetryService {
   }
 
   getChartData() {
-    // If we don't have enough history, generate some realistic past data based on current totals
-    if (this.hourlyHistory.length < 6) {
-      const history: HourlyMetrics[] = [];
-      const now = new Date();
-      for (let i = 23; i >= 0; i--) {
-        const d = new Date(now.getTime() - i * 3600000);
-        const time = d.getHours().toString().padStart(2, '0') + ':00';
-        // Distribute current metrics with some randomness for the past
-        const groqBase = Math.floor(this.metrics['groq']?.requests / 24) || 10;
-        const mistralBase = Math.floor(this.metrics['mistral_direct']?.requests / 24) || 5;
-        const geminiBase = Math.floor((this.metrics['gemini_direct']?.requests + this.metrics['openrouter_free']?.requests) / 24) || 3;
-        
-        history.push({
-          time,
-          groq: Math.floor(groqBase * (0.5 + Math.random())),
-          mistral: Math.floor(mistralBase * (0.5 + Math.random())),
-          gemini: Math.floor(geminiBase * (0.5 + Math.random()))
-        });
-      }
-      return history;
-    }
     return this.hourlyHistory;
   }
 
@@ -143,24 +121,29 @@ class TelemetryService {
     if (this.flushInterval) clearInterval(this.flushInterval);
     this.flushInterval = setInterval(async () => {
       await this.flushToFirestore();
-    }, 5 * 60 * 1000); // Flush every 5 minutes
+    }, 5 * 60 * 1000);
   }
 
-  private async flushToFirestore() {
+  public async flushToFirestore() {
+    if (!this.isDirty) {
+      dbTelemetry.recordSuppressedWrite('system_stats', 'unchanged_ai_telemetry_periodic_flush', 1);
+      return;
+    }
     try {
-      // Check if admin is initialized
       try {
         admin.app();
       } catch (e) {
         return;
       }
 
+      this.isDirty = false;
       await admin.firestore().collection('system_stats').doc('ai_telemetry').set({
         metrics: this.metrics,
         lastUpdated: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
-      console.log('[Telemetry] Flushed metrics to Firestore');
+      console.log('[Telemetry] Flushed dirty metrics to Firestore');
     } catch (e) {
+      this.isDirty = true;
       console.error('[Telemetry] Failed to flush metrics:', e);
     }
   }

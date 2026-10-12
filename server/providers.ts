@@ -12,12 +12,62 @@ export interface ModelResponse {
   text: string;
   usage: { promptTokens: number; completionTokens: number; totalTokens: number };
   finishReason: string;
+  upstreamModel?: string | null;
+}
+
+export interface ModelCallOptions {
+  complexity: 'high' | 'standard';
+  jsonMode?: boolean;
+  model?: string;
+  signal?: AbortSignal;
+  temperature?: number;
 }
 
 export interface ModelProvider {
   readonly name: string;
-  generate(messages: any[], options: { complexity: 'high' | 'standard', jsonMode?: boolean, model?: string }): Promise<ModelResponse>;
-  stream(messages: any[], options: { complexity: 'high' | 'standard', jsonMode?: boolean, model?: string }, onChunk: (chunk: string) => void): Promise<ModelResponse>;
+  generate(messages: any[], options: ModelCallOptions): Promise<ModelResponse>;
+  stream(messages: any[], options: ModelCallOptions, onChunk: (chunk: string) => void): Promise<ModelResponse>;
+}
+
+export function createStreamAbortError(reason = 'Client disconnected mid-stream'): Error {
+  const err = new Error(`STREAM_ABORTED: ${reason}`) as any;
+  err.code = 'STREAM_ABORTED';
+  err.isRetryable = false;
+  return err;
+}
+
+export function isClientAbortError(error: any, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true;
+  const msg = (error?.message || String(error || '')).toUpperCase();
+  return (
+    error?.code === 'CLIENT_DISCONNECTED' ||
+    error?.code === 'STREAM_ABORTED' ||
+    msg.includes('CLIENT_DISCONNECTED') ||
+    msg.includes('STREAM_ABORTED')
+  );
+}
+
+export function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) {
+    return Promise.reject(createStreamAbortError('Signal already aborted'));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      reject(createStreamAbortError('Client disconnected or aborted request'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (val) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(val);
+      },
+      (err) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(err);
+      }
+    );
+  });
 }
 
 const ProviderResponseSchema = z.object({
@@ -77,10 +127,16 @@ function isKeyInvalidOrExhaustedError(error: any): boolean {
   );
 }
 
-async function retry<T>(fn: () => Promise<T>, providerName: string, retries = 3, delay = 1200): Promise<T> {
+async function retry<T>(fn: () => Promise<T>, providerName: string, retries = 3, delay = 1200, signal?: AbortSignal): Promise<T> {
+  if (signal?.aborted) {
+    throw createStreamAbortError('Request aborted before provider attempt');
+  }
   try {
-    return await fn();
+    return await raceWithAbort(fn(), signal);
   } catch (error: any) {
+    if (isClientAbortError(error, signal)) {
+      throw error;
+    }
     const rawMsg = (error.message || String(error)).toLowerCase();
     const statusCode = error.statusCode || error.status || (error.message?.match(/\b(\d{3})\b/)?.[1] ? parseInt(error.message.match(/\b(\d{3})\b/)[1]) : undefined);
 
@@ -120,7 +176,7 @@ async function retry<T>(fn: () => Promise<T>, providerName: string, retries = 3,
     if (isUnauthorized && retries > 0) {
       console.warn(`[${providerName}] Invalid/unauthorized API key encountered, rotating to next key in pool (${retries} attempts left)...`);
       await new Promise(resolve => setTimeout(resolve, 150));
-      return retry(fn, providerName, retries - 1, delay);
+      return retry(fn, providerName, retries - 1, delay, signal);
     }
 
     // Retry transient errors: 429 (rate limits), 5xx (server errors), and network timeouts
@@ -146,14 +202,23 @@ async function retry<T>(fn: () => Promise<T>, providerName: string, retries = 3,
       }
     }
 
-    const jitter = Math.random() * 500;
-    const waitTime = retryAfterMs > 0 ? retryAfterMs : Math.min((isRateLimit ? delay * 2 : delay) + jitter, 6000);
+    const deterministicOffset = ((retries % 3) + 1) * 150;
+    const waitTime = retryAfterMs > 0 ? retryAfterMs : Math.min((isRateLimit ? delay * 2 : delay) + deterministicOffset, 6000);
 
     console.warn(`[${providerName}] Retrying transient error (${retries} retries left) in ${Math.round(waitTime)}ms: ${error.message}`);
-    await new Promise(resolve => setTimeout(resolve, waitTime));
-    return retry(fn, providerName, retries - 1, waitTime * 1.5);
+    await raceWithAbort(new Promise(resolve => setTimeout(resolve, waitTime)), signal);
+    return retry(fn, providerName, retries - 1, waitTime * 1.5, signal);
   }
 }
+
+import { dbTelemetry } from './dbTelemetry';
+
+let sharedApiKeysSnapshotCache: { data: Record<string, any> | null; fetchedAt: number } = {
+  data: null,
+  fetchedAt: 0
+};
+const API_KEYS_CACHE_TTL_MS = 60 * 1000;
+const lastExhaustedWriteByProviderKey = new Map<string, number>();
 
 export class DynamicKeyRotator {
   private providerName: string;
@@ -194,87 +259,87 @@ export class DynamicKeyRotator {
   }
 
   async fetchKeys(force: boolean = false) {
-    // Only skip if within 30s, we have keys, AND we already have a configured model
-    if (!force && this.configuredModel && this.dbKeys.length > 0 && Date.now() - this.lastFetchTime < 30000) {
+    const now = Date.now();
+    if (!force && this.lastFetchTime > 0 && now - this.lastFetchTime < API_KEYS_CACHE_TTL_MS) {
       return;
     }
     try {
       const app = getAdminApp();
       if (!app) return;
       const docRef = app.firestore().collection('system_settings').doc('api_keys');
-      const doc = await docRef.get();
-      if (doc.exists) {
-        const data = doc.data();
-        if (data && data[this.providerName]) {
-          this.configuredModel = data[this.providerName].model || '';
-          this.configuredFallbackModel = data[this.providerName].fallbackModel || '';
-          
-          if (Array.isArray(data[this.providerName].keys)) {
-            let needsUpdate = false;
-            const now = Date.now();
-            const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
+      let data: Record<string, any> | null = null;
+      if (!force && sharedApiKeysSnapshotCache.fetchedAt > 0 && now - sharedApiKeysSnapshotCache.fetchedAt < API_KEYS_CACHE_TTL_MS) {
+        data = sharedApiKeysSnapshotCache.data;
+      } else {
+        const doc = await docRef.get();
+        data = doc.exists ? (doc.data() || null) : null;
+        sharedApiKeysSnapshotCache = { data, fetchedAt: now };
+      }
 
-            const updatedKeys = data[this.providerName].keys.map((k: any) => {
-              if (k.isExhausted && k.exhaustedAt) {
-                const exhaustedDate = new Date(k.exhaustedAt);
-                const currentDate = new Date(now);
-                
-                // Reset if:
-                // 1. It's a different calendar day (UTC)
-                // 2. OR 24 hours have passed (Safety fallback)
-                const isNewDay = exhaustedDate.getUTCDate() !== currentDate.getUTCDate() || 
-                                 exhaustedDate.getUTCMonth() !== currentDate.getUTCMonth() ||
-                                 exhaustedDate.getUTCFullYear() !== currentDate.getUTCFullYear();
-                
-                const isPast24h = now - k.exhaustedAt > TWENTY_FOUR_HOURS;
+      if (data && data[this.providerName]) {
+        this.configuredModel = data[this.providerName].model || '';
+        this.configuredFallbackModel = data[this.providerName].fallbackModel || '';
 
-                if (isNewDay || isPast24h) {
-                  needsUpdate = true;
-                  const { exhaustedAt, ...rest } = k;
-                  return { ...rest, isExhausted: false };
-                }
+        if (Array.isArray(data[this.providerName].keys)) {
+          let needsUpdate = false;
+          const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
+
+          const updatedKeys = data[this.providerName].keys.map((k: any) => {
+            if (k.isExhausted && k.exhaustedAt) {
+              const exhaustedDate = new Date(k.exhaustedAt);
+              const currentDate = new Date(now);
+              const isNewDay =
+                exhaustedDate.getUTCDate() !== currentDate.getUTCDate() ||
+                exhaustedDate.getUTCMonth() !== currentDate.getUTCMonth() ||
+                exhaustedDate.getUTCFullYear() !== currentDate.getUTCFullYear();
+              const isPast24h = now - k.exhaustedAt > TWENTY_FOUR_HOURS;
+
+              if (isNewDay || isPast24h) {
+                needsUpdate = true;
+                const { exhaustedAt, ...rest } = k;
+                return { ...rest, isExhausted: false };
               }
-              return k;
-            });
-
-            if (needsUpdate) {
-              await docRef.update({
-                [`${this.providerName}.keys`]: updatedKeys
-              });
-              data[this.providerName].keys = updatedKeys;
             }
+            return k;
+          });
 
-            this.dbKeys = data[this.providerName].keys
-              .filter((k: any) => k.key && k.key.trim().length > 0)
-              .map((k: any) => k.key.trim());
+          if (needsUpdate) {
+            await docRef.update({
+              [`${this.providerName}.keys`]: updatedKeys
+            });
+            data[this.providerName].keys = updatedKeys;
+          } else {
+            dbTelemetry.recordSuppressedWrite('system_settings', 'unchanged_api_key_reset_check', 1);
+          }
 
-            // Sync local exhausted state with DB so we don't try exhausted keys until they reset
-            for (const k of data[this.providerName].keys) {
-              if (k.isExhausted) {
-                this.exhaustedKeys.add(k.key.trim());
-              } else {
-                this.exhaustedKeys.delete(k.key.trim());
-              }
+          this.dbKeys = data[this.providerName].keys
+            .filter((k: any) => k.key && k.key.trim().length > 0)
+            .map((k: any) => k.key.trim());
+
+          for (const k of data[this.providerName].keys) {
+            if (k.isExhausted) {
+              this.exhaustedKeys.add(k.key.trim());
+            } else {
+              this.exhaustedKeys.delete(k.key.trim());
             }
           }
         }
       }
-      this.lastFetchTime = Date.now();
+      this.lastFetchTime = now;
     } catch (e) {
       console.error(`Failed to fetch keys for ${this.providerName}`, e);
     }
   }
 
   async getModel(): Promise<string> {
-    await this.fetchKeys(!this.configuredModel);
+    await this.fetchKeys(false);
     return (this.configuredModel || '').trim();
   }
 
   async getFallbackModel(): Promise<string> {
-    await this.fetchKeys(!this.configuredFallbackModel);
+    await this.fetchKeys(false);
     const fallback = (this.configuredFallbackModel || '').trim();
     const primary = (this.configuredModel || '').trim();
-    // Ensure fallback is not identical to primary model
     if (fallback && fallback.toLowerCase() === primary.toLowerCase()) {
       return '';
     }
@@ -282,32 +347,29 @@ export class DynamicKeyRotator {
   }
 
   async getNextKey(): Promise<string> {
-    await this.fetchKeys();
-    // Prioritize Admin-configured Firestore dbKeys first; only append fallback env keys after dbKeys
+    await this.fetchKeys(false);
     const combinedKeys = this.dbKeys.length > 0
       ? [...this.dbKeys, ...this.fallbackKeys]
       : [...this.fallbackKeys];
     const allKeys = Array.from(new Set(combinedKeys));
-    
-    // Filter out obvious placeholders
-    const activeKeys = allKeys.filter(k => 
-      k && 
-      k.length > 5 && 
-      !k.includes('TODO') && 
-      !k.includes('YOUR_') && 
+
+    const activeKeys = allKeys.filter(k =>
+      k &&
+      k.length > 5 &&
+      !k.includes('TODO') &&
+      !k.includes('YOUR_') &&
       !k.includes('MY_GEMINI_API_KEY') &&
       !k.includes('PLACEHOLDER') &&
       !k.includes('<') &&
       !k.includes('>')
     );
-    
+
     if (activeKeys.length === 0) {
       const msg = `No valid API keys available for provider: ${this.providerName}. ${allKeys.length > 0 ? 'The provided keys appear to be placeholders.' : 'Please configure them in the Admin Dashboard or environment variables.'}`;
       console.error(msg);
       throw new Error(msg);
     }
-    
-    // Try to find a non-exhausted key
+
     let key = activeKeys[this.currentIndex % activeKeys.length];
     let attempts = 0;
     while (this.exhaustedKeys.has(key) && attempts < activeKeys.length) {
@@ -316,12 +378,8 @@ export class DynamicKeyRotator {
       attempts++;
     }
 
-    // If all keys are exhausted, clear the set and try again (maybe limits reset)
     if (attempts >= activeKeys.length) {
-      throw new Error("ALL_KEYS_EXHAUSTED");
-
-      this.exhaustedKeys.clear();
-      key = activeKeys[this.currentIndex % activeKeys.length];
+      throw new Error('ALL_KEYS_EXHAUSTED');
     }
 
     this.currentIndex = (this.currentIndex + 1) % activeKeys.length;
@@ -329,9 +387,19 @@ export class DynamicKeyRotator {
   }
 
   async markKeyExhausted(key: string) {
-    this.exhaustedKeys.add(key);
-    
-    // Update Firestore to mark key as exhausted
+    const trimmedKey = (key || '').trim();
+    const wasAlreadyExhaustedInMemory = this.exhaustedKeys.has(trimmedKey);
+    this.exhaustedKeys.add(trimmedKey);
+
+    // If this key is not a Firestore-managed dbKey (e.g. env fallback key), or was already marked exhausted within 60s, skip DB write
+    const throttleKey = `${this.providerName}:${trimmedKey}`;
+    const lastWriteAt = lastExhaustedWriteByProviderKey.get(throttleKey) || 0;
+    const now = Date.now();
+    if (wasAlreadyExhaustedInMemory || !this.dbKeys.includes(trimmedKey) || now - lastWriteAt < API_KEYS_CACHE_TTL_MS) {
+      dbTelemetry.recordSuppressedWrite('system_settings', 'duplicate_or_env_key_exhausted_write', 1);
+      return;
+    }
+
     try {
       const app = getAdminApp();
       if (!app) return;
@@ -340,15 +408,27 @@ export class DynamicKeyRotator {
       if (docSnap.exists) {
         const data = docSnap.data();
         if (data && data[this.providerName] && Array.isArray(data[this.providerName].keys)) {
+          let actuallyChanged = false;
           const updatedKeys = data[this.providerName].keys.map((k: any) => {
-            if (k.key === key) {
-              return { ...k, isExhausted: true, exhaustedAt: Date.now() };
+            if (k && typeof k.key === 'string' && k.key.trim() === trimmedKey) {
+              if (!k.isExhausted) {
+                actuallyChanged = true;
+                return { ...k, isExhausted: true, exhaustedAt: now };
+              }
             }
             return k;
           });
-          await docRef.update({
-            [`${this.providerName}.keys`]: updatedKeys
-          });
+          if (actuallyChanged) {
+            lastExhaustedWriteByProviderKey.set(throttleKey, now);
+            await docRef.update({
+              [`${this.providerName}.keys`]: updatedKeys
+            });
+            if (sharedApiKeysSnapshotCache.data && sharedApiKeysSnapshotCache.data[this.providerName]) {
+              sharedApiKeysSnapshotCache.data[this.providerName].keys = updatedKeys;
+            }
+          } else {
+            dbTelemetry.recordSuppressedWrite('system_settings', 'key_already_marked_exhausted_in_db', 1);
+          }
         }
       }
     } catch (e) {
@@ -436,7 +516,7 @@ export class GeminiDirectProvider implements ModelProvider {
     }
   }
 
-  async generate(messages: any[], options: { complexity: 'high' | 'standard', jsonMode?: boolean, model?: string }): Promise<ModelResponse> {
+  async generate(messages: any[], options: ModelCallOptions): Promise<ModelResponse> {
     return retry(async () => {
       const apiKey = await this.rotator.getNextKey();
       let primaryModel = (options.model || await this.rotator.getModel() || '').trim();
@@ -465,21 +545,24 @@ export class GeminiDirectProvider implements ModelProvider {
           setTimeout(() => reject(new ModelProviderError(`Gemini request timed out after 60s for model ${targetModel}`, 'gemini_direct', 408, true)), 60000)
         );
 
-        const response = await Promise.race([
+        const response = await raceWithAbort(Promise.race([
           ai.models.generateContent({
             model: targetModel,
             contents,
             config: {
               systemInstruction,
               responseMimeType: options.jsonMode ? "application/json" : "text/plain",
-              temperature: 0.5,
+              temperature: options.temperature ?? 0.5,
               maxOutputTokens: 8192,
             }
           }),
           timeoutPromise
-        ]);
+        ]), options?.signal);
 
         if (!response.text) throw new Error('Empty response from Gemini');
+        const upstreamModel = typeof (response as any)?.modelVersion === 'string' && (response as any).modelVersion.trim()
+          ? (response as any).modelVersion.trim()
+          : null;
 
         return {
           text: response.text,
@@ -488,13 +571,15 @@ export class GeminiDirectProvider implements ModelProvider {
             completionTokens: response.usageMetadata?.candidatesTokenCount || 0,
             totalTokens: response.usageMetadata?.totalTokenCount || 0
           },
-          finishReason: 'stop'
+          finishReason: 'stop',
+          upstreamModel
         };
       };
 
       try {
         return await executeGenerate(primaryModel);
       } catch (error: any) {
+        if (isClientAbortError(error, options?.signal)) throw error;
         const status = error.status || error.statusCode;
         if (isKeyInvalidOrExhaustedError(error)) {
           await this.rotator.markKeyExhausted(apiKey);
@@ -504,6 +589,7 @@ export class GeminiDirectProvider implements ModelProvider {
           try {
             return await executeGenerate(fallbackModel);
           } catch (fallbackErr: any) {
+            if (isClientAbortError(fallbackErr, options?.signal)) throw fallbackErr;
             if (isKeyInvalidOrExhaustedError(fallbackErr)) {
               await this.rotator.markKeyExhausted(apiKey);
             }
@@ -512,10 +598,10 @@ export class GeminiDirectProvider implements ModelProvider {
         }
         throw error;
       }
-    }, 'GeminiDirect');
+    }, 'GeminiDirect', 3, 1200, options?.signal);
   }
 
-  async stream(messages: any[], options: { complexity: 'high' | 'standard', jsonMode?: boolean, model?: string }, onChunk: (chunk: string) => void): Promise<ModelResponse> {
+  async stream(messages: any[], options: ModelCallOptions, onChunk: (chunk: string) => void): Promise<ModelResponse> {
     return retry(async () => {
       const apiKey = await this.rotator.getNextKey();
       let primaryModel = (options.model || await this.rotator.getModel() || '').trim();
@@ -539,19 +625,29 @@ export class GeminiDirectProvider implements ModelProvider {
       const { contents, systemInstruction } = this.transformMessagesToGemini(messages);
 
       const executeStream = async (targetModel: string) => {
-        const result = await ai.models.generateContentStream({
+        if (options?.signal?.aborted) {
+          throw createStreamAbortError('Gemini stream aborted before start');
+        }
+        const result = await raceWithAbort(ai.models.generateContentStream({
           model: targetModel,
           contents,
           config: {
             systemInstruction,
             responseMimeType: options?.jsonMode ? "application/json" : "text/plain",
-            temperature: 0.5,
+            temperature: options?.temperature ?? 0.5,
             maxOutputTokens: 8192,
           }
-        });
+        }), options?.signal);
 
         let fullText = '';
+        let upstreamModel: string | null = null;
         for await (const chunk of result) {
+          if (options?.signal?.aborted) {
+            throw createStreamAbortError('Gemini stream aborted mid-generation');
+          }
+          if (!upstreamModel && typeof (chunk as any)?.modelVersion === 'string' && (chunk as any).modelVersion.trim()) {
+            upstreamModel = (chunk as any).modelVersion.trim();
+          }
           const text = chunk.text;
           if (text) {
             fullText += text;
@@ -562,13 +658,15 @@ export class GeminiDirectProvider implements ModelProvider {
         return {
           text: fullText,
           usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-          finishReason: 'stop'
+          finishReason: 'stop',
+          upstreamModel
         };
       };
 
       try {
         return await executeStream(primaryModel);
       } catch (error: any) {
+        if (isClientAbortError(error, options?.signal)) throw error;
         const status = error.status || error.statusCode;
         if (isKeyInvalidOrExhaustedError(error)) {
           await this.rotator.markKeyExhausted(apiKey);
@@ -578,6 +676,7 @@ export class GeminiDirectProvider implements ModelProvider {
           try {
             return await executeStream(fallbackModel);
           } catch (fallbackErr: any) {
+            if (isClientAbortError(fallbackErr, options?.signal)) throw fallbackErr;
             if (isKeyInvalidOrExhaustedError(fallbackErr)) {
               await this.rotator.markKeyExhausted(apiKey);
             }
@@ -586,7 +685,7 @@ export class GeminiDirectProvider implements ModelProvider {
         }
         throw error;
       }
-    }, 'GeminiDirect');
+    }, 'GeminiDirect', 3, 1200, options?.signal);
   }
 }
 
@@ -619,7 +718,7 @@ export class OpenRouterFreeProvider implements ModelProvider {
     }
   }
 
-  async generate(messages: any[], options: { complexity: 'high' | 'standard', jsonMode?: boolean }): Promise<ModelResponse> {
+  async generate(messages: any[], options: ModelCallOptions): Promise<ModelResponse> {
     return retry(async () => {
       const apiKey = await this.rotator.getNextKey();
       let model = (await this.rotator.getModel()).trim();
@@ -644,9 +743,9 @@ export class OpenRouterFreeProvider implements ModelProvider {
           model: model,
           messages: messages,
           max_tokens: 8192,
-          temperature: 0.5,
+          temperature: options.temperature ?? 0.5,
           response_format: options.jsonMode ? { type: "json_object" } : undefined
-        });
+        }, { signal: options?.signal });
 
         return {
           text: response.choices[0]?.message?.content || '',
@@ -655,9 +754,11 @@ export class OpenRouterFreeProvider implements ModelProvider {
             completionTokens: response.usage?.completion_tokens || 0,
             totalTokens: response.usage?.total_tokens || 0
           },
-          finishReason: response.choices[0]?.finish_reason || 'stop'
+          finishReason: response.choices[0]?.finish_reason || 'stop',
+          upstreamModel: typeof (response as any)?.model === 'string' && (response as any).model.trim() ? (response as any).model.trim() : null
         };
       } catch (error: any) {
+        if (isClientAbortError(error, options?.signal)) throw error;
         // If rate limited (429), fallback to paid model
         if (error.status === 429) {
           if (!fallbackModel) throw error;
@@ -667,9 +768,9 @@ export class OpenRouterFreeProvider implements ModelProvider {
               model: fallbackModel,
               messages: messages,
               max_tokens: 8192,
-              temperature: 0.5,
+              temperature: options.temperature ?? 0.5,
               response_format: options.jsonMode ? { type: "json_object" } : undefined
-            });
+            }, { signal: options?.signal });
 
             return {
               text: paidResponse.choices[0]?.message?.content || '',
@@ -678,9 +779,11 @@ export class OpenRouterFreeProvider implements ModelProvider {
                 completionTokens: paidResponse.usage?.completion_tokens || 0,
                 totalTokens: paidResponse.usage?.total_tokens || 0
               },
-              finishReason: paidResponse.choices[0]?.finish_reason || 'stop'
+              finishReason: paidResponse.choices[0]?.finish_reason || 'stop',
+              upstreamModel: typeof (paidResponse as any)?.model === 'string' && (paidResponse as any).model.trim() ? (paidResponse as any).model.trim() : null
             };
           } catch (paidError: any) {
+             if (isClientAbortError(paidError, options?.signal)) throw paidError;
              if (paidError.status === 401 || paidError.status === 403 || paidError.status === 429) {
                this.rotator.markKeyExhausted(apiKey);
              }
@@ -693,10 +796,10 @@ export class OpenRouterFreeProvider implements ModelProvider {
         }
         throw error;
       }
-    }, 'OpenRouterFree');
+    }, 'OpenRouterFree', 3, 1200, options?.signal);
   }
 
-  async stream(messages: any[], options: { complexity: 'high' | 'standard' }, onChunk: (chunk: string) => void): Promise<ModelResponse> {
+  async stream(messages: any[], options: ModelCallOptions, onChunk: (chunk: string) => void): Promise<ModelResponse> {
     return retry(async () => {
       const apiKey = await this.rotator.getNextKey();
       let model = (await this.rotator.getModel()).trim();
@@ -720,13 +823,21 @@ export class OpenRouterFreeProvider implements ModelProvider {
           max_tokens: 8192,
           temperature: 0.5,
           stream: true
-        });
+        }, { signal: options?.signal });
 
         let fullText = '';
         let hasStartedThinking = false;
         let hasFinishedThinking = false;
+        let upstreamModel: string | null = null;
 
         for await (const chunk of stream) {
+          if (options?.signal?.aborted) {
+            try { (stream as any).controller?.abort(); } catch {}
+            throw createStreamAbortError('OpenRouter stream aborted mid-generation');
+          }
+          if (!upstreamModel && typeof (chunk as any)?.model === 'string' && (chunk as any).model.trim()) {
+            upstreamModel = (chunk as any).model.trim();
+          }
           const delta = chunk.choices[0]?.delta as any;
           const reasoning = delta?.reasoning_content || delta?.reasoning || '';
           const content = delta?.content || '';
@@ -756,9 +867,11 @@ export class OpenRouterFreeProvider implements ModelProvider {
         return {
           text: fullText,
           usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-          finishReason: 'stop'
+          finishReason: 'stop',
+          upstreamModel
         };
       } catch (error: any) {
+        if (isClientAbortError(error, options?.signal)) throw error;
         // If rate limited (429), fallback to paid model
         if (error.status === 429) {
           if (!fallbackModel) throw error;
@@ -768,15 +881,23 @@ export class OpenRouterFreeProvider implements ModelProvider {
               model: fallbackModel,
               messages: messages,
               max_tokens: 8192,
-              temperature: 0.5,
+              temperature: options.temperature ?? 0.5,
               stream: true
-            });
+            }, { signal: options?.signal });
 
             let fullText = '';
             let hasStartedThinking = false;
             let hasFinishedThinking = false;
+            let paidUpstreamModel: string | null = null;
 
             for await (const chunk of paidStream) {
+              if (options?.signal?.aborted) {
+                try { (paidStream as any).controller?.abort(); } catch {}
+                throw createStreamAbortError('OpenRouter fallback stream aborted mid-generation');
+              }
+              if (!paidUpstreamModel && typeof (chunk as any)?.model === 'string' && (chunk as any).model.trim()) {
+                paidUpstreamModel = (chunk as any).model.trim();
+              }
               const delta = chunk?.choices?.[0]?.delta as any;
               const reasoning = delta?.reasoning_content || delta?.reasoning || '';
               const content = delta?.content || '';
@@ -806,9 +927,11 @@ export class OpenRouterFreeProvider implements ModelProvider {
             return {
               text: fullText,
               usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-              finishReason: 'stop'
+              finishReason: 'stop',
+              upstreamModel: paidUpstreamModel
             };
           } catch (paidError: any) {
+            if (isClientAbortError(paidError, options?.signal)) throw paidError;
             if (paidError.status === 401 || paidError.status === 403 || paidError.status === 429) {
               this.rotator.markKeyExhausted(apiKey);
             }
@@ -821,7 +944,7 @@ export class OpenRouterFreeProvider implements ModelProvider {
         }
         throw error;
       }
-    }, 'OpenRouterFree');
+    }, 'OpenRouterFree', 3, 1200, options?.signal);
   }
 }
 
@@ -852,7 +975,7 @@ export class MistralProvider implements ModelProvider {
     }
   }
 
-  async generate(messages: any[], options: { complexity: 'high' | 'standard', jsonMode?: boolean, model?: string }): Promise<ModelResponse> {
+  async generate(messages: any[], options: ModelCallOptions): Promise<ModelResponse> {
     return retry(async () => {
       const apiKey = await this.rotator.getNextKey();
       const primaryModel = (options.model || await this.rotator.getModel() || '').trim();
@@ -872,13 +995,13 @@ export class MistralProvider implements ModelProvider {
       }
 
       const executeGenerate = async (targetModel: string) => {
-        const response = await mistral.chat.complete({
+        const response = await raceWithAbort(mistral.chat.complete({
           model: targetModel,
-          temperature: 0.5,
+          temperature: options.temperature ?? 0.5,
           maxTokens: 8192,
           messages: messages,
           responseFormat: options.jsonMode ? { type: "json_object" } : undefined
-        });
+        }), options?.signal);
 
         return {
           text: response.choices?.[0]?.message?.content as string || '',
@@ -887,19 +1010,22 @@ export class MistralProvider implements ModelProvider {
             completionTokens: response.usage?.completionTokens || 0,
             totalTokens: response.usage?.totalTokens || 0
           },
-          finishReason: response.choices?.[0]?.finishReason || 'stop'
+          finishReason: response.choices?.[0]?.finishReason || 'stop',
+          upstreamModel: typeof (response as any)?.model === 'string' && (response as any).model.trim() ? (response as any).model.trim() : null
         };
       };
 
       try {
         return await executeGenerate(primaryModel);
       } catch (error: any) {
+        if (isClientAbortError(error, options?.signal)) throw error;
         const status = error.status || error.statusCode;
         if (fallbackModel && fallbackModel !== primaryModel && (status === 404 || status === 429)) {
           console.warn(`[Mistral] Primary model '${primaryModel}' failed with status ${status}. Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeGenerate(fallbackModel);
           } catch (fallbackErr: any) {
+            if (isClientAbortError(fallbackErr, options?.signal)) throw fallbackErr;
             const fbStatus = fallbackErr.status || fallbackErr.statusCode;
             if (fbStatus === 401 || fbStatus === 403 || fbStatus === 429) {
               this.rotator.markKeyExhausted(apiKey);
@@ -913,10 +1039,10 @@ export class MistralProvider implements ModelProvider {
         }
         throw error;
       }
-    }, 'Mistral');
+    }, 'Mistral', 3, 1200, options?.signal);
   }
 
-  async stream(messages: any[], options: { complexity: 'high' | 'standard', jsonMode?: boolean, model?: string }, onChunk: (chunk: string) => void): Promise<ModelResponse> {
+  async stream(messages: any[], options: ModelCallOptions, onChunk: (chunk: string) => void): Promise<ModelResponse> {
     return retry(async () => {
       const apiKey = await this.rotator.getNextKey();
       const primaryModel = (options.model || await this.rotator.getModel() || '').trim();
@@ -936,16 +1062,26 @@ export class MistralProvider implements ModelProvider {
       }
 
       const executeStream = async (targetModel: string) => {
-        const stream = await mistral.chat.stream({
+        if (options?.signal?.aborted) {
+          throw createStreamAbortError('Mistral stream aborted before start');
+        }
+        const stream = await raceWithAbort(mistral.chat.stream({
           model: targetModel,
-          temperature: 0.5,
+          temperature: options.temperature ?? 0.5,
           maxTokens: 8192,
           messages: messages,
           responseFormat: options.jsonMode ? { type: "json_object" } : undefined
-        });
+        }), options?.signal);
 
         let fullText = '';
+        let upstreamModel: string | null = null;
         for await (const chunk of stream) {
+          if (options?.signal?.aborted) {
+            throw createStreamAbortError('Mistral stream aborted mid-generation');
+          }
+          if (!upstreamModel && typeof (chunk as any)?.data?.model === 'string' && (chunk as any).data.model.trim()) {
+            upstreamModel = (chunk as any).data.model.trim();
+          }
           const content = chunk?.data?.choices?.[0]?.delta?.content as string || '';
           if (content) {
             fullText += content;
@@ -956,19 +1092,22 @@ export class MistralProvider implements ModelProvider {
         return {
           text: fullText,
           usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-          finishReason: 'stop'
+          finishReason: 'stop',
+          upstreamModel
         };
       };
 
       try {
         return await executeStream(primaryModel);
       } catch (error: any) {
+        if (isClientAbortError(error, options?.signal)) throw error;
         const status = error.status || error.statusCode;
         if (fallbackModel && fallbackModel !== primaryModel && (status === 404 || status === 429)) {
           console.warn(`[Mistral Stream] Primary model '${primaryModel}' failed with status ${status}. Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeStream(fallbackModel);
           } catch (fallbackErr: any) {
+            if (isClientAbortError(fallbackErr, options?.signal)) throw fallbackErr;
             const fbStatus = fallbackErr.status || fallbackErr.statusCode;
             if (fbStatus === 401 || fbStatus === 403 || fbStatus === 429) {
               this.rotator.markKeyExhausted(apiKey);
@@ -982,7 +1121,7 @@ export class MistralProvider implements ModelProvider {
         }
         throw error;
       }
-    }, 'Mistral');
+    }, 'Mistral', 3, 1200, options?.signal);
   }
 }
 
@@ -1013,7 +1152,7 @@ export class GroqProvider implements ModelProvider {
     }
   }
 
-  async generate(messages: any[], options: { complexity: 'high' | 'standard', jsonMode?: boolean, model?: string }): Promise<ModelResponse> {
+  async generate(messages: any[], options: ModelCallOptions): Promise<ModelResponse> {
     return retry(async () => {
       const apiKey = await this.rotator.getNextKey();
       const primaryModel = (options.model || await this.rotator.getModel() || '').trim();
@@ -1040,11 +1179,11 @@ export class GroqProvider implements ModelProvider {
       const executeGenerate = async (targetModel: string) => {
         const response = await groq.chat.completions.create({
           model: targetModel,
-          temperature: 0.5,
+          temperature: options.temperature ?? 0.5,
           max_tokens: options.complexity === 'high' ? 4096 : 2048,
           messages: truncatedMessages,
           response_format: options.jsonMode ? { type: "json_object" } : undefined
-        });
+        }, { signal: options?.signal });
 
         return {
           text: response.choices[0]?.message?.content || '',
@@ -1053,19 +1192,22 @@ export class GroqProvider implements ModelProvider {
             completionTokens: response.usage?.completion_tokens || 0,
             totalTokens: response.usage?.total_tokens || 0
           },
-          finishReason: response.choices[0]?.finish_reason || 'stop'
+          finishReason: response.choices[0]?.finish_reason || 'stop',
+          upstreamModel: typeof (response as any)?.model === 'string' && (response as any).model.trim() ? (response as any).model.trim() : null
         };
       };
 
       try {
         return await executeGenerate(primaryModel);
       } catch (error: any) {
+        if (isClientAbortError(error, options?.signal)) throw error;
         const status = error.status || error.statusCode;
         if (fallbackModel && fallbackModel !== primaryModel && (status === 404 || status === 429)) {
           console.warn(`[Groq] Primary model '${primaryModel}' failed with status ${status}. Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeGenerate(fallbackModel);
           } catch (fallbackErr: any) {
+            if (isClientAbortError(fallbackErr, options?.signal)) throw fallbackErr;
             const fbStatus = fallbackErr.status || fallbackErr.statusCode;
             if (fbStatus === 401 || fbStatus === 403 || fbStatus === 429) {
               this.rotator.markKeyExhausted(apiKey);
@@ -1079,10 +1221,10 @@ export class GroqProvider implements ModelProvider {
         }
         throw error;
       }
-    }, 'Groq');
+    }, 'Groq', 3, 1200, options?.signal);
   }
 
-  async stream(messages: any[], options: { complexity: 'high' | 'standard', jsonMode?: boolean, model?: string }, onChunk: (chunk: string) => void): Promise<ModelResponse> {
+  async stream(messages: any[], options: ModelCallOptions, onChunk: (chunk: string) => void): Promise<ModelResponse> {
     return retry(async () => {
       const apiKey = await this.rotator.getNextKey();
       const primaryModel = (options.model || await this.rotator.getModel() || '').trim();
@@ -1107,17 +1249,25 @@ export class GroqProvider implements ModelProvider {
       const executeStream = async (targetModel: string) => {
         const stream = await groq.chat.completions.create({
           model: targetModel,
-          temperature: 0.5,
+          temperature: options.temperature ?? 0.5,
           max_tokens: options.complexity === 'high' ? 4096 : 2048,
           messages: truncatedMessages,
           stream: true
-        });
+        }, { signal: options?.signal });
 
         let fullText = '';
         let hasStartedThinking = false;
         let hasFinishedThinking = false;
+        let upstreamModel: string | null = null;
 
         for await (const chunk of stream) {
+          if (options?.signal?.aborted) {
+            try { (stream as any).controller?.abort(); } catch {}
+            throw createStreamAbortError('Groq stream aborted mid-generation');
+          }
+          if (!upstreamModel && typeof (chunk as any)?.model === 'string' && (chunk as any).model.trim()) {
+            upstreamModel = (chunk as any).model.trim();
+          }
           const delta = chunk?.choices?.[0]?.delta as any;
           const reasoning = delta?.reasoning_content || delta?.reasoning || '';
           const content = delta?.content || '';
@@ -1147,19 +1297,22 @@ export class GroqProvider implements ModelProvider {
         return {
           text: fullText,
           usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-          finishReason: 'stop'
+          finishReason: 'stop',
+          upstreamModel
         };
       };
 
       try {
         return await executeStream(primaryModel);
       } catch (error: any) {
+        if (isClientAbortError(error, options?.signal)) throw error;
         const status = error.status || error.statusCode;
         if (fallbackModel && fallbackModel !== primaryModel && (status === 404 || status === 429)) {
           console.warn(`[Groq Stream] Primary model '${primaryModel}' failed with status ${status}. Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeStream(fallbackModel);
           } catch (fallbackErr: any) {
+            if (isClientAbortError(fallbackErr, options?.signal)) throw fallbackErr;
             const fbStatus = fallbackErr.status || fallbackErr.statusCode;
             if (fbStatus === 401 || fbStatus === 403 || fbStatus === 429) {
               this.rotator.markKeyExhausted(apiKey);
@@ -1173,7 +1326,7 @@ export class GroqProvider implements ModelProvider {
         }
         throw error;
       }
-    }, 'Groq');
+    }, 'Groq', 3, 1200, options?.signal);
   }
 
   private truncateMessages(messages: any[], maxTokens: number): any[] {
@@ -1261,7 +1414,7 @@ export class CohereProvider implements ModelProvider {
     }
   }
 
-  async generate(messages: any[], options: { complexity: 'high' | 'standard', jsonMode?: boolean, model?: string }): Promise<ModelResponse> {
+  async generate(messages: any[], options: ModelCallOptions): Promise<ModelResponse> {
     return retry(async () => {
       const apiKey = await this.rotator.getNextKey();
       const primaryModel = (options.model || await this.rotator.getModel() || '').trim();
@@ -1287,12 +1440,12 @@ export class CohereProvider implements ModelProvider {
       const lastMessage = messages[messages.length - 1].content;
 
       const executeGenerate = async (targetModel: string) => {
-        const response = await cohere.chat({
+        const response = await raceWithAbort(cohere.chat({
           model: targetModel,
           message: lastMessage,
           chatHistory: chatHistory as any,
-          temperature: 0.5,
-        });
+          temperature: options.temperature ?? 0.5,
+        }), options?.signal);
 
         return {
           text: response.text,
@@ -1301,19 +1454,22 @@ export class CohereProvider implements ModelProvider {
             completionTokens: response.meta?.billedUnits?.outputTokens || 0,
             totalTokens: (response.meta?.billedUnits?.inputTokens || 0) + (response.meta?.billedUnits?.outputTokens || 0)
           },
-          finishReason: response.finishReason || 'COMPLETE'
+          finishReason: response.finishReason || 'COMPLETE',
+          upstreamModel: typeof (response as any)?.meta?.model === 'string' ? (response as any).meta.model : null
         };
       };
 
       try {
         return await executeGenerate(primaryModel);
       } catch (error: any) {
+        if (isClientAbortError(error, options?.signal)) throw error;
         const status = error.statusCode || error.status;
         if (fallbackModel && fallbackModel !== primaryModel && (status === 404 || status === 429)) {
           console.warn(`[Cohere] Primary model '${primaryModel}' failed with status ${status}. Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeGenerate(fallbackModel);
           } catch (fallbackErr: any) {
+            if (isClientAbortError(fallbackErr, options?.signal)) throw fallbackErr;
             const fbStatus = fallbackErr.statusCode || fallbackErr.status;
             if (fbStatus === 401 || fbStatus === 403 || fbStatus === 429) {
               this.rotator.markKeyExhausted(apiKey);
@@ -1327,10 +1483,10 @@ export class CohereProvider implements ModelProvider {
         }
         throw error;
       }
-    }, 'Cohere');
+    }, 'Cohere', 3, 1200, options?.signal);
   }
 
-  async stream(messages: any[], options: { complexity: 'high' | 'standard', model?: string }, onChunk: (chunk: string) => void): Promise<ModelResponse> {
+  async stream(messages: any[], options: ModelCallOptions, onChunk: (chunk: string) => void): Promise<ModelResponse> {
     return retry(async () => {
       const apiKey = await this.rotator.getNextKey();
       const primaryModel = (options.model || await this.rotator.getModel() || '').trim();
@@ -1352,15 +1508,25 @@ export class CohereProvider implements ModelProvider {
       const lastMessage = messages[messages.length - 1].content;
 
       const executeStream = async (targetModel: string) => {
-        const stream = await cohere.chatStream({
+        if (options?.signal?.aborted) {
+          throw createStreamAbortError('Cohere stream aborted before start');
+        }
+        const stream = await raceWithAbort(cohere.chatStream({
           model: targetModel,
           message: lastMessage,
           chatHistory: chatHistory as any,
-          temperature: 0.5,
-        });
+          temperature: options.temperature ?? 0.5,
+        }), options?.signal);
 
         let fullText = '';
+        let upstreamModel: string | null = null;
         for await (const chunk of stream) {
+          if (options?.signal?.aborted) {
+            throw createStreamAbortError('Cohere stream aborted mid-generation');
+          }
+          if (!upstreamModel && typeof (chunk as any)?.response?.meta?.model === 'string') {
+            upstreamModel = (chunk as any).response.meta.model;
+          }
           if (chunk.eventType === 'text-generation') {
             fullText += chunk.text;
             onChunk(chunk.text);
@@ -1370,19 +1536,22 @@ export class CohereProvider implements ModelProvider {
         return {
           text: fullText,
           usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-          finishReason: 'COMPLETE'
+          finishReason: 'COMPLETE',
+          upstreamModel
         };
       };
 
       try {
         return await executeStream(primaryModel);
       } catch (error: any) {
+        if (isClientAbortError(error, options?.signal)) throw error;
         const status = error.statusCode || error.status;
         if (fallbackModel && fallbackModel !== primaryModel && (status === 404 || status === 429)) {
           console.warn(`[Cohere Stream] Primary model '${primaryModel}' failed with status ${status}. Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeStream(fallbackModel);
           } catch (fallbackErr: any) {
+            if (isClientAbortError(fallbackErr, options?.signal)) throw fallbackErr;
             const fbStatus = fallbackErr.statusCode || fallbackErr.status;
             if (fbStatus === 401 || fbStatus === 403 || fbStatus === 429) {
               this.rotator.markKeyExhausted(apiKey);
@@ -1396,7 +1565,7 @@ export class CohereProvider implements ModelProvider {
         }
         throw error;
       }
-    }, 'Cohere');
+    }, 'Cohere', 3, 1200, options?.signal);
   }
 }
 
@@ -1408,7 +1577,7 @@ export class HuggingFaceProvider implements ModelProvider {
     this.rotator = new DynamicKeyRotator('huggingface', apiKey);
   }
 
-  async generate(messages: any[], options: { complexity: 'high' | 'standard', jsonMode?: boolean, model?: string }): Promise<ModelResponse> {
+  async generate(messages: any[], options: ModelCallOptions): Promise<ModelResponse> {
     return retry(async () => {
       const apiKey = await this.rotator.getNextKey();
       const primaryModel = (options.model || await this.rotator.getModel() || '').trim();
@@ -1425,12 +1594,12 @@ export class HuggingFaceProvider implements ModelProvider {
 
       const executeGenerate = async (targetModel: string) => {
         try {
-          const response = await hf.chatCompletion({
+          const response = await raceWithAbort(hf.chatCompletion({
             model: targetModel,
             messages: messages,
             max_tokens: 4096,
-            temperature: 0.5
-          });
+            temperature: options.temperature ?? 0.5
+          }), options?.signal);
 
           return {
             text: response.choices[0]?.message?.content || '',
@@ -1439,9 +1608,11 @@ export class HuggingFaceProvider implements ModelProvider {
               completionTokens: response.usage?.completion_tokens || 0,
               totalTokens: response.usage?.total_tokens || 0
             },
-            finishReason: response.choices[0]?.finish_reason || 'stop'
+            finishReason: response.choices[0]?.finish_reason || 'stop',
+            upstreamModel: typeof (response as any)?.model === 'string' && (response as any).model.trim() ? (response as any).model.trim() : null
           };
         } catch (error: any) {
+          if (isClientAbortError(error, options?.signal)) throw error;
           const errMsg = error?.message || '';
           if (errMsg.includes('Unexpected token') && (errMsg.includes('<') || errMsg.includes('doctype') || errMsg.includes('JSON'))) {
             throw new Error(`Hugging Face returned an HTML error page (404 Not Found) instead of JSON. This means the model ID "${targetModel}" is invalid or is not deployed on Hugging Face's Serverless Inference API.`);
@@ -1453,6 +1624,7 @@ export class HuggingFaceProvider implements ModelProvider {
       try {
         return await executeGenerate(primaryModel);
       } catch (error: any) {
+        if (isClientAbortError(error, options?.signal)) throw error;
         const status = error.status || error.statusCode;
         const isQuotaError = status === 401 || status === 403 || status === 429 || 
                            error.message?.toLowerCase().includes('limit') ||
@@ -1464,6 +1636,7 @@ export class HuggingFaceProvider implements ModelProvider {
           try {
             return await executeGenerate(fallbackModel);
           } catch (fallbackErr: any) {
+            if (isClientAbortError(fallbackErr, options?.signal)) throw fallbackErr;
             const fbStatus = fallbackErr.status || fallbackErr.statusCode;
             if (fbStatus === 401 || fbStatus === 403 || fbStatus === 429) {
               this.rotator.markKeyExhausted(apiKey);
@@ -1478,10 +1651,10 @@ export class HuggingFaceProvider implements ModelProvider {
         }
         throw error;
       }
-    }, 'HuggingFace');
+    }, 'HuggingFace', 3, 1200, options?.signal);
   }
 
-  async stream(messages: any[], options: { complexity: 'high' | 'standard', model?: string }, onChunk: (chunk: string) => void): Promise<ModelResponse> {
+  async stream(messages: any[], options: ModelCallOptions, onChunk: (chunk: string) => void): Promise<ModelResponse> {
     return retry(async () => {
       const apiKey = await this.rotator.getNextKey();
       const primaryModel = (options.model || await this.rotator.getModel() || '').trim();
@@ -1498,15 +1671,25 @@ export class HuggingFaceProvider implements ModelProvider {
 
       const executeStream = async (targetModel: string) => {
         try {
+          if (options?.signal?.aborted) {
+            throw createStreamAbortError('HuggingFace stream aborted before start');
+          }
           const stream = hf.chatCompletionStream({
             model: targetModel,
             messages: messages,
             max_tokens: 4096,
-            temperature: 0.5
+            temperature: options.temperature ?? 0.5
           });
 
           let fullText = '';
+          let upstreamModel: string | null = null;
           for await (const chunk of stream) {
+            if (options?.signal?.aborted) {
+              throw createStreamAbortError('HuggingFace stream aborted mid-generation');
+            }
+            if (!upstreamModel && typeof (chunk as any)?.model === 'string' && (chunk as any).model.trim()) {
+              upstreamModel = (chunk as any).model.trim();
+            }
             const content = chunk?.choices?.[0]?.delta?.content || '';
             if (content) {
               fullText += content;
@@ -1517,9 +1700,11 @@ export class HuggingFaceProvider implements ModelProvider {
           return {
             text: fullText,
             usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-            finishReason: 'stop'
+            finishReason: 'stop',
+            upstreamModel
           };
         } catch (error: any) {
+          if (isClientAbortError(error, options?.signal)) throw error;
           const errMsg = error?.message || '';
           if (errMsg.includes('Unexpected token') && (errMsg.includes('<') || errMsg.includes('doctype') || errMsg.includes('JSON'))) {
             throw new Error(`Hugging Face returned an HTML error page (404 Not Found) instead of JSON. This means the model ID "${targetModel}" is invalid or is not deployed on Hugging Face's Serverless Inference API.`);
@@ -1531,6 +1716,7 @@ export class HuggingFaceProvider implements ModelProvider {
       try {
         return await executeStream(primaryModel);
       } catch (error: any) {
+        if (isClientAbortError(error, options?.signal)) throw error;
         const status = error.status || error.statusCode;
         const isQuotaError = status === 401 || status === 403 || status === 429 || 
                            error.message?.toLowerCase().includes('limit') ||
@@ -1542,6 +1728,7 @@ export class HuggingFaceProvider implements ModelProvider {
           try {
             return await executeStream(fallbackModel);
           } catch (fallbackErr: any) {
+            if (isClientAbortError(fallbackErr, options?.signal)) throw fallbackErr;
             const fbStatus = fallbackErr.status || fallbackErr.statusCode;
             if (fbStatus === 401 || fbStatus === 403 || fbStatus === 429) {
               this.rotator.markKeyExhausted(apiKey);
@@ -1556,7 +1743,7 @@ export class HuggingFaceProvider implements ModelProvider {
         }
         throw error;
       }
-    }, 'HuggingFace');
+    }, 'HuggingFace', 3, 1200, options?.signal);
   }
 }
 
@@ -1595,7 +1782,7 @@ export class NvidiaProvider implements ModelProvider {
     return `nvidia/${trimmed}`;
   }
 
-  async generate(messages: any[], options: { complexity: 'high' | 'standard', jsonMode?: boolean, model?: string }): Promise<ModelResponse> {
+  async generate(messages: any[], options: ModelCallOptions): Promise<ModelResponse> {
     return retry(async () => {
       const apiKey = await this.rotator.getNextKey();
       const rawPrimary = (options?.model || await this.rotator.getModel() || '').trim();
@@ -1626,9 +1813,9 @@ export class NvidiaProvider implements ModelProvider {
           model: targetModel,
           messages: messages,
           max_tokens: 8192,
-          temperature: 0.5,
+          temperature: options.temperature ?? 0.5,
           response_format: options.jsonMode ? { type: "json_object" } : undefined
-        });
+        }, { signal: options?.signal });
 
         return {
           text: response.choices[0]?.message?.content || '',
@@ -1637,19 +1824,22 @@ export class NvidiaProvider implements ModelProvider {
             completionTokens: response.usage?.completion_tokens || 0,
             totalTokens: response.usage?.total_tokens || 0
           },
-          finishReason: response.choices[0]?.finish_reason || 'stop'
+          finishReason: response.choices[0]?.finish_reason || 'stop',
+          upstreamModel: typeof (response as any)?.model === 'string' && (response as any).model.trim() ? (response as any).model.trim() : null
         };
       };
 
       try {
         return await executeGenerate(primaryModel);
       } catch (error: any) {
+        if (isClientAbortError(error, options?.signal)) throw error;
         const status = error.status || error.statusCode;
         if (fallbackModel && fallbackModel !== primaryModel && (status === 404 || status === 429)) {
           console.warn(`[Nvidia] Primary model '${primaryModel}' failed with status ${status}. Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeGenerate(fallbackModel);
           } catch (fallbackError: any) {
+            if (isClientAbortError(fallbackError, options?.signal)) throw fallbackError;
             const fbStatus = fallbackError.status || fallbackError.statusCode;
             if (fbStatus === 401 || fbStatus === 403 || fbStatus === 429) {
               this.rotator.markKeyExhausted(apiKey);
@@ -1662,10 +1852,10 @@ export class NvidiaProvider implements ModelProvider {
         }
         throw error;
       }
-    }, 'Nvidia');
+    }, 'Nvidia', 3, 1200, options?.signal);
   }
 
-  async stream(messages: any[], options: { complexity: 'high' | 'standard', jsonMode?: boolean, model?: string }, onChunk: (chunk: string) => void): Promise<ModelResponse> {
+  async stream(messages: any[], options: ModelCallOptions, onChunk: (chunk: string) => void): Promise<ModelResponse> {
     return retry(async () => {
       const apiKey = await this.rotator.getNextKey();
       const rawPrimary = (options?.model || await this.rotator.getModel() || '').trim();
@@ -1696,16 +1886,24 @@ export class NvidiaProvider implements ModelProvider {
           model: targetModel,
           messages: messages,
           max_tokens: 8192,
-          temperature: 0.5,
+          temperature: options.temperature ?? 0.5,
           stream: true,
           response_format: options.jsonMode ? { type: "json_object" } : undefined
-        });
+        }, { signal: options?.signal });
 
         let fullText = '';
         let hasStartedThinking = false;
         let hasFinishedThinking = false;
+        let upstreamModel: string | null = null;
 
         for await (const chunk of stream) {
+          if (options?.signal?.aborted) {
+            try { (stream as any).controller?.abort(); } catch {}
+            throw createStreamAbortError('Nvidia stream aborted mid-generation');
+          }
+          if (!upstreamModel && typeof (chunk as any)?.model === 'string' && (chunk as any).model.trim()) {
+            upstreamModel = (chunk as any).model.trim();
+          }
           const delta = chunk?.choices?.[0]?.delta as any;
           const reasoning = delta?.reasoning_content || delta?.reasoning || '';
           const content = delta?.content || '';
@@ -1735,19 +1933,22 @@ export class NvidiaProvider implements ModelProvider {
         return {
           text: fullText,
           usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-          finishReason: 'stop'
+          finishReason: 'stop',
+          upstreamModel
         };
       };
 
       try {
         return await executeStream(primaryModel);
       } catch (error: any) {
+        if (isClientAbortError(error, options?.signal)) throw error;
         const status = error.status || error.statusCode;
         if (fallbackModel && fallbackModel !== primaryModel && (status === 404 || status === 429)) {
           console.warn(`[Nvidia Stream] Primary model '${primaryModel}' failed with status ${status}. Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeStream(fallbackModel);
           } catch (fallbackError: any) {
+            if (isClientAbortError(fallbackError, options?.signal)) throw fallbackError;
             const fbStatus = fallbackError.status || fallbackError.statusCode;
             if (fbStatus === 401 || fbStatus === 403 || fbStatus === 429) {
               this.rotator.markKeyExhausted(apiKey);
@@ -1760,7 +1961,7 @@ export class NvidiaProvider implements ModelProvider {
         }
         throw error;
       }
-    }, 'Nvidia');
+    }, 'Nvidia', 3, 1200, options?.signal);
   }
 }
 
@@ -1781,7 +1982,7 @@ export class CircuitBreaker {
     return this.trippedReason;
   }
 
-  async generate(messages: any[], options: { complexity: 'high' | 'standard', jsonMode?: boolean, model?: string }): Promise<ModelResponse> {
+  async generate(messages: any[], options: ModelCallOptions): Promise<ModelResponse> {
     if (this.isOpen()) {
       throw new ModelProviderError(`Circuit breaker OPEN for ${this.provider.name} (${this.trippedReason || 'in cooldown'})`, this.provider.name, 503, false);
     }
@@ -1791,12 +1992,14 @@ export class CircuitBreaker {
       this.onSuccess();
       return response;
     } catch (error) {
-      this.onFailure(error);
+      if (!isClientAbortError(error, options?.signal)) {
+        this.onFailure(error);
+      }
       throw error;
     }
   }
 
-  async stream(messages: any[], options: { complexity: 'high' | 'standard', jsonMode?: boolean, model?: string }, onChunk: (chunk: string) => void): Promise<ModelResponse> {
+  async stream(messages: any[], options: ModelCallOptions, onChunk: (chunk: string) => void): Promise<ModelResponse> {
     if (this.isOpen()) {
       throw new ModelProviderError(`Circuit breaker OPEN for ${this.provider.name} (${this.trippedReason || 'in cooldown'})`, this.provider.name, 503, false);
     }
@@ -1806,7 +2009,9 @@ export class CircuitBreaker {
       this.onSuccess();
       return response;
     } catch (error) {
-      this.onFailure(error);
+      if (!isClientAbortError(error, options?.signal)) {
+        this.onFailure(error);
+      }
       throw error;
     }
   }

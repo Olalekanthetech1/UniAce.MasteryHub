@@ -126,18 +126,38 @@ export function getLiveMemoryTelemetry(activeCourseJobs: number = 0): LiveMemory
   };
 }
 
+import crypto from 'crypto';
+import { dbTelemetry } from './dbTelemetry';
+
+export interface BufferedBackendLogEntry {
+  id: string;
+  level: AuditLogLevel;
+  category: AuditLogCategory;
+  message: string;
+  details: any;
+  userId: string;
+  userEmail: string;
+  timestampIso: string;
+}
+
+const recentBackendLogsRingBuffer: BufferedBackendLogEntry[] = [];
+const MAX_RING_BUFFER_LOGS = 200;
+const recentFirestoreLogDedupeMap = new Map<string, number>();
+const LOG_DEDUPE_WINDOW_MS = 10 * 60 * 1000; // 10 minutes deduplication per signature
+
+export function getBufferedBackendSystemLogs(limit: number = 100): BufferedBackendLogEntry[] {
+  return recentBackendLogsRingBuffer.slice(0, Math.max(1, Math.min(limit, MAX_RING_BUFFER_LOGS)));
+}
+
 export async function recordBackendSystemLog(
   level: AuditLogLevel,
   category: AuditLogCategory,
   message: string,
   details?: Record<string, any> | null,
-  actor?: { uid?: string; email?: string }
+  actor?: { uid?: string; email?: string },
+  options?: { forcePersistToFirestore?: boolean }
 ): Promise<void> {
   try {
-    const app = getAdminApp();
-    if (!app) return;
-    const db = app.firestore();
-    const logRef = db.collection('system_logs').doc();
     let safeDetails: any = null;
     if (details !== undefined && details !== null) {
       try {
@@ -146,6 +166,47 @@ export async function recordBackendSystemLog(
         safeDetails = { info: String(details) };
       }
     }
+
+    const entryId = `memlog_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    recentBackendLogsRingBuffer.unshift({
+      id: entryId,
+      level,
+      category,
+      message,
+      details: safeDetails,
+      userId: actor?.uid || 'system',
+      userEmail: actor?.email || 'system',
+      timestampIso: new Date().toISOString()
+    });
+    if (recentBackendLogsRingBuffer.length > MAX_RING_BUFFER_LOGS) {
+      recentBackendLogsRingBuffer.pop();
+    }
+
+    // Only persist to Firestore system_logs when explicitly forced, or for security/error/admin-mutation events
+    const shouldPersist =
+      options?.forcePersistToFirestore === true ||
+      level === 'error' ||
+      (category as string) === 'security' ||
+      (category === 'admin' && !message.includes('GET ') && !message.includes('keep-alive'));
+
+    if (!shouldPersist) {
+      dbTelemetry.recordSuppressedWrite('system_logs', 'buffered_routine_info_or_warning_log', 1);
+      return;
+    }
+
+    const dedupeKey = `${level}:${category}:${message.slice(0, 120)}`;
+    const now = Date.now();
+    const lastPersistedAt = recentFirestoreLogDedupeMap.get(dedupeKey) || 0;
+    if (!options?.forcePersistToFirestore && now - lastPersistedAt < LOG_DEDUPE_WINDOW_MS) {
+      dbTelemetry.recordSuppressedWrite('system_logs', 'deduplicated_repeated_system_log', 1);
+      return;
+    }
+    recentFirestoreLogDedupeMap.set(dedupeKey, now);
+
+    const app = getAdminApp();
+    if (!app) return;
+    const db = app.firestore();
+    const logRef = db.collection('system_logs').doc();
     await logRef.set({
       id: logRef.id,
       level,
@@ -162,6 +223,8 @@ export async function recordBackendSystemLog(
 }
 
 let memoryMonitorInterval: NodeJS.Timeout | null = null;
+let lastMemoryWarningFirestoreWriteAt = 0;
+const MEMORY_WARNING_FIRESTORE_THROTTLE_MS = 30 * 60 * 1000; // Max 1 write per 30 minutes
 
 export function startMemoryMonitoringUtility(getActiveJobsCount: () => number): NodeJS.Timeout {
   if (memoryMonitorInterval) {
@@ -176,16 +239,20 @@ export function startMemoryMonitoringUtility(getActiveJobsCount: () => number): 
 
     if (stats.heapUtilizationPct >= 85 || stats.hostUtilizationPct >= 90) {
       console.warn(summaryMsg);
-      recordBackendSystemLog('warning', 'system', summaryMsg, stats);
+      const now = Date.now();
+      if (now - lastMemoryWarningFirestoreWriteAt >= MEMORY_WARNING_FIRESTORE_THROTTLE_MS) {
+        lastMemoryWarningFirestoreWriteAt = now;
+        void recordBackendSystemLog('warning', 'system', summaryMsg, stats, undefined, { forcePersistToFirestore: true });
+      } else {
+        dbTelemetry.recordSuppressedWrite('system_logs', 'throttled_1m_memory_warning', 1);
+      }
     } else {
       console.log(summaryMsg);
     }
   };
 
-  // Emit initial startup snapshot once Firebase Admin is ready
   setTimeout(() => logMemorySnapshot(true), 2000);
 
-  // Emit periodic 60-second memory telemetry snapshots
   memoryMonitorInterval = setInterval(() => {
     logMemorySnapshot(false);
   }, 60 * 1000);

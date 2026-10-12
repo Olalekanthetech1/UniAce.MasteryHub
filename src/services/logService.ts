@@ -15,13 +15,46 @@ export interface SystemLog {
   timestamp: any;
 }
 
+const clientLogDedupeMap = new Map<string, number>();
+const CLIENT_LOG_DEDUPE_MS = 10 * 60 * 1000;
+const clientMemoryLogs: SystemLog[] = [];
+const MAX_CLIENT_MEMORY_LOGS = 100;
+
 export const LogService = {
   async log(level: LogLevel, category: LogCategory, message: string, details?: any) {
     try {
       const user = auth.currentUser;
-      const token = user ? await user.getIdToken(true) : null;
-      
-      // Call backend API for logging
+      const safeDetails = details ? JSON.parse(JSON.stringify(details)) : null;
+
+      clientMemoryLogs.unshift({
+        id: `local_${Date.now()}`,
+        level,
+        category,
+        message,
+        details: safeDetails,
+        userId: user?.uid || 'system',
+        userEmail: user?.email || 'system',
+        timestamp: new Date().toISOString()
+      });
+      if (clientMemoryLogs.length > MAX_CLIENT_MEMORY_LOGS) {
+        clientMemoryLogs.pop();
+      }
+
+      // Only send error or admin logs to the server to prevent client-driven Firestore write amplification
+      if (level !== 'error' && category !== 'admin') {
+        return;
+      }
+
+      const dedupeKey = `${level}:${category}:${message.slice(0, 120)}`;
+      const now = Date.now();
+      const lastSent = clientLogDedupeMap.get(dedupeKey) || 0;
+      if (now - lastSent < CLIENT_LOG_DEDUPE_MS) {
+        return;
+      }
+      clientLogDedupeMap.set(dedupeKey, now);
+
+      const token = user ? await user.getIdToken(false) : null;
+
       const response = await fetch('/api/logs', {
         method: 'POST',
         headers: {
@@ -32,7 +65,7 @@ export const LogService = {
           level,
           category,
           message,
-          details: details ? JSON.parse(JSON.stringify(details)) : null,
+          details: safeDetails,
           userId: user?.uid || 'system',
           userEmail: user?.email || 'system'
         })
@@ -46,9 +79,9 @@ export const LogService = {
     }
   },
 
-  async getLogs(count: number = 100, category?: string) {
+  async getLogs(count: number = 50, category?: string) {
     try {
-      const fetchLimit = category && category !== 'all' ? Math.max(count * 3, 300) : count;
+      const fetchLimit = Math.min(Math.max(count, 20), 50);
       const q = query(collection(db, 'system_logs'), orderBy('timestamp', 'desc'), limit(fetchLimit));
 
       const querySnapshot = await getDocs(q);
@@ -63,12 +96,12 @@ export const LogService = {
       return allLogs.slice(0, count);
     } catch (error) {
       console.error('Failed to fetch system logs:', error);
-      return [];
+      return clientMemoryLogs.slice(0, count);
     }
   },
 
-  subscribeToLogs(callback: (logs: SystemLog[]) => void, count: number = 100, category?: string) {
-    const fetchLimit = category && category !== 'all' ? Math.max(count * 3, 300) : count;
+  subscribeToLogs(callback: (logs: SystemLog[]) => void, count: number = 50, category?: string) {
+    const fetchLimit = Math.min(Math.max(count, 20), 50);
     const q = query(collection(db, 'system_logs'), orderBy('timestamp', 'desc'), limit(fetchLimit));
 
     return onSnapshot(q, (snapshot) => {

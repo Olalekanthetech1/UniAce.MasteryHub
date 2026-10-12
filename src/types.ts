@@ -243,13 +243,22 @@ export interface ChatMessage {
   timestamp?: string | number | Date;
   reactions?: { [emoji: string]: number };
   userReactions?: string[];
+  reportStatus?: 'pending_review' | 'verified_promoted' | 'dismissed';
   meta?: {
     providerUsed?: string;
+    upstreamModel?: string | null;
     providerLabel?: string;
     taskType?: string;
     complexity?: string;
     reasoning?: string;
     latencyMs?: number;
+    idempotency_token?: string;
+    scrubbedPassagesCount?: number;
+    estimatedCostUsd?: number;
+    grossMarginUsd?: number;
+    pricingStale?: boolean;
+    tokens?: number;
+    sparksCost?: number;
   };
 }
 

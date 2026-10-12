@@ -129,7 +129,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
                 </span>
               ) : (
                 <span className="text-amber-400 flex items-center gap-1">
-                  <Zap size={12} fill="currentColor" /> {sparksRemaining ?? 50}
+                  <Zap size={12} fill="currentColor" /> {sparksRemaining ?? '...'}
                 </span>
               )}
             </div>

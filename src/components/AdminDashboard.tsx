@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, FileText, Plus, CheckCircle, Loader2, BookOpen, AlertCircle, Settings, Trash2, Users, Activity, Database, Search, Zap, Trophy, Star, Bot, Shield, BarChart3, Globe, Edit2, RefreshCw, Clock, FileQuestion, MessageSquare, ArrowLeft, HeartPulse, X, ArrowRight, Layers, Key, Cpu, Share2, Download, Filter, Send, ChevronLeft, ChevronRight, Mic, Book, Terminal, Sparkles, TrendingUp, CreditCard, HelpCircle, Calculator, Video, Film } from 'lucide-react';
+import { Upload, FileText, Plus, CheckCircle, Loader2, BookOpen, AlertCircle, Settings, Trash2, Users, Activity, Database, Search, Zap, Trophy, Star, Bot, Shield, BarChart3, Globe, Edit2, RefreshCw, Clock, FileQuestion, MessageSquare, ArrowLeft, HeartPulse, X, ArrowRight, Layers, Key, Cpu, Share2, Download, Filter, Send, ChevronLeft, ChevronRight, Mic, Book, Terminal, Sparkles, TrendingUp, CreditCard, HelpCircle, Calculator, Video, Film, Landmark } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -24,6 +24,8 @@ import FormulasManagerTab from './admin/FormulasManagerTab';
 import MathEngineTab from './admin/MathEngineTab';
 import AcademicMCPDashboard from './admin/AcademicMCPDashboard';
 import DemoStudioTab from './admin/DemoStudioTab';
+import GoldenSetTrustTab from './admin/GoldenSetTrustTab';
+import DatabaseAccountingTab from './admin/DatabaseAccountingTab';
 import { AIService } from '../services/ai';
 import { generateCourseContent, generateCourseSkeleton, generateModuleContent, generateCourseFormulas } from '../services/aiCourseGenerator';
 import { CourseService, sanitizeForFirestore } from '../services/courseService';
@@ -133,7 +135,7 @@ export default function AdminDashboard() {
   const [isIngesting, setIsIngesting] = useState(false);
   const [ingestionStatus, setIngestionStatus] = useState('');
   const [kbStats, setKbStats] = useState({ totalChunks: 0 });
-  const [activeTab, setActiveTab] = useState<'overview' | 'demo-studio' | 'courses' | 'users' | 'rag' | 'communications' | 'settings' | 'logs' | 'question-bank' | 'curriculum-health' | 'curriculum-manager' | 'curriculum-requests' | 'api-debugger' | 'affiliates' | 'analytics' | 'api-status' | 'pricing' | 'challenges' | 'support' | 'formulas' | 'math-engine' | 'academic-mcp'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'demo-studio' | 'courses' | 'users' | 'rag' | 'communications' | 'settings' | 'logs' | 'question-bank' | 'curriculum-health' | 'curriculum-manager' | 'curriculum-requests' | 'api-debugger' | 'affiliates' | 'analytics' | 'api-status' | 'pricing' | 'challenges' | 'support' | 'formulas' | 'math-engine' | 'academic-mcp' | 'golden-set' | 'db-accounting'>('overview');
 
   useEffect(() => {
     // Redirect if current tab is not allowed for the role
@@ -147,7 +149,8 @@ export default function AdminDashboard() {
     if (activeTab === 'curriculum-health' && !canManageCurriculum) setActiveTab('overview');
     if (activeTab === 'curriculum-manager' && !canManageCurriculum) setActiveTab('overview');
     if (activeTab === 'affiliates' && !canManageUsers) setActiveTab('overview');
-  }, [userRole, activeTab, canViewLogs, canManageAI, canManageUsers, canManageCourses, canManageRAG, canManageCommunications, canManageCurriculum]);
+    if (activeTab === 'db-accounting' && !canManageSystem) setActiveTab('overview');
+  }, [userRole, activeTab, canViewLogs, canManageAI, canManageUsers, canManageCourses, canManageRAG, canManageCommunications, canManageCurriculum, canManageSystem]);
 
   const [integrityIssues, setIntegrityIssues] = useState<any[]>([]);
   const [isLoadingIntegrity, setIsLoadingIntegrity] = useState(false);
@@ -250,7 +253,7 @@ export default function AdminDashboard() {
   const [userFormDepartment, setUserFormDepartment] = useState('');
   const [userFormAcademicLevel, setUserFormAcademicLevel] = useState('100');
   const [userFormPlanType, setUserFormPlanType] = useState('free');
-  const [userFormSparks, setUserFormSparks] = useState(50);
+  const [userFormSparks, setUserFormSparks] = useState(0);
   const [selectedLogDetails, setSelectedLogDetails] = useState<any>(null);
   const [logLimit, setLogLimit] = useState(100);
   const [logStats, setLogStats] = useState<{ date: string; count: number }[]>([]);
@@ -1702,7 +1705,7 @@ export default function AdminDashboard() {
         setUserFormDepartment('');
         setUserFormAcademicLevel('100');
         setUserFormPlanType('free');
-        setUserFormSparks(50);
+        setUserFormSparks(0);
         fetchUsers();
       } else {
         const err = await res.json();
@@ -3016,11 +3019,13 @@ export default function AdminDashboard() {
             { id: 'users', label: 'User Management', icon: Users, show: permissions.canManageUsers },
             { id: 'affiliates', label: 'Affiliates', icon: Share2, show: permissions.canManageUsers },
             { id: 'pricing', label: 'Pricing & Plans', icon: CreditCard, show: permissions.canManageSystem },
+            { id: 'db-accounting', label: 'Database & Accounting', icon: Landmark, show: permissions.canManageSystem },
             { id: 'challenges', label: 'Quests & Arena', icon: Trophy, show: permissions.canManageSystem || permissions.canManageCourses },
             { id: 'support', label: 'Support & FAQs', icon: HelpCircle, show: permissions.canManageSystem || permissions.canCommunicate },
             { id: 'formulas', label: 'Formula Library', icon: BookOpen, show: permissions.canManageCourses },
             { id: 'math-engine', label: 'Math & MCP Engine', icon: Calculator, show: permissions.canManageSystem || permissions.canManageCourses },
             { id: 'academic-mcp', label: 'Academic Research MCP', icon: BookOpen, show: permissions.canManageSystem || permissions.canManageCourses },
+            { id: 'golden-set', label: 'Golden Set & Trust', icon: Shield, show: permissions.canManageSystem || permissions.canManageCourses || permissions.isTutor },
             { id: 'communications', label: 'Communications', icon: Globe, show: permissions.canCommunicate },
             { id: 'logs', label: 'System Logs', icon: FileText, show: permissions.canViewLogs },
             { id: 'settings', label: 'Command Center', icon: Shield, show: permissions.canManageSystem }
@@ -4479,7 +4484,7 @@ export default function AdminDashboard() {
                         setUserFormDepartment('');
                         setUserFormAcademicLevel('100');
                         setUserFormPlanType('free');
-                        setUserFormSparks(50);
+                        setUserFormSparks(0);
                         setSelectedUserForEdit(null);
                         setIsAddUserModalOpen(true);
                       }}
@@ -4616,7 +4621,7 @@ export default function AdminDashboard() {
                                            setUserFormDepartment(user.department || '');
                                            setUserFormAcademicLevel(user.academic_level || '100');
                                            setUserFormPlanType(user.plan_type || 'free');
-                                           setUserFormSparks(user.ai_sparks || 50);
+                                           setUserFormSparks(user.ai_sparks ?? 0);
                                          }}
                                          className="p-2 text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
                                          title="Edit Profile"
@@ -4787,7 +4792,7 @@ export default function AdminDashboard() {
                          setUserFormDepartment(selectedUserForDetails.department || '');
                          setUserFormAcademicLevel(selectedUserForDetails.academic_level || '100');
                          setUserFormPlanType(selectedUserForDetails.plan_type || 'free');
-                         setUserFormSparks(selectedUserForDetails.ai_sparks || 50);
+                         setUserFormSparks(selectedUserForDetails.ai_sparks ?? 0);
                        }}
                        className="px-4 py-2 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-bold text-slate-700 dark:text-slate-300 rounded-xl transition-all flex items-center gap-1.5"
                      >
@@ -7973,11 +7978,13 @@ export default function AdminDashboard() {
 
       {activeTab === 'demo-studio' && <DemoStudioTab />}
       {activeTab === 'pricing' && <PricingManagerTab />}
+      {activeTab === 'db-accounting' && <DatabaseAccountingTab />}
       {activeTab === 'challenges' && <ChallengesManagerTab />}
       {activeTab === 'support' && <SupportManagerTab />}
       {activeTab === 'formulas' && <FormulasManagerTab />}
       {activeTab === 'math-engine' && <MathEngineTab />}
       {activeTab === 'academic-mcp' && <AcademicMCPDashboard />}
+      {activeTab === 'golden-set' && <GoldenSetTrustTab />}
 
       {/* Toast Notification */}
       {toast && (

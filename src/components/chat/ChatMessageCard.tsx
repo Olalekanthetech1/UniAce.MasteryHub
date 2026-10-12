@@ -4,7 +4,7 @@ import {
   Bot, User, Volume2, VolumeX, Copy, Check, BookmarkPlus, 
   Share2, ChevronDown, ChevronUp, Sparkles, Lightbulb, 
   BarChart2, FileText, ArrowRight, HelpCircle, Clock,
-  Smile, ThumbsUp, Heart, Target
+  Smile, ThumbsUp, Heart, Target, Flag
 } from 'lucide-react';
 import { ChatMessage, Bookmark } from '../../types';
 import MarkdownRenderer from '../MarkdownRenderer';
@@ -66,6 +66,7 @@ interface ChatMessageCardProps {
   onSaveBookmark?: (bookmark: Bookmark) => void;
   currentUserId?: string;
   courseId?: string;
+  onReportWrongAnswer?: (message: ChatMessage, index: number) => void;
 }
 
 export const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
@@ -79,6 +80,7 @@ export const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
   onSaveBookmark,
   currentUserId,
   courseId,
+  onReportWrongAnswer,
 }) => {
   const isModel = message.role === 'model';
   const [copied, setCopied] = useState(false);
@@ -253,31 +255,35 @@ export const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
                   <span className="font-semibold text-slate-700 dark:text-zinc-200">UniAce Tutor</span>
                   {formattedTime && (
                     <>
-                      <span className="inline-block w-1 h-1 rounded-full bg-slate-300 dark:bg-zinc-700" />
-                      <span className="flex items-center gap-1 text-[10px] text-slate-400 dark:text-zinc-500 font-mono">
+                      <span aria-hidden="true">·</span>
+                      <span className="flex items-center gap-1 text-[10px] text-slate-400 dark:text-zinc-500 font-mono tabular-nums">
                         <Clock size={10} className="opacity-70" />
                         {formattedTime}
                       </span>
                     </>
                   )}
-                  {message.meta?.providerLabel && (
-                    <span className="text-[10px] px-1.5 py-0.2 rounded-md bg-slate-100 dark:bg-zinc-800 text-slate-500 dark:text-zinc-400 font-mono">
-                      {message.meta.providerLabel}
-                    </span>
+                  {(message.meta?.providerLabel || message.meta?.providerUsed) && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span className="text-[10px] text-slate-500 dark:text-zinc-400 font-mono">
+                        Answered by {message.meta.providerLabel || message.meta.providerUsed}
+                      </span>
+                    </>
                   )}
-                  <span className="text-[10px] px-2 py-0.2 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 font-semibold">
+                  <span aria-hidden="true">·</span>
+                  <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold">
                     Academic Rigor
                   </span>
                 </>
               ) : (
                 <>
                   {formattedTime && (
-                    <span className="flex items-center gap-1 text-[10px] text-slate-400 dark:text-zinc-500 font-mono">
+                    <span className="flex items-center gap-1 text-[10px] text-slate-400 dark:text-zinc-500 font-mono tabular-nums">
                       <Clock size={10} className="opacity-70" />
                       {formattedTime}
                     </span>
                   )}
-                  <span className="inline-block w-1 h-1 rounded-full bg-slate-300 dark:bg-zinc-700" />
+                  <span aria-hidden="true">·</span>
                   <span className="font-semibold text-slate-600 dark:text-zinc-300">You</span>
                 </>
               )}
@@ -289,6 +295,15 @@ export const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
                 ? 'w-full bg-white dark:bg-zinc-900 text-slate-800 dark:text-zinc-100 rounded-2xl rounded-tl-xs border border-slate-200/85 dark:border-zinc-800'
                 : 'bg-slate-900 dark:bg-zinc-800 text-white rounded-2xl rounded-tr-xs border border-transparent'
             }`}>
+              {/* Transparent PDF / RAG Scrubbing Notice */}
+              {isModel && typeof message.meta?.scrubbedPassagesCount === 'number' && message.meta.scrubbedPassagesCount > 0 && (
+                <div className="mb-3 pb-2 border-b border-amber-200/70 dark:border-amber-900/50 flex items-center justify-between text-xs text-amber-700 dark:text-amber-400 font-medium">
+                  <span>
+                    Document Hygiene: <strong className="font-mono tabular-nums">{message.meta.scrubbedPassagesCount}</strong> non-academic instruction {message.meta.scrubbedPassagesCount === 1 ? 'passage was' : 'passages were'} removed from your attached document.
+                  </span>
+                </div>
+              )}
+
               {/* Uploaded Images */}
               {message.image && (
                 <div className="mb-3 rounded-xl overflow-hidden border border-slate-200 dark:border-zinc-700 max-w-sm">
@@ -519,6 +534,35 @@ export const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
                   <Share2 size={14} />
                   <span className="text-[11px]">Share Card</span>
                 </button>
+
+                {/* Report Wrong Answer (Student Trust & Golden Set Feedback Loop) */}
+                {onReportWrongAnswer && (
+                  <>
+                    <span className="w-px h-3 bg-slate-200 dark:bg-zinc-800 mx-0.5" />
+                    {message.reportStatus ? (
+                      <span
+                        className="p-1.5 text-amber-600 dark:text-amber-400 flex items-center gap-1 text-[11px] font-mono"
+                        title="Queued for Academic SME & SymPy Verification"
+                      >
+                        <Flag size={13} />
+                        <span>
+                          {message.reportStatus === 'verified_promoted'
+                            ? 'Verified · Bounty Credited'
+                            : 'Reported · Pending SME Review'}
+                        </span>
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => onReportWrongAnswer(message, index)}
+                        className="p-1.5 rounded-lg hover:bg-amber-50 dark:hover:bg-amber-950/30 text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 transition-colors flex items-center gap-1 text-xs"
+                        title="Report mathematical or factual inaccuracy for SME review & Spark restitution"
+                      >
+                        <Flag size={13} />
+                        <span className="text-[11px]">Report Wrong Answer</span>
+                      </button>
+                    )}
+                  </>
+                )}
               </div>
             )}
 

@@ -5,6 +5,8 @@ import { jsonrepair } from 'jsonrepair';
 export const useWebSocketChat = () => {
   const { user } = useAuth();
   const wsRef = useRef<WebSocket | null>(null);
+  const activeStreamCleanupRef = useRef<((reason?: string) => void) | null>(null);
+  const activeTokenRef = useRef<string | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -40,6 +42,9 @@ export const useWebSocketChat = () => {
         };
 
         ws.onclose = () => {
+          if (activeStreamCleanupRef.current) {
+            activeStreamCleanupRef.current('Connection closed mid-stream. Unused pre-authorized sparks have been automatically refunded.');
+          }
           if (isMounted && wsRef.current === ws) {
             setIsConnected(false);
           }
@@ -69,10 +74,29 @@ export const useWebSocketChat = () => {
       }
     });
 
+    const handleBeforeUnload = () => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && activeTokenRef.current) {
+        try {
+          wsRef.current.send(JSON.stringify({
+            type: 'abort',
+            idempotency_token: activeTokenRef.current
+          }));
+        } catch (_) {}
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
     return () => {
       isMounted = false;
+      window.removeEventListener('beforeunload', handleBeforeUnload);
       if (wsRef.current) {
         try {
+          if (wsRef.current.readyState === WebSocket.OPEN && activeTokenRef.current) {
+            wsRef.current.send(JSON.stringify({
+              type: 'abort',
+              idempotency_token: activeTokenRef.current
+            }));
+          }
           wsRef.current.close();
         } catch (_) {}
         wsRef.current = null;
@@ -80,11 +104,33 @@ export const useWebSocketChat = () => {
     };
   }, [user?.uid]);
 
+  const abortStream = useCallback((idempotencyToken?: string) => {
+    const tokenToAbort = idempotencyToken || activeTokenRef.current;
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      try {
+        wsRef.current.send(JSON.stringify({
+          type: 'abort',
+          idempotency_token: tokenToAbort || undefined
+        }));
+      } catch (e) {
+        console.error('Error sending WS abort signal', e);
+      }
+    }
+  }, []);
+
   const sendMessage = useCallback((data: any, onChunk: (text: string) => void, onDone: () => void, onError: (err: string) => void, onMeta?: (data: any) => void) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       onError('WebSocket not connected');
       return;
     }
+
+    activeTokenRef.current = data?.idempotency_token || data?.idempotencyToken || null;
+
+    const cleanupListener = () => {
+      wsRef.current?.removeEventListener('message', handleMessage);
+      activeStreamCleanupRef.current = null;
+      activeTokenRef.current = null;
+    };
 
     const handleMessage = (event: MessageEvent) => {
       try {
@@ -100,16 +146,23 @@ export const useWebSocketChat = () => {
         if (response.type === 'chunk') {
           onChunk(response.text);
         } else if (response.type === 'done') {
-          wsRef.current?.removeEventListener('message', handleMessage);
+          cleanupListener();
           onDone();
         } else if (response.type === 'error') {
-          wsRef.current?.removeEventListener('message', handleMessage);
+          cleanupListener();
           onError(response.error);
         } else if (response.type === 'meta') {
-           if (onMeta) onMeta(response);
+          if (onMeta) onMeta(response);
         }
       } catch (e) {
         console.error('Error parsing WS message', e);
+      }
+    };
+
+    activeStreamCleanupRef.current = (disconnectReason?: string) => {
+      cleanupListener();
+      if (disconnectReason) {
+        onError(disconnectReason);
       }
     };
 
@@ -117,10 +170,11 @@ export const useWebSocketChat = () => {
     try {
       wsRef.current.send(JSON.stringify(data));
     } catch (e) {
+      cleanupListener();
       console.error('Error sending WS message', e);
       onError('Failed to send message');
     }
   }, []);
 
-  return { isConnected, sendMessage, error };
+  return { isConnected, sendMessage, abortStream, error };
 };

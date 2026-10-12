@@ -59,7 +59,7 @@ export default function ChatBot({
 }: ChatBotProps) {
   const { user, profile: authProfile } = useAuth();
   const { courses } = useCourses();
-  const { isConnected: isWsConnected, sendMessage: sendWsMessage } = useWebSocketChat();
+  const { isConnected: isWsConnected, sendMessage: sendWsMessage, abortStream: abortWsStream } = useWebSocketChat();
   const isAdmin = (profile || authProfile)?.role === 'admin' || (import.meta.env.VITE_ADMIN_EMAILS || '').split(',').includes(user?.email || '');
 
   // Dynamic context state (can be overridden by Syllabus Jumper)
@@ -95,6 +95,20 @@ export default function ChatBot({
   const [isSyllabusJumperOpen, setIsSyllabusJumperOpen] = useState(false);
   const [isMiniQuizOpen, setIsMiniQuizOpen] = useState(false);
 
+  // Report Wrong Answer Modal State (Student Trust & Golden Set Feedback Loop)
+  const [reportTarget, setReportTarget] = useState<{ message: ChatMessage; index: number; promptText: string } | null>(null);
+  const [reportCategory, setReportCategory] = useState<'final_answer_error' | 'derivation_step_flaw' | 'factual_conceptual_error' | 'broken_latex'>('final_answer_error');
+  const [reportCorrection, setReportCorrection] = useState('');
+  const [reportSubmitting, setReportSubmitting] = useState(false);
+  const [reportError, setReportError] = useState<string | null>(null);
+  const [reportSuccessMsg, setReportSuccessMsg] = useState<string | null>(null);
+  const [reportAllowance, setReportAllowance] = useState<{
+    dailyReportsUsed: number;
+    dailyReportCap: number;
+    remainingAllowance: number;
+    firstReporterBonusSparks: number;
+  } | null>(null);
+
   // Audio Speech state
   const [activeSpeechIdx, setActiveSpeechIdx] = useState<number | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -107,6 +121,8 @@ export default function ChatBot({
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const workerRef = useRef<Worker | null>(null);
+  const httpAbortControllerRef = useRef<AbortController | null>(null);
+  const activeIdempotencyTokenRef = useRef<string | null>(null);
 
   const currentPersonality = progress?.aiPersonality || profile?.aiPersonality || 'encouraging';
 
@@ -114,6 +130,9 @@ export default function ChatBot({
     workerRef.current = new Worker(new URL('../workers/pdfWorker.ts', import.meta.url), { type: 'module' });
     return () => {
       workerRef.current?.terminate();
+      if (httpAbortControllerRef.current) {
+        httpAbortControllerRef.current.abort();
+      }
     };
   }, []);
 
@@ -142,6 +161,98 @@ export default function ChatBot({
     setCurrentContent(content);
     if (onSelectTopicContext) {
       onSelectTopicContext(courseId, moduleTitle, subTopicTitle, content);
+    }
+  };
+
+  const handleOpenReportModal = async (msg: ChatMessage, msgIdx: number) => {
+    let precedingPrompt = '';
+    for (let i = msgIdx - 1; i >= 0; i--) {
+      if (messages[i]?.role === 'user') {
+        precedingPrompt = messages[i].text || '';
+        break;
+      }
+    }
+    setReportTarget({ message: msg, index: msgIdx, promptText: precedingPrompt });
+    setReportCategory('final_answer_error');
+    setReportCorrection('');
+    setReportError(null);
+    setReportSuccessMsg(null);
+
+    try {
+      const token = await user?.getIdToken();
+      if (!token) return;
+      const res = await fetch('/api/chat/report-allowance', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const allowanceData = await res.json();
+        setReportAllowance(allowanceData);
+      }
+    } catch {
+      // Keep allowance null if offline
+    }
+  };
+
+  const handleSubmitWrongAnswerReport = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!reportTarget || !user) return;
+    setReportSubmitting(true);
+    setReportError(null);
+
+    try {
+      const token = await user.getIdToken();
+      const targetMsg = reportTarget.message;
+      const msgId = targetMsg.id || `msg_${reportTarget.index}_${Date.now()}`;
+
+      const res = await fetch('/api/chat/report-wrong', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          messageId: msgId,
+          courseId: currentCourseId || null,
+          idempotency_token: targetMsg.meta?.idempotency_token || '',
+          category: reportCategory,
+          promptText: reportTarget.promptText || 'University Coursework Query',
+          modelResponseText: targetMsg.text || '',
+          studentCorrection: reportCorrection.trim(),
+          providerUsed: targetMsg.meta?.providerUsed || 'unknown',
+          upstreamModel: targetMsg.meta?.upstreamModel ?? null,
+          providerLabel: targetMsg.meta?.providerLabel,
+          sparksCharged: targetMsg.meta?.sparksCost || 1
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || 'Failed to submit report');
+      }
+
+      setMessages((prev) => {
+        const updated = [...prev];
+        if (updated[reportTarget.index]) {
+          updated[reportTarget.index] = {
+            ...updated[reportTarget.index],
+            id: msgId,
+            reportStatus: 'pending_review'
+          };
+        }
+        return updated;
+      });
+
+      setReportSuccessMsg(
+        `Queued for Academic SME & SymPy Verification (${data.dailyReportsUsed}/${data.dailyReportCap} daily reports used). You will receive an in-app notification and Spark restitution once verified.`
+      );
+      setTimeout(() => {
+        setReportTarget(null);
+        setReportSuccessMsg(null);
+      }, 2200);
+    } catch (err: any) {
+      setReportError(err?.message || 'Could not submit report.');
+    } finally {
+      setReportSubmitting(false);
     }
   };
 
@@ -262,9 +373,27 @@ export default function ChatBot({
     document.body.removeChild(link);
   };
 
+  // Abort / Cancel Active Stream & Trigger Server Auto-Refund
+  const handleAbortStream = () => {
+    const activeToken = activeIdempotencyTokenRef.current;
+    if (isWsConnected) {
+      abortWsStream(activeToken || undefined);
+    }
+    if (httpAbortControllerRef.current) {
+      httpAbortControllerRef.current.abort();
+      httpAbortControllerRef.current = null;
+    }
+    activeIdempotencyTokenRef.current = null;
+    setIsLoading(false);
+    setIsAiThinking(false);
+  };
+
   // Reset / New Session
   const handleNewSession = () => {
     if (messages.length > 0 && confirm("Start a fresh study conversation? Your previous notes remain saved in your notebook.")) {
+      if (isLoading) {
+        handleAbortStream();
+      }
       setMessages([]);
       setInput("");
       setSelectedImage(null);
@@ -284,7 +413,10 @@ export default function ChatBot({
     }
 
     const isFreeUser = (profile || authProfile)?.plan_type === 'free';
-    const hasNoSparks = ((profile || authProfile)?.ai_sparks ?? 0) <= 0;
+    const rawSparks = sparksRemaining ?? (profile || authProfile)?.ai_sparks;
+    const knownSparks: number | null =
+      typeof rawSparks === 'number' && Number.isFinite(rawSparks) ? rawSparks : null;
+    const hasNoSparks = knownSparks !== null && knownSparks <= 0;
     if (isFreeUser && hasNoSparks && !isAdmin) {
       setShowPricingModal(true);
       return;
@@ -298,8 +430,12 @@ export default function ChatBot({
       textToSend = `[Attached Document Context]:\n${pdfText}\n\n[Student Question]:\n${textToSend}`;
     }
 
+    const idempotencyToken = `chat_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+    activeIdempotencyTokenRef.current = idempotencyToken;
+    const balanceBeforeSend: number | null = knownSparks;
+
     const userMsg: ChatMessage = {
-      id: `user-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      id: `user-${idempotencyToken}`,
       role: "user",
       text: textToSend || (selectedImage ? "Analyzed problem diagram." : "Analyzed uploaded document."),
       image: selectedImage || undefined,
@@ -349,8 +485,9 @@ export default function ChatBot({
         isHintRequest,
         masteryLevel,
         personality: currentPersonality,
-        currentSparks: (profile || authProfile)?.ai_sparks ?? 50,
-        planType: (profile || authProfile)?.plan_type ?? 'free'
+        currentSparks: knownSparks ?? undefined,
+        planType: (profile || authProfile)?.plan_type ?? 'free',
+        idempotency_token: idempotencyToken
       }, (chunk) => {
         setMessages(prev => {
           const newMsgs = [...prev];
@@ -360,12 +497,15 @@ export default function ChatBot({
           return newMsgs;
         });
       }, () => {
+        activeIdempotencyTokenRef.current = null;
         setIsLoading(false);
         setIsAiThinking(false);
       }, (err) => {
         console.error("WS Chat error:", err);
+        activeIdempotencyTokenRef.current = null;
         setIsLoading(false);
         setIsAiThinking(false);
+        setSparksRemaining(balanceBeforeSend);
         setMessages(prev => {
           const newMsgs = [...prev];
           if (newMsgs[msgIndex]) {
@@ -378,6 +518,37 @@ export default function ChatBot({
         if (meta.sparksRemaining !== undefined) {
           setSparksRemaining(meta.sparksRemaining);
         }
+        if (
+          meta.providerLabel !== undefined ||
+          meta.providerUsed !== undefined ||
+          meta.upstreamModel !== undefined ||
+          meta.scrubbedPassagesCount !== undefined ||
+          meta.tokens !== undefined ||
+          meta.sparksCost !== undefined
+        ) {
+          setMessages(prev => {
+            const newMsgs = [...prev];
+            if (newMsgs[msgIndex]) {
+              newMsgs[msgIndex] = {
+                ...newMsgs[msgIndex],
+                meta: {
+                  ...(newMsgs[msgIndex].meta || {}),
+                  ...meta
+                }
+              };
+            }
+            return newMsgs;
+          });
+        }
+        if (meta.aborted) {
+          setMessages(prev => {
+            const newMsgs = [...prev];
+            if (newMsgs[msgIndex] && !newMsgs[msgIndex].text.trim()) {
+              newMsgs[msgIndex].text = "_Generation stopped. Unused pre-authorized sparks were automatically refunded._";
+            }
+            return newMsgs;
+          });
+        }
         if (meta.status === 'thinking') {
           if (isProMode) setIsAiThinking(true);
         } else if (meta.status === 'answering') {
@@ -387,7 +558,9 @@ export default function ChatBot({
       return;
     }
 
-    // Fallback HTTP Fetch
+    // Fallback HTTP Fetch with AbortController
+    const abortController = new AbortController();
+    httpAbortControllerRef.current = abortController;
     try {
       let token = '';
       try {
@@ -398,8 +571,10 @@ export default function ChatBot({
 
       const response = await fetch('/api/chat', {
         method: 'POST',
+        signal: abortController.signal,
         headers: {
           'Content-Type': 'application/json',
+          'X-Idempotency-Key': idempotencyToken,
           ...(token ? { 'Authorization': `Bearer ${token}` } : {})
         },
         body: JSON.stringify({
@@ -414,8 +589,9 @@ export default function ChatBot({
           isHintRequest,
           masteryLevel,
           personality: currentPersonality,
-          currentSparks: (profile || authProfile)?.ai_sparks ?? 50,
-          planType: (profile || authProfile)?.plan_type ?? 'free'
+          currentSparks: knownSparks,
+          planType: (profile || authProfile)?.plan_type ?? 'free',
+          idempotency_token: idempotencyToken
         })
       });
 
@@ -449,10 +625,13 @@ export default function ChatBot({
       }
 
       const modelMsg: ChatMessage = {
-        id: data.id || `ai-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        id: data.id || `ai-${Date.now()}`,
         role: "model",
         text: data.response,
-        meta: data.meta,
+        meta: {
+          ...(data.meta || {}),
+          sparksCost: data.sparksCost ?? data.meta?.sparksCost
+        },
         timestamp: new Date().toISOString()
       };
       setMessages((prev) => [...prev, modelMsg]);
@@ -460,10 +639,25 @@ export default function ChatBot({
         setSparksRemaining(data.sparksRemaining);
       }
     } catch (error: any) {
+      if (error?.name === 'AbortError' || abortController.signal.aborted) {
+        setSparksRemaining(balanceBeforeSend);
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "model",
+            text: "_Generation stopped. Unused pre-authorized sparks were automatically refunded._",
+            timestamp: new Date().toISOString()
+          }
+        ]);
+        return;
+      }
       console.error("Chat fetch error:", error);
+      setSparksRemaining(balanceBeforeSend);
       const displayMsg = error?.message || "Error: Failed to connect to UniAce Tutor.";
       setMessages((prev) => [...prev, { role: "model", text: displayMsg, timestamp: new Date().toISOString() }]);
     } finally {
+      httpAbortControllerRef.current = null;
+      activeIdempotencyTokenRef.current = null;
       setIsLoading(false);
     }
   };
@@ -631,6 +825,7 @@ export default function ChatBot({
                 onSaveBookmark={onSaveBookmark}
                 currentUserId={user?.uid}
                 courseId={currentCourseId || undefined}
+                onReportWrongAnswer={handleOpenReportModal}
               />
             ))}
 
@@ -686,6 +881,7 @@ export default function ChatBot({
         hintsRequestedCount={hintsRequestedCount}
         onRequestAdaptiveSolution={() => handleSend("Please break down this derivation step-by-step with full intermediate calculations and intuitive analogies.")}
         activeTopicTitle={currentSubTopicTitle || currentModuleTitle || currentCourseId || undefined}
+        onAbortStream={handleAbortStream}
       />
 
       {/* Academic Toolkit Bottom Sheet */}
@@ -748,6 +944,121 @@ export default function ChatBot({
           }}
         />
       )}
+
+      {/* Report Wrong Answer Modal (Student Trust & Golden Set Feedback Loop) */}
+      <AnimatePresence>
+        {reportTarget && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[90] bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 8 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 8 }}
+              className="w-full max-w-lg bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl shadow-xl overflow-hidden"
+            >
+              <div className="px-5 py-4 border-b border-slate-200 dark:border-zinc-800 flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-zinc-100">
+                    Report Inaccurate Academic Solution
+                  </h3>
+                  <p className="text-[11px] text-slate-500 dark:text-zinc-400 font-mono mt-0.5">
+                    {reportTarget.message.meta?.providerLabel
+                      ? `Provenance: ${reportTarget.message.meta.providerLabel}`
+                      : 'Provenance: Upstream model unverified'}
+                    {reportAllowance && (
+                      <>
+                        {' · '}
+                        Allowance: {reportAllowance.remainingAllowance}/{reportAllowance.dailyReportCap} today
+                      </>
+                    )}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setReportTarget(null)}
+                  className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200 rounded-lg"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <form onSubmit={handleSubmitWrongAnswerReport} className="p-5 space-y-4">
+                <div className="p-3 bg-slate-50 dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded-xl text-xs text-slate-600 dark:text-zinc-300 leading-relaxed">
+                  Verified errors are reviewed by an Academic SME & Numeric/Symbolic Verifier. If confirmed, you receive a{' '}
+                  <strong className="text-emerald-600 dark:text-emerald-400 font-mono">
+                    100% query Spark refund
+                    {reportAllowance?.firstReporterBonusSparks
+                      ? ` + ${reportAllowance.firstReporterBonusSparks} Bonus Sparks (First Reporter on Topic)`
+                      : ''}
+                  </strong>{' '}
+                  and the corrected problem enters the Golden Set regression suite.
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 mb-1.5">
+                    Error Category
+                  </label>
+                  <select
+                    value={reportCategory}
+                    onChange={(e) => setReportCategory(e.target.value as any)}
+                    className="w-full px-3 py-2 text-xs rounded-xl bg-white dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 text-slate-800 dark:text-zinc-100 focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="final_answer_error">Wrong Final Numerical or Symbolic Answer</option>
+                    <option value="derivation_step_flaw">Flawed Intermediate Derivation or Proof Step</option>
+                    <option value="factual_conceptual_error">Factual or University Curriculum Misconception</option>
+                    <option value="broken_latex">Malformed LaTeX / KaTeX Equation Syntax</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 mb-1.5">
+                    Expected Answer or Step Correction (Optional, LaTeX supported)
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={reportCorrection}
+                    onChange={(e) => setReportCorrection(e.target.value)}
+                    placeholder="e.g., The definite integral evaluates to \pi / 4, not \pi / 2 because..."
+                    className="w-full px-3 py-2 text-xs rounded-xl bg-white dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 text-slate-800 dark:text-zinc-100 font-mono focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                {reportError && (
+                  <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300">
+                    {reportError}
+                  </div>
+                )}
+
+                {reportSuccessMsg && (
+                  <div className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-700 dark:text-emerald-300">
+                    {reportSuccessMsg}
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-zinc-800">
+                  <button
+                    type="button"
+                    onClick={() => setReportTarget(null)}
+                    className="px-3.5 py-2 rounded-xl text-xs font-semibold text-slate-600 dark:text-zinc-400 hover:bg-slate-100 dark:hover:bg-zinc-800"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={reportSubmitting || Boolean(reportSuccessMsg)}
+                    className="px-4 py-2 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white transition-colors"
+                  >
+                    {reportSubmitting ? 'Submitting to SME Queue...' : 'Submit for SME Verification'}
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 

@@ -332,7 +332,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       protectedFields.forEach(field => delete dataToSave[field]);
       Object.keys(dataToSave).forEach(key => dataToSave[key] === undefined && delete dataToSave[key]);
 
-      if (!userDoc.exists()) {
+      const docExistsOnServer = userDoc.exists() || Boolean(backendProfile);
+      if (!docExistsOnServer) {
         try {
           await Promise.race([
             setDoc(userRef, dataToSave, { merge: true }),
@@ -368,7 +369,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               const token = await getToken(msg, {
                 vapidKey: import.meta.env.VITE_FIREBASE_VAPID_KEY || 'YOUR_PUBLIC_VAPID_KEY'
               });
-              if (token) {
+              if (token && firestoreData.fcmToken !== token && backendProfile?.fcmToken !== token) {
                 await setDoc(userRef, { fcmToken: token }, { merge: true });
               }
             }
@@ -537,10 +538,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try { localStorage.setItem('activeSemester', dataToSave.semester); } catch {}
     }
 
-    // 2. Persist via backend API (write-through to Firestore + Disk-Backed Quota Shield)
+    // 2. Persist via backend API (idempotent write-through to Firestore)
+    let backendSynced = false;
     try {
-      const token = await user.getIdToken();
-      await fetch('/api/user/profile', {
+      const token = await user.getIdToken(false);
+      const res = await fetch('/api/user/profile', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -548,19 +550,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         },
         body: JSON.stringify(dataToSave)
       });
+      backendSynced = res.ok;
     } catch (apiErr) {
       console.warn("Backend profile sync warning:", apiErr);
     }
 
-    // 3. Also attempt direct client Firestore update with timeout guard
-    try {
-      const userRef = doc(db, "users", user.uid);
-      await Promise.race([
-        setDoc(userRef, dataToSave, { merge: true }),
-        new Promise((resolve) => setTimeout(resolve, 2500))
-      ]);
-    } catch (error) {
-      console.warn("Client Firestore profile update deferred to backend:", error);
+    // 3. Only attempt direct client Firestore update if backend API sync was unavailable
+    if (!backendSynced) {
+      try {
+        const userRef = doc(db, "users", user.uid);
+        await Promise.race([
+          setDoc(userRef, dataToSave, { merge: true }),
+          new Promise((resolve) => setTimeout(resolve, 2500))
+        ]);
+      } catch (error) {
+        console.warn("Client Firestore profile update deferred:", error);
+      }
     }
   };
 

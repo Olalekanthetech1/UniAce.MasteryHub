@@ -1,7 +1,7 @@
 import { PlanType } from '../types';
 
 export interface PlanLimits {
-  sparksPerDay: number | 'unlimited';
+  sparksPerDay: number | 'unlimited' | null;
   arenaBattlesPerDay: number | 'unlimited';
   pastQuestionsPerDay: number | 'unlimited';
   hasAdvancedAnalytics: boolean;
@@ -11,7 +11,7 @@ export interface PlanLimits {
 
 export const PLAN_LIMITS: Record<PlanType, PlanLimits> = {
   'free': {
-    sparksPerDay: 50,
+    sparksPerDay: null,
     arenaBattlesPerDay: 3,
     pastQuestionsPerDay: 5,
     hasAdvancedAnalytics: false,
@@ -54,6 +54,7 @@ export class SubscriptionService {
     const value = limits[feature];
     if (typeof value === 'boolean') return value;
     if (value === 'unlimited') return true;
+    if (value === null) return false;
     return value > 0; // This is a simplified check, actual usage tracking would be needed for counts
   }
 }

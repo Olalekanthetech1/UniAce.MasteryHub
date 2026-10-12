@@ -5,6 +5,8 @@ import { motion, AnimatePresence } from 'motion/react';
 // @ts-ignore
 import PaystackPop from '@paystack/inline-js';
 import { PricingService, PricingPlan, DEFAULT_PRICING_PLANS } from '../services/pricingConfig';
+import { db } from '../firebase';
+import { doc, onSnapshot } from 'firebase/firestore';
 
 export default function PricingPage() {
   const { user, profile } = useAuth();
@@ -13,6 +15,7 @@ export default function PricingPage() {
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [transactionRef, setTransactionRef] = useState('');
   const [plans, setPlans] = useState<PricingPlan[]>(DEFAULT_PRICING_PLANS);
+  const [dailyFreeSparks, setDailyFreeSparks] = useState<number | null>(null);
 
   useEffect(() => {
     const unsubscribe = PricingService.subscribePricingConfig((config) => {
@@ -20,7 +23,25 @@ export default function PricingPage() {
         setPlans(config.plans.filter(p => p.enabled !== false));
       }
     });
-    return () => unsubscribe();
+    let unsubPolicy = () => {};
+    if (db) {
+      unsubPolicy = onSnapshot(
+        doc(db, 'system_config', 'evaluation_policy'),
+        (snap) => {
+          if (snap.exists()) {
+            const val = snap.data()?.dailyFreeSparks;
+            setDailyFreeSparks(typeof val === 'number' && val > 0 ? val : null);
+          } else {
+            setDailyFreeSparks(null);
+          }
+        },
+        () => setDailyFreeSparks(null)
+      );
+    }
+    return () => {
+      unsubscribe();
+      unsubPolicy();
+    };
   }, []);
 
   const handlePayment = async (plan: any) => {
@@ -62,9 +83,7 @@ export default function PricingPage() {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ 
-                reference: transaction.reference,
-                amount: plan.price,
-                planType: plan.id
+                reference: transaction.reference
               }),
             });
             if (!response.ok) throw new Error('Verification failed');
@@ -193,7 +212,10 @@ export default function PricingPage() {
             <div>
               <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-1">How Sparks Work</h3>
               <p className="text-slate-600 dark:text-zinc-400 text-sm leading-relaxed">
-                Sparks fuel UniAce AI. Costs are dynamic based on query complexity. Standard queries start at ~2 Sparks; Deep Analysis starts at ~15 Sparks. Daily allowance: Free users receive 20 Sparks daily!
+                Sparks fuel UniAce AI. Costs are dynamic based on query complexity. Standard queries start at ~2 Sparks; Deep Analysis starts at ~15 Sparks.
+                {dailyFreeSparks !== null && dailyFreeSparks > 0
+                  ? ` Daily allowance: Free users receive ${dailyFreeSparks} Sparks daily!`
+                  : ''}
               </p>
             </div>
           </div>

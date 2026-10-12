@@ -35,6 +35,130 @@ const INITIAL_PROGRESS: UserProgress = {
   assignments: [],
 };
 
+// Module-level singleton state to prevent multiple mounted useUserProgress() hooks
+// from registering duplicate onSnapshot listeners or firing parallel duplicate writes.
+const PROGRESS_SESSION_ID = `${Date.now()}`;
+let progressBatchSeq = 0;
+let activeListenerUid: string | null = null;
+let activeListenerUnsubscribe: (() => void) | null = null;
+let activeListenerRefCount = 0;
+let hasCompletedInitialServerSync = false;
+let lastServerCommittedFullJson = '';
+let lastServerCommittedMilestoneJson = '';
+let pendingMilestoneTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingStudyCheckpointTimer: ReturnType<typeof setTimeout> | null = null;
+let inFlightBatchId: string | null = null;
+
+function extractAllowedProgressPayload(progressObj: UserProgress): Record<string, any> {
+  const {
+    xp,
+    level,
+    mastery,
+    achievements,
+    enrolledCourses,
+    role,
+    plan_type,
+    subscription_expiry,
+    subscription_status,
+    subscription_start_date,
+    last_spark_reset,
+    last_payment_ref,
+    ai_sparks,
+    free_sparks,
+    paid_sparks,
+    frozen_disputed_sparks,
+    bucketSource,
+    ...allowedProgress
+  } = (progressObj || {}) as any;
+  return allowedProgress;
+}
+
+function extractMilestoneOnlyJson(allowed: Record<string, any>): string {
+  const { studyTime, topicLastStudied, ...milestoneOnly } = allowed;
+  return JSON.stringify(milestoneOnly);
+}
+
+async function flushCoalescedProgressBatch(
+  currentUser: { uid: string; getIdToken: (force?: boolean) => Promise<string> },
+  allowedPayload: Record<string, any>,
+  existingBatchId?: string
+): Promise<boolean> {
+  const fullJson = JSON.stringify(allowedPayload);
+  if (fullJson === lastServerCommittedFullJson) {
+    return true;
+  }
+
+  const pendingStorageKey = `uniace_pending_progress_batch_v1_${currentUser.uid}`;
+  let syncBatchId = existingBatchId;
+  let clientSequence = progressBatchSeq;
+
+  if (!syncBatchId) {
+    progressBatchSeq += 1;
+    clientSequence = progressBatchSeq;
+    syncBatchId = `${currentUser.uid}_${PROGRESS_SESSION_ID}_${clientSequence}`;
+    try {
+      localStorage.setItem(
+        pendingStorageKey,
+        JSON.stringify({
+          syncBatchId,
+          clientSequence,
+          payload: allowedPayload,
+          savedAtIso: new Date().toISOString()
+        })
+      );
+    } catch {
+      // Ignore storage quota errors
+    }
+  }
+
+  if (inFlightBatchId === syncBatchId) {
+    return false;
+  }
+  inFlightBatchId = syncBatchId;
+
+  try {
+    const token = await currentUser.getIdToken(false);
+    const response = await fetch('/api/user/progress-sync', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      keepalive: true,
+      body: JSON.stringify({
+        syncBatchId,
+        clientSequence,
+        ...allowedPayload
+      })
+    });
+
+    if (response.ok) {
+      lastServerCommittedFullJson = fullJson;
+      lastServerCommittedMilestoneJson = extractMilestoneOnlyJson(allowedPayload);
+      try {
+        const storedRaw = localStorage.getItem(pendingStorageKey);
+        if (storedRaw) {
+          const stored = JSON.parse(storedRaw);
+          if (stored?.syncBatchId === syncBatchId) {
+            localStorage.removeItem(pendingStorageKey);
+          }
+        }
+      } catch {
+        // Ignore localStorage parse errors
+      }
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.warn('[ProgressSync] Deferred progress batch retry:', err);
+    return false;
+  } finally {
+    if (inFlightBatchId === syncBatchId) {
+      inFlightBatchId = null;
+    }
+  }
+}
+
 export function useUserProgress() {
   const { user, profile } = useAuth();
   const { progress, setProgress, isOnline, setIsOnline, integrityIssues, setIntegrityIssues } = useProgressStore();
@@ -80,7 +204,6 @@ export function useUserProgress() {
     });
 
     const mergedTopicLastStudied = { ...local.topicLastStudied, ...server.topicLastStudied };
-    // Take the more recent date
     Object.keys(mergedTopicLastStudied).forEach(key => {
       if (local.topicLastStudied[key] && server.topicLastStudied[key]) {
         const localDate = new Date(local.topicLastStudied[key]);
@@ -95,12 +218,11 @@ export function useUserProgress() {
     });
     const mergedBookmarks = Array.from(bookmarkMap.values());
 
-    // Merge achievements
     const achievementMap = new Map<string, Achievement>();
     [...(local.achievements || []), ...(server.achievements || [])].forEach(a => {
       if (!a || !a.id) return;
       const existing = achievementMap.get(a.id);
-      if (!existing || (a.unlockedAt && (!existing.unlockedAt))) {
+      if (!existing || (a.unlockedAt && !existing.unlockedAt)) {
         achievementMap.set(a.id, a);
       }
     });
@@ -141,113 +263,149 @@ export function useUserProgress() {
     };
   }, []);
 
-  // Sync with Firestore when user logs in or comes online
+  // Singleton Firestore listener shared across all hook consumers
   useEffect(() => {
     if (!user) {
       hasInitialSyncRef.current = false;
+      hasCompletedInitialServerSync = false;
       return;
     }
 
-    const userDocRef = doc(db, 'users', user.uid);
-    
-    const unsubscribe = onSnapshot(userDocRef, (docSnap) => {
-      hasInitialSyncRef.current = true;
-      if (docSnap.exists()) {
-        const serverData = docSnap.data() as UserProgress;
-        
-        setProgress(prev => {
-          const mergedData = mergeProgress(prev, {
-            ...INITIAL_PROGRESS,
-            ...serverData,
-            assignments: Array.isArray(serverData.assignments) ? serverData.assignments : [],
-            topicLastStudied: serverData.topicLastStudied || {},
-            bookmarks: serverData.bookmarks || []
-          });
-
-          // Only update if data is actually different to avoid unnecessary re-renders
-          if (JSON.stringify(prev) !== JSON.stringify(mergedData)) {
-            return mergedData;
-          }
-          return prev;
-        });
+    activeListenerRefCount += 1;
+    if (activeListenerUid !== user.uid || !activeListenerUnsubscribe) {
+      if (activeListenerUnsubscribe) {
+        activeListenerUnsubscribe();
       }
-    }, (error) => {
-      hasInitialSyncRef.current = true;
-      console.error("Error syncing user progress:", error);
-    });
+      activeListenerUid = user.uid;
+      const userDocRef = doc(db, 'users', user.uid);
 
-    return () => unsubscribe();
-  }, [user, isOnline, mergeProgress]); // Re-run when online status changes to force sync
+      activeListenerUnsubscribe = onSnapshot(
+        userDocRef,
+        (docSnap) => {
+          hasInitialSyncRef.current = true;
+          hasCompletedInitialServerSync = true;
+          if (docSnap.exists()) {
+            const serverData = docSnap.data() as UserProgress;
+            setProgress(prev => {
+              const mergedData = mergeProgress(prev, {
+                ...INITIAL_PROGRESS,
+                ...serverData,
+                assignments: Array.isArray(serverData.assignments) ? serverData.assignments : [],
+                topicLastStudied: serverData.topicLastStudied || {},
+                bookmarks: serverData.bookmarks || []
+              });
 
-  // Persist changes to LocalStorage and Firestore (only after initial server sync completes)
+              const allowedFromMerged = extractAllowedProgressPayload(mergedData);
+              lastServerCommittedFullJson = JSON.stringify(allowedFromMerged);
+              lastServerCommittedMilestoneJson = extractMilestoneOnlyJson(allowedFromMerged);
+
+              if (JSON.stringify(prev) !== JSON.stringify(mergedData)) {
+                return mergedData;
+              }
+              return prev;
+            });
+          }
+        },
+        (error) => {
+          hasInitialSyncRef.current = true;
+          hasCompletedInitialServerSync = true;
+          console.error('Error syncing user progress:', error);
+        }
+      );
+
+      // Replay any unacknowledged durable batch from a prior tab session
+      const pendingStorageKey = `uniace_pending_progress_batch_v1_${user.uid}`;
+      try {
+        const rawPending = localStorage.getItem(pendingStorageKey);
+        if (rawPending) {
+          const parsed = JSON.parse(rawPending);
+          if (parsed?.syncBatchId && parsed?.payload) {
+            void flushCoalescedProgressBatch(user, parsed.payload, parsed.syncBatchId);
+          }
+        }
+      } catch {
+        // Ignore malformed localStorage entry
+      }
+    } else {
+      hasInitialSyncRef.current = hasCompletedInitialServerSync;
+    }
+
+    return () => {
+      activeListenerRefCount = Math.max(0, activeListenerRefCount - 1);
+      if (activeListenerRefCount === 0 && activeListenerUnsubscribe) {
+        activeListenerUnsubscribe();
+        activeListenerUnsubscribe = null;
+        activeListenerUid = null;
+      }
+    };
+  }, [user?.uid, isOnline, mergeProgress]);
+
+  // Coalesced, idempotent persistence: 5s debounce for milestone changes, 5-minute checkpoint for studyTime
   useEffect(() => {
     try {
       localStorage.setItem('uniace_user_progress', JSON.stringify(progress));
-    } catch (e) {
-      console.warn('localStorage access denied, cannot save progress locally');
+    } catch {
+      // Ignore storage access errors
     }
-    
-    if (user && isOnline && hasInitialSyncRef.current && profile) {
-      const userDocRef = doc(db, 'users', user.uid);
-      const { 
-        xp, level, mastery, achievements, enrolledCourses, 
-        role, plan_type, subscription_expiry, subscription_status, 
-        subscription_start_date, last_spark_reset, last_payment_ref, 
-        ai_sparks, ...allowedProgress 
-      } = progress as any;
 
-      // Use a timeout to debounce writes slightly
-      const timeoutId = setTimeout(() => {
-        user.getIdToken().then(token => {
-          fetch('/api/user/profile', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`
-            },
-            body: JSON.stringify(allowedProgress)
-          }).catch(() => {});
-        }).catch(() => {});
-
-        setDoc(userDocRef, { ...allowedProgress, uid: user.uid }, { merge: true }).catch(err => {
-          console.error("Error persisting user progress to Firestore:", err);
-        });
-      }, 1500);
-      
-      return () => {
-        clearTimeout(timeoutId);
-      };
+    if (!user || !isOnline || !hasCompletedInitialServerSync || !profile) {
+      return;
     }
-  }, [progress, user, isOnline, profile]);
+
+    const allowedProgress = extractAllowedProgressPayload(progress);
+    const fullJson = JSON.stringify(allowedProgress);
+    if (fullJson === lastServerCommittedFullJson) {
+      return;
+    }
+
+    const milestoneJson = extractMilestoneOnlyJson(allowedProgress);
+    const isMilestoneMutation = milestoneJson !== lastServerCommittedMilestoneJson;
+
+    if (isMilestoneMutation) {
+      if (pendingMilestoneTimer) {
+        clearTimeout(pendingMilestoneTimer);
+      }
+      pendingMilestoneTimer = setTimeout(() => {
+        pendingMilestoneTimer = null;
+        void flushCoalescedProgressBatch(user, extractAllowedProgressPayload(useProgressStore.getState().progress));
+      }, 5000);
+    } else if (!pendingStudyCheckpointTimer) {
+      // Study-time only change: coalesce into a 5-minute durable checkpoint flush
+      pendingStudyCheckpointTimer = setTimeout(() => {
+        pendingStudyCheckpointTimer = null;
+        void flushCoalescedProgressBatch(user, extractAllowedProgressPayload(useProgressStore.getState().progress));
+      }, 5 * 60 * 1000);
+    }
+  }, [progress, user?.uid, isOnline, Boolean(profile)]);
+
+  // Flush pending progress on visibilitychange (when tab is hidden)
+  useEffect(() => {
+    if (!user) return;
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden' && hasCompletedInitialServerSync) {
+        const latestAllowed = extractAllowedProgressPayload(useProgressStore.getState().progress);
+        void flushCoalescedProgressBatch(user, latestAllowed);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [user?.uid]);
 
   const saveImmediately = useCallback(async (newProgress: UserProgress) => {
-    if (!user || !isOnline || !hasInitialSyncRef.current) return;
+    if (!user || !isOnline || !hasCompletedInitialServerSync) return;
     try {
-      const userDocRef = doc(db, 'users', user.uid);
-      const { 
-        xp, level, mastery, achievements, enrolledCourses, 
-        role, plan_type, subscription_expiry, subscription_status, 
-        subscription_start_date, last_spark_reset, last_payment_ref, 
-        ai_sparks, ...allowedProgress 
-      } = newProgress as any;
-
-      user.getIdToken().then(token => {
-        fetch('/api/user/profile', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify(allowedProgress)
-        }).catch(() => {});
-      }).catch(() => {});
-
-      await Promise.race([
-        setDoc(userDocRef, { ...allowedProgress, uid: user.uid }, { merge: true }),
-        new Promise(resolve => setTimeout(resolve, 2500))
-      ]);
+      if (pendingMilestoneTimer) {
+        clearTimeout(pendingMilestoneTimer);
+        pendingMilestoneTimer = null;
+      }
+      if (pendingStudyCheckpointTimer) {
+        clearTimeout(pendingStudyCheckpointTimer);
+        pendingStudyCheckpointTimer = null;
+      }
+      const allowedProgress = extractAllowedProgressPayload(newProgress);
+      await flushCoalescedProgressBatch(user, allowedProgress);
     } catch (err) {
-      console.error("Error in immediate sync:", err);
+      console.error('Error in immediate sync:', err);
     }
   }, [user, isOnline]);
 

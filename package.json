@@ -9,9 +9,10 @@
     "start": "NODE_OPTIONS=\"--max-old-space-size=$(node -e 'const fs=require(\"fs\"),os=require(\"os\");let m=os.totalmem();for(const p of [\"/sys/fs/cgroup/memory.max\",\"/sys/fs/cgroup/memory/memory.limit_in_bytes\"]){try{const v=parseInt(fs.readFileSync(p,\"utf8\").trim(),10);if(v>0&&v<m)m=v;}catch{}}console.log(Math.floor((m/(1024*1024))*0.65))')\" node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "npx tsc --noEmit && node scripts/check-zero-fallback.js",
+    "lint": "npx tsc --noEmit && node scripts/check-zero-fallback.js && npx tsx scripts/test-prompt-shield.ts",
     "lint:fallback": "node scripts/check-zero-fallback.js",
-    "eval:golden": "node scripts/eval-golden-set.js"
+    "test:shield": "npx tsx scripts/test-prompt-shield.ts",
+    "eval:golden": "npx tsx scripts/runGoldenSetEval.ts"
   },
   "dependencies": {
     "@google/genai": "^2.10.0",
@@ -79,8 +80,10 @@
     "@types/nodemailer": "^7.0.11",
     "@types/papaparse": "^5.5.2",
     "@types/pdfjs-dist": "^2.10.377",
+    "@types/pg": "^8.23.1",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.28.0",
+    "pg": "^8.23.1",
     "tailwindcss": "^4.1.14",
     "typescript": "~5.8.2",
     "vite-plugin-pwa": "^1.2.0"

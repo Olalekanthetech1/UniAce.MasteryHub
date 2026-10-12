@@ -239,26 +239,17 @@ export function useSelfHealing() {
         ai_sparks, ...allowedProgress 
       } = repairedProgress as any;
 
-      user.getIdToken().then(token => {
-        fetch('/api/user/profile', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify(allowedProgress)
-        }).catch(() => {});
+      const token = await user.getIdToken(false);
+      await fetch('/api/user/profile', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(allowedProgress)
       }).catch(() => {});
 
-      await Promise.race([
-        setDoc(userDocRef, { ...allowedProgress, uid: user.uid }, { merge: true }),
-        new Promise(resolve => setTimeout(resolve, 2500))
-      ]);
-
-      // 5. Emit success logging
-      await LogService.log('success', 'system', `State self-healed successfully. Fixed issue: ${reason}`);
-      
-      console.log('[Self-Healing] State repaired and synced successfully with Firestore.');
+      console.log('[Self-Healing] State repaired and synced via server profile endpoint.');
     } catch (error) {
       console.error('[Self-Healing] Silent state restoration failed:', error);
       await LogService.log('error', 'system', `State self-healing failed: ${error instanceof Error ? error.message : String(error)}`);

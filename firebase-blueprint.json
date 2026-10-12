@@ -237,6 +237,32 @@
       },
       "required": ["id", "userId", "userEmail", "action", "sparksDeducted", "timestamp"]
     },
+    "SparkLedgerEntry": {
+      "title": "SparkLedgerEntry",
+      "description": "Immutable append-only spark escrow ledger record with idempotency token",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 160, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "idempotency_token": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "maxLength": 128 },
+        "userEmail": { "type": "string", "format": "email", "maxLength": 200 },
+        "action": { "type": "string", "enum": ["PRE_AUTH", "SETTLE", "REFUND", "HINT_DEDUCT", "REWARD", "ADMIN_ADJUST"] },
+        "delta": { "type": "number" },
+        "preAuthAmount": { "type": "number" },
+        "actualCost": { "type": "number" },
+        "balanceBefore": { "type": "number" },
+        "balanceAfter": { "type": "number" },
+        "complexity": { "type": "string", "maxLength": 32 },
+        "endpoint": { "type": "string", "enum": ["http_chat", "ws_chat", "hint", "reward", "admin"] },
+        "providerUsed": { "type": "string", "maxLength": 64 },
+        "tokens": { "type": "number" },
+        "planType": { "type": "string", "maxLength": 32 },
+        "role": { "type": "string", "maxLength": 32 },
+        "reason": { "type": "string", "maxLength": 500 },
+        "createdAtIso": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "idempotency_token", "uid", "action", "delta", "preAuthAmount", "balanceBefore", "balanceAfter", "endpoint", "createdAtIso"]
+    },
     "Challenge": {
       "title": "Challenge",
       "description": "Daily quest or arena challenge",
@@ -326,6 +352,70 @@
         "dismissedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["announcementId", "dismissedAt"]
+    },
+    "AnswerReport": {
+      "title": "AnswerReport",
+      "description": "Student-submitted wrong-answer report queued for SME review and post-SETTLE QUALITY_BOUNTY restitution",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "uid": { "type": "string" },
+        "messageId": { "type": "string" },
+        "idempotency_token": { "type": "string" },
+        "category": { "type": "string", "enum": ["final_answer_error", "derivation_step_flaw", "factual_conceptual_error", "broken_latex"] },
+        "promptText": { "type": "string" },
+        "modelResponseText": { "type": "string" },
+        "studentCorrection": { "type": "string" },
+        "questionTopicHash": { "type": "string" },
+        "providerUsed": { "type": "string" },
+        "upstreamModel": { "type": "string" },
+        "providerLabel": { "type": "string" },
+        "sparksCharged": { "type": "number" },
+        "isFirstReporterForTopic": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["pending_review", "verified_promoted", "dismissed"] },
+        "reviewerUid": { "type": "string" },
+        "reviewerName": { "type": "string" },
+        "reviewerNotes": { "type": "string" },
+        "bountySparksAwarded": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "uid", "messageId", "category", "promptText", "modelResponseText", "status", "createdAt"]
+    },
+    "GoldenSetBenchmarkItem": {
+      "title": "GoldenSetBenchmarkItem",
+      "description": "SME-signed ground-truth benchmark question for the 150-question Golden Set evaluation harness",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "suiteType": { "type": "string", "enum": ["core_150", "regression_promoted"] },
+        "split": { "type": "string", "enum": ["dev_routing", "locked_holdout"] },
+        "domain": { "type": "string", "enum": ["Mathematics", "Physics", "Computer Science", "Chemistry"] },
+        "topic": { "type": "string" },
+        "question": { "type": "string" },
+        "gradingMode": { "type": "string", "enum": ["numeric_with_tolerance", "symbolic_domain_sampling", "exact_choice", "cross_family_llm_judge"] },
+        "finalAnswer": { "type": "string" },
+        "groundTruthProofLatex": { "type": "string" },
+        "verificationState": { "type": "string", "enum": ["human_verified", "pending_sme_signoff"] },
+        "verifiedByUid": { "type": "string" },
+        "verifiedByName": { "type": "string" },
+        "academicCitation": { "type": "string" }
+      },
+      "required": ["id", "suiteType", "split", "domain", "question", "gradingMode", "finalAnswer", "groundTruthProofLatex", "verificationState", "academicCitation"]
+    },
+    "GoldenSetEvaluationRun": {
+      "title": "GoldenSetEvaluationRun",
+      "description": "Resumable production-pipeline evaluation run against SME-verified Golden Set items",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "suiteType": { "type": "string", "enum": ["core_150", "regression_promoted"] },
+        "status": { "type": "string", "enum": ["running", "paused", "completed", "failed"] },
+        "isOfficialRun": { "type": "boolean" },
+        "officialBadgeLabel": { "type": "string" },
+        "triggeredByUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "suiteType", "status", "isOfficialRun", "triggeredByUid", "createdAt"]
     }
   },
   "firestore": {
@@ -400,6 +490,22 @@
     "/spark_audit_logs/{logId}": {
       "schema": "SparkAuditLog",
       "description": "Server-side audit logs for spark usage"
+    },
+    "/spark_ledger/{entryId}": {
+      "schema": "SparkLedgerEntry",
+      "description": "Append-only server-authoritative spark escrow ledger with idempotency keys"
+    },
+    "/answer_reports/{reportId}": {
+      "schema": "AnswerReport",
+      "description": "Student wrong-answer reports queued for SME triage and post-SETTLE QUALITY_BOUNTY restitution"
+    },
+    "/golden_set_benchmarks/{questionId}": {
+      "schema": "GoldenSetBenchmarkItem",
+      "description": "SME-verified ground-truth benchmark items for the 150-question Golden Set"
+    },
+    "/golden_set_runs/{runId}": {
+      "schema": "GoldenSetEvaluationRun",
+      "description": "Resumable production-pipeline evaluation runs with Wilson 95% CI and explicit ungraded telemetry"
     }
   }
 }

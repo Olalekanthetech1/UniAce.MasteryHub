@@ -88,6 +88,7 @@ UniAce Mastery Hub follows a full-stack dual-layer architecture:
   - Perform all credit deductions and refills atomically via Firestore transactions (`runTransaction`).
   - Never overwrite existing user records without merging updates (`{ merge: true }`).
   - Respect database security rules defined in `firestore.rules`.
+  - **Test Sandbox Isolation (`sandboxNamespace`)**: The `sandboxNamespace` parameter (which scopes Firestore paths under `_ci_test_sandboxes/{sandboxNamespace}/{collection}`) is strictly reserved for isolated CLI test runners (`scripts/test-*.ts`). It MUST NEVER be read from, accepted via, or influenced by HTTP request bodies, query parameters, headers, or WebSocket payloads in `server.ts`.
 
 ---
 

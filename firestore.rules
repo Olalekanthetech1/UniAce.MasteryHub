@@ -406,5 +406,32 @@ service cloud.firestore {
       allow read: if isAdmin();
       allow write: if false; // Only written via backend server SDK
     }
+
+    match /spark_ledger/{entryId} {
+      allow get: if isAdmin() || (isAuthenticated() && resource != null && resource.data.uid == request.auth.uid);
+      allow list: if isAdmin() || (isAuthenticated() && resource.data.uid == request.auth.uid);
+      allow write, create, update, delete: if false; // Strictly server-only state machine via Firebase Admin SDK
+    }
+
+    match /chat_analytics/{analyticsId} {
+      allow read: if isAdmin();
+      allow write, create, update, delete: if false; // Strictly server-only telemetry via Firebase Admin SDK
+    }
+
+    match /answer_reports/{reportId} {
+      allow get: if isAdmin() || isTutor() || (isAuthenticated() && resource != null && resource.data.uid == request.auth.uid);
+      allow list: if isAdmin() || isTutor() || (isAuthenticated() && resource.data.uid == request.auth.uid);
+      allow write, create, update, delete: if false; // Strictly server-only via /api/chat/report-wrong and /api/admin/answer-reports/:id/triage
+    }
+
+    match /golden_set_benchmarks/{questionId} {
+      allow read: if isAdmin() || isTutor();
+      allow write, create, update, delete: if false; // Strictly server-only via SME Corpus Manager endpoints
+    }
+
+    match /golden_set_runs/{runId} {
+      allow read: if isAdmin() || isTutor();
+      allow write, create, update, delete: if false; // Strictly server-only via Resumable Golden Set Evaluator
+    }
   }
 }

@@ -117,9 +117,11 @@ export default function PastQuestions({
     if (isUsingFiftyFifty[q.id]) return;
     if (eliminatedOptions[q.id]) return;
 
-    const currentSparks = profile?.ai_sparks ?? 50;
+    const rawSparks = profile?.ai_sparks;
+    const currentSparks: number | null =
+      typeof rawSparks === 'number' && Number.isFinite(rawSparks) ? rawSparks : null;
 
-    if (!isPremium && currentSparks < 1) {
+    if (!isPremium && currentSparks !== null && currentSparks < 1) {
       toast.error("Insufficient sparks! Please upgrade or obtain more sparks.");
       setShowPricingModal(true);
       return;
