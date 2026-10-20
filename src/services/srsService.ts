@@ -1,5 +1,4 @@
-import { db, auth } from '../firebase';
-import { doc, getDoc, setDoc, collection, query, where, getDocs, Timestamp } from 'firebase/firestore';
+import { auth } from '../firebase';
 
 export interface SRSRecord {
   userId: string;
@@ -10,7 +9,11 @@ export interface SRSRecord {
   repetitions: number;
   nextReviewDate: string;
   lastReviewed: string;
-  topicTitle: string;
+  topicTitle?: string;
+  box?: number;
+  repetitionCount?: number;
+  easeFactor?: number;
+  lastPerformanceScore?: number;
 }
 
 export const SRSService = {
@@ -66,39 +69,55 @@ export const SRSService = {
     else if (scorePercentage >= 40) quality = 2;
     else if (scorePercentage >= 20) quality = 1;
 
-    const srsRef = doc(db, `users/${user.uid}/spaced_repetition`, topicId);
-    const srsSnap = await getDoc(srsRef);
-    
-    let currentRecord: SRSRecord | undefined;
-    if (srsSnap.exists()) {
-      currentRecord = srsSnap.data() as SRSRecord;
+    try {
+      const token = await user.getIdToken();
+      await fetch('/api/user/srs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          cardId: topicId,
+          courseId,
+          rating: quality
+        })
+      });
+    } catch (err) {
+      console.warn('[SRSService] Failed to update SRS via API:', err);
     }
-
-    const updates = this.calculateNextReview(quality, currentRecord);
-
-    const fullRecord: SRSRecord = {
-      userId: user.uid,
-      topicId,
-      courseId,
-      topicTitle,
-      easinessFactor: updates.easinessFactor!,
-      interval: updates.interval!,
-      repetitions: updates.repetitions!,
-      nextReviewDate: updates.nextReviewDate!,
-      lastReviewed: updates.lastReviewed!
-    };
-
-    await setDoc(srsRef, fullRecord, { merge: true });
   },
 
   /**
    * Fetches an SRS record for a specific user and topic.
    */
   async getSRSRecord(userId: string, courseId: string, topicId: string): Promise<SRSRecord | null> {
-    const srsRef = doc(db, `users/${userId}/spaced_repetition`, topicId);
-    const srsSnap = await getDoc(srsRef);
-    if (srsSnap.exists()) {
-      return srsSnap.data() as SRSRecord;
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) return null;
+      const res = await fetch('/api/user/srs', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json.cards)) {
+          const match = json.cards.find((c: any) => c.card_id === topicId || c.id === topicId);
+          if (match) {
+            return {
+              userId,
+              topicId: match.card_id,
+              courseId: match.course_id,
+              easinessFactor: match.ease_factor || 2.5,
+              interval: 1,
+              repetitions: match.review_count || 0,
+              nextReviewDate: match.next_review_at,
+              lastReviewed: match.updated_at || new Date().toISOString()
+            };
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[SRSService] Failed to fetch SRS record:', err);
     }
     return null;
   },
@@ -107,21 +126,42 @@ export const SRSService = {
    * Fetches all topics that are currently due for review.
    */
   async getDueReviews(userId?: string): Promise<SRSRecord[]> {
-    const uid = userId || auth.currentUser?.uid;
+    const user = auth.currentUser;
+    const uid = userId || user?.uid;
     if (!uid) return [];
 
-    const now = new Date().toISOString();
-    const srsRef = collection(db, `users/${uid}/spaced_repetition`);
-    
-    // Query for items where nextReviewDate is in the past
-    const q = query(srsRef, where("nextReviewDate", "<=", now));
-    const querySnapshot = await getDocs(q);
-    
-    const dueItems: SRSRecord[] = [];
-    querySnapshot.forEach((doc) => {
-      dueItems.push(doc.data() as SRSRecord);
-    });
-
-    return dueItems;
+    try {
+      const token = await user?.getIdToken();
+      if (token) {
+        const res = await fetch('/api/user/srs', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (Array.isArray(json.cards)) {
+            const now = Date.now();
+            return json.cards
+              .filter((c: any) => !c.next_review_at || new Date(c.next_review_at).getTime() <= now)
+              .map((c: any) => ({
+                userId: uid,
+                topicId: c.card_id,
+                courseId: c.course_id,
+                easinessFactor: c.ease_factor || 2.5,
+                interval: 1,
+                repetitions: c.review_count || 0,
+                box: c.box,
+                nextReviewDate: c.next_review_at,
+                lastReviewed: c.updated_at || new Date().toISOString(),
+                repetitionCount: c.review_count,
+                easeFactor: c.ease_factor,
+                lastPerformanceScore: 3
+              }));
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[SRSService] Failed to fetch due reviews:', err);
+    }
+    return [];
   }
 };

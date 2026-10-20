@@ -3,6 +3,7 @@ import os from 'os';
 import v8 from 'v8';
 import admin from 'firebase-admin';
 import { getAdminApp } from './firebaseAdmin';
+import { getPostgresPool } from './postgresPool';
 
 export interface LiveMemoryStats {
   timestamp: string;
@@ -203,20 +204,15 @@ export async function recordBackendSystemLog(
     }
     recentFirestoreLogDedupeMap.set(dedupeKey, now);
 
-    const app = getAdminApp();
-    if (!app) return;
-    const db = app.firestore();
-    const logRef = db.collection('system_logs').doc();
-    await logRef.set({
-      id: logRef.id,
-      level,
-      category,
-      message,
-      details: safeDetails,
-      userId: actor?.uid || 'system',
-      userEmail: actor?.email || 'system',
-      timestamp: admin.firestore.FieldValue.serverTimestamp()
-    });
+    const pool = getPostgresPool();
+    if (pool) {
+      const logId = crypto.randomUUID ? crypto.randomUUID() : `log_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      await pool.query(
+        `INSERT INTO system_logs (log_id, level, category, message, details, user_id, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+        [logId, level, category, message, JSON.stringify(safeDetails || {}), actor?.uid || 'system']
+      );
+    }
   } catch (err: any) {
     console.warn('[SystemAuditLogger] Could not persist system_log entry:', err?.message || err);
   }

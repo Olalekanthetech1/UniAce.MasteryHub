@@ -17,6 +17,29 @@ const STRICT_SERVER_FILES = [
   'server/sparkLedger.ts',
 ];
 
+const GROUP_1_FILES = [
+  'src/components/GlobalNotification.tsx',
+  'src/context/InstitutionContext.tsx',
+  'src/context/AuthContext.tsx',
+  'src/hooks/useNotifications.ts',
+  'src/components/Leaderboard.tsx',
+  'src/services/gamification.ts',
+  'src/services/challengesConfig.ts',
+  'src/services/supportConfig.ts',
+  'src/components/PricingPage.tsx',
+  'src/services/pricingConfig.ts',
+  'src/components/ContentArea.tsx',
+  'src/services/srsService.ts',
+  'src/components/Flashcards.tsx',
+  'src/components/FlashcardHub.tsx',
+  'src/components/QuizGenerator.tsx',
+  'src/components/StudyPlan.tsx',
+  'src/components/StudyArchitect.tsx',
+  'src/components/AdaptiveRecalibratorModal.tsx',
+  'src/services/logService.ts',
+  'src/services/chatReactionService.ts',
+];
+
 const ROOT_FILES = ['server.ts'];
 const SCAN_DIRS = ['src', 'server', 'scripts'];
 const IGNORE_FILES = ['check-zero-fallback.js'];
@@ -71,10 +94,21 @@ for (const relPath of STRICT_SERVER_FILES) {
   }
 }
 
+// Check Group 1 Zero-Firestore constraint
+for (const group1File of GROUP_1_FILES) {
+  if (fs.existsSync(group1File)) {
+    const content = fs.readFileSync(group1File, 'utf8');
+    if (content.includes('firebase/firestore')) {
+      console.error(`[GROUP 1 FIRESTORE VIOLATION] File ${group1File} must NOT import firebase/firestore.`);
+      violations++;
+    }
+  }
+}
+
 if (violations > 0) {
-  console.error(`\n❌ Zero-Mock Policy check failed: found ${violations} violation(s).`);
+  console.error(`\n❌ Zero-Mock Policy & Group 1 Firestore check failed: found ${violations} violation(s).`);
   process.exit(1);
 } else {
-  console.log('✅ Zero-Mock Policy check passed: no mock/placeholder data, Math.random(), or fiat Tier-1 lists detected.');
+  console.log('✅ Zero-Mock Policy & Group 1 Zero-Firestore check passed: all Group 1 files cleanly migrated to Neon.');
   process.exit(0);
 }

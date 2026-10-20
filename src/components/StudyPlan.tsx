@@ -7,8 +7,6 @@ import { usePremiumStatus } from '../hooks/usePremiumStatus';
 import { AIService } from '../services/ai';
 import LockedFeature from './LockedFeature';
 import { Module, UserProgress } from '../types';
-import { db } from '../firebase';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
 import CalendarExportModal from './CalendarExportModal';
 import { exportElementToPdf } from '../utils/exportUtils';
 
@@ -53,10 +51,15 @@ export default function StudyPlan({ progress, syllabus }: StudyPlanProps) {
       if (!user) return;
       setIsLoading(true);
       try {
-        const docRef = doc(db, 'user_study_plans', user.uid);
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          setPlan(docSnap.data() as StudyPlanData);
+        const token = await user.getIdToken();
+        const res = await fetch('/api/user/study-plan', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.plan) {
+            setPlan(json.plan as StudyPlanData);
+          }
         }
       } catch (err) {
         console.error('Error loading study plan:', err);
@@ -74,9 +77,16 @@ export default function StudyPlan({ progress, syllabus }: StudyPlanProps) {
     try {
       const data = await AIService.generateStudyPlan(progress, syllabus);
       setPlan(data);
-      // Save plan to Firestore
-      const docRef = doc(db, 'user_study_plans', user.uid);
-      await setDoc(docRef, data);
+      // Save plan via Neon API
+      const token = await user.getIdToken();
+      await fetch('/api/user/study-plan', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ plan: data })
+      });
     } catch (err) {
       console.error('Error generating study plan:', err);
       setError('Failed to generate your personalized plan. Please try again.');

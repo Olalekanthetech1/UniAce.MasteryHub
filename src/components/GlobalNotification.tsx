@@ -1,8 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { AlertCircle, X, Zap, ExternalLink, Info, AlertTriangle } from 'lucide-react';
-import { db } from '../firebase';
-import { collection, doc, onSnapshot, query, where, setDoc, updateDoc, increment, serverTimestamp } from 'firebase/firestore';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
 
@@ -31,104 +29,102 @@ export default function GlobalNotification() {
   const [loadingDismissals, setLoadingDismissals] = useState<boolean>(true);
   const [isDismissing, setIsDismissing] = useState<boolean>(false);
 
-  // 1. Subscribe to user's server-side dismissals subcollection
+  // 1. Fetch user dismissals from Neon
   useEffect(() => {
-    if (!db || !user) {
+    if (!user) {
       setDismissedIds(new Set());
       setLoadingDismissals(false);
       return;
     }
 
-    setLoadingDismissals(true);
-    const dismissalsRef = collection(db, 'users', user.uid, 'dismissals');
-    
-    const unsub = onSnapshot(dismissalsRef, (snapshot) => {
-      const ids = new Set<string>();
-      snapshot.docs.forEach(docSnap => {
-        ids.add(docSnap.id);
-      });
-      setDismissedIds(ids);
-      setLoadingDismissals(false);
-    }, (error) => {
-      console.error("GlobalNotification: Listener error for user dismissals:", error);
-      setLoadingDismissals(false);
-    });
+    let isMounted = true;
+    const loadDismissals = async () => {
+      try {
+        const token = await user.getIdToken(false);
+        const res = await fetch('/api/user/announcements/dismissals', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.ok && isMounted) {
+          const json = await res.json();
+          setDismissedIds(new Set(json.dismissedIds || []));
+        }
+      } catch (err) {
+        console.warn('Failed to load announcement dismissals:', err);
+      } finally {
+        if (isMounted) setLoadingDismissals(false);
+      }
+    };
 
-    return () => unsub();
+    loadDismissals();
   }, [user]);
 
-  // 2. Subscribe to active announcements collection
+  // 2. Fetch active announcements from Neon with focus-refresh and polling
   useEffect(() => {
-    if (!db || !user) {
-      setAnnouncements([]);
-      return;
-    }
+    let isMounted = true;
+    const fetchAnnouncements = async () => {
+      try {
+        const res = await fetch('/api/announcements/active');
+        if (res.ok && isMounted) {
+          const json = await res.json();
+          const items: AnnouncementDoc[] = [];
+          const now = new Date();
 
-    const announcementsRef = collection(db, 'announcements');
-    const q = query(announcementsRef, where('active', '==', true));
+          (json.announcements || []).forEach((data: any) => {
+            const docId = data.id;
+            if (!docId) return;
 
-    const unsub = onSnapshot(q, (snapshot) => {
-      const items: AnnouncementDoc[] = [];
-      const now = new Date();
+            if (data.expires_at) {
+              const expireDate = new Date(data.expires_at);
+              if (!isNaN(expireDate.getTime()) && expireDate < now) {
+                return;
+              }
+            }
 
-      snapshot.docs.forEach(docSnap => {
-        const data = docSnap.data();
-        const docId = docSnap.id;
+            if (data.audience && data.audience !== 'all') {
+              if (data.audience === 'department' && profile?.department && data.target_department) {
+                if (profile.department.toLowerCase() !== data.target_department.toLowerCase()) return;
+              }
+              if (data.audience === 'academic_level' && profile?.academic_level && data.target_level) {
+                if (profile.academic_level.toLowerCase() !== data.target_level.toLowerCase()) return;
+              }
+            }
 
-        // Strict ID validation guard: If doc has no valid ID, do not display and log error
-        if (!docId) {
-          console.error("GlobalNotification Security Warning: Announcement missing document ID at read time.", data);
-          return;
+            items.push({
+              id: docId,
+              title: data.title || 'Global Announcement',
+              message: data.message || '',
+              active: data.active !== false,
+              severity: data.severity || 'info',
+              audience: data.audience || 'all',
+              targetDepartment: data.target_department,
+              targetLevel: data.target_level,
+              ctaLabel: data.cta_label,
+              ctaUrl: data.cta_url,
+              createdAt: data.created_at,
+              expiresAt: data.expires_at
+            });
+          });
+
+          setAnnouncements(items);
         }
+      } catch (err) {
+        console.warn('Failed to fetch announcements:', err);
+      }
+    };
 
-        // Check expiration date if present
-        if (data.expiresAt) {
-          const expireDate = new Date(data.expiresAt);
-          if (!isNaN(expireDate.getTime()) && expireDate < now) {
-            return; // Expired announcement
-          }
-        }
+    fetchAnnouncements();
+    const interval = setInterval(fetchAnnouncements, 60000);
+    const onFocus = () => { fetchAnnouncements(); };
+    window.addEventListener('focus', onFocus);
 
-        // Check audience targeting
-        if (data.audience && data.audience !== 'all') {
-          if (data.audience === 'department' && profile?.department && data.targetDepartment) {
-            if (profile.department.toLowerCase() !== data.targetDepartment.toLowerCase()) return;
-          }
-          if (data.audience === 'academic_level' && profile?.academic_level && data.targetLevel) {
-            if (profile.academic_level.toLowerCase() !== data.targetLevel.toLowerCase()) return;
-          }
-        }
-
-        items.push({
-          id: docId,
-          title: data.title || 'Global Announcement',
-          message: data.message || '',
-          active: data.active !== false,
-          severity: data.severity || 'info',
-          audience: data.audience || 'all',
-          targetDepartment: data.targetDepartment,
-          targetLevel: data.targetLevel,
-          ctaLabel: data.ctaLabel,
-          ctaUrl: data.ctaUrl,
-          createdAt: data.createdAt,
-          expiresAt: data.expiresAt,
-          publishedBy: data.publishedBy,
-          impressions: data.impressions || 0,
-          dismissalsCount: data.dismissalsCount || 0
-        });
-      });
-
-      // Sort newest first
-      items.sort((a, b) => (b.id > a.id ? 1 : -1));
-      setAnnouncements(items);
-    }, (error) => {
-      console.error("GlobalNotification: Listener error for announcements collection:", error);
-    });
-
-    return () => unsub();
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+    };
   }, [user, profile]);
 
-  // Wait until user dismissals are fully loaded to prevent banner flash/flicker on login
+  // Wait until user dismissals are fully loaded
   if (loadingDismissals || !user) {
     return null;
   }
@@ -140,7 +136,7 @@ export default function GlobalNotification() {
     return null;
   }
 
-  // Handle server-side dismissal write with error handling
+  // Handle server-side dismissal write to Neon
   const handleDismiss = async () => {
     if (isDismissing) return;
     setIsDismissing(true);
@@ -151,29 +147,28 @@ export default function GlobalNotification() {
     setDismissedIds(prev => new Set(prev).add(announcementId));
 
     try {
-      if (db && user) {
-        // Write to user's subcollection: users/{uid}/dismissals/{announcementId}
-        const dismissalRef = doc(db, 'users', user.uid, 'dismissals', announcementId);
-        await setDoc(dismissalRef, {
-          announcementId,
-          dismissedAt: serverTimestamp()
+      if (user) {
+        const token = await user.getIdToken(false);
+        const res = await fetch('/api/user/announcements/dismiss', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ announcementId })
         });
-
-        // Increment dismissalsCount metric on announcement document
-        const announcementRef = doc(db, 'announcements', announcementId);
-        updateDoc(announcementRef, {
-          dismissalsCount: increment(1)
-        }).catch(() => {});
+        if (!res.ok) {
+          throw new Error('Dismissal endpoint returned error');
+        }
       }
     } catch (err: any) {
-      console.error("GlobalNotification: Failed to save dismissal server-side:", err);
-      // Revert optimistic update and inform user
+      console.warn("GlobalNotification: Failed to save dismissal server-side:", err);
       setDismissedIds(prev => {
         const next = new Set(prev);
         next.delete(announcementId);
         return next;
       });
-      toast.error("Could not save announcement dismissal. Please try again.");
+      toast.error("Could not dismiss banner permanently. Please try again.");
     } finally {
       setIsDismissing(false);
     }

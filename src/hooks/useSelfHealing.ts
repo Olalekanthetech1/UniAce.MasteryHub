@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useProgressStore } from '../lib/progressStore';
 import { useAuth } from '../context/AuthContext';
-import { db } from '../firebase';
-import { doc, getDocFromServer, setDoc } from 'firebase/firestore';
 import { useNotifications } from './useNotifications';
 import { LogService } from '../services/logService';
 import { GamificationService, BADGES } from '../services/gamification';
@@ -115,11 +113,13 @@ export function useSelfHealing() {
     console.warn(`[Self-Healing] State corruption/stalled progress detected. Reason: ${reason}. Initiating repair...`);
     
     try {
-      // 1. Silent re-sync with authoritative Firestore server data (bypass cache)
-      const userDocRef = doc(db, 'users', user.uid);
-      const docSnap = await getDocFromServer(userDocRef);
-      
-      const serverData = docSnap.exists() ? (docSnap.data() as Partial<UserProgress>) : {};
+      // 1. Silent re-sync with authoritative Neon server data via bootstrap endpoint
+      const token = await user.getIdToken(false);
+      const bootstrapRes = await fetch('/api/user/bootstrap', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const bootstrapJson = bootstrapRes.ok ? await bootstrapRes.json() : null;
+      const serverData = (bootstrapJson?.profile as Partial<UserProgress>) || {};
       
       // 2. Perform advanced data cleaning & repairs
       const repairedXp = Math.max(0, serverData.xp ?? progress.xp ?? 0);
@@ -239,12 +239,12 @@ export function useSelfHealing() {
         ai_sparks, ...allowedProgress 
       } = repairedProgress as any;
 
-      const token = await user.getIdToken(false);
+      const syncToken = await user.getIdToken(false);
       await fetch('/api/user/profile', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          'Authorization': `Bearer ${syncToken}`
         },
         body: JSON.stringify(allowedProgress)
       }).catch(() => {});

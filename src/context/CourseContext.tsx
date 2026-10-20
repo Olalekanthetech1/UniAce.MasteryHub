@@ -1,13 +1,12 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { Course, CourseId } from '../types';
-import { db } from '../firebase';
-import { collection, getDocs, onSnapshot } from 'firebase/firestore';
 import { useAuth } from './AuthContext';
-import { sortCourseSyllabus } from '../shared/courseSchemas';
+import { CourseService } from '../services/courseService';
 
 interface CourseContextType {
   courses: Record<string, Course>;
   loading: boolean;
+  error: string | null;
   refreshCourses: () => Promise<void>;
 }
 
@@ -16,127 +15,98 @@ const CourseContext = createContext<CourseContextType | undefined>(undefined);
 export function CourseProvider({ children }: { children: React.ReactNode }) {
   const [courses, setCourses] = useState<Record<string, Course>>({});
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const { user } = useAuth();
 
-  const fetchCourses = async () => {
-    // This is kept for backward compatibility if components call refreshCourses manually
-    // but the real-time listener handles the actual state updates.
-    if (!db) return;
-    try {
-      const querySnapshot = await getDocs(collection(db, 'courses'));
-      if (!querySnapshot.empty) {
-        const firestoreCourses: Record<string, Course> = {};
-        querySnapshot.forEach((docSnap: any) => {
-          const data = docSnap.data() as Course & { deleted?: boolean };
-          const courseId = docSnap.id;
-          data.id = courseId as CourseId;
-          if (!data.deleted) {
-            if (Array.isArray(data.syllabus)) {
-              data.syllabus = sortCourseSyllabus(data.syllabus);
-            }
-            firestoreCourses[courseId] = data;
-          }
-        });
-        setCourses(firestoreCourses);
-      }
-    } catch (error) {
-      console.error("Error manually fetching courses:", error);
-    }
-  };
+  const coursesRef = useRef<Record<string, Course>>({});
+  coursesRef.current = courses;
 
-  useEffect(() => {
-    if (!db) {
-      console.warn("Firestore not initialized");
-      setCourses({});
-      setLoading(false);
+  const inFlightRef = useRef(false);
+  const lastFetchTimeRef = useRef(0);
+
+  const fetchCatalog = useCallback(async (isManualRetry = false) => {
+    if (inFlightRef.current) return;
+
+    const now = Date.now();
+    // Enforce 60s minimum interval for automatic background refetches
+    if (!isManualRetry && now - lastFetchTimeRef.current < 60000 && Object.keys(coursesRef.current).length > 0) {
       return;
     }
 
-    // Only set up listener if user is authenticated (or if we want to allow public read, we can do it anyway, but depending on user ensures we retry after auth)
-    console.log(`CourseContext: Setting up real-time listener for courses...`);
-    setLoading(true);
+    inFlightRef.current = true;
+    
+    // Set loading only when courses is empty
+    if (Object.keys(coursesRef.current).length === 0) {
+      setLoading(true);
+    }
+    setError(null);
 
-    const unsubscribe = onSnapshot(
-      collection(db, 'courses'),
-      (querySnapshot) => {
-        if (querySnapshot.empty) {
-          console.log("No courses in Firestore");
-          setCourses({});
-        } else {
-          const firestoreCourses: Record<string, Course> = {};
-          const hydrationPromises: Promise<void>[] = [];
-
-          querySnapshot.forEach((docSnap: any) => {
-            const data = docSnap.data() as Course & { deleted?: boolean; department?: string };
-            const courseId = docSnap.id;
-            data.id = courseId as CourseId;
-
-            if (!data.deleted) {
-              if (!data.scope) data.scope = 'DEPARTMENT';
-              if (!data.faculties) data.faculties = [];
-              if (!data.departments || data.departments.length === 0) {
-                data.departments = (data as any).department ? [(data as any).department as any] : [];
-              }
-              if (!data.level) data.level = '100';
-              if (!data.semester) data.semester = '1st Semester';
-              if (Array.isArray(data.syllabus)) {
-                data.syllabus = sortCourseSyllabus(data.syllabus);
-              }
-              
-              firestoreCourses[courseId] = data;
-
-              // Fallback: If syllabus is missing or empty, hydrate from subcollections
-              if (!data.syllabus || data.syllabus.length === 0) {
-                const promise = (async () => {
-                  try {
-                    const { CourseService } = await import('../services/courseService');
-                    const modules = await CourseService.getModules(courseId);
-                    if (modules && modules.length > 0) {
-                      const populatedModules = await Promise.all(
-                        modules.map(async (mod) => {
-                          const lessons = await CourseService.getLessons(courseId, mod.id);
-                          return {
-                            id: mod.id,
-                            title: mod.title,
-                            subTopics: lessons || []
-                          };
-                        })
-                      );
-                      firestoreCourses[courseId].syllabus = sortCourseSyllabus(populatedModules);
-                    }
-                  } catch (hErr) {
-                    console.warn(`Failed hydrating subcollection syllabus for ${courseId}:`, hErr);
-                  }
-                })();
-                hydrationPromises.push(promise);
-              }
-            }
-          });
-
-          if (hydrationPromises.length > 0) {
-            Promise.all(hydrationPromises).then(() => {
-              setCourses({ ...firestoreCourses });
-            });
-          }
-
-          setCourses(firestoreCourses);
-          console.log("CourseContext: Courses synced successfully");
+    try {
+      let token: string | undefined;
+      if (user) {
+        try {
+          token = await user.getIdToken();
+        } catch {
+          // Token fetch error handled gracefully
         }
-        setLoading(false);
-      },
-      (error) => {
-        console.error("Error syncing courses:", error);
-        setCourses({});
-        setLoading(false);
       }
-    );
 
-    return () => unsubscribe();
-  }, [user]); // Re-run when user changes (e.g., signs in)
+      const catalogList = await CourseService.getFullCatalog(token);
+      const courseMap: Record<string, Course> = {};
+      for (const c of catalogList) {
+        courseMap[c.id] = c;
+      }
+
+      setCourses(courseMap);
+      setError(null);
+      lastFetchTimeRef.current = Date.now();
+    } catch (err: any) {
+      console.error('[CourseContext] Failed to load catalog:', err);
+      // Only surface blocking error if we don't have cached courses
+      if (Object.keys(coursesRef.current).length === 0) {
+        setError(err.message || 'Failed to connect to course catalog');
+      }
+    } finally {
+      inFlightRef.current = false;
+      setLoading(false);
+    }
+  }, [user]);
+
+  // Initial fetch on mount or user/auth change
+  useEffect(() => {
+    fetchCatalog();
+  }, [user?.uid, fetchCatalog]);
+
+  // Window focus refetch with 60s throttling
+  useEffect(() => {
+    const handleFocus = () => {
+      fetchCatalog();
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, [fetchCatalog]);
 
   return (
-    <CourseContext.Provider value={{ courses, loading, refreshCourses: fetchCourses }}>
-      {children}
+    <CourseContext.Provider value={{ courses, loading, error, refreshCourses: () => fetchCatalog(true) }}>
+      {error && Object.keys(courses).length === 0 ? (
+        <div className="min-h-screen bg-slate-900 text-white flex flex-col items-center justify-center p-6 text-center">
+          <div className="w-16 h-16 bg-red-500/10 border border-red-500/30 rounded-2xl flex items-center justify-center text-red-400 mb-4 text-2xl font-bold">
+            !
+          </div>
+          <h2 className="text-xl font-bold mb-2">Unable to Load Course Catalog</h2>
+          <p className="text-slate-400 max-w-md mb-6 text-sm">
+            {error}
+          </p>
+          <button
+            onClick={() => fetchCatalog(true)}
+            className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-xl transition-all shadow-lg shadow-blue-500/20 active:scale-95 cursor-pointer"
+          >
+            Retry Connection
+          </button>
+        </div>
+      ) : (
+        children
+      )}
     </CourseContext.Provider>
   );
 }

@@ -5,8 +5,6 @@ import { motion, AnimatePresence } from 'motion/react';
 // @ts-ignore
 import PaystackPop from '@paystack/inline-js';
 import { PricingService, PricingPlan, DEFAULT_PRICING_PLANS } from '../services/pricingConfig';
-import { db } from '../firebase';
-import { doc, onSnapshot } from 'firebase/firestore';
 
 export default function PricingPage() {
   const { user, profile } = useAuth();
@@ -23,24 +21,31 @@ export default function PricingPage() {
         setPlans(config.plans.filter(p => p.enabled !== false));
       }
     });
-    let unsubPolicy = () => {};
-    if (db) {
-      unsubPolicy = onSnapshot(
-        doc(db, 'system_config', 'evaluation_policy'),
-        (snap) => {
-          if (snap.exists()) {
-            const val = snap.data()?.dailyFreeSparks;
-            setDailyFreeSparks(typeof val === 'number' && val > 0 ? val : null);
-          } else {
-            setDailyFreeSparks(null);
-          }
-        },
-        () => setDailyFreeSparks(null)
-      );
-    }
+
+    let isMounted = true;
+    const fetchPolicy = async () => {
+      try {
+        const res = await fetch('/api/system/config/evaluation_policy');
+        if (res.ok && isMounted) {
+          const json = await res.json();
+          const val = json.data?.dailyFreeSparks;
+          setDailyFreeSparks(typeof val === 'number' && val > 0 ? val : null);
+        }
+      } catch {
+        if (isMounted) setDailyFreeSparks(null);
+      }
+    };
+
+    fetchPolicy();
+    const interval = setInterval(fetchPolicy, 60000);
+    const onFocus = () => { fetchPolicy(); };
+    window.addEventListener('focus', onFocus);
+
     return () => {
+      isMounted = false;
       unsubscribe();
-      unsubPolicy();
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
     };
   }, []);
 

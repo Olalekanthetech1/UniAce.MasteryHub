@@ -1,17 +1,4 @@
-import { 
-  doc, 
-  setDoc, 
-  deleteDoc, 
-  getDoc, 
-  getDocs, 
-  collection, 
-  query, 
-  where, 
-  onSnapshot, 
-  serverTimestamp 
-} from 'firebase/firestore';
-import { db, auth } from '../firebase';
-import { MessageReaction } from '../types';
+import { auth } from '../firebase';
 
 export interface ReactionState {
   tallies: { [emoji: string]: number };
@@ -19,9 +6,7 @@ export interface ReactionState {
 }
 
 /**
- * Toggles a reaction for a given message and student.
- * Persists to Firestore doc: `message_reactions/${messageId}_${userId}_${encodeURIComponent(emoji)}`
- * And updates/syncs with backend API.
+ * Toggles a reaction for a given message and student via Neon API.
  */
 export async function toggleMessageReaction(
   messageId: string,
@@ -33,91 +18,36 @@ export async function toggleMessageReaction(
     throw new Error('Message ID, emoji, and User ID are required to react.');
   }
 
-  // Sanitize doc ID for firestore
-  const cleanEmojiCode = encodeURIComponent(emoji);
-  const reactionDocId = `${messageId}_${userId}_${cleanEmojiCode}`;
-  const reactionRef = doc(db, 'message_reactions', reactionDocId);
-
-  try {
-    const existingSnap = await getDoc(reactionRef);
-    let isActive = false;
-
-    if (existingSnap.exists()) {
-      // Remove reaction
-      await deleteDoc(reactionRef);
-      isActive = false;
-    } else {
-      // Add reaction
-      await setDoc(reactionRef, {
+  if (auth.currentUser) {
+    const token = await auth.currentUser.getIdToken();
+    const res = await fetch('/api/chat/reaction', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
         messageId,
-        userId,
         emoji,
-        courseId: courseId || null,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
-      isActive = true;
+        action: 'toggle',
+        courseId
+      })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return {
+        active: Boolean(data.active),
+        tallies: data.tallies || {},
+        userReactions: data.userReactions || []
+      };
     }
-
-    // Also notify server endpoint in background for analytics & cache sync
-    if (auth.currentUser) {
-      auth.currentUser.getIdToken().then(token => {
-        fetch('/api/chat/reaction', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({
-            messageId,
-            emoji,
-            action: isActive ? 'add' : 'remove',
-            courseId
-          })
-        }).catch(err => console.warn('Server reaction sync notice:', err));
-      }).catch(() => {});
-    }
-
-    // Fetch updated tallies
-    const current = await getMessageReactions(messageId, userId);
-    return {
-      active: isActive,
-      tallies: current.tallies,
-      userReactions: current.userReactions
-    };
-  } catch (error) {
-    console.error('Error in toggleMessageReaction:', error);
-    // Fallback via server API
-    if (auth.currentUser) {
-      const token = await auth.currentUser.getIdToken();
-      const res = await fetch('/api/chat/reaction', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          messageId,
-          emoji,
-          action: 'toggle',
-          courseId
-        })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        return {
-          active: data.active,
-          tallies: data.tallies || {},
-          userReactions: data.userReactions || []
-        };
-      }
-    }
-    throw error;
   }
+
+  return { active: false, tallies: {}, userReactions: [] };
 }
 
 /**
- * Retrieves all reactions for a given message ID and current user.
+ * Retrieves all reactions for a given message ID and current user via Neon API.
  */
 export async function getMessageReactions(
   messageId: string, 
@@ -128,35 +58,28 @@ export async function getMessageReactions(
   }
 
   try {
-    const q = query(
-      collection(db, 'message_reactions'), 
-      where('messageId', '==', messageId)
-    );
-    const snap = await getDocs(q);
+    const token = auth.currentUser ? await auth.currentUser.getIdToken() : null;
+    if (!token) return { tallies: {}, userReactions: [] };
 
-    const tallies: { [emoji: string]: number } = {};
-    const userReactions: string[] = [];
-
-    snap.forEach(docSnap => {
-      const data = docSnap.data() as MessageReaction;
-      const emoji = data.emoji;
-      if (emoji) {
-        tallies[emoji] = (tallies[emoji] || 0) + 1;
-        if (userId && data.userId === userId && !userReactions.includes(emoji)) {
-          userReactions.push(emoji);
-        }
-      }
+    const res = await fetch(`/api/chat/reactions?messageId=${encodeURIComponent(messageId)}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
     });
-
-    return { tallies, userReactions };
+    if (res.ok) {
+      const data = await res.json();
+      return {
+        tallies: data.tallies || {},
+        userReactions: data.userReactions || []
+      };
+    }
   } catch (error) {
-    console.warn('Error fetching message reactions from Firestore:', error);
-    return { tallies: {}, userReactions: [] };
+    console.warn('Error fetching message reactions via API:', error);
   }
+
+  return { tallies: {}, userReactions: [] };
 }
 
 /**
- * Real-time listener for reactions on a specific message.
+ * Polling subscription for reactions on a specific message.
  */
 export function subscribeToMessageReactions(
   messageId: string,
@@ -168,33 +91,18 @@ export function subscribeToMessageReactions(
     return () => {};
   }
 
-  try {
-    const q = query(
-      collection(db, 'message_reactions'),
-      where('messageId', '==', messageId)
-    );
+  let isActive = true;
+  const poll = async () => {
+    if (!isActive) return;
+    const res = await getMessageReactions(messageId, userId);
+    if (isActive) callback(res);
+  };
 
-    return onSnapshot(q, (snapshot) => {
-      const tallies: { [emoji: string]: number } = {};
-      const userReactions: string[] = [];
+  poll();
+  const interval = setInterval(poll, 10000);
 
-      snapshot.forEach(docSnap => {
-        const data = docSnap.data() as MessageReaction;
-        const emoji = data.emoji;
-        if (emoji) {
-          tallies[emoji] = (tallies[emoji] || 0) + 1;
-          if (userId && data.userId === userId && !userReactions.includes(emoji)) {
-            userReactions.push(emoji);
-          }
-        }
-      });
-
-      callback({ tallies, userReactions });
-    }, (err) => {
-      console.warn('Message reactions onSnapshot error:', err);
-    });
-  } catch (err) {
-    console.warn('Failed to subscribe to message reactions:', err);
-    return () => {};
-  }
+  return () => {
+    isActive = false;
+    clearInterval(interval);
+  };
 }

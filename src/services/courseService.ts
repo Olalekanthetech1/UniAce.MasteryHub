@@ -39,43 +39,96 @@ export const sanitizeForFirestore = (obj: any): any => {
 };
 
 export const CourseService = {
-  async getCourse(courseId: string): Promise<Course | null> {
-    let retries = 3;
-    while (retries > 0) {
+  async getFullCatalog(idToken?: string): Promise<Course[]> {
+    const headers: Record<string, string> = {};
+    if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+    const res = await fetch('/api/catalog/full', { headers });
+    if (!res.ok) {
+      let details = `HTTP ${res.status}: ${res.statusText || 'Server Error'}`;
       try {
-        const courseDoc = await getDoc(doc(db, 'courses', courseId));
-        if (courseDoc.exists()) {
-          const data = courseDoc.data();
-          if (Array.isArray(data.syllabus)) {
-            data.syllabus = sortCourseSyllabus(data.syllabus);
-          }
-          return { id: courseDoc.id, ...data } as Course;
+        const errData = await res.json();
+        if (errData.message || errData.error) {
+          details = `HTTP ${res.status}: ${errData.message || errData.error}`;
         }
-        return null;
-      } catch (error: any) {
-        if (error.message?.includes('timeout') && retries > 1) {
-          retries--;
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          continue;
-        }
-        throw error;
-      }
+      } catch {}
+      throw new Error(`Failed to fetch catalog (${details})`);
     }
-    return null;
+    const data = await res.json();
+    return (data.courses || []).map((c: any) => ({
+      id: c.id,
+      title: c.title,
+      description: c.description || '',
+      department: c.department || '',
+      faculty: c.faculty || '',
+      faculties: c.faculties || (c.faculty ? [c.faculty] : []),
+      departments: c.departments || (c.department ? [c.department] : []),
+      level: (c.level || '100') as any,
+      semester: (c.semester === 'second' ? '2nd Semester' : '1st Semester') as any,
+      scope: c.scope || 'DEPARTMENT',
+      status: c.status,
+      syllabus: Array.isArray(c.syllabus) ? sortCourseSyllabus(c.syllabus) : []
+    }));
+  },
+
+  async getCourse(courseId: string): Promise<Course | null> {
+    const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}`);
+    if (res.status === 404) {
+      return null;
+    }
+    if (!res.ok) {
+      throw new Error(`Failed to fetch course ${courseId} (HTTP ${res.status}: ${res.statusText})`);
+    }
+    const data = await res.json();
+    if (!data.course) return null;
+    const c = data.course;
+    return {
+      id: c.id,
+      title: c.title,
+      description: c.description || '',
+      department: c.department || '',
+      faculty: c.faculty || '',
+      faculties: c.faculty ? [c.faculty] : [],
+      departments: c.department ? [c.department] : [],
+      level: (c.level || '100') as any,
+      semester: (c.semester === 'second' ? '2nd Semester' : '1st Semester') as any,
+      scope: c.scope || 'DEPARTMENT',
+      status: c.status,
+      syllabus: Array.isArray(c.syllabus) ? sortCourseSyllabus(c.syllabus) : []
+    };
   },
 
   async getModules(courseId: string): Promise<Module[]> {
-    const modulesSnap = await getDocs(query(collection(db, `courses/${courseId}/modules`), orderBy('order')));
-    return modulesSnap.docs
-      .map(doc => ({ id: doc.id, ...doc.data() } as Module))
-      .sort((a, b) => getModuleOrderIndex(a) - getModuleOrderIndex(b));
+    const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}/modules`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch modules for course ${courseId} (HTTP ${res.status}: ${res.statusText})`);
+    }
+    const data = await res.json();
+    if (!Array.isArray(data.modules)) {
+      return [];
+    }
+    return data.modules.map((m: any) => ({
+      id: m.id,
+      title: m.title,
+      subTopics: [],
+      order: m.order_index
+    })).sort((a: any, b: any) => getModuleOrderIndex(a) - getModuleOrderIndex(b));
   },
 
   async getLessons(courseId: string, moduleId: string): Promise<SubTopic[]> {
-    const lessonsSnap = await getDocs(query(collection(db, `courses/${courseId}/modules/${moduleId}/lessons`), orderBy('order')));
-    return lessonsSnap.docs
-      .map(doc => ({ id: doc.id, ...doc.data() } as SubTopic))
-      .sort((a, b) => getLessonOrderIndex(a) - getLessonOrderIndex(b));
+    const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}/modules/${encodeURIComponent(moduleId)}/lessons`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch lessons for ${courseId}/${moduleId} (HTTP ${res.status}: ${res.statusText})`);
+    }
+    const data = await res.json();
+    if (!Array.isArray(data.lessons)) {
+      return [];
+    }
+    return data.lessons.map((l: any) => ({
+      id: l.id,
+      title: l.title,
+      content: l.content_markdown || l.content || '',
+      order: l.order_index
+    })).sort((a: any, b: any) => getLessonOrderIndex(a) - getLessonOrderIndex(b));
   },
 
   async getQuiz(courseId: string, moduleId: string): Promise<Quiz | null> {
@@ -87,6 +140,25 @@ export const CourseService = {
   },
 
   async getFormulas(courseId: string): Promise<Formula[]> {
+    try {
+      const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}/formulas`);
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.formulas) && data.formulas.length > 0) {
+          return data.formulas.map((f: any) => ({
+            id: f.id,
+            name: f.name,
+            latex: f.latex_expression || f.latex || '',
+            description: f.derivation_notes || f.description || '',
+            category: f.category || 'General',
+            variables: f.variables_breakdown
+          }));
+        }
+      }
+    } catch {
+      // Transparent failover to Firestore
+    }
+
     const formulasSnap = await getDocs(collection(db, `courses/${courseId}/formulas`));
     return formulasSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Formula));
   },

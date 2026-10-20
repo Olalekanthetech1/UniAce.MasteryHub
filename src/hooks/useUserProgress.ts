@@ -1,8 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { UserProgress, Achievement, Bookmark, CourseId, AIPersonality, Department } from '../types';
 import { useAuth } from '../context/AuthContext';
-import { db } from '../firebase';
-import { doc, setDoc, onSnapshot, getDoc, updateDoc, arrayUnion, arrayRemove, increment } from 'firebase/firestore';
 import { GamificationService, BADGES } from '../services/gamification';
 import { useCourses } from '../context/CourseContext';
 import { DEPARTMENT_TO_FACULTY } from '../constants';
@@ -277,15 +275,16 @@ export function useUserProgress() {
         activeListenerUnsubscribe();
       }
       activeListenerUid = user.uid;
-      const userDocRef = doc(db, 'users', user.uid);
-
-      activeListenerUnsubscribe = onSnapshot(
-        userDocRef,
-        (docSnap) => {
-          hasInitialSyncRef.current = true;
-          hasCompletedInitialServerSync = true;
-          if (docSnap.exists()) {
-            const serverData = docSnap.data() as UserProgress;
+      let isMounted = true;
+      const fetchInitialProgress = async () => {
+        try {
+          const token = await user.getIdToken();
+          const res = await fetch('/api/user/bootstrap', {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          if (res.ok && isMounted) {
+            const data = await res.json();
+            const serverData = data.profile || {};
             setProgress(prev => {
               const mergedData = mergeProgress(prev, {
                 ...INITIAL_PROGRESS,
@@ -305,13 +304,16 @@ export function useUserProgress() {
               return prev;
             });
           }
-        },
-        (error) => {
+        } catch (e) {
+          console.warn('Initial progress sync via bootstrap fallback:', e);
+        } finally {
           hasInitialSyncRef.current = true;
           hasCompletedInitialServerSync = true;
-          console.error('Error syncing user progress:', error);
         }
-      );
+      };
+
+      fetchInitialProgress();
+      activeListenerUnsubscribe = () => { isMounted = false; };
 
       // Replay any unacknowledged durable batch from a prior tab session
       const pendingStorageKey = `uniace_pending_progress_batch_v1_${user.uid}`;

@@ -8,9 +8,8 @@ import { useTheme } from '../context/ThemeContext';
 import { usePremiumStatus } from '../hooks/usePremiumStatus';
 import { getModuleIcon, getCleanModuleTitle } from '../utils/moduleIcons';
 import { useState, useEffect } from 'react';
-import { doc, onSnapshot } from 'firebase/firestore';
-import { db } from '../firebase';
 import { UniAceLogo } from './UniAceLogo';
+import { useFeatureSwitches } from '../hooks/useFeatureSwitches';
 
 interface SidebarProps {
   activeModuleId: string;
@@ -48,6 +47,7 @@ export default function Sidebar({
   onToggleCalculator
 }: SidebarProps) {
   const { user, profile, signInWithGoogle, logout } = useAuth();
+  const { switches } = useFeatureSwitches();
   const { theme: appTheme, toggleTheme } = useTheme();
   const { isPremium, isTrialActive } = usePremiumStatus();
   const isAdmin = Boolean(user && profile?.role === 'admin');
@@ -242,17 +242,19 @@ export default function Sidebar({
                   <span className="text-[10px] font-medium">Quizzes</span>
                 </button>
 
-                <button
-                  onClick={() => onViewSelect('arena')}
-                  className={`flex flex-col items-center justify-center gap-1.5 p-2.5 rounded-xl transition-all ${
-                    activeView === 'arena'
-                      ? 'bg-zinc-800 text-white'
-                      : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/50'
-                  }`}
-                >
-                  <Swords size={18} />
-                  <span className="text-[10px] font-medium">Arena</span>
-                </button>
+                {switches.arena && (
+                  <button
+                    onClick={() => onViewSelect('arena')}
+                    className={`flex flex-col items-center justify-center gap-1.5 p-2.5 rounded-xl transition-all ${
+                      activeView === 'arena'
+                        ? 'bg-zinc-800 text-white'
+                        : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/50'
+                    }`}
+                  >
+                    <Swords size={18} />
+                    <span className="text-[10px] font-medium">Arena</span>
+                  </button>
+                )}
 
                 <button
                   onClick={() => onViewSelect('ai-tutor')}

@@ -1,6 +1,4 @@
 import { UserProgress, Achievement, LeaderboardEntry } from '../types';
-import { collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
-import { db } from '../firebase';
 
 export const LEVELS = [
   { level: 1, xp: 0, title: 'Novice' },
@@ -114,64 +112,23 @@ export class GamificationService {
 
   static async getLeaderboard(): Promise<LeaderboardEntry[]> {
     try {
-      const q = query(collection(db, 'public_leaderboard'), orderBy('xp', 'desc'), limit(10));
-      const querySnapshot = await getDocs(q);
-      
-      if (!querySnapshot.empty) {
-        const leaderboard: LeaderboardEntry[] = [];
-        let rank = 1;
-
-        querySnapshot.forEach((doc) => {
-          const data = doc.data();
-          leaderboard.push({
-            userId: doc.id,
-            displayName: data.displayName || 'Anonymous Scholar',
-            photoURL: data.photoURL || '',
-            xp: data.xp || 0,
-            rank: rank++,
-            streak: data.streak || 0,
-          });
-        });
-
-        return leaderboard;
-      }
-
-      // Fallback to backend API
-      const res = await fetch('/api/leaderboard');
+      const res = await fetch('/api/gamification/leaderboard');
       if (res.ok) {
         const json = await res.json();
-        if (json.leaders && json.leaders.length > 0) {
-          return json.leaders.map((l: any, idx: number) => ({
-            userId: l.uid,
-            displayName: l.displayName || 'Scholar',
-            photoURL: l.photoURL || '',
+        if (json.leaderboard) {
+          return json.leaderboard.map((l: any, idx: number) => ({
+            userId: l.id,
+            displayName: l.name || 'Scholar',
+            photoURL: l.avatar || '',
             xp: l.xp || 0,
-            rank: idx + 1,
+            rank: l.rank || (idx + 1),
             streak: l.streak || 0,
           }));
         }
       }
       return [];
     } catch (error) {
-      console.error('Error fetching leaderboard from public_leaderboard:', error);
-      try {
-        const res = await fetch('/api/leaderboard');
-        if (res.ok) {
-          const json = await res.json();
-          if (json.leaders) {
-            return json.leaders.map((l: any, idx: number) => ({
-              userId: l.uid,
-              displayName: l.displayName || 'Scholar',
-              photoURL: l.photoURL || '',
-              xp: l.xp || 0,
-              rank: idx + 1,
-              streak: l.streak || 0,
-            }));
-          }
-        }
-      } catch (fallbackErr) {
-        console.error('Fallback leaderboard error:', fallbackErr);
-      }
+      console.error('Error fetching leaderboard:', error);
       return [];
     }
   }

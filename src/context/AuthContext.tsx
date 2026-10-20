@@ -9,10 +9,9 @@ import {
   createUserWithEmailAndPassword,
   updateProfile 
 } from "firebase/auth";
-import { doc, getDoc, setDoc, serverTimestamp, onSnapshot } from "firebase/firestore";
 import { getToken } from "firebase/messaging";
 import toast from "react-hot-toast";
-import { auth, db, messaging } from "../firebase";
+import { auth, messaging } from "../firebase";
 import { LogService } from "../services/logService";
 import { PlanType } from "../types";
 
@@ -109,25 +108,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const syncUserProfile = async (currentUser: User) => {
-    if (!db) return;
     console.log("AuthContext: Syncing user profile for", currentUser.uid);
     const cachedProfile = loadCachedProfile(currentUser.uid);
 
     try {
-      const userRef = doc(db, "users", currentUser.uid);
-      
-      let userDoc: any = { exists: () => false, data: () => ({}) };
-      try {
-        const userDocPromise = getDoc(userRef);
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error("Firestore getDoc timeout")), 6000)
-        );
-        userDoc = await Promise.race([userDocPromise, timeoutPromise]) as any;
-      } catch (docErr) {
-        console.warn("AuthContext: Client getDoc fallback to backend/cached profile:", docErr);
-      }
-
-      const firestoreData: Record<string, any> = userDoc.exists() ? (userDoc.data() || {}) : {};
+      const firestoreData: Record<string, any> = {};
       let backendProfile: Record<string, any> | null = null;
 
       let userRole: 'student' | 'admin' | 'tutor' | 'moderator' = firestoreData.role || cachedProfile?.role || 'student';
@@ -220,7 +205,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         referralCode = currentUser.uid.substring(0, 6).toUpperCase();
       }
 
-      if (!userDoc.exists() && !referredBy) {
+      if (!backendProfile && !referredBy) {
         const storedRef = sessionStorage.getItem('ref_code');
         if (storedRef) {
           referredBy = storedRef;
@@ -273,7 +258,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         learningProfile: mergedSource.learningProfile,
         has_seen_whatsapp: mergedSource.has_seen_whatsapp !== undefined
           ? Boolean(mergedSource.has_seen_whatsapp)
-          : (userDoc.exists() ? true : false),
+          : (backendProfile ? true : false),
         onboarding_completed: resolvedOnboardingCompleted,
         referralCode,
         referredBy,
@@ -311,7 +296,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const dataToSave: any = {
         ...profileData,
-        lastActive: serverTimestamp(),
+        lastActive: new Date().toISOString(),
         sessionId: currentSessionId,
       };
       
@@ -332,52 +317,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       protectedFields.forEach(field => delete dataToSave[field]);
       Object.keys(dataToSave).forEach(key => dataToSave[key] === undefined && delete dataToSave[key]);
 
-      const docExistsOnServer = userDoc.exists() || Boolean(backendProfile);
-      if (!docExistsOnServer) {
-        try {
-          await Promise.race([
-            setDoc(userRef, dataToSave, { merge: true }),
-            new Promise((resolve) => setTimeout(resolve, 2500))
-          ]);
-          activeSessionIdRef.current = currentSessionId;
-        } catch (err) {
-          console.warn("Skipping initial client profile write (handled by backend):", err);
-        }
-      } else {
-        const existingSessionId = firestoreData.sessionId || backendProfile?.sessionId;
-        if (!existingSessionId) {
-          activeSessionIdRef.current = currentSessionId;
-          setDoc(userRef, { sessionId: currentSessionId }, { merge: true }).catch(() => {});
-        } else {
-          activeSessionIdRef.current = existingSessionId;
-          try {
-            localStorage.setItem('uniace_session_id', existingSessionId);
-          } catch {}
-        }
-      }
+      activeSessionIdRef.current = backendProfile?.sessionId || currentSessionId;
+      try {
+        localStorage.setItem('uniace_session_id', activeSessionIdRef.current);
+      } catch {}
 
       saveCachedProfile(currentUser.uid, profileData);
       setProfile(profileData);
       console.log("AuthContext: Profile synced successfully");
-      
-      // Handle FCM Token in background
-      (async () => {
-        try {
-          if ('Notification' in window && Notification.permission === 'granted') {
-            const msg = await messaging();
-            if (msg) {
-              const token = await getToken(msg, {
-                vapidKey: import.meta.env.VITE_FIREBASE_VAPID_KEY || 'YOUR_PUBLIC_VAPID_KEY'
-              });
-              if (token && firestoreData.fcmToken !== token && backendProfile?.fcmToken !== token) {
-                await setDoc(userRef, { fcmToken: token }, { merge: true });
-              }
-            }
-          }
-        } catch (err) {
-          console.log("FCM not supported or permission denied", err);
-        }
-      })();
     } catch (error) {
       console.error("Error syncing user profile:", error);
       if (!profile) {
@@ -445,55 +392,41 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           await syncUserProfile(currentUser);
           
           if (isMounted) {
-            profileUnsubscribe = onSnapshot(doc(db, "users", currentUser.uid), (docSnap) => {
-              if (docSnap.exists() && isMounted) {
-                const data = docSnap.data() as UserProfile;
-                
-                if (activeSessionIdRef.current && 
-                    data.sessionId && 
-                    data.sessionId !== activeSessionIdRef.current && 
-                    data.sessionId !== currentSessionId) {
-                  console.warn("AuthContext: New session detected elsewhere. Logging out...");
-                  toast.error("Logged out: Your account is being used on another device.", {
-                    duration: 6000,
-                    icon: '🔒'
-                  });
-                  logout();
-                  return;
-                }
-
-                setProfile((prev) => {
-                  if (!prev) return prev;
-                  const prevTime = prev.updatedAt ? Date.parse(prev.updatedAt) || 0 : 0;
-                  const snapTime = data.updatedAt ? Date.parse(data.updatedAt) || 0 : 0;
-                  const keepPrevEditable = prevTime > snapTime;
-
-                  const nextProfile: UserProfile = {
-                    ...prev,
-                    ...data,
-                    displayName: keepPrevEditable ? (prev.displayName || data.displayName) : (data.displayName || prev.displayName),
-                    bio: keepPrevEditable ? (prev.bio ?? data.bio) : (data.bio ?? prev.bio),
-                    photoURL: keepPrevEditable ? (prev.photoURL || data.photoURL) : (data.photoURL || prev.photoURL),
-                    themeColor: keepPrevEditable ? (prev.themeColor || data.themeColor) : (data.themeColor || prev.themeColor),
-                    department: keepPrevEditable ? (prev.department || data.department) : (data.department || prev.department),
-                    faculty: keepPrevEditable ? (prev.faculty || data.faculty) : (data.faculty || prev.faculty),
-                    academic_level: keepPrevEditable ? (prev.academic_level || data.academic_level) : (data.academic_level || prev.academic_level),
-                    semester: keepPrevEditable ? (prev.semester || data.semester) : (data.semester || prev.semester),
-                    onboarding_completed: keepPrevEditable
-                      ? (prev.onboarding_completed ?? data.onboarding_completed)
-                      : (data.onboarding_completed ?? prev.onboarding_completed),
-                    has_seen_whatsapp: keepPrevEditable
-                      ? (prev.has_seen_whatsapp ?? data.has_seen_whatsapp)
-                      : (data.has_seen_whatsapp ?? prev.has_seen_whatsapp),
-                    updatedAt: keepPrevEditable ? prev.updatedAt : (data.updatedAt || prev.updatedAt)
-                  };
-                  saveCachedProfile(currentUser.uid, nextProfile);
-                  return nextProfile;
+            // Check session on window focus / visibility change instead of Firestore onSnapshot
+            const checkSessionOnFocus = async () => {
+              if (!isMounted || !currentUser) return;
+              try {
+                const token = await currentUser.getIdToken();
+                const res = await fetch('/api/user/quota', {
+                  headers: { 'Authorization': `Bearer ${token}` },
+                  cache: 'no-store'
                 });
+                if (res.ok) {
+                  const data = await res.json();
+                  const backendSessionId = data.session_id || data.profile?.sessionId;
+                  if (activeSessionIdRef.current && 
+                      backendSessionId && 
+                      backendSessionId !== activeSessionIdRef.current && 
+                      backendSessionId !== currentSessionId) {
+                    console.warn("AuthContext: Remote session change detected. Logging out...");
+                    toast.error("Logged out: Your account is being used on another device.", {
+                      duration: 6000,
+                      icon: '🔒'
+                    });
+                    logout();
+                  }
+                }
+              } catch {
+                // Non-fatal network error
               }
-            }, (err) => {
-              console.error("AuthContext: Profile snapshot error", err);
-            });
+            };
+
+            window.addEventListener('focus', checkSessionOnFocus);
+            const intervalId = setInterval(checkSessionOnFocus, 90000);
+            profileUnsubscribe = () => {
+              window.removeEventListener('focus', checkSessionOnFocus);
+              clearInterval(intervalId);
+            };
           }
         } catch (err) {
           console.error("AuthContext: Error during auth state change handling", err);
@@ -518,7 +451,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const updateProfileData = async (data: Partial<UserProfile>) => {
-    if (!user || !profile || !db) return;
+    if (!user || !profile) return;
     const updatedAt = new Date().toISOString();
     const dataToSave: Record<string, any> = { ...data, updatedAt };
     Object.keys(dataToSave).forEach(key => dataToSave[key] === undefined && delete dataToSave[key]);
@@ -555,17 +488,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.warn("Backend profile sync warning:", apiErr);
     }
 
-    // 3. Only attempt direct client Firestore update if backend API sync was unavailable
     if (!backendSynced) {
-      try {
-        const userRef = doc(db, "users", user.uid);
-        await Promise.race([
-          setDoc(userRef, dataToSave, { merge: true }),
-          new Promise((resolve) => setTimeout(resolve, 2500))
-        ]);
-      } catch (error) {
-        console.warn("Client Firestore profile update deferred:", error);
-      }
+      console.warn("Backend profile sync queued locally.");
     }
   };
 

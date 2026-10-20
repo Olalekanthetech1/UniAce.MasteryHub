@@ -1,0 +1,1750 @@
+[
+  {
+    "courseId": "BIO101",
+    "moduleId": "animal-systems",
+    "moduleTitle": "6. ANIMAL FORM AND FUNCTION (SURVEY)",
+    "lessonCount": 1,
+    "lessons": [
+      {
+        "id": "6.1",
+        "title": "6.1 Organ Systems Overview"
+      }
+    ]
+  },
+  {
+    "courseId": "BIO101",
+    "moduleId": "biotechnology",
+    "moduleTitle": "5. BIOTECHNOLOGY",
+    "lessonCount": 1,
+    "lessons": [
+      {
+        "id": "5.1",
+        "title": "5.1 Basic Techniques"
+      }
+    ]
+  },
+  {
+    "courseId": "BIO101",
+    "moduleId": "evolution-diversity",
+    "moduleTitle": "4. EVOLUTION AND DIVERSITY OF LIFE",
+    "lessonCount": 2,
+    "lessons": [
+      {
+        "id": "4.2",
+        "title": "4.2 Taxonomy and Classification"
+      },
+      {
+        "id": "4.1",
+        "title": "4.1 Evolution and Speciation"
+      }
+    ]
+  },
+  {
+    "courseId": "BIO101",
+    "moduleId": "genetics",
+    "moduleTitle": "3. GENETICS AND MOLECULAR BIOLOGY",
+    "lessonCount": 4,
+    "lessons": [
+      {
+        "id": "3.4",
+        "title": "3.4 Gene Regulation"
+      },
+      {
+        "id": "3.1",
+        "title": "3.1 Patterns of Inheritance"
+      },
+      {
+        "id": "3.3",
+        "title": "3.3 The Central Dogma"
+      },
+      {
+        "id": "3.2",
+        "title": "3.2 Molecular Basis of Inheritance"
+      }
+    ]
+  },
+  {
+    "courseId": "BIO101",
+    "moduleId": "plant-systems",
+    "moduleTitle": "7. PLANT FORM AND FUNCTION (SURVEY)",
+    "lessonCount": 1,
+    "lessons": [
+      {
+        "id": "7.1",
+        "title": "7.1 Plant Structure and Transport"
+      }
+    ]
+  },
+  {
+    "courseId": "BIO101",
+    "moduleId": "intro-to-biology",
+    "moduleTitle": "1. INTRODUCTION TO BIOLOGY",
+    "lessonCount": 3,
+    "lessons": [
+      {
+        "id": "1.3",
+        "title": "1.3 Chemistry of Living Things"
+      },
+      {
+        "id": "1.1",
+        "title": "1.1 Biology as a Science"
+      },
+      {
+        "id": "1.2",
+        "title": "1.2 Origin of Life"
+      }
+    ]
+  },
+  {
+    "courseId": "BIO101",
+    "moduleId": "the-cell",
+    "moduleTitle": "2. THE CELL",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "2.2",
+        "title": "2.2 Membrane Structure and Transport"
+      },
+      {
+        "id": "2.1",
+        "title": "2.1 Cell Structure and Functions of Cellular Organelles"
+      },
+      {
+        "id": "2.4",
+        "title": "2.4 Photosynthesis (Anabolic Pathways)"
+      },
+      {
+        "id": "2.5",
+        "title": "2.5 Cell Division (Mitosis and Meiosis)"
+      },
+      {
+        "id": "2.3",
+        "title": "2.3 Cellular Respiration (Catabolic Pathways)"
+      }
+    ]
+  },
+  {
+    "courseId": "BIO102",
+    "moduleId": "plant-bio",
+    "moduleTitle": "2. PLANT BIOLOGY",
+    "lessonCount": 1,
+    "lessons": [
+      {
+        "id": "2.1",
+        "title": "2.1 Plant Structure"
+      }
+    ]
+  },
+  {
+    "courseId": "BIO102",
+    "moduleId": "ecology",
+    "moduleTitle": "1. ECOLOGY",
+    "lessonCount": 1,
+    "lessons": [
+      {
+        "id": "1.1",
+        "title": "1.1 Ecosystems"
+      }
+    ]
+  },
+  {
+    "courseId": "CHM101",
+    "moduleId": "m8",
+    "moduleTitle": "Chemical Bonding I: Basic Concepts",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m8-l4",
+        "title": "Covalent Bonding and Lewis Structures"
+      },
+      {
+        "id": "m8-l5",
+        "title": "Bond Polarity and Electronegativity"
+      },
+      {
+        "id": "m8-l1",
+        "title": "Types of Chemical Bonds: Ionic, Covalent, and Metallic"
+      },
+      {
+        "id": "m8-l3",
+        "title": "Ionic Bonding and Lattice Energy"
+      },
+      {
+        "id": "m8-l2",
+        "title": "Lewis Symbols and the Octet Rule"
+      }
+    ]
+  },
+  {
+    "courseId": "CHM101",
+    "moduleId": "m9",
+    "moduleTitle": "Chemical Bonding II: Molecular Geometry and Bonding Theories",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m9-l3",
+        "title": "Valence Bond Theory and Hybridization"
+      },
+      {
+        "id": "m9-l2",
+        "title": "Molecular Geometry and Polarity"
+      },
+      {
+        "id": "m9-l5",
+        "title": "Bonding in Diatomic and Polyatomic Molecules"
+      },
+      {
+        "id": "m9-l1",
+        "title": "Valence Shell Electron Pair Repulsion (VSEPR) Theory"
+      },
+      {
+        "id": "m9-l4",
+        "title": "Molecular Orbital Theory"
+      }
+    ]
+  },
+  {
+    "courseId": "CHM101",
+    "moduleId": "m10",
+    "moduleTitle": "Gases and the Kinetic-Molecular Theory",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m10-l3",
+        "title": "The Ideal Gas Equation and Applications"
+      },
+      {
+        "id": "m10-l5",
+        "title": "Kinetic-Molecular Theory and Real Gases"
+      },
+      {
+        "id": "m10-l1",
+        "title": "Characteristics of Gases and the Ideal Gas Law"
+      },
+      {
+        "id": "m10-l4",
+        "title": "Gas Mixtures and Partial Pressures"
+      },
+      {
+        "id": "m10-l2",
+        "title": "Gas Laws: Boyle's, Charles's, and Avogadro's Laws"
+      }
+    ]
+  },
+  {
+    "courseId": "CHM101",
+    "moduleId": "atomic-structure",
+    "moduleTitle": "1. ATOMIC STRUCTURE",
+    "lessonCount": 2,
+    "lessons": [
+      {
+        "id": "1.1",
+        "title": "1.1 Atoms and Elements"
+      },
+      {
+        "id": "1.2",
+        "title": "1.2 Periodic Table"
+      }
+    ]
+  },
+  {
+    "courseId": "CHM101",
+    "moduleId": "m7",
+    "moduleTitle": "Periodic Properties of the Elements",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m7-l2",
+        "title": "Effective Nuclear Charge and Shielding"
+      },
+      {
+        "id": "m7-l5",
+        "title": "Metals, Nonmetals, and Metalloids: Properties and Trends"
+      },
+      {
+        "id": "m7-l1",
+        "title": "Development of the Periodic Table"
+      },
+      {
+        "id": "m7-l4",
+        "title": "Ionization Energy and Electron Affinity"
+      },
+      {
+        "id": "m7-l3",
+        "title": "Trends in Atomic and Ionic Radii"
+      }
+    ]
+  },
+  {
+    "courseId": "CHM101",
+    "moduleId": "m11",
+    "moduleTitle": "Intermolecular Forces, Liquids, and Solids",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m11-l2",
+        "title": "Properties of Liquids: Viscosity and Surface Tension"
+      },
+      {
+        "id": "m11-l4",
+        "title": "Crystalline Solids: Unit Cells and Structures"
+      },
+      {
+        "id": "m11-l1",
+        "title": "Intermolecular Forces: Types and Strengths"
+      },
+      {
+        "id": "m11-l5",
+        "title": "Amorphous Solids and Modern Materials"
+      },
+      {
+        "id": "m11-l3",
+        "title": "Phase Changes and Phase Diagrams"
+      }
+    ]
+  },
+  {
+    "courseId": "CHM102",
+    "moduleId": "organic-intro",
+    "moduleTitle": "1. INTRODUCTION TO ORGANIC CHEMISTRY",
+    "lessonCount": 1,
+    "lessons": [
+      {
+        "id": "1.1",
+        "title": "1.1 Hydrocarbons"
+      }
+    ]
+  },
+  {
+    "courseId": "CHM102",
+    "moduleId": "functional-groups",
+    "moduleTitle": "2. FUNCTIONAL GROUPS",
+    "lessonCount": 1,
+    "lessons": [
+      {
+        "id": "2.1",
+        "title": "2.1 Alcohols and Acids"
+      }
+    ]
+  },
+  {
+    "courseId": "CHM107",
+    "moduleId": "lab-safety",
+    "moduleTitle": "1. LABORATORY SAFETY AND TECHNIQUES",
+    "lessonCount": 1,
+    "lessons": [
+      {
+        "id": "1.1",
+        "title": "1.1 Safety Rules"
+      }
+    ]
+  },
+  {
+    "courseId": "CHM107",
+    "moduleId": "m10",
+    "moduleTitle": "Equilibrium and Le Chatelier's Principle",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m10-l2",
+        "title": "Writing Equilibrium Constant Expressions"
+      },
+      {
+        "id": "m10-l3",
+        "title": "Determining Equilibrium Concentrations"
+      },
+      {
+        "id": "m10-l4",
+        "title": "Le Chatelier's Principle in Action"
+      },
+      {
+        "id": "m10-l1",
+        "title": "Introduction to Chemical Equilibrium"
+      },
+      {
+        "id": "m10-l5",
+        "title": "Solubility Equilibria and Ksp"
+      }
+    ]
+  },
+  {
+    "courseId": "CHM107",
+    "moduleId": "m12",
+    "moduleTitle": "Scientific Communication and Data Analysis",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m12-l1",
+        "title": "Graphing Experimental Data"
+      },
+      {
+        "id": "m12-l2",
+        "title": "Statistical Analysis of Laboratory Data"
+      },
+      {
+        "id": "m12-l4",
+        "title": "Presenting Scientific Findings Orally"
+      },
+      {
+        "id": "m12-l3",
+        "title": "Writing Comprehensive Laboratory Reports"
+      },
+      {
+        "id": "m12-l5",
+        "title": "Peer Review and Scientific Discourse"
+      }
+    ]
+  },
+  {
+    "courseId": "CHM107",
+    "moduleId": "m8",
+    "moduleTitle": "Acids, Bases, and pH",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m8-l2",
+        "title": "Measuring pH and pOH"
+      },
+      {
+        "id": "m8-l3",
+        "title": "Strong vs. Weak Acids and Bases"
+      },
+      {
+        "id": "m8-l1",
+        "title": "Identifying Acids and Bases Using Indicators"
+      },
+      {
+        "id": "m8-l5",
+        "title": "Buffer Solutions and Their Properties"
+      },
+      {
+        "id": "m8-l4",
+        "title": "Titration Techniques and Calculations"
+      }
+    ]
+  },
+  {
+    "courseId": "CHM107",
+    "moduleId": "m9",
+    "moduleTitle": "Chemical Kinetics",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m9-l1",
+        "title": "Measuring Reaction Rates"
+      },
+      {
+        "id": "m9-l2",
+        "title": "Factors Affecting Reaction Rates"
+      },
+      {
+        "id": "m9-l3",
+        "title": "Determining Rate Laws Experimentally"
+      },
+      {
+        "id": "m9-l5",
+        "title": "Catalysts and Their Effects on Reactions"
+      },
+      {
+        "id": "m9-l4",
+        "title": "Activation Energy and the Arrhenius Equation"
+      }
+    ]
+  },
+  {
+    "courseId": "CHM107",
+    "moduleId": "m11",
+    "moduleTitle": "Electrochemistry",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m11-l3",
+        "title": "Measuring Cell Potentials"
+      },
+      {
+        "id": "m11-l2",
+        "title": "Constructing Galvanic Cells"
+      },
+      {
+        "id": "m11-l4",
+        "title": "Nernst Equation and Non-Standard Conditions"
+      },
+      {
+        "id": "m11-l1",
+        "title": "Redox Reactions and Oxidation States"
+      },
+      {
+        "id": "m11-l5",
+        "title": "Electrolysis and Its Applications"
+      }
+    ]
+  },
+  {
+    "courseId": "CHM107",
+    "moduleId": "m7",
+    "moduleTitle": "Solutions and Colligative Properties",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m7-l4",
+        "title": "Osmotic Pressure and Its Applications"
+      },
+      {
+        "id": "m7-l1",
+        "title": "Preparing Solutions and Calculating Concentrations"
+      },
+      {
+        "id": "m7-l5",
+        "title": "Solubility and Factors Affecting It"
+      },
+      {
+        "id": "m7-l3",
+        "title": "Colligative Properties: Boiling Point Elevation"
+      },
+      {
+        "id": "m7-l2",
+        "title": "Colligative Properties: Freezing Point Depression"
+      }
+    ]
+  },
+  {
+    "courseId": "CHM108",
+    "moduleId": "m9",
+    "moduleTitle": "Module 9: Coordination Chemistry and Complex Ions",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m9-l3",
+        "title": "Crystal Field Theory and Spectrochemical Series"
+      },
+      {
+        "id": "m9-l5",
+        "title": "Applications of Coordination Chemistry in Medicine and Industry"
+      },
+      {
+        "id": "m9-l1",
+        "title": "Introduction to Coordination Compounds and Ligands"
+      },
+      {
+        "id": "m9-l2",
+        "title": "Nomenclature and Isomerism in Coordination Chemistry"
+      },
+      {
+        "id": "m9-l4",
+        "title": "Synthesis and Characterization of Coordination Compounds"
+      }
+    ]
+  },
+  {
+    "courseId": "CHM108",
+    "moduleId": "m8",
+    "moduleTitle": "Module 8: Solutions and Colligative Properties",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m8-l4",
+        "title": "Experimental Determination of Molar Mass Using Colligative Properties"
+      },
+      {
+        "id": "m8-l5",
+        "title": "Applications of Colligative Properties in Industry"
+      },
+      {
+        "id": "m8-l1",
+        "title": "Types of Solutions and Solubility Rules"
+      },
+      {
+        "id": "m8-l3",
+        "title": "Freezing Point Depression and Osmotic Pressure"
+      },
+      {
+        "id": "m8-l2",
+        "title": "Colligative Properties: Vapor Pressure Lowering and Boiling Point Elevation"
+      }
+    ]
+  },
+  {
+    "courseId": "CHM108",
+    "moduleId": "qualitative-analysis",
+    "moduleTitle": "1. QUALITATIVE ANALYSIS",
+    "lessonCount": 1,
+    "lessons": [
+      {
+        "id": "1.1",
+        "title": "1.1 Identification of Ions"
+      }
+    ]
+  },
+  {
+    "courseId": "COS101",
+    "moduleId": "intro-computing",
+    "moduleTitle": "1. INTRODUCTION TO COMPUTING",
+    "lessonCount": 2,
+    "lessons": [
+      {
+        "id": "1.2",
+        "title": "1.2 Computer Hardware"
+      },
+      {
+        "id": "1.1",
+        "title": "1.1 History of Computers"
+      }
+    ]
+  },
+  {
+    "courseId": "GET101",
+    "moduleId": "intro-engineering",
+    "moduleTitle": "1. INTRODUCTION TO ENGINEERING",
+    "lessonCount": 2,
+    "lessons": [
+      {
+        "id": "1.1",
+        "title": "1.1 Engineering Profession"
+      },
+      {
+        "id": "1.2",
+        "title": "1.2 Engineering Graphics"
+      }
+    ]
+  },
+  {
+    "courseId": "GET102",
+    "moduleId": "applied-mechanics",
+    "moduleTitle": "1. APPLIED MECHANICS",
+    "lessonCount": 2,
+    "lessons": [
+      {
+        "id": "1.1",
+        "title": "1.1 Statics"
+      },
+      {
+        "id": "1.2",
+        "title": "1.2 Strength of Materials"
+      }
+    ]
+  },
+  {
+    "courseId": "GST111",
+    "moduleId": "english-sound-system",
+    "moduleTitle": "2. ENGLISH SOUND SYSTEM (CONSONANTS & VOWELS)",
+    "lessonCount": 3,
+    "lessons": [
+      {
+        "id": "2.1",
+        "title": "2.1 Consonant Sounds"
+      },
+      {
+        "id": "2.2",
+        "title": "2.2 Vowel Sounds: Monophthongs"
+      },
+      {
+        "id": "2.3",
+        "title": "2.3 Diphthongs & Triphthongs"
+      }
+    ]
+  },
+  {
+    "courseId": "GST111",
+    "moduleId": "speaking-phonetics-phonology",
+    "moduleTitle": "1. SPEAKING, PHONETICS & PHONOLOGY",
+    "lessonCount": 6,
+    "lessons": [
+      {
+        "id": "1.2",
+        "title": "1.2 Mechanisms of Speech"
+      },
+      {
+        "id": "1.6",
+        "title": "1.6 Branches of Phonology & Prosody"
+      },
+      {
+        "id": "1.3",
+        "title": "1.3 What Is Phonetics?"
+      },
+      {
+        "id": "1.1",
+        "title": "1.1 The Notion of Speaking"
+      },
+      {
+        "id": "1.5",
+        "title": "1.5 The Concept of Phonology"
+      },
+      {
+        "id": "1.4",
+        "title": "1.4 Articulatory Phonetics & Organs"
+      }
+    ]
+  },
+  {
+    "courseId": "GST111",
+    "moduleId": "ethics-writing-full",
+    "moduleTitle": "9. ETHICS IN ADVANCED WRITING",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "9.2",
+        "title": "9.2 Proper Use of Data & Inclusion"
+      },
+      {
+        "id": "9.4",
+        "title": "9.4 Plagiarism: Definition & Types"
+      },
+      {
+        "id": "9.3",
+        "title": "9.3 Copyright Infringement"
+      },
+      {
+        "id": "9.5",
+        "title": "9.5 Consequences of Plagiarism"
+      },
+      {
+        "id": "9.1",
+        "title": "9.1 Overview of Ethics"
+      }
+    ]
+  },
+  {
+    "courseId": "GST111",
+    "moduleId": "sentence-construction",
+    "moduleTitle": "3. SENTENCE CONSTRUCTION & TYPES",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "3.1",
+        "title": "3.1 The Meaning of a Sentence"
+      },
+      {
+        "id": "3.2",
+        "title": "3.2 Basic Sentence Structure"
+      },
+      {
+        "id": "3.3",
+        "title": "3.3 Direct Object"
+      },
+      {
+        "id": "3.5",
+        "title": "3.5 Functional Types of Sentences"
+      },
+      {
+        "id": "3.4",
+        "title": "3.4 Structural Types of a Sentence"
+      }
+    ]
+  },
+  {
+    "courseId": "GST111",
+    "moduleId": "writing-reading-ict-full",
+    "moduleTitle": "10. WRITING, READING & ICT",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "10.5",
+        "title": "10.5 ICT in Language Education"
+      },
+      {
+        "id": "10.3",
+        "title": "10.3 Mechanics of Writing"
+      },
+      {
+        "id": "10.2",
+        "title": "10.2 Types of Writing"
+      },
+      {
+        "id": "10.4",
+        "title": "10.4 Reading & Comprehension Skills"
+      },
+      {
+        "id": "10.1",
+        "title": "10.1 The Writing Process"
+      }
+    ]
+  },
+  {
+    "courseId": "GST111",
+    "moduleId": "nouns-verbs-full",
+    "moduleTitle": "6. NOUNS & VERBS",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "6.4",
+        "title": "6.4 Finite & Non-Finite Verbs"
+      },
+      {
+        "id": "6.2",
+        "title": "6.2 The Possessive Case"
+      },
+      {
+        "id": "6.3",
+        "title": "6.3 Verbs: Lexical & Auxiliary"
+      },
+      {
+        "id": "6.5",
+        "title": "6.5 Transitive & Intransitive Verbs"
+      },
+      {
+        "id": "6.1",
+        "title": "6.1 Nouns: Types & Pluralization"
+      }
+    ]
+  },
+  {
+    "courseId": "GST111",
+    "moduleId": "reported-speech-full",
+    "moduleTitle": "4. DIRECT AND INDIRECT SPEECH",
+    "lessonCount": 3,
+    "lessons": [
+      {
+        "id": "4.1",
+        "title": "4.1 Introduction to Reporting"
+      },
+      {
+        "id": "4.2",
+        "title": "4.2 Rules of Direct Speech"
+      },
+      {
+        "id": "4.3",
+        "title": "4.3 Rules of Indirect Speech"
+      }
+    ]
+  },
+  {
+    "courseId": "GST111",
+    "moduleId": "other-word-classes-full",
+    "moduleTitle": "7. ADJECTIVES, ADVERBS, PREPOSITIONS & PRONOUNS",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "7.5",
+        "title": "7.5 Interjections"
+      },
+      {
+        "id": "7.2",
+        "title": "7.2 Adverbs: Kinds & Forms"
+      },
+      {
+        "id": "7.4",
+        "title": "7.4 Pronouns: Functions & Classes"
+      },
+      {
+        "id": "7.1",
+        "title": "7.1 Adjectives: Characteristics & Order"
+      },
+      {
+        "id": "7.3",
+        "title": "7.3 Prepositions: Types & Positions"
+      }
+    ]
+  },
+  {
+    "courseId": "GST111",
+    "moduleId": "grammar-word-classes-full",
+    "moduleTitle": "5. GRAMMAR & WORD CLASSES",
+    "lessonCount": 4,
+    "lessons": [
+      {
+        "id": "5.2",
+        "title": "5.2 Scope of Grammar"
+      },
+      {
+        "id": "5.1",
+        "title": "5.1 Introduction to Grammar"
+      },
+      {
+        "id": "5.4",
+        "title": "5.4 Word Classes (Parts of Speech)"
+      },
+      {
+        "id": "5.3",
+        "title": "5.3 Types of Grammar"
+      }
+    ]
+  },
+  {
+    "courseId": "GST111",
+    "moduleId": "logic-reasoning-full",
+    "moduleTitle": "8. LOGIC & REASONING",
+    "lessonCount": 4,
+    "lessons": [
+      {
+        "id": "8.2",
+        "title": "8.2 Syllogism"
+      },
+      {
+        "id": "8.4",
+        "title": "8.4 Deductive Reasoning"
+      },
+      {
+        "id": "8.1",
+        "title": "8.1 Logic & Rationality"
+      },
+      {
+        "id": "8.3",
+        "title": "8.3 Inductive Reasoning"
+      }
+    ]
+  },
+  {
+    "courseId": "GST112",
+    "moduleId": "m7",
+    "moduleTitle": "Re-Orientation and National Values: Policies and Programs",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m7-l3",
+        "title": "Operation Feed the Nation: Objectives and Outcomes"
+      },
+      {
+        "id": "m7-l1",
+        "title": "Introduction to National Re-Orientation Programs"
+      },
+      {
+        "id": "m7-l5",
+        "title": "War Against Indiscipline (WAI) and Ethical Campaigns"
+      },
+      {
+        "id": "m7-l4",
+        "title": "Green Revolution: Agricultural Policies and Impact"
+      },
+      {
+        "id": "m7-l2",
+        "title": "The 3Rs: Reading, Writing, and Arithmetic Initiatives"
+      }
+    ]
+  },
+  {
+    "courseId": "GST112",
+    "moduleId": "m3",
+    "moduleTitle": "Challenges of Nation-Building: Military Intervention and the Nigerian Civil War",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m3-l1",
+        "title": "Post-Independence Nigeria: Early Political Developments"
+      },
+      {
+        "id": "m3-l2",
+        "title": "Military Coups and the Rise of Military Rule"
+      },
+      {
+        "id": "m3-l3",
+        "title": "Causes and Consequences of the Nigerian Civil War (1967-1970)"
+      },
+      {
+        "id": "m3-l4",
+        "title": "Post-War Reconstruction and Reconciliation Efforts"
+      },
+      {
+        "id": "m3-l5",
+        "title": "Legacy of Military Rule on Nigerian Democracy"
+      }
+    ]
+  },
+  {
+    "courseId": "GST112",
+    "moduleId": "m2",
+    "moduleTitle": "Colonial Rule and the Formation of Nigeria as a Political Unit",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m2-l2",
+        "title": "The Scramble for Africa and British Colonial Expansion"
+      },
+      {
+        "id": "m2-l3",
+        "title": "Administration and Policies Under Colonial Rule"
+      },
+      {
+        "id": "m2-l1",
+        "title": "European Exploration and Early Contact with Nigeria"
+      },
+      {
+        "id": "m2-l5",
+        "title": "Path to Independence and the Birth of Modern Nigeria"
+      },
+      {
+        "id": "m2-l4",
+        "title": "Emergence of Nigerian Nationalism and Resistance Movements"
+      }
+    ]
+  },
+  {
+    "courseId": "GST112",
+    "moduleId": "m6",
+    "moduleTitle": "Citizenship, Norms, and Indigenous Values",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m6-l1",
+        "title": "Concepts of Citizenship and Civic Responsibilities"
+      },
+      {
+        "id": "m6-l2",
+        "title": "Indigenous Norms, Values, and Ethical Systems"
+      },
+      {
+        "id": "m6-l3",
+        "title": "Role of Indigenous Languages in Cultural Preservation"
+      },
+      {
+        "id": "m6-l5",
+        "title": "Education and the Transmission of Cultural Values"
+      },
+      {
+        "id": "m6-l4",
+        "title": "Gender Roles and Social Structures in Nigerian Societies"
+      }
+    ]
+  },
+  {
+    "courseId": "GST112",
+    "moduleId": "m4",
+    "moduleTitle": "Trade, Economics, and Self-Reliance in Nigeria",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m4-l5",
+        "title": "Promoting Self-Reliance: From Past to Present"
+      },
+      {
+        "id": "m4-l4",
+        "title": "Apprenticeship Systems and Skill Acquisition in Nigeria"
+      },
+      {
+        "id": "m4-l1",
+        "title": "Traditional Trade Systems and Economic Practices"
+      },
+      {
+        "id": "m4-l2",
+        "title": "Colonial Economy and the Shift to Cash Crops"
+      },
+      {
+        "id": "m4-l3",
+        "title": "Post-Independence Economic Policies and Challenges"
+      }
+    ]
+  },
+  {
+    "courseId": "GST112",
+    "moduleId": "m8",
+    "moduleTitle": "Contemporary Socio-Political and Cultural Developments",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m8-l5",
+        "title": "Nigeria's Role in Regional and Global Affairs"
+      },
+      {
+        "id": "m8-l3",
+        "title": "Cultural Revival and the Role of the Arts in Modern Nigeria"
+      },
+      {
+        "id": "m8-l2",
+        "title": "Democracy and Governance: Progress and Challenges"
+      },
+      {
+        "id": "m8-l4",
+        "title": "Youth Movements and Social Change in Contemporary Nigeria"
+      },
+      {
+        "id": "m8-l1",
+        "title": "Nigeria in the 21st Century: Key Socio-Political Trends"
+      }
+    ]
+  },
+  {
+    "courseId": "GST112",
+    "moduleId": "m1",
+    "moduleTitle": "Pre-Colonial Nigeria: History, Culture, and Art up to 1800",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m1-l1",
+        "title": "Introduction to Nigerian Pre-Colonial Societies"
+      },
+      {
+        "id": "m1-l3",
+        "title": "Indigenous Political Systems and Governance"
+      },
+      {
+        "id": "m1-l2",
+        "title": "Major Ethnic Groups and Their Cultural Practices"
+      },
+      {
+        "id": "m1-l5",
+        "title": "Trade Networks and Economic Systems Before 1800"
+      },
+      {
+        "id": "m1-l4",
+        "title": "Art, Religion, and Symbolism in Pre-Colonial Nigeria"
+      }
+    ]
+  },
+  {
+    "courseId": "GST112",
+    "moduleId": "m5",
+    "moduleTitle": "Social Justice, Law, and National Development",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "m5-l1",
+        "title": "Concepts of Social Justice in Nigerian Context"
+      },
+      {
+        "id": "m5-l2",
+        "title": "Development of the Nigerian Legal and Judicial System"
+      },
+      {
+        "id": "m5-l3",
+        "title": "Fundamental Human Rights and Their Protection"
+      },
+      {
+        "id": "m5-l5",
+        "title": "Role of Law in National Development"
+      },
+      {
+        "id": "m5-l4",
+        "title": "Challenges in the Nigerian Judiciary and Legal Reforms"
+      }
+    ]
+  },
+  {
+    "courseId": "PHY101",
+    "moduleId": "m10",
+    "moduleTitle": "Module 10: Torque and Angular Momentum",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "l3",
+        "title": "Work and Power in Rotational Motion"
+      },
+      {
+        "id": "l1",
+        "title": "Torque"
+      },
+      {
+        "id": "l4",
+        "title": "Angular Momentum"
+      },
+      {
+        "id": "l2",
+        "title": "Newton's Second Law for Rotation"
+      },
+      {
+        "id": "l5",
+        "title": "Conservation of Angular Momentum"
+      }
+    ]
+  },
+  {
+    "courseId": "PHY101",
+    "moduleId": "mechanics",
+    "moduleTitle": "1. MECHANICS",
+    "lessonCount": 2,
+    "lessons": [
+      {
+        "id": "1.2",
+        "title": "1.2 Linear Motion"
+      },
+      {
+        "id": "1.1",
+        "title": "1.1 Units and Dimensions"
+      }
+    ]
+  },
+  {
+    "courseId": "PHY101",
+    "moduleId": "m9",
+    "moduleTitle": "Module 9: Rotational Motion",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "l4",
+        "title": "Rotational Kinetic Energy"
+      },
+      {
+        "id": "l5",
+        "title": "Moment of Inertia"
+      },
+      {
+        "id": "l1",
+        "title": "Angular Position, Velocity, and Acceleration"
+      },
+      {
+        "id": "l2",
+        "title": "Rotational Kinematics"
+      },
+      {
+        "id": "l3",
+        "title": "Relationship Between Linear and Angular Variables"
+      }
+    ]
+  },
+  {
+    "courseId": "PHY102",
+    "moduleId": "m9",
+    "moduleTitle": "Module 8: Electromagnetic Induction",
+    "lessonCount": 10,
+    "lessons": [
+      {
+        "id": "l4",
+        "title": "Capacitors in AC Circuits: Capacitive Reactance"
+      },
+      {
+        "id": "l1",
+        "title": "AC Voltages and Currents: Phasors"
+      },
+      {
+        "id": "m9-l4",
+        "title": "Inductance: Self-Inductance and Mutual Inductance"
+      },
+      {
+        "id": "m9-l2",
+        "title": "Lenz's Law: Direction of Induced EMF and Conservation of Energy"
+      },
+      {
+        "id": "m9-l3",
+        "title": "Motional EMF: $\\mathcal{E} = B \\ell v$ for Conductors in Motion"
+      },
+      {
+        "id": "m9-l1",
+        "title": "Faraday's Law of Induction: $\\mathcal{E} = -\\frac{d\\Phi_B}{dt}$"
+      },
+      {
+        "id": "m9-l5",
+        "title": "RL Circuits: Current Growth and Decay in Inductive Circuits"
+      },
+      {
+        "id": "l2",
+        "title": "Resistors in AC Circuits"
+      },
+      {
+        "id": "l3",
+        "title": "Inductors in AC Circuits: Inductive Reactance"
+      },
+      {
+        "id": "m9-l6",
+        "title": "Transformers: Step-Up and Step-Down Configurations"
+      }
+    ]
+  },
+  {
+    "courseId": "PHY102",
+    "moduleId": "m10",
+    "moduleTitle": "Maxwell’s Equations and EM Waves",
+    "lessonCount": 9,
+    "lessons": [
+      {
+        "id": "m10-l3",
+        "title": "The Electromagnetic Wave Equation"
+      },
+      {
+        "id": "m10-l5",
+        "title": "Energy Transport and the Poynting Vector $\\\\mathbf{S}$"
+      },
+      {
+        "id": "l3",
+        "title": "Maxwell's Equations: Unifying Electromagnetism"
+      },
+      {
+        "id": "m10-l4",
+        "title": "Plane Electromagnetic Waves and the Speed of Light"
+      },
+      {
+        "id": "l2",
+        "title": "Power in AC Circuits"
+      },
+      {
+        "id": "l1",
+        "title": "Series RLC Circuits: Impedance and Resonance"
+      },
+      {
+        "id": "m10-l2",
+        "title": "Maxwell’s Equations in Vacuum and Matter"
+      },
+      {
+        "id": "m10-l1",
+        "title": "Displacement Current and the Ampere-Maxwell Law"
+      },
+      {
+        "id": "l4",
+        "title": "Electromagnetic Oscillations and Waves"
+      }
+    ]
+  },
+  {
+    "courseId": "PHY104",
+    "moduleId": "m7",
+    "moduleTitle": "Module 7: Wave Optics: Interference and Diffraction",
+    "lessonCount": 11,
+    "lessons": [
+      {
+        "id": "m7-l3",
+        "title": "Coherence and Conditions for Interference"
+      },
+      {
+        "id": "m7-l2",
+        "title": "Interference of Light: Young’s Double-Slit Experiment"
+      },
+      {
+        "id": "l5",
+        "title": "Dispersion and Scattering of Light"
+      },
+      {
+        "id": "l1",
+        "title": "Nature and Propagation of Light"
+      },
+      {
+        "id": "l4",
+        "title": "Total Internal Reflection and its Applications"
+      },
+      {
+        "id": "m7-l6",
+        "title": "Thin Film Interference and Newton’s Rings"
+      },
+      {
+        "id": "m7-l5",
+        "title": "Diffraction Gratings and Their Applications"
+      },
+      {
+        "id": "m7-l1",
+        "title": "Huygens’s Principle and Wavefronts"
+      },
+      {
+        "id": "l2",
+        "title": "Reflection at Plane Surfaces"
+      },
+      {
+        "id": "l3",
+        "title": "Refraction at Plane Surfaces: Snell's Law"
+      },
+      {
+        "id": "m7-l4",
+        "title": "Diffraction at Single Slit and Double Slit"
+      }
+    ]
+  },
+  {
+    "courseId": "PHY104",
+    "moduleId": "m9",
+    "moduleTitle": "Module 9: Waves at Interfaces and Advanced Topics",
+    "lessonCount": 11,
+    "lessons": [
+      {
+        "id": "l2",
+        "title": "Young's Double-Slit Experiment"
+      },
+      {
+        "id": "l5",
+        "title": "Coherence and Interference Conditions"
+      },
+      {
+        "id": "l1",
+        "title": "Huygens' Principle Revisited"
+      },
+      {
+        "id": "l4",
+        "title": "Michelson Interferometer"
+      },
+      {
+        "id": "m9-l5",
+        "title": "Solitons and Shock Waves"
+      },
+      {
+        "id": "m9-l1",
+        "title": "Reflection and Transmission of Waves at Boundaries"
+      },
+      {
+        "id": "m9-l3",
+        "title": "Waveguides and Resonant Cavities"
+      },
+      {
+        "id": "l3",
+        "title": "Interference in Thin Films"
+      },
+      {
+        "id": "m9-l6",
+        "title": "Review of Key Concepts and Applications"
+      },
+      {
+        "id": "m9-l2",
+        "title": "Impedance and Energy Transfer in Wave Systems"
+      },
+      {
+        "id": "m9-l4",
+        "title": "Nonlinear Wave Phenomena"
+      }
+    ]
+  },
+  {
+    "courseId": "PHY104",
+    "moduleId": "m8",
+    "moduleTitle": "Module 8: Polarization and Modern Optics",
+    "lessonCount": 11,
+    "lessons": [
+      {
+        "id": "m8-l6",
+        "title": "Fiber Optics and Nonlinear Optics"
+      },
+      {
+        "id": "m8-l2",
+        "title": "Polarizers and Malus’s Law"
+      },
+      {
+        "id": "m8-l4",
+        "title": "Birefringence and Optical Activity"
+      },
+      {
+        "id": "l2",
+        "title": "Refraction at Spherical Surfaces"
+      },
+      {
+        "id": "m8-l5",
+        "title": "Lasers and Holography: Principles and Applications"
+      },
+      {
+        "id": "m8-l1",
+        "title": "Polarization of Light: Linear, Circular, and Elliptical"
+      },
+      {
+        "id": "l3",
+        "title": "Thin Lenses: Converging and Diverging"
+      },
+      {
+        "id": "m8-l3",
+        "title": "Polarization by Reflection and Brewster’s Angle"
+      },
+      {
+        "id": "l1",
+        "title": "Reflection at Spherical Surfaces: Mirrors"
+      },
+      {
+        "id": "l5",
+        "title": "Optical Instruments: Telescopes and Microscopes"
+      },
+      {
+        "id": "l4",
+        "title": "Lens Maker's Formula and Magnification"
+      }
+    ]
+  },
+  {
+    "courseId": "PHY104",
+    "moduleId": "m4",
+    "moduleTitle": "Module 4: Sound Waves - Propagation and Doppler Effect",
+    "lessonCount": 11,
+    "lessons": [
+      {
+        "id": "m4-l6",
+        "title": "Shock Waves and Sonic Booms: Phenomena and Mathematical Descriptions"
+      },
+      {
+        "id": "m4-l4",
+        "title": "Propagation of Sound in Solids and Liquids: Key Differences"
+      },
+      {
+        "id": "l3",
+        "title": "Interference of Waves"
+      },
+      {
+        "id": "l2",
+        "title": "Wave Propagation and Superposition Principle"
+      },
+      {
+        "id": "m4-l1",
+        "title": "Nature and Propagation of Sound Waves in Gases"
+      },
+      {
+        "id": "m4-l5",
+        "title": "The Doppler Effect: Derivation and Applications"
+      },
+      {
+        "id": "m4-l3",
+        "title": "Properties of Sound Waves: Intensity, Loudness, and Pitch"
+      },
+      {
+        "id": "l4",
+        "title": "Diffraction of Waves"
+      },
+      {
+        "id": "l1",
+        "title": "Introduction to Waves: Types and Characteristics"
+      },
+      {
+        "id": "l5",
+        "title": "Dispersion and Polarization of Waves"
+      },
+      {
+        "id": "m4-l2",
+        "title": "Speed of Sound in Gases: Derivation and Factors Affecting It"
+      }
+    ]
+  },
+  {
+    "courseId": "PHY104",
+    "moduleId": "m10",
+    "moduleTitle": "Module 10: Wave Optics: Diffraction",
+    "lessonCount": 5,
+    "lessons": [
+      {
+        "id": "l5",
+        "title": "Holography: Principles and Applications"
+      },
+      {
+        "id": "l3",
+        "title": "Circular Aperture Diffraction and Resolution"
+      },
+      {
+        "id": "l2",
+        "title": "Diffraction Gratings"
+      },
+      {
+        "id": "l4",
+        "title": "X-ray Diffraction"
+      },
+      {
+        "id": "l1",
+        "title": "Single-Slit Diffraction"
+      }
+    ]
+  },
+  {
+    "courseId": "PHY104",
+    "moduleId": "m6",
+    "moduleTitle": "Module 6: Wave Optics - Interference, Diffraction, and Polarization",
+    "lessonCount": 11,
+    "lessons": [
+      {
+        "id": "m6-l3",
+        "title": "Diffraction of Light: Single-Slit and Double-Slit Patterns"
+      },
+      {
+        "id": "l4",
+        "title": "Propagation of Sound in Solids"
+      },
+      {
+        "id": "l3",
+        "title": "Propagation of Sound in Liquids"
+      },
+      {
+        "id": "l2",
+        "title": "Propagation of Sound in Gases"
+      },
+      {
+        "id": "m6-l2",
+        "title": "Interference of Light: Young's Double-Slit Experiment"
+      },
+      {
+        "id": "m6-l4",
+        "title": "Diffraction Gratings: Principles and Applications"
+      },
+      {
+        "id": "l1",
+        "title": "Nature of Sound Waves"
+      },
+      {
+        "id": "m6-l1",
+        "title": "Wave Nature of Light: Huygens's Principle and Wavefronts"
+      },
+      {
+        "id": "l5",
+        "title": "Intensity and Loudness of Sound"
+      },
+      {
+        "id": "m6-l5",
+        "title": "Polarization of Light: Types and Mathematical Descriptions"
+      },
+      {
+        "id": "m6-l6",
+        "title": "Applications of Wave Optics: Thin Films and Anti-Reflection Coatings"
+      }
+    ]
+  },
+  {
+    "courseId": "PHY104",
+    "moduleId": "quantum-intro",
+    "moduleTitle": "2. Introduction to Quantum Theory",
+    "lessonCount": 2,
+    "lessons": [
+      {
+        "id": "2.1",
+        "title": "2.1 Photoelectric Effect"
+      },
+      {
+        "id": "2.2",
+        "title": "2.2 Wave-Particle Duality"
+      }
+    ]
+  },
+  {
+    "courseId": "PHY104",
+    "moduleId": "relativity",
+    "moduleTitle": "1. Special Relativity",
+    "lessonCount": 2,
+    "lessons": [
+      {
+        "id": "1.2",
+        "title": "1.2 Lorentz Transformations"
+      },
+      {
+        "id": "1.1",
+        "title": "1.1 Postulates of Special Relativity"
+      }
+    ]
+  },
+  {
+    "courseId": "PHY104",
+    "moduleId": "m5",
+    "moduleTitle": "Module 5: Geometric Optics - Reflection, Refraction, and Lenses",
+    "lessonCount": 11,
+    "lessons": [
+      {
+        "id": "m5-l6",
+        "title": "Optical Instruments: Microscopes, Telescopes, and Cameras"
+      },
+      {
+        "id": "m5-l2",
+        "title": "Reflection of Light: Laws and Applications"
+      },
+      {
+        "id": "l2",
+        "title": "Energy and Power in Waves"
+      },
+      {
+        "id": "l3",
+        "title": "One, Two, and Three-Dimensional Wave Equations"
+      },
+      {
+        "id": "m5-l3",
+        "title": "Refraction of Light: Snell's Law and Total Internal Reflection"
+      },
+      {
+        "id": "l5",
+        "title": "Echoes, Beats, and the Doppler Effect"
+      },
+      {
+        "id": "l1",
+        "title": "Waves at Interfaces: Reflection and Refraction"
+      },
+      {
+        "id": "m5-l5",
+        "title": "Thin Lenses: Types, Ray Diagrams, and Lensmaker's Equation"
+      },
+      {
+        "id": "m5-l1",
+        "title": "Nature and Propagation of Light: Wave-Particle Duality"
+      },
+      {
+        "id": "m5-l4",
+        "title": "Reflection and Refraction at Spherical Surfaces: Mirror and Lens Equations"
+      },
+      {
+        "id": "l4",
+        "title": "Phase and Group Velocities"
+      }
+    ]
+  },
+  {
+    "courseId": "PHY108",
+    "moduleId": "optics-lab",
+    "moduleTitle": "1. OPTICS EXPERIMENTS",
+    "lessonCount": 1,
+    "lessons": [
+      {
+        "id": "1.1",
+        "title": "1.1 Reflection and Refraction"
+      }
+    ]
+  },
+  {
+    "courseId": "STA112",
+    "moduleId": "random-vars",
+    "moduleTitle": "3. RANDOM VARIABLES",
+    "lessonCount": 1,
+    "lessons": [
+      {
+        "id": "3.1",
+        "title": "3.1 Discrete Random Variables"
+      }
+    ]
+  },
+  {
+    "courseId": "STA112",
+    "moduleId": "m10",
+    "moduleTitle": "Probability in Decision Making and Risk Assessment",
+    "lessonCount": 6,
+    "lessons": [
+      {
+        "id": "m10-l2",
+        "title": "Bayesian Decision Theory and Its Applications"
+      },
+      {
+        "id": "m10-l6",
+        "title": "Ethical Considerations in Probabilistic Decision Making"
+      },
+      {
+        "id": "m10-l4",
+        "title": "Risk Assessment: Probabilistic Models and Monte Carlo Simulations"
+      },
+      {
+        "id": "m10-l1",
+        "title": "Probability in Decision Theory: Expected Utility and Risk"
+      },
+      {
+        "id": "m10-l5",
+        "title": "Probability in Machine Learning: Naive Bayes and Bayesian Networks"
+      },
+      {
+        "id": "m10-l3",
+        "title": "Probability in Quality Control and Reliability Engineering"
+      }
+    ]
+  },
+  {
+    "courseId": "STA112",
+    "moduleId": "cond-prob",
+    "moduleTitle": "2. CONDITIONAL PROBABILITY",
+    "lessonCount": 2,
+    "lessons": [
+      {
+        "id": "2.2",
+        "title": "2.2 Bayes' Theorem"
+      },
+      {
+        "id": "2.1",
+        "title": "2.1 Conditional Probability & Independence"
+      }
+    ]
+  },
+  {
+    "courseId": "STA112",
+    "moduleId": "intro-prob",
+    "moduleTitle": "1. INTRODUCTION TO PROBABILITY",
+    "lessonCount": 2,
+    "lessons": [
+      {
+        "id": "1.1",
+        "title": "1.1 Basic Concepts"
+      },
+      {
+        "id": "1.2",
+        "title": "1.2 Probability Laws"
+      }
+    ]
+  },
+  {
+    "courseId": "ZOO102",
+    "moduleId": "animal-physiology",
+    "moduleTitle": "1. ANIMAL PHYSIOLOGY",
+    "lessonCount": 2,
+    "lessons": [
+      {
+        "id": "1.2",
+        "title": "1.2 Respiration and Circulation"
+      },
+      {
+        "id": "1.1",
+        "title": "1.1 Digestion and Nutrition"
+      }
+    ]
+  }
+]

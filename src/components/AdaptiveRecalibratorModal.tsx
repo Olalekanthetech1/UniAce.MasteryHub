@@ -3,8 +3,6 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Sparkles, Award, CheckCircle2, Loader2, ArrowRight, Zap, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AIService } from '../services/ai';
-import { db } from '../firebase';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { Module, UserProgress } from '../types';
 
 interface AdaptiveRecalibratorModalProps {
@@ -76,23 +74,25 @@ export const AdaptiveRecalibratorModal: React.FC<AdaptiveRecalibratorModalProps>
     }
     
     try {
-      // Check if they have an active study plan first in Firestore
-      const docRef = doc(db, 'study_plans', user.uid);
-      const docSnap = await getDoc(docRef);
-      if (!docSnap.exists()) {
-        // Silently close without interrupting study if no plan exists yet
+      const token = await user.getIdToken();
+      const res = await fetch('/api/user/study-plan', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) {
+        onClose();
+        return;
+      }
+      const json = await res.json();
+      if (!json.plan) {
         onClose();
         return;
       }
 
       if (score < 60) {
-        // Trigger Booster Lesson Injection automatically in background
         triggerBoosterInjection();
       } else if (score === 100) {
-        // Offer Fast Track via non-intrusive corner toast
         setStep('fast_track_offer');
       } else {
-        // Decent score, close silently
         onClose();
       }
     } catch (err) {
@@ -111,11 +111,13 @@ export const AdaptiveRecalibratorModal: React.FC<AdaptiveRecalibratorModalProps>
       const booster = await AIService.generateBoosterLesson(topicTitle, score);
       setBoosterData(booster);
 
-      // Save to active study plan in Firestore
-      const docRef = doc(db, 'study_plans', user.uid);
-      const docSnap = await getDoc(docRef);
-      if (docSnap.exists()) {
-        const activePlan = docSnap.data();
+      const token = await user.getIdToken();
+      const res = await fetch('/api/user/study-plan', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const json = await res.json();
+        const activePlan = json.plan || {};
         const updatedSchedule = [
           {
             day: "AI Booster Session",
@@ -125,13 +127,22 @@ export const AdaptiveRecalibratorModal: React.FC<AdaptiveRecalibratorModalProps>
           ...(activePlan.dailySchedule || [])
         ];
 
-        await setDoc(docRef, {
-          ...activePlan,
-          dailySchedule: updatedSchedule,
-          tips: [
-            `Booster Tip: Reinforce "${topicTitle}" foundations before proceeding to next modules.`,
-            ...(activePlan.tips || [])
-          ]
+        await fetch('/api/user/study-plan', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            plan: {
+              ...activePlan,
+              dailySchedule: updatedSchedule,
+              tips: [
+                `Booster Tip: Reinforce "${topicTitle}" foundations before proceeding to next modules.`,
+                ...(activePlan.tips || [])
+              ]
+            }
+          })
         });
         setStep('success_booster');
       } else {
@@ -153,9 +164,15 @@ export const AdaptiveRecalibratorModal: React.FC<AdaptiveRecalibratorModalProps>
     try {
       const advancedPlan = await AIService.generateFastTrackPlan(progress, syllabus, topicTitle);
       
-      // Save updated fast-track plan in Firestore
-      const docRef = doc(db, 'study_plans', user.uid);
-      await setDoc(docRef, advancedPlan);
+      const token = await user.getIdToken();
+      await fetch('/api/user/study-plan', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ plan: advancedPlan })
+      });
       
       setStep('fast_track_success');
     } catch (err) {

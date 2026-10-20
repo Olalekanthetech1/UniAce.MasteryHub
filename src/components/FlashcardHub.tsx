@@ -5,10 +5,8 @@ import { motion } from 'motion/react';
 import Flashcards from './Flashcards';
 import { useAuth } from '../context/AuthContext';
 import { useCourses } from '../context/CourseContext';
-import { db } from '../firebase';
-import { collection, query, getDocs } from 'firebase/firestore';
-import { useUserProgress } from '../hooks/useUserProgress';
 import CourseContextBar from './CourseContextBar';
+import { useUserProgress } from '../hooks/useUserProgress';
 import { isCourseEligibleForUser } from '../utils/courseEligibility';
 
 interface FlashcardHubProps {
@@ -43,29 +41,32 @@ export default function FlashcardHub({
   const fetchStats = async () => {
     if (!user) return;
     try {
-      const q = query(collection(db, `users/${user.uid}/flashcards`));
-      const snap = await getDocs(q);
+      const token = await user.getIdToken();
+      const res = await fetch('/api/user/srs', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) return;
+      const json = await res.json();
+      const cards = json.cards || [];
       let learning = 0;
       let mastered = 0;
       let due = 0;
-      const now = new Date().toISOString();
+      const now = Date.now();
 
-      snap.forEach(doc => {
-        const card = doc.data();
-        // If courseId is set, only count stats for the selected course
-        if (activeCourseId && card.courseId !== activeCourseId) return;
+      cards.forEach((card: any) => {
+        if (activeCourseId && card.course_id !== activeCourseId) return;
 
-        if ((card.repetition || 0) > 3) {
+        if ((card.review_count || 0) > 3) {
           mastered++;
         } else {
           learning++;
         }
-        if (!card.nextReviewDate || card.nextReviewDate <= now) {
+        if (!card.next_review_at || new Date(card.next_review_at).getTime() <= now) {
           due++;
         }
       });
       
-      setStats({ learning, mastered, totalDue: due, streak: progress?.streak || 0 });
+      setStats({ learning, mastered, totalDue: due, streak: profile?.streak || 0 });
     } catch (e) {
       console.error("Failed to fetch flashcard stats:", e);
     }

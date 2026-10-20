@@ -19,7 +19,11 @@ import {
 } from 'lucide-react';
 import { auth } from '../../firebase';
 
-export default function DatabaseAccountingTab() {
+interface DatabaseAccountingTabProps {
+  onSwitchTab?: (tab: string) => void;
+}
+
+export default function DatabaseAccountingTab({ onSwitchTab }: DatabaseAccountingTabProps) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [stats, setStats] = useState<any>(null);
@@ -167,6 +171,16 @@ export default function DatabaseAccountingTab() {
         </div>
 
         <div className="flex items-center gap-3">
+          {onSwitchTab && (
+            <button
+              onClick={() => onSwitchTab('database-engine')}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-violet-500/40 bg-violet-500/10 hover:bg-violet-500/20 text-violet-300 text-sm font-semibold transition"
+            >
+              <Database className="w-4 h-4 text-violet-400" />
+              <span>Database Engine & Flags</span>
+              <ArrowUpRight className="w-3.5 h-3.5" />
+            </button>
+          )}
           <button
             onClick={() => {
               setRefreshing(true);

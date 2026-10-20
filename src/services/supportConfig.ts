@@ -1,5 +1,4 @@
-import { db } from '../firebase';
-import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
+import { auth } from '../firebase';
 
 export interface FaqItem {
   id: string;
@@ -95,17 +94,18 @@ export const DEFAULT_TUTORIALS: TutorialItem[] = [
 export const SupportService = {
   async getSupportConfig(): Promise<SupportConfig> {
     try {
-      if (!db) return { faqs: DEFAULT_FAQS, tutorials: DEFAULT_TUTORIALS };
-      const docRef = doc(db, 'system_config', 'support');
-      const snap = await getDoc(docRef);
-      if (snap.exists()) {
-        const data = snap.data() as SupportConfig;
-        return {
-          faqs: Array.isArray(data.faqs) && data.faqs.length > 0 ? data.faqs : DEFAULT_FAQS,
-          tutorials: Array.isArray(data.tutorials) && data.tutorials.length > 0 ? data.tutorials : DEFAULT_TUTORIALS,
-          contactEmail: data.contactEmail || 'uniace.support@gmail.com',
-          whatsappSupport: data.whatsappSupport || ''
-        };
+      const res = await fetch('/api/system/config/support');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.data && typeof json.data === 'object') {
+          const data = json.data as SupportConfig;
+          return {
+            faqs: Array.isArray(data.faqs) && data.faqs.length > 0 ? data.faqs : DEFAULT_FAQS,
+            tutorials: Array.isArray(data.tutorials) && data.tutorials.length > 0 ? data.tutorials : DEFAULT_TUTORIALS,
+            contactEmail: data.contactEmail || 'uniace.support@gmail.com',
+            whatsappSupport: data.whatsappSupport || ''
+          };
+        }
       }
     } catch (e) {
       console.warn('Using default support config due to fetch error:', e);
@@ -114,35 +114,39 @@ export const SupportService = {
   },
 
   subscribeSupportConfig(callback: (config: SupportConfig) => void): () => void {
-    if (!db) {
-      callback({ faqs: DEFAULT_FAQS, tutorials: DEFAULT_TUTORIALS });
-      return () => {};
-    }
-    const docRef = doc(db, 'system_config', 'support');
-    return onSnapshot(docRef, (snap) => {
-      if (snap.exists()) {
-        const data = snap.data() as SupportConfig;
-        callback({
-          faqs: Array.isArray(data.faqs) && data.faqs.length > 0 ? data.faqs : DEFAULT_FAQS,
-          tutorials: Array.isArray(data.tutorials) && data.tutorials.length > 0 ? data.tutorials : DEFAULT_TUTORIALS,
-          contactEmail: data.contactEmail || 'uniace.support@gmail.com',
-          whatsappSupport: data.whatsappSupport || ''
-        });
-        return;
-      }
-      callback({ faqs: DEFAULT_FAQS, tutorials: DEFAULT_TUTORIALS });
-    }, (error) => {
-      console.warn('Support snapshot error, fallback to defaults:', error);
-      callback({ faqs: DEFAULT_FAQS, tutorials: DEFAULT_TUTORIALS });
-    });
+    let isSubscribed = true;
+
+    const poll = async () => {
+      if (!isSubscribed) return;
+      const data = await this.getSupportConfig();
+      if (isSubscribed) callback(data);
+    };
+
+    poll();
+    const interval = setInterval(poll, 60000);
+    const onFocus = () => { poll(); };
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      isSubscribed = false;
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+    };
   },
 
   async saveSupportConfig(config: SupportConfig): Promise<void> {
-    if (!db) throw new Error('Firestore not initialized');
-    const docRef = doc(db, 'system_config', 'support');
-    await setDoc(docRef, {
-      ...config,
-      lastUpdated: new Date().toISOString()
-    }, { merge: true });
+    const user = auth.currentUser;
+    const token = user ? await user.getIdToken() : '';
+    await fetch('/api/admin/system-config/support', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify({
+        ...config,
+        lastUpdated: new Date().toISOString()
+      })
+    });
   }
 };

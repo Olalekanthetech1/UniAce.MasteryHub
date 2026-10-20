@@ -25,11 +25,11 @@ async function runStage5ATests() {
   // -------------------------------------------------------------
   console.log('--- TEST 1: Feature Flag Invariants ---');
   const flags = getFeatureFlags();
-  assert(flags.ENABLE_POSTGRES_CATALOG === false, 'ENABLE_POSTGRES_CATALOG must be false by default');
-  assert(flags.ENABLE_POSTGRES_PROGRESS === false, 'ENABLE_POSTGRES_PROGRESS must be false by default');
+  assert(flags.ENABLE_POSTGRES_CATALOG === true, 'ENABLE_POSTGRES_CATALOG is active for Phase 1 Cutover');
+  assert(flags.ENABLE_POSTGRES_PROGRESS === true, 'ENABLE_POSTGRES_PROGRESS is active for Phase 2 Cutover');
   assert(flags.ENABLE_POSTGRES_GENERATION_JOBS === false, 'ENABLE_POSTGRES_GENERATION_JOBS must be false by default');
   assert(flags.ENABLE_POSTGRES_SHADOW_WRITE === false, 'ENABLE_POSTGRES_SHADOW_WRITE must be false (prohibited)');
-  console.log('✅ Feature flag safeguards verified: all Postgres flags disabled by default.\n');
+  console.log('✅ Feature flag safeguards verified: ENABLE_POSTGRES_CATALOG and ENABLE_POSTGRES_PROGRESS active.\n');
 
   // -------------------------------------------------------------
   // TEST 2: Multi-Instance Catalog Cache

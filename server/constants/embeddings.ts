@@ -1,0 +1,4 @@
+export const EMBEDDING_MODEL = 'gemini-embedding-001';
+export const EMBEDDING_DIMENSIONS = 768;
+export const EMBEDDING_TASK_DOCUMENT = 'RETRIEVAL_DOCUMENT';
+export const EMBEDDING_TASK_QUERY = 'RETRIEVAL_QUERY';

@@ -1,0 +1,2249 @@
+{
+  "BIO101": {
+    "courseId": "BIO101",
+    "embeddedModulesCount": 10,
+    "embeddedModules": [
+      {
+        "id": "m1",
+        "title": "Introduction to Biology and the Scientific Method",
+        "lessonCount": 5
+      },
+      {
+        "id": "m2",
+        "title": "Chemistry of Life",
+        "lessonCount": 5
+      },
+      {
+        "id": "m3",
+        "title": "Cell Structure and Function",
+        "lessonCount": 5
+      },
+      {
+        "id": "m4",
+        "title": "Energy and Enzymes",
+        "lessonCount": 5
+      },
+      {
+        "id": "m5",
+        "title": "Cellular Respiration and Photosynthesis",
+        "lessonCount": 5
+      },
+      {
+        "id": "m6",
+        "title": "Cell Division and Genetics",
+        "lessonCount": 5
+      },
+      {
+        "id": "m7",
+        "title": "Molecular Genetics and Biotechnology",
+        "lessonCount": 5
+      },
+      {
+        "id": "m8",
+        "title": "Evolution and Diversity of Life",
+        "lessonCount": 5
+      },
+      {
+        "id": "m9",
+        "title": "Prokaryotes and Viruses",
+        "lessonCount": 5
+      },
+      {
+        "id": "m10",
+        "title": "Introduction to Ecology",
+        "lessonCount": 5
+      }
+    ],
+    "subcollectionModulesCount": 17,
+    "subcollectionModules": [
+      {
+        "id": "animal-systems",
+        "title": "6. ANIMAL FORM AND FUNCTION (SURVEY)"
+      },
+      {
+        "id": "biotechnology",
+        "title": "5. BIOTECHNOLOGY"
+      },
+      {
+        "id": "evolution-diversity",
+        "title": "4. EVOLUTION AND DIVERSITY OF LIFE"
+      },
+      {
+        "id": "genetics",
+        "title": "3. GENETICS AND MOLECULAR BIOLOGY"
+      },
+      {
+        "id": "m7",
+        "title": "Molecular Genetics and Biotechnology"
+      },
+      {
+        "id": "m3",
+        "title": "Cell Structure and Function"
+      },
+      {
+        "id": "m2",
+        "title": "Chemistry of Life"
+      },
+      {
+        "id": "m6",
+        "title": "Cell Division and Genetics"
+      },
+      {
+        "id": "m10",
+        "title": "Introduction to Ecology"
+      },
+      {
+        "id": "the-cell",
+        "title": "2. THE CELL"
+      },
+      {
+        "id": "intro-to-biology",
+        "title": "1. INTRODUCTION TO BIOLOGY"
+      },
+      {
+        "id": "m4",
+        "title": "Energy and Enzymes"
+      },
+      {
+        "id": "m8",
+        "title": "Evolution and Diversity of Life"
+      },
+      {
+        "id": "m1",
+        "title": "Introduction to Biology and the Scientific Method"
+      },
+      {
+        "id": "m5",
+        "title": "Cellular Respiration and Photosynthesis"
+      },
+      {
+        "id": "m9",
+        "title": "Prokaryotes and Viruses"
+      },
+      {
+        "id": "plant-systems",
+        "title": "7. PLANT FORM AND FUNCTION (SURVEY)"
+      }
+    ],
+    "neonModulesCount": 17,
+    "neonCandidateCount": 7,
+    "candidateModules": [
+      {
+        "id": "animal-systems",
+        "title": "6. ANIMAL FORM AND FUNCTION (SURVEY)",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m3: \"Cell Structure and Function\" (overlap: function)"
+      },
+      {
+        "id": "biotechnology",
+        "title": "5. BIOTECHNOLOGY",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m7: \"Molecular Genetics and Biotechnology\" (overlap: biotechnology)"
+      },
+      {
+        "id": "evolution-diversity",
+        "title": "4. EVOLUTION AND DIVERSITY OF LIFE",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m2: \"Chemistry of Life\" (overlap: life)"
+      },
+      {
+        "id": "genetics",
+        "title": "3. GENETICS AND MOLECULAR BIOLOGY",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m1: \"Introduction to Biology and the Scientific Method\" (overlap: biology)"
+      },
+      {
+        "id": "the-cell",
+        "title": "2. THE CELL",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m3: \"Cell Structure and Function\" (overlap: cell)"
+      },
+      {
+        "id": "intro-to-biology",
+        "title": "1. INTRODUCTION TO BIOLOGY",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m1: \"Introduction to Biology and the Scientific Method\" (overlap: biology)"
+      },
+      {
+        "id": "plant-systems",
+        "title": "7. PLANT FORM AND FUNCTION (SURVEY)",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m3: \"Cell Structure and Function\" (overlap: function)"
+      }
+    ]
+  },
+  "BIO102": {
+    "courseId": "BIO102",
+    "embeddedModulesCount": 10,
+    "embeddedModules": [
+      {
+        "id": "m1",
+        "title": "Introduction to Microbiology: Viruses and Bacteria",
+        "lessonCount": 6
+      },
+      {
+        "id": "m2",
+        "title": "Fungi: Structure, Classification, and Ecological Roles",
+        "lessonCount": 6
+      },
+      {
+        "id": "m3",
+        "title": "Survey of the Plant Kingdom: Diversity and Adaptations",
+        "lessonCount": 6
+      },
+      {
+        "id": "m4",
+        "title": "Survey of the Animal Kingdom: Phylogeny and Adaptations",
+        "lessonCount": 6
+      },
+      {
+        "id": "m5",
+        "title": "Plant Physiology: Nutrition, Respiration, and Growth",
+        "lessonCount": 6
+      },
+      {
+        "id": "m6",
+        "title": "Animal Physiology I: Nutrition and Respiratory Systems",
+        "lessonCount": 6
+      },
+      {
+        "id": "m7",
+        "title": "Animal Physiology II: Circulatory and Excretory Systems",
+        "lessonCount": 6
+      },
+      {
+        "id": "m8",
+        "title": "Animal Physiology III: Reproduction and Development",
+        "lessonCount": 6
+      },
+      {
+        "id": "m9",
+        "title": "Ecological Adaptations of Plants and Animals",
+        "lessonCount": 6
+      },
+      {
+        "id": "m10",
+        "title": "Laboratory Techniques and Practical Applications",
+        "lessonCount": 6
+      }
+    ],
+    "subcollectionModulesCount": 12,
+    "subcollectionModules": [
+      {
+        "id": "m7",
+        "title": "Animal Physiology II: Circulatory and Excretory Systems"
+      },
+      {
+        "id": "m3",
+        "title": "Survey of the Plant Kingdom: Diversity and Adaptations"
+      },
+      {
+        "id": "m2",
+        "title": "Fungi: Structure, Classification, and Ecological Roles"
+      },
+      {
+        "id": "m6",
+        "title": "Animal Physiology I: Nutrition and Respiratory Systems"
+      },
+      {
+        "id": "m10",
+        "title": "Laboratory Techniques and Practical Applications"
+      },
+      {
+        "id": "m4",
+        "title": "Survey of the Animal Kingdom: Phylogeny and Adaptations"
+      },
+      {
+        "id": "m8",
+        "title": "Animal Physiology III: Reproduction and Development"
+      },
+      {
+        "id": "m1",
+        "title": "Introduction to Microbiology: Viruses and Bacteria"
+      },
+      {
+        "id": "m5",
+        "title": "Plant Physiology: Nutrition, Respiration, and Growth"
+      },
+      {
+        "id": "m9",
+        "title": "Ecological Adaptations of Plants and Animals"
+      },
+      {
+        "id": "ecology",
+        "title": "1. ECOLOGY"
+      },
+      {
+        "id": "plant-bio",
+        "title": "2. PLANT BIOLOGY"
+      }
+    ],
+    "neonModulesCount": 12,
+    "neonCandidateCount": 2,
+    "candidateModules": [
+      {
+        "id": "ecology",
+        "title": "1. ECOLOGY",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      },
+      {
+        "id": "plant-bio",
+        "title": "2. PLANT BIOLOGY",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m3: \"Survey of the Plant Kingdom: Diversity and Adaptations\" (overlap: plant)"
+      }
+    ]
+  },
+  "CHM101": {
+    "courseId": "CHM101",
+    "embeddedModulesCount": 6,
+    "embeddedModules": [
+      {
+        "id": "m1",
+        "title": "Atomic Structure and Periodicity",
+        "lessonCount": 5
+      },
+      {
+        "id": "m2",
+        "title": "Chemical Bonding and Molecular Geometry",
+        "lessonCount": 5
+      },
+      {
+        "id": "m3",
+        "title": "Stoichiometry and States of Matter",
+        "lessonCount": 5
+      },
+      {
+        "id": "m4",
+        "title": "Thermodynamics and Kinetics",
+        "lessonCount": 6
+      },
+      {
+        "id": "m5",
+        "title": "Chemical Equilibrium and Le Chatelier’s Principle",
+        "lessonCount": 5
+      },
+      {
+        "id": "m6",
+        "title": "Acids, Bases, and Redox Reactions",
+        "lessonCount": 6
+      }
+    ],
+    "subcollectionModulesCount": 12,
+    "subcollectionModules": [
+      {
+        "id": "m11",
+        "title": "Intermolecular Forces, Liquids, and Solids"
+      },
+      {
+        "id": "m7",
+        "title": "Periodic Properties of the Elements"
+      },
+      {
+        "id": "atomic-structure",
+        "title": "1. ATOMIC STRUCTURE"
+      },
+      {
+        "id": "m3",
+        "title": "Stoichiometry and States of Matter"
+      },
+      {
+        "id": "m2",
+        "title": "Chemical Bonding and Molecular Geometry"
+      },
+      {
+        "id": "m6",
+        "title": "Acids, Bases, and Redox Reactions"
+      },
+      {
+        "id": "m10",
+        "title": "Gases and the Kinetic-Molecular Theory"
+      },
+      {
+        "id": "m4",
+        "title": "Thermodynamics and Kinetics"
+      },
+      {
+        "id": "m8",
+        "title": "Chemical Bonding I: Basic Concepts"
+      },
+      {
+        "id": "m1",
+        "title": "Atomic Structure and Periodicity"
+      },
+      {
+        "id": "m5",
+        "title": "Chemical Equilibrium and Le Chatelier’s Principle"
+      },
+      {
+        "id": "m9",
+        "title": "Chemical Bonding II: Molecular Geometry and Bonding Theories"
+      }
+    ],
+    "neonModulesCount": 12,
+    "neonCandidateCount": 6,
+    "candidateModules": [
+      {
+        "id": "m11",
+        "title": "Intermolecular Forces, Liquids, and Solids",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      },
+      {
+        "id": "m7",
+        "title": "Periodic Properties of the Elements",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      },
+      {
+        "id": "atomic-structure",
+        "title": "1. ATOMIC STRUCTURE",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m1: \"Atomic Structure and Periodicity\" (overlap: atomic, structure)"
+      },
+      {
+        "id": "m10",
+        "title": "Gases and the Kinetic-Molecular Theory",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m2: \"Chemical Bonding and Molecular Geometry\" (overlap: molecular)"
+      },
+      {
+        "id": "m8",
+        "title": "Chemical Bonding I: Basic Concepts",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m2: \"Chemical Bonding and Molecular Geometry\" (overlap: chemical, bonding)"
+      },
+      {
+        "id": "m9",
+        "title": "Chemical Bonding II: Molecular Geometry and Bonding Theories",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m2: \"Chemical Bonding and Molecular Geometry\" (overlap: chemical, bonding, molecular, geometry, bonding)"
+      }
+    ]
+  },
+  "CHM102": {
+    "courseId": "CHM102",
+    "embeddedModulesCount": 10,
+    "embeddedModules": [
+      {
+        "id": "m1",
+        "title": "Introduction to the Chemistry of Selected Metals and Non-metals",
+        "lessonCount": 5
+      },
+      {
+        "id": "m2",
+        "title": "Introduction to Transition Metal Chemistry",
+        "lessonCount": 5
+      },
+      {
+        "id": "m3",
+        "title": "Allotropes of Carbon and Their Chemistry",
+        "lessonCount": 5
+      },
+      {
+        "id": "m4",
+        "title": "Development and Importance of Organic Chemistry",
+        "lessonCount": 5
+      },
+      {
+        "id": "m5",
+        "title": "Isolation and Purification of Organic Compounds",
+        "lessonCount": 5
+      },
+      {
+        "id": "m6",
+        "title": "Determination of Structures of Organic Compounds",
+        "lessonCount": 5
+      },
+      {
+        "id": "m7",
+        "title": "Nomenclature of Organic Compounds",
+        "lessonCount": 5
+      },
+      {
+        "id": "m8",
+        "title": "Electronic Theory in Organic Chemistry",
+        "lessonCount": 5
+      },
+      {
+        "id": "m9",
+        "title": "Reaction Mechanisms, Kinetics, and Stereochemistry",
+        "lessonCount": 5
+      },
+      {
+        "id": "m10",
+        "title": "Chemistry of Organic Functional Groups",
+        "lessonCount": 5
+      }
+    ],
+    "subcollectionModulesCount": 12,
+    "subcollectionModules": [
+      {
+        "id": "functional-groups",
+        "title": "2. FUNCTIONAL GROUPS"
+      },
+      {
+        "id": "m7",
+        "title": "Nomenclature of Organic Compounds"
+      },
+      {
+        "id": "m3",
+        "title": "Allotropes of Carbon and Their Chemistry"
+      },
+      {
+        "id": "organic-intro",
+        "title": "1. INTRODUCTION TO ORGANIC CHEMISTRY"
+      },
+      {
+        "id": "m2",
+        "title": "Introduction to Transition Metal Chemistry"
+      },
+      {
+        "id": "m6",
+        "title": "Determination of Structures of Organic Compounds"
+      },
+      {
+        "id": "m10",
+        "title": "Chemistry of Organic Functional Groups"
+      },
+      {
+        "id": "m4",
+        "title": "Development and Importance of Organic Chemistry"
+      },
+      {
+        "id": "m8",
+        "title": "Electronic Theory in Organic Chemistry"
+      },
+      {
+        "id": "m1",
+        "title": "Introduction to the Chemistry of Selected Metals and Non-metals"
+      },
+      {
+        "id": "m5",
+        "title": "Isolation and Purification of Organic Compounds"
+      },
+      {
+        "id": "m9",
+        "title": "Reaction Mechanisms, Kinetics, and Stereochemistry"
+      }
+    ],
+    "neonModulesCount": 12,
+    "neonCandidateCount": 2,
+    "candidateModules": [
+      {
+        "id": "functional-groups",
+        "title": "2. FUNCTIONAL GROUPS",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m10: \"Chemistry of Organic Functional Groups\" (overlap: functional, groups)"
+      },
+      {
+        "id": "organic-intro",
+        "title": "1. INTRODUCTION TO ORGANIC CHEMISTRY",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m1: \"Introduction to the Chemistry of Selected Metals and Non-metals\" (overlap: chemistry)"
+      }
+    ]
+  },
+  "CHM107": {
+    "courseId": "CHM107",
+    "embeddedModulesCount": 6,
+    "embeddedModules": [
+      {
+        "id": "m1",
+        "title": "Module 1: Laboratory Safety and Risk Management",
+        "lessonCount": 6
+      },
+      {
+        "id": "m2",
+        "title": "Module 2: Metrology and Instrumentation in Chemistry",
+        "lessonCount": 6
+      },
+      {
+        "id": "m3",
+        "title": "Module 3: Solution Preparation and Standardization",
+        "lessonCount": 6
+      },
+      {
+        "id": "m4",
+        "title": "Module 4: Acid-Base Titrimetric Analysis",
+        "lessonCount": 6
+      },
+      {
+        "id": "m5",
+        "title": "Module 5: Redox Titrimetric Analysis",
+        "lessonCount": 6
+      },
+      {
+        "id": "m6",
+        "title": "Module 6: Qualitative Analysis of Inorganic Compounds",
+        "lessonCount": 6
+      }
+    ],
+    "subcollectionModulesCount": 13,
+    "subcollectionModules": [
+      {
+        "id": "m11",
+        "title": "Electrochemistry"
+      },
+      {
+        "id": "m7",
+        "title": "Solutions and Colligative Properties"
+      },
+      {
+        "id": "m3",
+        "title": "Module 3: Solution Preparation and Standardization"
+      },
+      {
+        "id": "lab-safety",
+        "title": "1. LABORATORY SAFETY AND TECHNIQUES"
+      },
+      {
+        "id": "m2",
+        "title": "Module 2: Metrology and Instrumentation in Chemistry"
+      },
+      {
+        "id": "m6",
+        "title": "Module 6: Qualitative Analysis of Inorganic Compounds"
+      },
+      {
+        "id": "m10",
+        "title": "Equilibrium and Le Chatelier's Principle"
+      },
+      {
+        "id": "m4",
+        "title": "Module 4: Acid-Base Titrimetric Analysis"
+      },
+      {
+        "id": "m12",
+        "title": "Scientific Communication and Data Analysis"
+      },
+      {
+        "id": "m8",
+        "title": "Acids, Bases, and pH"
+      },
+      {
+        "id": "m1",
+        "title": "Module 1: Laboratory Safety and Risk Management"
+      },
+      {
+        "id": "m5",
+        "title": "Module 5: Redox Titrimetric Analysis"
+      },
+      {
+        "id": "m9",
+        "title": "Chemical Kinetics"
+      }
+    ],
+    "neonModulesCount": 13,
+    "neonCandidateCount": 7,
+    "candidateModules": [
+      {
+        "id": "m11",
+        "title": "Electrochemistry",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      },
+      {
+        "id": "m7",
+        "title": "Solutions and Colligative Properties",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      },
+      {
+        "id": "lab-safety",
+        "title": "1. LABORATORY SAFETY AND TECHNIQUES",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m1: \"Module 1: Laboratory Safety and Risk Management\" (overlap: laboratory, safety)"
+      },
+      {
+        "id": "m10",
+        "title": "Equilibrium and Le Chatelier's Principle",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      },
+      {
+        "id": "m12",
+        "title": "Scientific Communication and Data Analysis",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m4: \"Module 4: Acid-Base Titrimetric Analysis\" (overlap: analysis)"
+      },
+      {
+        "id": "m8",
+        "title": "Acids, Bases, and pH",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      },
+      {
+        "id": "m9",
+        "title": "Chemical Kinetics",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      }
+    ]
+  },
+  "CHM108": {
+    "courseId": "CHM108",
+    "embeddedModulesCount": 7,
+    "embeddedModules": [
+      {
+        "id": "m1",
+        "title": "Laboratory Safety and Foundational Skills",
+        "lessonCount": 5
+      },
+      {
+        "id": "m2",
+        "title": "Physical Constant Determination",
+        "lessonCount": 5
+      },
+      {
+        "id": "m3",
+        "title": "Qualitative Organic Analysis I: Preliminary Tests",
+        "lessonCount": 5
+      },
+      {
+        "id": "m4",
+        "title": "Qualitative Organic Analysis II: Elemental Analysis",
+        "lessonCount": 5
+      },
+      {
+        "id": "m5",
+        "title": "Functional Group Analysis",
+        "lessonCount": 5
+      },
+      {
+        "id": "m6",
+        "title": "Quantitative Volumetric Analysis",
+        "lessonCount": 5
+      },
+      {
+        "id": "m7",
+        "title": "Separation Techniques",
+        "lessonCount": 5
+      }
+    ],
+    "subcollectionModulesCount": 10,
+    "subcollectionModules": [
+      {
+        "id": "m7",
+        "title": "Separation Techniques"
+      },
+      {
+        "id": "m3",
+        "title": "Qualitative Organic Analysis I: Preliminary Tests"
+      },
+      {
+        "id": "m2",
+        "title": "Physical Constant Determination"
+      },
+      {
+        "id": "m6",
+        "title": "Quantitative Volumetric Analysis"
+      },
+      {
+        "id": "qualitative-analysis",
+        "title": "1. QUALITATIVE ANALYSIS"
+      },
+      {
+        "id": "m4",
+        "title": "Qualitative Organic Analysis II: Elemental Analysis"
+      },
+      {
+        "id": "m8",
+        "title": "Module 8: Solutions and Colligative Properties"
+      },
+      {
+        "id": "m1",
+        "title": "Laboratory Safety and Foundational Skills"
+      },
+      {
+        "id": "m5",
+        "title": "Functional Group Analysis"
+      },
+      {
+        "id": "m9",
+        "title": "Module 9: Coordination Chemistry and Complex Ions"
+      }
+    ],
+    "neonModulesCount": 10,
+    "neonCandidateCount": 3,
+    "candidateModules": [
+      {
+        "id": "qualitative-analysis",
+        "title": "1. QUALITATIVE ANALYSIS",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m3: \"Qualitative Organic Analysis I: Preliminary Tests\" (overlap: qualitative, analysis)"
+      },
+      {
+        "id": "m8",
+        "title": "Module 8: Solutions and Colligative Properties",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      },
+      {
+        "id": "m9",
+        "title": "Module 9: Coordination Chemistry and Complex Ions",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      }
+    ]
+  },
+  "COS101": {
+    "courseId": "COS101",
+    "embeddedModulesCount": 6,
+    "embeddedModules": [
+      {
+        "id": "m1",
+        "title": "Foundations and History of Computing",
+        "lessonCount": 5
+      },
+      {
+        "id": "m2",
+        "title": "Hardware and System Architecture",
+        "lessonCount": 5
+      },
+      {
+        "id": "m3",
+        "title": "Software, Humanware, and Logic",
+        "lessonCount": 5
+      },
+      {
+        "id": "m4",
+        "title": "Information Processing and Society",
+        "lessonCount": 5
+      },
+      {
+        "id": "m5",
+        "title": "The Computing Profession and Specializations",
+        "lessonCount": 5
+      },
+      {
+        "id": "m6",
+        "title": "Internet, Connectivity, and the Future",
+        "lessonCount": 5
+      }
+    ],
+    "subcollectionModulesCount": 7,
+    "subcollectionModules": [
+      {
+        "id": "m3",
+        "title": "Software, Humanware, and Logic"
+      },
+      {
+        "id": "intro-computing",
+        "title": "1. INTRODUCTION TO COMPUTING"
+      },
+      {
+        "id": "m2",
+        "title": "Hardware and System Architecture"
+      },
+      {
+        "id": "m6",
+        "title": "Internet, Connectivity, and the Future"
+      },
+      {
+        "id": "m4",
+        "title": "Information Processing and Society"
+      },
+      {
+        "id": "m1",
+        "title": "Foundations and History of Computing"
+      },
+      {
+        "id": "m5",
+        "title": "The Computing Profession and Specializations"
+      }
+    ],
+    "neonModulesCount": 7,
+    "neonCandidateCount": 1,
+    "candidateModules": [
+      {
+        "id": "intro-computing",
+        "title": "1. INTRODUCTION TO COMPUTING",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m1: \"Foundations and History of Computing\" (overlap: computing)"
+      }
+    ]
+  },
+  "GET101": {
+    "courseId": "GET101",
+    "embeddedModulesCount": 8,
+    "embeddedModules": [
+      {
+        "id": "m1",
+        "title": "Module 1: Evolution of Engineering",
+        "lessonCount": 6
+      },
+      {
+        "id": "m2",
+        "title": "Module 2: The Engineering Profession",
+        "lessonCount": 6
+      },
+      {
+        "id": "m3",
+        "title": "Module 3: Engineering Regulation and Professional Bodies",
+        "lessonCount": 6
+      },
+      {
+        "id": "m4",
+        "title": "Module 4: Engineering Ethics and Social Responsibility",
+        "lessonCount": 6
+      },
+      {
+        "id": "m5",
+        "title": "Module 5: Engineering and Sustainable Development",
+        "lessonCount": 6
+      },
+      {
+        "id": "m6",
+        "title": "Module 6: Engineering, Culture, and Society",
+        "lessonCount": 6
+      },
+      {
+        "id": "m7",
+        "title": "Module 7: Engineering Communication and Leadership",
+        "lessonCount": 6
+      },
+      {
+        "id": "m8",
+        "title": "Module 8: Future Trends in Engineering and Society",
+        "lessonCount": 6
+      }
+    ],
+    "subcollectionModulesCount": 9,
+    "subcollectionModules": [
+      {
+        "id": "m7",
+        "title": "Module 7: Engineering Communication and Leadership"
+      },
+      {
+        "id": "m3",
+        "title": "Module 3: Engineering Regulation and Professional Bodies"
+      },
+      {
+        "id": "m2",
+        "title": "Module 2: The Engineering Profession"
+      },
+      {
+        "id": "m6",
+        "title": "Module 6: Engineering, Culture, and Society"
+      },
+      {
+        "id": "intro-engineering",
+        "title": "1. INTRODUCTION TO ENGINEERING"
+      },
+      {
+        "id": "m4",
+        "title": "Module 4: Engineering Ethics and Social Responsibility"
+      },
+      {
+        "id": "m8",
+        "title": "Module 8: Future Trends in Engineering and Society"
+      },
+      {
+        "id": "m1",
+        "title": "Module 1: Evolution of Engineering"
+      },
+      {
+        "id": "m5",
+        "title": "Module 5: Engineering and Sustainable Development"
+      }
+    ],
+    "neonModulesCount": 9,
+    "neonCandidateCount": 1,
+    "candidateModules": [
+      {
+        "id": "intro-engineering",
+        "title": "1. INTRODUCTION TO ENGINEERING",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m1: \"Module 1: Evolution of Engineering\" (overlap: engineering)"
+      }
+    ]
+  },
+  "GET102": {
+    "courseId": "GET102",
+    "embeddedModulesCount": 10,
+    "embeddedModules": [
+      {
+        "id": "m1",
+        "title": "Introduction to Engineering Graphics",
+        "lessonCount": 6
+      },
+      {
+        "id": "m2",
+        "title": "Geometric Constructions and Basic Shapes",
+        "lessonCount": 6
+      },
+      {
+        "id": "m3",
+        "title": "Orthographic Projections and Multiview Drawings",
+        "lessonCount": 6
+      },
+      {
+        "id": "m4",
+        "title": "Auxiliary Views and Sectional Views",
+        "lessonCount": 6
+      },
+      {
+        "id": "m5",
+        "title": "Dimensioning and Tolerancing",
+        "lessonCount": 6
+      },
+      {
+        "id": "m6",
+        "title": "Introduction to Solid Modelling and CAD",
+        "lessonCount": 6
+      },
+      {
+        "id": "m7",
+        "title": "Isometric and Pictorial Drawings",
+        "lessonCount": 6
+      },
+      {
+        "id": "m8",
+        "title": "Working Drawings and Assembly Drawings",
+        "lessonCount": 6
+      },
+      {
+        "id": "m9",
+        "title": "Introduction to 3D Modelling and Advanced CAD Techniques",
+        "lessonCount": 6
+      },
+      {
+        "id": "m10",
+        "title": "Engineering Graphics and Solid Modelling Projects",
+        "lessonCount": 6
+      }
+    ],
+    "subcollectionModulesCount": 11,
+    "subcollectionModules": [
+      {
+        "id": "m7",
+        "title": "Isometric and Pictorial Drawings"
+      },
+      {
+        "id": "m3",
+        "title": "Orthographic Projections and Multiview Drawings"
+      },
+      {
+        "id": "m2",
+        "title": "Geometric Constructions and Basic Shapes"
+      },
+      {
+        "id": "m6",
+        "title": "Introduction to Solid Modelling and CAD"
+      },
+      {
+        "id": "m10",
+        "title": "Engineering Graphics and Solid Modelling Projects"
+      },
+      {
+        "id": "m4",
+        "title": "Auxiliary Views and Sectional Views"
+      },
+      {
+        "id": "m8",
+        "title": "Working Drawings and Assembly Drawings"
+      },
+      {
+        "id": "m1",
+        "title": "Introduction to Engineering Graphics"
+      },
+      {
+        "id": "m5",
+        "title": "Dimensioning and Tolerancing"
+      },
+      {
+        "id": "m9",
+        "title": "Introduction to 3D Modelling and Advanced CAD Techniques"
+      },
+      {
+        "id": "applied-mechanics",
+        "title": "1. APPLIED MECHANICS"
+      }
+    ],
+    "neonModulesCount": 11,
+    "neonCandidateCount": 1,
+    "candidateModules": [
+      {
+        "id": "applied-mechanics",
+        "title": "1. APPLIED MECHANICS",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      }
+    ]
+  },
+  "GST111": {
+    "courseId": "GST111",
+    "embeddedModulesCount": 10,
+    "embeddedModules": [
+      {
+        "id": "m1",
+        "title": "The Notion & Mechanisms of Speaking",
+        "lessonCount": 5
+      },
+      {
+        "id": "m2",
+        "title": "Phonetics: The Science of Sound",
+        "lessonCount": 6
+      },
+      {
+        "id": "m3",
+        "title": "Phonology: Systems & Patterns",
+        "lessonCount": 6
+      },
+      {
+        "id": "m4",
+        "title": "English Grammar: Sentence Structure",
+        "lessonCount": 5
+      },
+      {
+        "id": "m5",
+        "title": "Word Classes (Parts of Speech)",
+        "lessonCount": 6
+      },
+      {
+        "id": "m6",
+        "title": "Reported Speech",
+        "lessonCount": 5
+      },
+      {
+        "id": "m7",
+        "title": "Logic & Reasoning",
+        "lessonCount": 5
+      },
+      {
+        "id": "m8",
+        "title": "Advanced Writing Skills",
+        "lessonCount": 5
+      },
+      {
+        "id": "m9",
+        "title": "Reading & Comprehension",
+        "lessonCount": 5
+      },
+      {
+        "id": "m10",
+        "title": "ICT & Ethical Issues",
+        "lessonCount": 5
+      }
+    ],
+    "subcollectionModulesCount": 20,
+    "subcollectionModules": [
+      {
+        "id": "writing-reading-ict-full",
+        "title": "10. WRITING, READING & ICT"
+      },
+      {
+        "id": "nouns-verbs-full",
+        "title": "6. NOUNS & VERBS"
+      },
+      {
+        "id": "reported-speech-full",
+        "title": "4. DIRECT AND INDIRECT SPEECH"
+      },
+      {
+        "id": "other-word-classes-full",
+        "title": "7. ADJECTIVES, ADVERBS, PREPOSITIONS & PRONOUNS"
+      },
+      {
+        "id": "grammar-word-classes-full",
+        "title": "5. GRAMMAR & WORD CLASSES"
+      },
+      {
+        "id": "m7",
+        "title": "Logic & Reasoning"
+      },
+      {
+        "id": "logic-reasoning-full",
+        "title": "8. LOGIC & REASONING"
+      },
+      {
+        "id": "m3",
+        "title": "Phonology: Systems & Patterns"
+      },
+      {
+        "id": "english-sound-system",
+        "title": "2. ENGLISH SOUND SYSTEM (CONSONANTS & VOWELS)"
+      },
+      {
+        "id": "m2",
+        "title": "Phonetics: The Science of Sound"
+      },
+      {
+        "id": "m6",
+        "title": "Reported Speech"
+      },
+      {
+        "id": "m10",
+        "title": "ICT & Ethical Issues"
+      },
+      {
+        "id": "speaking-phonetics-phonology",
+        "title": "1. SPEAKING, PHONETICS & PHONOLOGY"
+      },
+      {
+        "id": "ethics-writing-full",
+        "title": "9. ETHICS IN ADVANCED WRITING"
+      },
+      {
+        "id": "m4",
+        "title": "English Grammar: Sentence Structure"
+      },
+      {
+        "id": "m8",
+        "title": "Advanced Writing Skills"
+      },
+      {
+        "id": "sentence-construction",
+        "title": "3. SENTENCE CONSTRUCTION & TYPES"
+      },
+      {
+        "id": "m1",
+        "title": "The Notion & Mechanisms of Speaking"
+      },
+      {
+        "id": "m5",
+        "title": "Word Classes (Parts of Speech)"
+      },
+      {
+        "id": "m9",
+        "title": "Reading & Comprehension"
+      }
+    ],
+    "neonModulesCount": 20,
+    "neonCandidateCount": 10,
+    "candidateModules": [
+      {
+        "id": "writing-reading-ict-full",
+        "title": "10. WRITING, READING & ICT",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m8: \"Advanced Writing Skills\" (overlap: writing)"
+      },
+      {
+        "id": "nouns-verbs-full",
+        "title": "6. NOUNS & VERBS",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      },
+      {
+        "id": "reported-speech-full",
+        "title": "4. DIRECT AND INDIRECT SPEECH",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m6: \"Reported Speech\" (overlap: speech)"
+      },
+      {
+        "id": "other-word-classes-full",
+        "title": "7. ADJECTIVES, ADVERBS, PREPOSITIONS & PRONOUNS",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      },
+      {
+        "id": "grammar-word-classes-full",
+        "title": "5. GRAMMAR & WORD CLASSES",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m4: \"English Grammar: Sentence Structure\" (overlap: grammar)"
+      },
+      {
+        "id": "logic-reasoning-full",
+        "title": "8. LOGIC & REASONING",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m7: \"Logic & Reasoning\" (overlap: logic, reasoning)"
+      },
+      {
+        "id": "english-sound-system",
+        "title": "2. ENGLISH SOUND SYSTEM (CONSONANTS & VOWELS)",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m2: \"Phonetics: The Science of Sound\" (overlap: sound)"
+      },
+      {
+        "id": "speaking-phonetics-phonology",
+        "title": "1. SPEAKING, PHONETICS & PHONOLOGY",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m1: \"The Notion & Mechanisms of Speaking\" (overlap: speaking)"
+      },
+      {
+        "id": "ethics-writing-full",
+        "title": "9. ETHICS IN ADVANCED WRITING",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m8: \"Advanced Writing Skills\" (overlap: writing)"
+      },
+      {
+        "id": "sentence-construction",
+        "title": "3. SENTENCE CONSTRUCTION & TYPES",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m4: \"English Grammar: Sentence Structure\" (overlap: sentence)"
+      }
+    ]
+  },
+  "GST112": {
+    "courseId": "GST112",
+    "embeddedModulesCount": 10,
+    "embeddedModules": [
+      {
+        "id": "concept-culture",
+        "title": "1. CONCEPT OF CULTURE",
+        "lessonCount": 5
+      },
+      {
+        "id": "nigerian-peoples",
+        "title": "2. NIGERIAN PEOPLES: ETHNIC COMPOSITION",
+        "lessonCount": 4
+      },
+      {
+        "id": "pre-colonial-politics",
+        "title": "3. PRE-COLONIAL POLITICAL SYSTEMS",
+        "lessonCount": 4
+      },
+      {
+        "id": "indigenous-economics",
+        "title": "4. INDIGENOUS ECONOMIC SYSTEMS",
+        "lessonCount": 4
+      },
+      {
+        "id": "marriage-family",
+        "title": "5. MARRIAGE AND FAMILY SYSTEMS",
+        "lessonCount": 4
+      },
+      {
+        "id": "religion-nigeria",
+        "title": "6. RELIGION AND SOCIETY",
+        "lessonCount": 4
+      },
+      {
+        "id": "history-nigeria",
+        "title": "7. HISTORY OF NIGERIA: EVOLUTION OF A NATION",
+        "lessonCount": 4
+      },
+      {
+        "id": "social-justice",
+        "title": "8. SOCIAL JUSTICE AND NATIONAL INTEGRATION",
+        "lessonCount": 3
+      },
+      {
+        "id": "economy-development",
+        "title": "9. ECONOMY AND DEVELOPMENT",
+        "lessonCount": 3
+      },
+      {
+        "id": "science-tech",
+        "title": "10. SCIENCE AND TECHNOLOGY IN NIGERIA",
+        "lessonCount": 2
+      }
+    ],
+    "subcollectionModulesCount": 18,
+    "subcollectionModules": [
+      {
+        "id": "economy-development",
+        "title": "9. ECONOMY AND DEVELOPMENT"
+      },
+      {
+        "id": "m7",
+        "title": "Re-Orientation and National Values: Policies and Programs"
+      },
+      {
+        "id": "m3",
+        "title": "Challenges of Nation-Building: Military Intervention and the Nigerian Civil War"
+      },
+      {
+        "id": "religion-nigeria",
+        "title": "6. RELIGION AND SOCIETY"
+      },
+      {
+        "id": "nigerian-peoples",
+        "title": "2. NIGERIAN PEOPLES: ETHNIC COMPOSITION"
+      },
+      {
+        "id": "m2",
+        "title": "Colonial Rule and the Formation of Nigeria as a Political Unit"
+      },
+      {
+        "id": "history-nigeria",
+        "title": "7. HISTORY OF NIGERIA: EVOLUTION OF A NATION"
+      },
+      {
+        "id": "m6",
+        "title": "Citizenship, Norms, and Indigenous Values"
+      },
+      {
+        "id": "science-tech",
+        "title": "10. SCIENCE AND TECHNOLOGY IN NIGERIA"
+      },
+      {
+        "id": "marriage-family",
+        "title": "5. MARRIAGE AND FAMILY SYSTEMS"
+      },
+      {
+        "id": "indigenous-economics",
+        "title": "4. INDIGENOUS ECONOMIC SYSTEMS"
+      },
+      {
+        "id": "pre-colonial-politics",
+        "title": "3. PRE-COLONIAL POLITICAL SYSTEMS"
+      },
+      {
+        "id": "m4",
+        "title": "Trade, Economics, and Self-Reliance in Nigeria"
+      },
+      {
+        "id": "m8",
+        "title": "Contemporary Socio-Political and Cultural Developments"
+      },
+      {
+        "id": "m1",
+        "title": "Pre-Colonial Nigeria: History, Culture, and Art up to 1800"
+      },
+      {
+        "id": "concept-culture",
+        "title": "1. CONCEPT OF CULTURE"
+      },
+      {
+        "id": "m5",
+        "title": "Social Justice, Law, and National Development"
+      },
+      {
+        "id": "social-justice",
+        "title": "8. SOCIAL JUSTICE AND NATIONAL INTEGRATION"
+      }
+    ],
+    "neonModulesCount": 18,
+    "neonCandidateCount": 8,
+    "candidateModules": [
+      {
+        "id": "m7",
+        "title": "Re-Orientation and National Values: Policies and Programs",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "social-justice: \"8. SOCIAL JUSTICE AND NATIONAL INTEGRATION\" (overlap: national)"
+      },
+      {
+        "id": "m3",
+        "title": "Challenges of Nation-Building: Military Intervention and the Nigerian Civil War",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "nigerian-peoples: \"2. NIGERIAN PEOPLES: ETHNIC COMPOSITION\" (overlap: nigerian)"
+      },
+      {
+        "id": "m2",
+        "title": "Colonial Rule and the Formation of Nigeria as a Political Unit",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "pre-colonial-politics: \"3. PRE-COLONIAL POLITICAL SYSTEMS\" (overlap: colonial, political)"
+      },
+      {
+        "id": "m6",
+        "title": "Citizenship, Norms, and Indigenous Values",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "indigenous-economics: \"4. INDIGENOUS ECONOMIC SYSTEMS\" (overlap: indigenous)"
+      },
+      {
+        "id": "m4",
+        "title": "Trade, Economics, and Self-Reliance in Nigeria",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "history-nigeria: \"7. HISTORY OF NIGERIA: EVOLUTION OF A NATION\" (overlap: nigeria)"
+      },
+      {
+        "id": "m8",
+        "title": "Contemporary Socio-Political and Cultural Developments",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "pre-colonial-politics: \"3. PRE-COLONIAL POLITICAL SYSTEMS\" (overlap: political)"
+      },
+      {
+        "id": "m1",
+        "title": "Pre-Colonial Nigeria: History, Culture, and Art up to 1800",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "concept-culture: \"1. CONCEPT OF CULTURE\" (overlap: culture)"
+      },
+      {
+        "id": "m5",
+        "title": "Social Justice, Law, and National Development",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "social-justice: \"8. SOCIAL JUSTICE AND NATIONAL INTEGRATION\" (overlap: social, justice, national)"
+      }
+    ]
+  },
+  "PHY101": {
+    "courseId": "PHY101",
+    "embeddedModulesCount": 8,
+    "embeddedModules": [
+      {
+        "id": "m1",
+        "title": "Module 1: Physical Quantities and Vectors",
+        "lessonCount": 5
+      },
+      {
+        "id": "m2",
+        "title": "Module 2: Kinematics of a Particle",
+        "lessonCount": 5
+      },
+      {
+        "id": "m3",
+        "title": "Module 3: Particle Dynamics",
+        "lessonCount": 5
+      },
+      {
+        "id": "m4",
+        "title": "Module 4: Work, Energy, and Power",
+        "lessonCount": 5
+      },
+      {
+        "id": "m5",
+        "title": "Module 5: Conservation Laws and Collisions",
+        "lessonCount": 5
+      },
+      {
+        "id": "m6",
+        "title": "Module 6: Rotational Dynamics",
+        "lessonCount": 5
+      },
+      {
+        "id": "m7",
+        "title": "Module 7: Gravitation",
+        "lessonCount": 5
+      },
+      {
+        "id": "m8",
+        "title": "Module 8: Properties of Matter and Fluids",
+        "lessonCount": 5
+      }
+    ],
+    "subcollectionModulesCount": 11,
+    "subcollectionModules": [
+      {
+        "id": "m7",
+        "title": "Module 7: Gravitation"
+      },
+      {
+        "id": "m3",
+        "title": "Module 3: Particle Dynamics"
+      },
+      {
+        "id": "mechanics",
+        "title": "1. MECHANICS"
+      },
+      {
+        "id": "m2",
+        "title": "Module 2: Kinematics of a Particle"
+      },
+      {
+        "id": "m6",
+        "title": "Module 6: Rotational Dynamics"
+      },
+      {
+        "id": "m10",
+        "title": "Module 10: Torque and Angular Momentum"
+      },
+      {
+        "id": "m4",
+        "title": "Module 4: Work, Energy, and Power"
+      },
+      {
+        "id": "m8",
+        "title": "Module 8: Properties of Matter and Fluids"
+      },
+      {
+        "id": "m1",
+        "title": "Module 1: Physical Quantities and Vectors"
+      },
+      {
+        "id": "m5",
+        "title": "Module 5: Conservation Laws and Collisions"
+      },
+      {
+        "id": "m9",
+        "title": "Module 9: Rotational Motion"
+      }
+    ],
+    "neonModulesCount": 11,
+    "neonCandidateCount": 3,
+    "candidateModules": [
+      {
+        "id": "mechanics",
+        "title": "1. MECHANICS",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      },
+      {
+        "id": "m10",
+        "title": "Module 10: Torque and Angular Momentum",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      },
+      {
+        "id": "m9",
+        "title": "Module 9: Rotational Motion",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m6: \"Module 6: Rotational Dynamics\" (overlap: rotational)"
+      }
+    ]
+  },
+  "PHY102": {
+    "courseId": "PHY102",
+    "embeddedModulesCount": 8,
+    "embeddedModules": [
+      {
+        "id": "m1",
+        "title": "Module 1: Introduction to Electrostatics and Electric Charge",
+        "lessonCount": 6
+      },
+      {
+        "id": "m2",
+        "title": "Module 2: Electric Potential and Capacitance",
+        "lessonCount": 6
+      },
+      {
+        "id": "m3",
+        "title": "Module 3: Current, Resistance, and DC Circuits",
+        "lessonCount": 6
+      },
+      {
+        "id": "m4",
+        "title": "Module 4: Magnetostatics and Magnetic Fields",
+        "lessonCount": 6
+      },
+      {
+        "id": "m5",
+        "title": "Module 5: Electromagnetic Induction and Faraday's Law",
+        "lessonCount": 6
+      },
+      {
+        "id": "m6",
+        "title": "Module 6: Maxwell's Equations and Electromagnetic Waves",
+        "lessonCount": 6
+      },
+      {
+        "id": "m7",
+        "title": "Module 7: AC Circuits and Phasor Analysis",
+        "lessonCount": 6
+      },
+      {
+        "id": "m8",
+        "title": "Module 8: Review, Applications, and Advanced Topics",
+        "lessonCount": 6
+      }
+    ],
+    "subcollectionModulesCount": 10,
+    "subcollectionModules": [
+      {
+        "id": "m7",
+        "title": "Module 7: AC Circuits and Phasor Analysis"
+      },
+      {
+        "id": "m3",
+        "title": "Module 3: Current, Resistance, and DC Circuits"
+      },
+      {
+        "id": "m2",
+        "title": "Module 2: Electric Potential and Capacitance"
+      },
+      {
+        "id": "m6",
+        "title": "Module 6: Maxwell's Equations and Electromagnetic Waves"
+      },
+      {
+        "id": "m10",
+        "title": "Maxwell’s Equations and EM Waves"
+      },
+      {
+        "id": "m4",
+        "title": "Module 4: Magnetostatics and Magnetic Fields"
+      },
+      {
+        "id": "m8",
+        "title": "Module 8: Review, Applications, and Advanced Topics"
+      },
+      {
+        "id": "m1",
+        "title": "Module 1: Introduction to Electrostatics and Electric Charge"
+      },
+      {
+        "id": "m5",
+        "title": "Module 5: Electromagnetic Induction and Faraday's Law"
+      },
+      {
+        "id": "m9",
+        "title": "Module 8: Electromagnetic Induction"
+      }
+    ],
+    "neonModulesCount": 10,
+    "neonCandidateCount": 2,
+    "candidateModules": [
+      {
+        "id": "m10",
+        "title": "Maxwell’s Equations and EM Waves",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m6: \"Module 6: Maxwell's Equations and Electromagnetic Waves\" (overlap: equations, waves)"
+      },
+      {
+        "id": "m9",
+        "title": "Module 8: Electromagnetic Induction",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m5: \"Module 5: Electromagnetic Induction and Faraday's Law\" (overlap: electromagnetic, induction)"
+      }
+    ]
+  },
+  "PHY104": {
+    "courseId": "PHY104",
+    "embeddedModulesCount": 3,
+    "embeddedModules": [
+      {
+        "id": "m1",
+        "title": "Simple Harmonic Motion",
+        "lessonCount": 5
+      },
+      {
+        "id": "m2",
+        "title": "Damped and Coupled Oscillations",
+        "lessonCount": 5
+      },
+      {
+        "id": "m3",
+        "title": "Wave Properties and Classification",
+        "lessonCount": 5
+      }
+    ],
+    "subcollectionModulesCount": 12,
+    "subcollectionModules": [
+      {
+        "id": "m7",
+        "title": "Module 7: Wave Optics: Interference and Diffraction"
+      },
+      {
+        "id": "m3",
+        "title": "Wave Properties and Classification"
+      },
+      {
+        "id": "quantum-intro",
+        "title": "2. Introduction to Quantum Theory"
+      },
+      {
+        "id": "m2",
+        "title": "Damped and Coupled Oscillations"
+      },
+      {
+        "id": "m6",
+        "title": "Module 6: Wave Optics - Interference, Diffraction, and Polarization"
+      },
+      {
+        "id": "m10",
+        "title": "Module 10: Wave Optics: Diffraction"
+      },
+      {
+        "id": "m4",
+        "title": "Module 4: Sound Waves - Propagation and Doppler Effect"
+      },
+      {
+        "id": "m8",
+        "title": "Module 8: Polarization and Modern Optics"
+      },
+      {
+        "id": "m1",
+        "title": "Simple Harmonic Motion"
+      },
+      {
+        "id": "relativity",
+        "title": "1. Special Relativity"
+      },
+      {
+        "id": "m5",
+        "title": "Module 5: Geometric Optics - Reflection, Refraction, and Lenses"
+      },
+      {
+        "id": "m9",
+        "title": "Module 9: Waves at Interfaces and Advanced Topics"
+      }
+    ],
+    "neonModulesCount": 12,
+    "neonCandidateCount": 9,
+    "candidateModules": [
+      {
+        "id": "m7",
+        "title": "Module 7: Wave Optics: Interference and Diffraction",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m3: \"Wave Properties and Classification\" (overlap: wave)"
+      },
+      {
+        "id": "quantum-intro",
+        "title": "2. Introduction to Quantum Theory",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      },
+      {
+        "id": "m6",
+        "title": "Module 6: Wave Optics - Interference, Diffraction, and Polarization",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m3: \"Wave Properties and Classification\" (overlap: wave)"
+      },
+      {
+        "id": "m10",
+        "title": "Module 10: Wave Optics: Diffraction",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m3: \"Wave Properties and Classification\" (overlap: wave)"
+      },
+      {
+        "id": "m4",
+        "title": "Module 4: Sound Waves - Propagation and Doppler Effect",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      },
+      {
+        "id": "m8",
+        "title": "Module 8: Polarization and Modern Optics",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      },
+      {
+        "id": "relativity",
+        "title": "1. Special Relativity",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      },
+      {
+        "id": "m5",
+        "title": "Module 5: Geometric Optics - Reflection, Refraction, and Lenses",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      },
+      {
+        "id": "m9",
+        "title": "Module 9: Waves at Interfaces and Advanced Topics",
+        "order": 0,
+        "classification": "unique-content",
+        "matchedWithKept": "None (no title overlap with kept modules)"
+      }
+    ]
+  },
+  "PHY108": {
+    "courseId": "PHY108",
+    "embeddedModulesCount": 10,
+    "embeddedModules": [
+      {
+        "id": "m1",
+        "title": "Introduction to Experimental Physics and Error Analysis",
+        "lessonCount": 5
+      },
+      {
+        "id": "m2",
+        "title": "Measurement Techniques and Instrumentation",
+        "lessonCount": 5
+      },
+      {
+        "id": "m3",
+        "title": "Mechanics and Mechanical Systems",
+        "lessonCount": 5
+      },
+      {
+        "id": "m4",
+        "title": "Electrical Measurements and Circuits",
+        "lessonCount": 5
+      },
+      {
+        "id": "m5",
+        "title": "Resonance and Wave Phenomena",
+        "lessonCount": 5
+      },
+      {
+        "id": "m6",
+        "title": "Optics and Light Experiments",
+        "lessonCount": 5
+      },
+      {
+        "id": "m7",
+        "title": "Thermal Physics and Heat Experiments",
+        "lessonCount": 5
+      },
+      {
+        "id": "m8",
+        "title": "Fluid Mechanics and Viscosity",
+        "lessonCount": 5
+      },
+      {
+        "id": "m9",
+        "title": "Data Analysis and Report Writing",
+        "lessonCount": 5
+      },
+      {
+        "id": "m10",
+        "title": "Advanced Experiments and Project Work",
+        "lessonCount": 5
+      }
+    ],
+    "subcollectionModulesCount": 11,
+    "subcollectionModules": [
+      {
+        "id": "m7",
+        "title": "Thermal Physics and Heat Experiments"
+      },
+      {
+        "id": "m3",
+        "title": "Mechanics and Mechanical Systems"
+      },
+      {
+        "id": "m2",
+        "title": "Measurement Techniques and Instrumentation"
+      },
+      {
+        "id": "m6",
+        "title": "Optics and Light Experiments"
+      },
+      {
+        "id": "m10",
+        "title": "Advanced Experiments and Project Work"
+      },
+      {
+        "id": "m4",
+        "title": "Electrical Measurements and Circuits"
+      },
+      {
+        "id": "m8",
+        "title": "Fluid Mechanics and Viscosity"
+      },
+      {
+        "id": "m1",
+        "title": "Introduction to Experimental Physics and Error Analysis"
+      },
+      {
+        "id": "m5",
+        "title": "Resonance and Wave Phenomena"
+      },
+      {
+        "id": "m9",
+        "title": "Data Analysis and Report Writing"
+      },
+      {
+        "id": "optics-lab",
+        "title": "1. OPTICS EXPERIMENTS"
+      }
+    ],
+    "neonModulesCount": 11,
+    "neonCandidateCount": 1,
+    "candidateModules": [
+      {
+        "id": "optics-lab",
+        "title": "1. OPTICS EXPERIMENTS",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m6: \"Optics and Light Experiments\" (overlap: optics, experiments)"
+      }
+    ]
+  },
+  "STA112": {
+    "courseId": "STA112",
+    "embeddedModulesCount": 9,
+    "embeddedModules": [
+      {
+        "id": "m1",
+        "title": "Introduction to Combinatorics",
+        "lessonCount": 5
+      },
+      {
+        "id": "m2",
+        "title": "Fundamentals of Probability",
+        "lessonCount": 5
+      },
+      {
+        "id": "m3",
+        "title": "Random Variables and Probability Distributions",
+        "lessonCount": 5
+      },
+      {
+        "id": "m4",
+        "title": "Discrete Probability Distributions",
+        "lessonCount": 5
+      },
+      {
+        "id": "m5",
+        "title": "Continuous Probability Distributions",
+        "lessonCount": 5
+      },
+      {
+        "id": "m6",
+        "title": "Joint and Multivariate Distributions",
+        "lessonCount": 5
+      },
+      {
+        "id": "m7",
+        "title": "Sampling Distributions and the Central Limit Theorem",
+        "lessonCount": 5
+      },
+      {
+        "id": "m8",
+        "title": "Exploratory Data Analysis (EDA)",
+        "lessonCount": 5
+      },
+      {
+        "id": "m9",
+        "title": "Applications of Probability",
+        "lessonCount": 5
+      }
+    ],
+    "subcollectionModulesCount": 13,
+    "subcollectionModules": [
+      {
+        "id": "random-vars",
+        "title": "3. RANDOM VARIABLES"
+      },
+      {
+        "id": "m7",
+        "title": "Sampling Distributions and the Central Limit Theorem"
+      },
+      {
+        "id": "m3",
+        "title": "Random Variables and Probability Distributions"
+      },
+      {
+        "id": "m2",
+        "title": "Fundamentals of Probability"
+      },
+      {
+        "id": "m6",
+        "title": "Joint and Multivariate Distributions"
+      },
+      {
+        "id": "m10",
+        "title": "Probability in Decision Making and Risk Assessment"
+      },
+      {
+        "id": "cond-prob",
+        "title": "2. CONDITIONAL PROBABILITY"
+      },
+      {
+        "id": "m4",
+        "title": "Discrete Probability Distributions"
+      },
+      {
+        "id": "intro-prob",
+        "title": "1. INTRODUCTION TO PROBABILITY"
+      },
+      {
+        "id": "m8",
+        "title": "Exploratory Data Analysis (EDA)"
+      },
+      {
+        "id": "m1",
+        "title": "Introduction to Combinatorics"
+      },
+      {
+        "id": "m5",
+        "title": "Continuous Probability Distributions"
+      },
+      {
+        "id": "m9",
+        "title": "Applications of Probability"
+      }
+    ],
+    "neonModulesCount": 13,
+    "neonCandidateCount": 4,
+    "candidateModules": [
+      {
+        "id": "random-vars",
+        "title": "3. RANDOM VARIABLES",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m3: \"Random Variables and Probability Distributions\" (overlap: random, variables)"
+      },
+      {
+        "id": "m10",
+        "title": "Probability in Decision Making and Risk Assessment",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m2: \"Fundamentals of Probability\" (overlap: probability)"
+      },
+      {
+        "id": "cond-prob",
+        "title": "2. CONDITIONAL PROBABILITY",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m2: \"Fundamentals of Probability\" (overlap: probability)"
+      },
+      {
+        "id": "intro-prob",
+        "title": "1. INTRODUCTION TO PROBABILITY",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m2: \"Fundamentals of Probability\" (overlap: probability)"
+      }
+    ]
+  },
+  "ZOO102": {
+    "courseId": "ZOO102",
+    "embeddedModulesCount": 11,
+    "embeddedModules": [
+      {
+        "id": "m1",
+        "title": "Introduction to Animal Diversity and Basic Concepts",
+        "lessonCount": 5
+      },
+      {
+        "id": "m2",
+        "title": "Principles of Animal Body Plans and Development",
+        "lessonCount": 5
+      },
+      {
+        "id": "m3",
+        "title": "Phylogenetics and Evolutionary History of Animals",
+        "lessonCount": 5
+      },
+      {
+        "id": "m4",
+        "title": "Animal Systematics and Nomenclature",
+        "lessonCount": 5
+      },
+      {
+        "id": "m5",
+        "title": "Modern Trends in Systematics: Phenetics, Cladistics, and Molecular Systematics",
+        "lessonCount": 5
+      },
+      {
+        "id": "m6",
+        "title": "Geographical Distribution of Animal Life",
+        "lessonCount": 5
+      },
+      {
+        "id": "m7",
+        "title": "Conservation of Biodiversity: Global and Nigerian Perspectives",
+        "lessonCount": 5
+      },
+      {
+        "id": "m8",
+        "title": "General Classification of the Animal Kingdom: Invertebrates I",
+        "lessonCount": 5
+      },
+      {
+        "id": "m9",
+        "title": "General Classification of the Animal Kingdom: Invertebrates II",
+        "lessonCount": 5
+      },
+      {
+        "id": "m10",
+        "title": "General Classification of the Animal Kingdom: Vertebrates",
+        "lessonCount": 5
+      },
+      {
+        "id": "m11",
+        "title": "General Classification of the Animal Kingdom: Birds and Mammals",
+        "lessonCount": 5
+      }
+    ],
+    "subcollectionModulesCount": 12,
+    "subcollectionModules": [
+      {
+        "id": "m11",
+        "title": "General Classification of the Animal Kingdom: Birds and Mammals"
+      },
+      {
+        "id": "m7",
+        "title": "Conservation of Biodiversity: Global and Nigerian Perspectives"
+      },
+      {
+        "id": "m3",
+        "title": "Phylogenetics and Evolutionary History of Animals"
+      },
+      {
+        "id": "m2",
+        "title": "Principles of Animal Body Plans and Development"
+      },
+      {
+        "id": "m6",
+        "title": "Geographical Distribution of Animal Life"
+      },
+      {
+        "id": "m10",
+        "title": "General Classification of the Animal Kingdom: Vertebrates"
+      },
+      {
+        "id": "m4",
+        "title": "Animal Systematics and Nomenclature"
+      },
+      {
+        "id": "m8",
+        "title": "General Classification of the Animal Kingdom: Invertebrates I"
+      },
+      {
+        "id": "m1",
+        "title": "Introduction to Animal Diversity and Basic Concepts"
+      },
+      {
+        "id": "m5",
+        "title": "Modern Trends in Systematics: Phenetics, Cladistics, and Molecular Systematics"
+      },
+      {
+        "id": "m9",
+        "title": "General Classification of the Animal Kingdom: Invertebrates II"
+      },
+      {
+        "id": "animal-physiology",
+        "title": "1. ANIMAL PHYSIOLOGY"
+      }
+    ],
+    "neonModulesCount": 12,
+    "neonCandidateCount": 1,
+    "candidateModules": [
+      {
+        "id": "animal-physiology",
+        "title": "1. ANIMAL PHYSIOLOGY",
+        "order": 0,
+        "classification": "duplicate-draft",
+        "matchedWithKept": "m1: \"Introduction to Animal Diversity and Basic Concepts\" (overlap: animal)"
+      }
+    ]
+  }
+}

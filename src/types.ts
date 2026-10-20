@@ -53,6 +53,8 @@ export interface Course {
   provenance?: CourseProvenance;
   deleted?: boolean;
   deletedAt?: string;
+  status?: string;
+  faculty?: string;
   syllabusStatus?: 'pending' | 'generating' | 'ready' | 'failed';
   syllabusStatusTimestamp?: string;
 }

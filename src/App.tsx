@@ -1,5 +1,6 @@
 import { useState, useEffect, useTransition } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import toast from 'react-hot-toast';
 import Sidebar from './components/Sidebar';
 import BottomNav from './components/BottomNav';
 import ContentArea from './components/ContentArea';
@@ -37,6 +38,8 @@ import Arena from './components/Arena';
 import ConceptMap from './components/ConceptMap';
 import StudyPlan from './components/StudyPlan';
 import VoiceTutor from './components/VoiceTutor';
+import ComingSoon from './components/ComingSoon';
+import { useFeatureSwitches } from './hooks/useFeatureSwitches';
 
 import AcademicProfileModal from './components/AcademicProfileModal';
 import WhatsAppPromoModal from './components/WhatsAppPromoModal';
@@ -80,6 +83,7 @@ export default function App() {
 
 function AppContent() {
   const { isConfigured, user, profile, loading, signInWithGoogle } = useAuth();
+  const { switches: featureSwitches } = useFeatureSwitches();
   const [isPending, startTransition] = useTransition();
   const { courses, refreshCourses } = useCourses();
   const { progress, addXp, updateMastery, recordQuizScore, recordStudyTime, addBookmark, removeBookmark, enrollCourse, unenrollCourse, updateAIPersonality, isOnline, checkAndUpdateStreak } = useUserProgress();
@@ -547,90 +551,8 @@ function AppContent() {
               }
             }}
             onRegenerate={isAdmin ? async () => {
-              if (!isAdmin || !activeCourseId || !activeCourse || regenerationProgress > 0) return;
-              if (!db) return;
-
-              try {
-                setRegenerationProgress(15);
-                setRegenerationStatus("Establishing canonical domain taxonomy...");
-
-                const skeletonData = await generateCourseSkeleton(
-                  activeCourse.title || activeCourse.id,
-                  activeCourse.description || `University course on ${activeCourse.title}`,
-                  undefined,
-                  undefined,
-                  [],
-                  activeCourse.level || 'Undergraduate',
-                  activeCourse.semester || activeSemester,
-                  activeCourse.department || 'General',
-                  undefined,
-                  'academic',
-                  'standard',
-                  undefined,
-                  activeCourse.academicStandard || 'Globally Adaptive (Universal University Standard)',
-                  activeCourse.scope || 'DEPARTMENT',
-                  activeCourse.faculties || [],
-                  activeCourse.departments || [],
-                  activeCourse.id
-                );
-
-                if (skeletonData && skeletonData.modules) {
-                  setRegenerationProgress(75);
-                  setRegenerationStatus("Structuring module curriculum...");
-
-                  const updatedModules = skeletonData.modules.map((m: any, idx: number) => ({
-                    id: m.id || `m${idx + 1}`,
-                    title: m.title || `Module ${idx + 1}`,
-                    isFoundationModule: idx === 0 || !!m.isFoundationModule,
-                    subTopics: (m.lessonTitles || m.topics || []).map((t: any, tIdx: number) => ({
-                      id: typeof t === 'object' && t.id ? t.id : `m${idx + 1}-l${tIdx + 1}`,
-                      title: typeof t === 'object' && t.title ? t.title : String(t),
-                      completed: false
-                    }))
-                  }));
-
-                  const outcomesList = skeletonData.learningOutcomes || [];
-                  const cleanUpdate = sanitizeForFirestore({
-                    syllabus: updatedModules,
-                    learningOutcomes: outcomesList,
-                    objectives: outcomesList.map((o: any) => typeof o === 'string' ? o : o.outcome).filter(Boolean),
-                    description: skeletonData.description || activeCourse.description,
-                    domainBrief: skeletonData.domainBrief || null,
-                    syllabusStatus: 'ready',
-                    syllabusStatusTimestamp: new Date().toISOString()
-                  });
-
-                  await setDoc(doc(db, 'courses', activeCourseId), cleanUpdate, { merge: true });
-                  // Sync module headers in subcollection for consistency
-                  await Promise.all(
-                    updatedModules.map((mod: any, mIdx: number) =>
-                      setDoc(doc(db, `courses/${activeCourseId}/modules`, mod.id), sanitizeForFirestore({
-                        title: mod.title,
-                        order: mIdx + 1,
-                        isFoundationModule: !!mod.isFoundationModule
-                      }), { merge: true }).catch(() => {})
-                    )
-                  );
-                  await refreshCourses();
-                  setRegenerationProgress(100);
-                  setRegenerationStatus("Syllabus ready!");
-                  setTimeout(() => {
-                    setRegenerationProgress(0);
-                    setRegenerationStatus('');
-                  }, 1200);
-                }
-              } catch (err: any) {
-                console.error("Syllabus regeneration error:", err);
-                setRegenerationProgress(0);
-                setRegenerationStatus('');
-                if (db) {
-                  await updateDoc(doc(db, 'courses', activeCourseId), {
-                    syllabusStatus: 'failed',
-                    syllabusStatusTimestamp: new Date().toISOString()
-                  }).catch(() => {});
-                }
-                throw err;
-              }
+              toast.error("Syllabus regeneration writes to Firestore are paused during Postgres catalog migration.");
+              return;
             } : undefined}
             regenerationProgress={regenerationProgress}
             regenerationStatus={regenerationStatus}
@@ -768,9 +690,15 @@ function AppContent() {
         )}
 
         {activeView === 'arena' && (
-          <Arena 
-            activeCourseId={activeCourseId}
-          />
+          featureSwitches.arena ? (
+            <Arena activeCourseId={activeCourseId} />
+          ) : (
+            <ComingSoon 
+              title="Gamified Battle Arena" 
+              description="The Arena feature is undergoing scheduled performance optimization. Check back soon!" 
+              onBack={() => handleViewSelect('dashboard')} 
+            />
+          )
         )}
 
         {activeView === 'concept-map' && (
@@ -788,7 +716,15 @@ function AppContent() {
         )}
 
         {activeView === 'tutor-dashboard' && (
-          <TutorDashboard onBack={() => handleViewSelect('profile')} />
+          featureSwitches.tutor_dashboard ? (
+            <TutorDashboard onBack={() => handleViewSelect('profile')} />
+          ) : (
+            <ComingSoon 
+              title="Tutor & Affiliates Hub" 
+              description="The Tutor Portal is undergoing scheduled maintenance. Check back soon!" 
+              onBack={() => handleViewSelect('profile')} 
+            />
+          )
         )}
 
         {activeView === 'admin-dashboard' && (

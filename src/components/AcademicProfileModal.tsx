@@ -25,12 +25,25 @@ export default function AcademicProfileModal({ onClose }: { onClose?: () => void
   useEffect(() => {
     const fetchLink = async () => {
       try {
+        const res = await fetch('/api/system/config/community');
+        if (res.ok) {
+          const json = await res.json();
+          if (json.data?.whatsappLink) {
+            setWhatsappLink(json.data.whatsappLink);
+            return;
+          }
+        }
+      } catch {
+        // Non-fatal
+      }
+
+      try {
         const snap = await getDoc(doc(db, 'system_config', 'community'));
         if (snap.exists() && snap.data().whatsappLink) {
           setWhatsappLink(snap.data().whatsappLink);
         }
       } catch (e) {
-        console.error("Failed to fetch whatsapp link:", e);
+        console.warn("Failed to fetch whatsapp link from fallback:", e);
       }
     };
     fetchLink();

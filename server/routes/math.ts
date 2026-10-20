@@ -1,4 +1,5 @@
 import express from 'express';
+import { getPostgresPool } from '../postgresPool';
 import { 
   executeMathComputation, 
   getMathEngineConfig, 
@@ -63,10 +64,24 @@ export function setupMathRoutes(
       const adminApp = getAdminApp();
       if (!adminApp) return res.status(503).json({ error: 'Firebase Admin not initialized' });
 
-      // Verify Admin or Tutor role
-      const userDoc = await adminApp.firestore().collection('users').doc(user.uid).get();
-      const userData = userDoc.data();
-      const isAdmin = userData?.role === 'admin' || userData?.role === 'tutor' || isAdminEmail(user.email);
+      // Verify Admin or Tutor role via Neon PostgreSQL
+      let isAdmin = false;
+      if (isAdminEmail(user.email)) {
+        isAdmin = true;
+      } else {
+        const pool = getPostgresPool();
+        if (pool) {
+          const res = await pool.query('SELECT role FROM users WHERE uid = $1', [user.uid]);
+          if (res.rows.length > 0 && (res.rows[0].role === 'admin' || res.rows[0].role === 'tutor')) {
+            isAdmin = true;
+          }
+        }
+        if (!isAdmin && adminApp) {
+          const userDoc = await adminApp.firestore().collection('users').doc(user.uid).get();
+          const userData = userDoc.data();
+          isAdmin = userData?.role === 'admin' || userData?.role === 'tutor';
+        }
+      }
       if (!isAdmin) {
         return res.status(403).json({ error: 'Forbidden: Admin or Tutor access required' });
       }
@@ -197,9 +212,23 @@ export function setupMathRoutes(
       const adminApp = getAdminApp();
       if (!adminApp) return res.status(503).json({ error: 'Firebase not initialized' });
 
-      const userDoc = await adminApp.firestore().collection('users').doc(user.uid).get();
-      const userData = userDoc.data();
-      const isAdmin = userData?.role === 'admin' || isAdminEmail(user.email);
+      let isAdmin = false;
+      if (isAdminEmail(user.email)) {
+        isAdmin = true;
+      } else {
+        const pool = getPostgresPool();
+        if (pool) {
+          const res = await pool.query('SELECT role FROM users WHERE uid = $1', [user.uid]);
+          if (res.rows.length > 0 && res.rows[0].role === 'admin') {
+            isAdmin = true;
+          }
+        }
+        if (!isAdmin && adminApp) {
+          const userDoc = await adminApp.firestore().collection('users').doc(user.uid).get();
+          const userData = userDoc.data();
+          isAdmin = userData?.role === 'admin';
+        }
+      }
       if (!isAdmin) {
         return res.status(403).json({ error: 'Forbidden: Admin access required' });
       }

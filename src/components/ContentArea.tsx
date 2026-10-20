@@ -12,8 +12,6 @@ import { AIService } from '../services/ai';
 import { generateLessonContent, sanitizeLatex } from '../services/aiCourseGenerator';
 import { sanitizeForFirestore } from '../services/courseService';
 import { LogService } from '../services/logService';
-import { db } from '../firebase';
-import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { useCourses } from '../context/CourseContext';
 import { useAuth } from '../context/AuthContext';
 import { usePremiumStatus } from '../hooks/usePremiumStatus';
@@ -86,9 +84,9 @@ export default function ContentArea({
   const activeSubTopic = subTopics[activeSubTopicIndex] || subTopics[0];
 
   // Derive active lesson content synchronously on render to guarantee content availability precedes render
-  const activeLessonData = activeSubTopic?.content
+  const activeLessonData = (activeSubTopic?.content && activeSubTopic.content.trim().length > 0)
     ? { id: activeSubTopic.id, content: sanitizeLatex(stripThinkTags(activeSubTopic.content)), metadata: {} as PipelineMetadata }
-    : (fetchedLesson?.id === activeSubTopic?.id ? fetchedLesson : null);
+    : (fetchedLesson?.id === activeSubTopic?.id && fetchedLesson.content && fetchedLesson.content.trim().length > 0 ? fetchedLesson : null);
 
   const isCurrentLessonLoading = isFetchingContent || (!activeLessonData && !isGenerating);
 
@@ -127,7 +125,7 @@ export default function ContentArea({
   // Load content dynamically (Lazy Loading)
   useEffect(() => {
     const loadContent = async () => {
-      if (!courseId || !db) return;
+      if (!courseId) return;
       
       // If it already has content (legacy or preloaded courses), use it
       if (activeSubTopic?.content) {
@@ -140,28 +138,18 @@ export default function ContentArea({
 
       setIsFetchingContent(true);
       try {
-        const lessonPath = `courses/${courseId}/modules/${module.id}/lessons/${activeSubTopic.id}`;
-        console.log(`[ContentArea] Fetching lesson from path: ${lessonPath}`);
+        console.log(`[ContentArea] Fetching lessons via Neon API for ${courseId}/${module.id}/${activeSubTopic?.id}`);
+        const { CourseService } = await import('../services/courseService');
+        const lessons = await CourseService.getLessons(courseId, module.id);
+        const targetLesson = lessons.find(l => l.id === activeSubTopic?.id || (activeSubTopic?.id.includes('-') && l.id === activeSubTopic.id.split('-')[1]));
 
-        let lessonDoc = await getDoc(doc(db, `courses/${courseId}/modules/${module.id}/lessons`, activeSubTopic.id));
-        
-        // Fallback for legacy courses where lesson ID was just 'l1' instead of 'm1-l1'
-        if (!lessonDoc.exists() && activeSubTopic.id.includes('-')) {
-          const legacyId = activeSubTopic.id.split('-')[1];
-          if (legacyId) {
-            console.log(`[ContentArea] Lesson not found at ${activeSubTopic.id}, trying legacy ID: ${legacyId}`);
-            lessonDoc = await getDoc(doc(db, `courses/${courseId}/modules/${module.id}/lessons`, legacyId));
-          }
-        }
-
-        if (lessonDoc.exists() && lessonDoc.data().content) {
-          const data = lessonDoc.data();
-          console.log(`[ContentArea] Lesson found! Content length: ${data.content.length}`);
-          const sanitizedContent = sanitizeLatex(stripThinkTags(data.content));
-          setFetchedLesson({ id: activeSubTopic.id, content: sanitizedContent, metadata: data.metadata || {} });
+        if (targetLesson && targetLesson.content) {
+          console.log(`[ContentArea] Lesson found via Neon API! Content length: ${targetLesson.content.length}`);
+          const sanitizedContent = sanitizeLatex(stripThinkTags(targetLesson.content));
+          setFetchedLesson({ id: activeSubTopic.id, content: sanitizedContent, metadata: {} });
           onLessonContentChange?.(sanitizedContent);
         } else {
-          console.log(`[ContentArea] Lesson NOT found at ${lessonPath}`);
+          console.log(`[ContentArea] Lesson content not found for ${activeSubTopic?.id}`);
           setFetchedLesson(null);
           if (!profile) {
             return;
@@ -244,16 +232,23 @@ export default function ContentArea({
            setFetchedLesson({ ...fetchedLesson, content: newContent });
            onLessonContentChange?.(newContent);
            
-           // Update Firestore
+           // Update via Neon API
            try {
-              let lessonPath = `courses/${courseId}/modules/${module.id}/lessons/${activeSubTopic.id}`;
-              await setDoc(doc(db, lessonPath), sanitizeForFirestore({
-                content: newContent,
-                metadata: fetchedLesson?.metadata || {}
-              }), { merge: true });
-              console.log("[Auto-Upgrade] Successfully updated Firestore with real FLUX images!");
+              const idToken = await user?.getIdToken();
+              await fetch(`/api/courses/${encodeURIComponent(courseId!)}/modules/${encodeURIComponent(module.id)}/lessons/${encodeURIComponent(activeSubTopic.id)}`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${idToken}`
+                },
+                body: JSON.stringify({
+                  title: activeSubTopic.title,
+                  content: newContent
+                })
+              });
+              console.log("[Auto-Upgrade] Successfully updated lesson content via API!");
            } catch (e) {
-             console.error("[Auto-Upgrade] Failed to save upgraded content to Firestore:", e);
+             console.error("[Auto-Upgrade] Failed to save upgraded content:", e);
            }
         }
       }
@@ -324,7 +319,7 @@ export default function ContentArea({
   };
 
   const handleGenerateLesson = async () => {
-    if (!isAdmin || !courseId || !db) return;
+    if (!isAdmin || !courseId) return;
     
     setIsGenerating(true);
     setGenerationStep(0);
@@ -355,18 +350,28 @@ export default function ContentArea({
         undefined
       );
 
-      // Save to Firestore
-      const lessonRef = doc(db, `courses/${courseId}/modules/${module.id}/lessons`, activeSubTopic.id);
-      const cleanData = sanitizeForFirestore({ 
-        content: lesson.content || '', 
-        metadata: lesson.metadata || {} 
-      });
-      await setDoc(lessonRef, cleanData, { merge: true });
+      // Save via Neon API
+      try {
+        const idToken = await user?.getIdToken();
+        await fetch(`/api/courses/${encodeURIComponent(courseId)}/modules/${encodeURIComponent(module.id)}/lessons/${encodeURIComponent(activeSubTopic.id)}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${idToken}`
+          },
+          body: JSON.stringify({
+            title: activeSubTopic.title,
+            content: lesson.content || ''
+          })
+        });
+      } catch (saveErr) {
+        console.warn('Failed to save lesson content via API:', saveErr);
+      }
 
       LogService.log('success', 'ai', `Generated lesson content for ${activeSubTopic.title}`, { courseId, moduleId: module.id, lessonId: activeSubTopic.id, audience: (lesson.metadata as any)?.audience });
 
       // Update local state
-      setFetchedLesson({ id: activeSubTopic.id, content: lesson.content, metadata: (cleanData.metadata as PipelineMetadata) || {} });
+      setFetchedLesson({ id: activeSubTopic.id, content: lesson.content, metadata: (lesson.metadata as PipelineMetadata) || {} });
       onLessonContentChange?.(lesson.content);
 
       // Update global state to reflect new content

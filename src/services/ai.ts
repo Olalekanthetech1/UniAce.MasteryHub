@@ -209,9 +209,13 @@ export const AIService = {
     if (lastUserMessage.text) {
       let department: string | undefined;
       if (activeCourseId) {
-        const course = await CourseService.getCourse(activeCourseId);
-        if (course) {
-          department = course.department;
+        try {
+          const course = await CourseService.getCourse(activeCourseId);
+          if (course) {
+            department = course.department;
+          }
+        } catch (e) {
+          console.warn('[ai.ts] Failed to fetch active course details:', e);
         }
       }
 

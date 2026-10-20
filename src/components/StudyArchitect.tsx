@@ -18,8 +18,7 @@ import {
 } from 'lucide-react';
 import { TimetableEntry, ExamDate, StudySession, UserProgress } from '../types';
 import { AIService } from '../services/ai';
-import { db, auth } from '../firebase';
-import { doc, setDoc, getDoc, updateDoc, arrayUnion } from 'firebase/firestore';
+import { auth } from '../firebase';
 
 interface StudyArchitectProps {
   progress: UserProgress;
@@ -38,13 +37,21 @@ export const StudyArchitect: React.FC<StudyArchitectProps> = ({ progress, onClos
   useEffect(() => {
     const loadData = async () => {
       if (!auth.currentUser) return;
-      const docRef = doc(db, 'study_plans', auth.currentUser.uid);
-      const docSnap = await getDoc(docRef);
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        setTimetable(data.timetable || []);
-        setExams(data.exams || []);
-        setSessions(data.sessions || []);
+      try {
+        const token = await auth.currentUser.getIdToken();
+        const res = await fetch('/api/user/study-plan', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.plan) {
+            setTimetable(json.plan.timetable || []);
+            setExams(json.plan.exams || []);
+            setSessions(json.plan.sessions || []);
+          }
+        }
+      } catch (err) {
+        console.error('Error loading study plan:', err);
       }
     };
     loadData();
@@ -104,13 +111,21 @@ export const StudyArchitect: React.FC<StudyArchitectProps> = ({ progress, onClos
     if (!auth.currentUser) return;
     setSaving(true);
     try {
-      const docRef = doc(db, 'study_plans', auth.currentUser.uid);
-      await setDoc(docRef, {
-        userId: auth.currentUser.uid,
-        timetable,
-        exams,
-        sessions,
-        lastGenerated: new Date().toISOString()
+      const token = await auth.currentUser.getIdToken();
+      await fetch('/api/user/study-plan', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          plan: {
+            timetable,
+            exams,
+            sessions,
+            lastGenerated: new Date().toISOString()
+          }
+        })
       });
       onClose();
     } catch (error) {

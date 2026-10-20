@@ -1,8 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Trophy, Medal, Crown, User, Zap, Star, ArrowUp, ArrowDown, Minus, Flame } from 'lucide-react';
-import { collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
-import { db } from '../firebase';
 
 interface LeaderboardEntry {
   uid: string;
@@ -19,56 +17,34 @@ export default function Leaderboard() {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    let isMounted = true;
     const fetchLeaders = async () => {
       try {
-        const q = query(
-          collection(db, 'public_leaderboard'),
-          orderBy('xp', 'desc'),
-          limit(10)
-        );
-        const snapshot = await getDocs(q);
-        if (!snapshot.empty) {
-          const data = snapshot.docs.map((doc, index) => ({
-            uid: doc.id,
-            displayName: doc.data().displayName || 'Scholar',
-            photoURL: doc.data().photoURL || '',
-            xp: doc.data().xp || 0,
-            level: doc.data().level || 1,
-            streak: doc.data().streak || 0,
-            rank: index + 1
-          }));
-          setLeaders(data);
-          return;
-        }
-
-        // Fallback to server endpoint if collection is being populated
-        const res = await fetch('/api/leaderboard');
-        if (res.ok) {
+        const res = await fetch('/api/gamification/leaderboard');
+        if (res.ok && isMounted) {
           const json = await res.json();
-          if (json.leaders && json.leaders.length > 0) {
-            setLeaders(json.leaders);
-            return;
+          if (json.leaderboard) {
+            const data = json.leaderboard.map((item: any) => ({
+              uid: item.id,
+              displayName: item.name || 'Scholar',
+              photoURL: item.avatar || '',
+              xp: item.xp || 0,
+              level: item.level || 1,
+              streak: item.streak || 0,
+              rank: item.rank
+            }));
+            setLeaders(data);
           }
         }
       } catch (error) {
-        console.error('Error fetching leaderboard from public_leaderboard, trying API fallback:', error);
-        try {
-          const res = await fetch('/api/leaderboard');
-          if (res.ok) {
-            const json = await res.json();
-            if (json.leaders) {
-              setLeaders(json.leaders);
-            }
-          }
-        } catch (apiErr) {
-          console.error('Fallback leaderboard API error:', apiErr);
-        }
+        console.warn('Leaderboard fetch error:', error);
       } finally {
-        setIsLoading(false);
+        if (isMounted) setIsLoading(false);
       }
     };
 
     fetchLeaders();
+    return () => { isMounted = false; };
   }, []);
 
   return (

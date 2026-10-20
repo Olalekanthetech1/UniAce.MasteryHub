@@ -145,32 +145,8 @@ export default function CourseSyllabus({
   // Wrapped Admin Regeneration that sets live syllabusStatus on course document
   const triggerRegenerate = async () => {
     if (!isAdmin || !activeCourseId || !onRegenerate) return;
-    try {
-      await updateDoc(doc(db, 'courses', activeCourseId), {
-        syllabusStatus: 'generating',
-        syllabusStatusTimestamp: new Date().toISOString()
-      });
-      setLiveSyllabusStatus('generating');
-      
-      // Call parent generation flow
-      await onRegenerate();
-      
-      // Update back to ready
-      await updateDoc(doc(db, 'courses', activeCourseId), {
-        syllabusStatus: 'ready',
-        syllabusStatusTimestamp: new Date().toISOString()
-      });
-      setLiveSyllabusStatus('ready');
-      toast.success("Syllabus generated successfully!");
-    } catch (err) {
-      console.error("Error generating syllabus:", err);
-      await updateDoc(doc(db, 'courses', activeCourseId), {
-        syllabusStatus: 'failed',
-        syllabusStatusTimestamp: new Date().toISOString()
-      });
-      setLiveSyllabusStatus('failed');
-      toast.error("Syllabus generation failed.");
-    }
+    toast.error("Admin syllabus regeneration writes to Firestore are paused during Postgres catalog migration.");
+    return;
   };
 
   // Normalize objectives with Bloom taxonomy levels and match with quiz performance

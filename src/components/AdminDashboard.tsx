@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, FileText, Plus, CheckCircle, Loader2, BookOpen, AlertCircle, Settings, Trash2, Users, Activity, Database, Search, Zap, Trophy, Star, Bot, Shield, BarChart3, Globe, Edit2, RefreshCw, Clock, FileQuestion, MessageSquare, ArrowLeft, HeartPulse, X, ArrowRight, Layers, Key, Cpu, Share2, Download, Filter, Send, ChevronLeft, ChevronRight, Mic, Book, Terminal, Sparkles, TrendingUp, CreditCard, HelpCircle, Calculator, Video, Film, Landmark } from 'lucide-react';
+import { Upload, FileText, Plus, CheckCircle, Loader2, BookOpen, AlertCircle, Settings, Trash2, Users, Activity, Database, Search, Zap, Trophy, Star, Bot, Shield, BarChart3, Globe, Edit2, RefreshCw, Clock, FileQuestion, MessageSquare, ArrowLeft, HeartPulse, X, ArrowRight, Layers, Key, Cpu, Share2, Download, Filter, Send, ChevronLeft, ChevronRight, Mic, Book, Terminal, Sparkles, TrendingUp, CreditCard, HelpCircle, Calculator, Video, Film, Landmark, ToggleRight } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -26,6 +26,8 @@ import AcademicMCPDashboard from './admin/AcademicMCPDashboard';
 import DemoStudioTab from './admin/DemoStudioTab';
 import GoldenSetTrustTab from './admin/GoldenSetTrustTab';
 import DatabaseAccountingTab from './admin/DatabaseAccountingTab';
+import DatabaseEngineTab from './admin/DatabaseEngineTab';
+import FeatureSwitchesTab from './admin/FeatureSwitchesTab';
 import { AIService } from '../services/ai';
 import { generateCourseContent, generateCourseSkeleton, generateModuleContent, generateCourseFormulas } from '../services/aiCourseGenerator';
 import { CourseService, sanitizeForFirestore } from '../services/courseService';
@@ -135,7 +137,7 @@ export default function AdminDashboard() {
   const [isIngesting, setIsIngesting] = useState(false);
   const [ingestionStatus, setIngestionStatus] = useState('');
   const [kbStats, setKbStats] = useState({ totalChunks: 0 });
-  const [activeTab, setActiveTab] = useState<'overview' | 'demo-studio' | 'courses' | 'users' | 'rag' | 'communications' | 'settings' | 'logs' | 'question-bank' | 'curriculum-health' | 'curriculum-manager' | 'curriculum-requests' | 'api-debugger' | 'affiliates' | 'analytics' | 'api-status' | 'pricing' | 'challenges' | 'support' | 'formulas' | 'math-engine' | 'academic-mcp' | 'golden-set' | 'db-accounting'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'demo-studio' | 'courses' | 'users' | 'rag' | 'communications' | 'settings' | 'logs' | 'question-bank' | 'curriculum-health' | 'curriculum-manager' | 'curriculum-requests' | 'api-debugger' | 'affiliates' | 'analytics' | 'api-status' | 'pricing' | 'challenges' | 'support' | 'formulas' | 'math-engine' | 'academic-mcp' | 'golden-set' | 'db-accounting' | 'database-engine' | 'feature-switches'>('overview');
 
   useEffect(() => {
     // Redirect if current tab is not allowed for the role
@@ -150,6 +152,7 @@ export default function AdminDashboard() {
     if (activeTab === 'curriculum-manager' && !canManageCurriculum) setActiveTab('overview');
     if (activeTab === 'affiliates' && !canManageUsers) setActiveTab('overview');
     if (activeTab === 'db-accounting' && !canManageSystem) setActiveTab('overview');
+    if (activeTab === 'database-engine' && !canManageSystem) setActiveTab('overview');
   }, [userRole, activeTab, canViewLogs, canManageAI, canManageUsers, canManageCourses, canManageRAG, canManageCommunications, canManageCurriculum, canManageSystem]);
 
   const [integrityIssues, setIntegrityIssues] = useState<any[]>([]);
@@ -2297,81 +2300,18 @@ export default function AdminDashboard() {
   }, [db]);
 
   const handleRestoreCourse = async (courseId: string) => {
-    try {
-      if (!db) throw new Error("Firestore not initialized");
-      const courseToRestore = archivedCourses[courseId];
-      if (!courseToRestore) return;
-
-      // Write back to courses
-      await setDoc(doc(db, 'courses', courseId), courseToRestore);
-      
-      // Remove from archived_courses
-      await deleteDoc(doc(db, 'archived_courses', courseId));
-      
-      await refreshCourses();
-      await fetchArchivedCourses();
-      showToast(`Course ${courseId} restored successfully.`, "success");
-    } catch (error) {
-      console.error("Error restoring course:", error);
-      showToast("Failed to restore course.", "error");
-    }
+    showToast("Direct Firestore course writes are paused during Postgres catalog migration. Use Postgres administrative API.", "info");
+    return;
   };
 
   const handleDeleteCourse = async (courseId: string) => {
-    setConfirmModal({
-      title: "Archive Course",
-      message: `Are you sure you want to archive course ${courseId}? It will be moved to the Archived Courses tab and can be restored later.`,
-      onConfirm: async () => {
-        try {
-          if (!db) throw new Error("Firestore not initialized");
-          const courseToArchive = courses[courseId];
-          if (courseToArchive) {
-            await setDoc(doc(db, 'archived_courses', courseId), courseToArchive);
-          }
-          
-          // Overwrite the course document with a tiny tombstone to prevent data leakage
-          await setDoc(doc(db, 'courses', courseId), { 
-            id: courseId,
-            deleted: true,
-            deletedAt: new Date().toISOString()
-          });
-          
-          await refreshCourses();
-          showToast(`Course ${courseId} archived successfully.`, "success");
-        } catch (error) {
-          console.error("Error archiving course:", error);
-          showToast("Failed to archive course.", "error");
-        }
-        setConfirmModal(null);
-      }
-    });
+    showToast("Direct Firestore course writes are paused during Postgres catalog migration. Use Postgres administrative API.", "info");
+    return;
   };
 
   const handlePermanentDeleteCourse = async (courseId: string) => {
-    setConfirmModal({
-      title: "Permanent Delete",
-      message: `Are you sure you want to permanently delete course ${courseId}? This action CANNOT be undone.`,
-      onConfirm: async () => {
-        try {
-          if (!db) throw new Error("Firestore not initialized");
-          
-          // Delete from archived_courses
-          await deleteDoc(doc(db, 'archived_courses', courseId));
-          
-          // Delete the tombstone from courses
-          // Note: This does not delete subcollections (modules, lessons, etc.).
-          // In a production environment, a Cloud Function should be triggered to recursively delete subcollections.
-          await deleteDoc(doc(db, 'courses', courseId));
-          
-          await fetchArchivedCourses();
-          showToast(`Course ${courseId} permanently deleted.`, "success");
-        } catch (error) {
-          console.error("Error permanently deleting course:", error);
-          showToast("Failed to permanently delete course.", "error");
-        }
-        setConfirmModal(null);
-      }
-    });
+    showToast("Direct Firestore course writes are paused during Postgres catalog migration. Use Postgres administrative API.", "info");
+    return;
   };
 
   const handleEditCourse = (course: Course) => {
@@ -2539,17 +2479,10 @@ export default function AdminDashboard() {
     try {
       if (!db) throw new Error("Firestore not initialized");
 
-      await setDoc(doc(db, 'courses', sanitizedId), {
-        ...finalCourseData,
-        id: sanitizedId,
-        scope: courseScope,
-        faculties: courseScope === 'FACULTY' ? selectedFaculties : [],
-        departments: courseScope === 'DEPARTMENT' ? selectedDepartments : [],
-        creditUnits: 0,
-        prerequisites: [],
-        createdAt: new Date().toISOString(),
-        sourcePdf: selectedFile.name
-      });
+      showToast("Direct Firestore course writes are paused during Postgres catalog migration. Use Postgres migration API.", "info");
+      setStatusMessage("Direct Firestore course writes are paused during Postgres catalog migration.");
+      setIsUploading(false);
+      return;
 
       LogService.log('success', 'admin', `Published new course: ${finalCourseData.title} (${finalCourseData.id})`);
 
@@ -3020,12 +2953,14 @@ export default function AdminDashboard() {
             { id: 'affiliates', label: 'Affiliates', icon: Share2, show: permissions.canManageUsers },
             { id: 'pricing', label: 'Pricing & Plans', icon: CreditCard, show: permissions.canManageSystem },
             { id: 'db-accounting', label: 'Database & Accounting', icon: Landmark, show: permissions.canManageSystem },
+            { id: 'database-engine', label: 'Database Engine', icon: Database, show: permissions.canManageSystem },
             { id: 'challenges', label: 'Quests & Arena', icon: Trophy, show: permissions.canManageSystem || permissions.canManageCourses },
             { id: 'support', label: 'Support & FAQs', icon: HelpCircle, show: permissions.canManageSystem || permissions.canCommunicate },
             { id: 'formulas', label: 'Formula Library', icon: BookOpen, show: permissions.canManageCourses },
             { id: 'math-engine', label: 'Math & MCP Engine', icon: Calculator, show: permissions.canManageSystem || permissions.canManageCourses },
             { id: 'academic-mcp', label: 'Academic Research MCP', icon: BookOpen, show: permissions.canManageSystem || permissions.canManageCourses },
             { id: 'golden-set', label: 'Golden Set & Trust', icon: Shield, show: permissions.canManageSystem || permissions.canManageCourses || permissions.isTutor },
+            { id: 'feature-switches', label: 'Feature Switches', icon: ToggleRight, show: permissions.canManageSystem },
             { id: 'communications', label: 'Communications', icon: Globe, show: permissions.canCommunicate },
             { id: 'logs', label: 'System Logs', icon: FileText, show: permissions.canViewLogs },
             { id: 'settings', label: 'Command Center', icon: Shield, show: permissions.canManageSystem }
@@ -7978,13 +7913,15 @@ export default function AdminDashboard() {
 
       {activeTab === 'demo-studio' && <DemoStudioTab />}
       {activeTab === 'pricing' && <PricingManagerTab />}
-      {activeTab === 'db-accounting' && <DatabaseAccountingTab />}
+      {activeTab === 'db-accounting' && <DatabaseAccountingTab onSwitchTab={(tab) => setActiveTab(tab as any)} />}
+      {activeTab === 'database-engine' && <DatabaseEngineTab onSwitchTab={(tab) => setActiveTab(tab as any)} />}
       {activeTab === 'challenges' && <ChallengesManagerTab />}
       {activeTab === 'support' && <SupportManagerTab />}
       {activeTab === 'formulas' && <FormulasManagerTab />}
       {activeTab === 'math-engine' && <MathEngineTab />}
       {activeTab === 'academic-mcp' && <AcademicMCPDashboard />}
       {activeTab === 'golden-set' && <GoldenSetTrustTab />}
+      {activeTab === 'feature-switches' && <FeatureSwitchesTab />}
 
       {/* Toast Notification */}
       {toast && (

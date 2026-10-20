@@ -6,8 +6,6 @@ import { AIService } from '../services/ai';
 import MarkdownRenderer from './MarkdownRenderer';
 import { useUserProgress } from '../hooks/useUserProgress';
 import { useAuth } from '../context/AuthContext';
-import { db } from '../firebase';
-import { collection, query, where, getDocs, doc, writeBatch, setDoc } from 'firebase/firestore';
 
 interface FlashcardsProps {
   module?: Module;
@@ -33,94 +31,44 @@ export default function Flashcards({ module, subTopic, isGlobalReview, onClose }
       setErrorMsg(null);
       
       try {
-        const flashcardsRef = collection(db, `users/${user.uid}/flashcards`);
         let fetchedCards: Flashcard[] = [];
         
-        if (isGlobalReview) {
-          setLoadingText("Finding cards due for review today...");
-          // Global review: get cards due today or earlier
-          const nowIso = new Date().toISOString();
-          const q = query(flashcardsRef, where('nextReviewDate', '<=', nowIso));
-          const querySnapshot = await getDocs(q);
+        if (module) {
+          setLoadingText("Generating flashcards...");
+          const generatedCards = await AIService.generateFlashcards(
+            module, 
+            subTopic, 
+            10,
+            profile?.academic_level,
+            profile?.department
+          );
           
-          querySnapshot.forEach((doc) => {
-            fetchedCards.push({ id: doc.id, ...doc.data() } as Flashcard);
-          });
-          
-          // Shuffle or limit if necessary
-          fetchedCards = fetchedCards.sort(() => 0.5 - Math.random()).slice(0, 30);
-          
-          if (fetchedCards.length === 0) {
+          if (!generatedCards || !Array.isArray(generatedCards) || generatedCards.length === 0) {
             setSessionComplete(true);
-          } else {
-            setCards(fetchedCards);
+            return;
           }
-        } else if (module) {
-          setLoadingText(`Loading cards for ${module.title}...`);
-          // Module specific review
-          let q = query(flashcardsRef, where('moduleId', '==', module.id));
-          if (subTopic) {
-             q = query(flashcardsRef, where('moduleId', '==', module.id), where('subTopicId', '==', subTopic.id));
-          }
-          const querySnapshot = await getDocs(q);
-          
-          querySnapshot.forEach((doc) => {
-            fetchedCards.push({ id: doc.id, ...doc.data() } as Flashcard);
+
+          const cardsToSave = generatedCards.map(c => {
+            let cardId = c.id && c.id.length > 3 && !c.id.includes('/') ? c.id : undefined;
+            if (!cardId) {
+              cardId = typeof crypto !== 'undefined' && crypto.randomUUID 
+                ? crypto.randomUUID() 
+                : Math.random().toString(36).substring(2) + Date.now().toString(36);
+            }
+            return {
+              ...c,
+              id: cardId,
+              userId: user.uid,
+              interval: 0,
+              repetition: 0,
+              efactor: 2.5,
+              nextReviewDate: new Date().toISOString()
+            };
           });
           
-          if (fetchedCards.length > 0) {
-            // Sort by due date (due ones first)
-            fetchedCards.sort((a, b) => {
-              const dateA = a.nextReviewDate ? new Date(a.nextReviewDate).getTime() : 0;
-              const dateB = b.nextReviewDate ? new Date(b.nextReviewDate).getTime() : 0;
-              return dateA - dateB;
-            });
-            setCards(fetchedCards);
-          } else {
-            // Generate new ones and save them
-            setLoadingText("Generating new flashcards...");
-            const generatedCards = await AIService.generateFlashcards(
-              module, 
-              subTopic, 
-              10,
-              profile?.academic_level,
-              profile?.department
-            );
-            
-            if (!generatedCards || !Array.isArray(generatedCards) || generatedCards.length === 0) {
-              setSessionComplete(true);
-              return;
-            }
-
-            // Save to Firestore
-            setLoadingText("Saving flashcards to your deck...");
-            const batch = writeBatch(db);
-            const cardsToSave = generatedCards.map(c => {
-              let cardId = c.id && c.id.length > 3 && !c.id.includes('/') ? c.id : undefined;
-              if (!cardId) {
-                cardId = typeof crypto !== 'undefined' && crypto.randomUUID 
-                  ? crypto.randomUUID() 
-                  : Math.random().toString(36).substring(2) + Date.now().toString(36);
-              }
-              return {
-                ...c,
-                id: cardId,
-                userId: user.uid,
-                interval: 0,
-                repetition: 0,
-                efactor: 2.5,
-                nextReviewDate: new Date().toISOString() // Due immediately
-              };
-            });
-            
-            cardsToSave.forEach(c => {
-              const cardRef = doc(flashcardsRef, c.id);
-              batch.set(cardRef, c);
-            });
-            
-            await batch.commit();
-            setCards(cardsToSave);
-          }
+          setCards(cardsToSave);
+        } else {
+          setSessionComplete(true);
         }
       } catch (error: any) {
         console.error("Failed to load flashcards:", error);
@@ -164,18 +112,22 @@ export default function Flashcards({ module, subTopic, isGlobalReview, onClose }
     const nextReviewDate = new Date();
     nextReviewDate.setDate(nextReviewDate.getDate() + nextInterval);
     
-    // Update the card locally and in Firestore
-    const updatedCard = {
-      ...currentCard,
-      interval: nextInterval,
-      repetition: nextRepetition,
-      efactor: nextEfactor,
-      nextReviewDate: nextReviewDate.toISOString()
-    };
-    
-    // Fire and forget
+    // Save to Neon API
     if (user?.uid) {
-      setDoc(doc(db, `users/${user.uid}/flashcards`, currentCard.id), updatedCard, { merge: true });
+      try {
+        const token = await user.getIdToken();
+        fetch('/api/user/srs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({
+            cardId: currentCard.id,
+            courseId: (currentCard as any).courseId || module?.id || 'general',
+            rating
+          })
+        }).catch(err => console.warn('Failed to save SRS card rating:', err));
+      } catch (err) {
+        console.warn('Failed to get token for SRS:', err);
+      }
     }
 
     nextCard();

@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { useUserProgress } from '../hooks/useUserProgress';
 import { useTheme } from '../context/ThemeContext';
 import { View, Department, Level, Semester } from '../types';
+import { useFeatureSwitches } from '../hooks/useFeatureSwitches';
 import { db, storage } from '../firebase';
 import { collection, query, where, orderBy, limit, getDocs, Timestamp } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
@@ -32,6 +33,7 @@ import { useInstitution } from '../context/InstitutionContext';
 export default function UserProfile({ onBack, onNavigate }: UserProfileProps) {
   const { departments: DEPARTMENTS } = useInstitution();
   const { user, logout, profile, updateProfileData } = useAuth();
+  const { switches } = useFeatureSwitches();
   const { progress } = useUserProgress();
   const { theme, toggleTheme } = useTheme();
   const isDarkMode = theme === 'dark';
@@ -644,7 +646,7 @@ export default function UserProfile({ onBack, onNavigate }: UserProfileProps) {
               { label: 'Past Qs', icon: FileText, color: 'bg-cyan-100 dark:bg-cyan-900/30 text-cyan-600 dark:text-cyan-400', view: 'past-questions' },
               { label: 'Notebook', icon: BookOpen, color: 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400', view: 'notebook' },
               ...(isAdmin ? [{ label: 'Admin Dashboard', icon: Settings, color: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400', view: 'admin-dashboard' }] : []),
-              ...(!isAdmin && isTutor ? [{ label: 'Tutor Dashboard', icon: Settings, color: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400', view: 'tutor-dashboard' }] : []),
+              ...(!isAdmin && isTutor && switches.tutor_dashboard ? [{ label: 'Tutor Dashboard', icon: Settings, color: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400', view: 'tutor-dashboard' }] : []),
             ].map((item, idx) => (
               <button
                 key={idx}

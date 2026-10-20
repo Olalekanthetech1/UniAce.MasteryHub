@@ -1,5 +1,4 @@
-import { db } from '../firebase';
-import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
+import { auth } from '../firebase';
 
 export interface ArenaChallenge {
   id: string;
@@ -63,13 +62,11 @@ export const DEFAULT_CHALLENGES: ArenaChallenge[] = [
 export const ChallengesService = {
   async getChallenges(): Promise<ArenaChallenge[]> {
     try {
-      if (!db) return DEFAULT_CHALLENGES;
-      const docRef = doc(db, 'system_config', 'challenges');
-      const snap = await getDoc(docRef);
-      if (snap.exists()) {
-        const data = snap.data();
-        if (Array.isArray(data.challenges) && data.challenges.length > 0) {
-          return data.challenges;
+      const res = await fetch('/api/system/config/challenges');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.data && Array.isArray(json.data.challenges) && json.data.challenges.length > 0) {
+          return json.data.challenges as ArenaChallenge[];
         }
       }
     } catch (e) {
@@ -79,32 +76,39 @@ export const ChallengesService = {
   },
 
   subscribeChallenges(callback: (challenges: ArenaChallenge[]) => void): () => void {
-    if (!db) {
-      callback(DEFAULT_CHALLENGES);
-      return () => {};
-    }
-    const docRef = doc(db, 'system_config', 'challenges');
-    return onSnapshot(docRef, (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
-        if (Array.isArray(data.challenges) && data.challenges.length > 0) {
-          callback(data.challenges);
-          return;
-        }
-      }
-      callback(DEFAULT_CHALLENGES);
-    }, (error) => {
-      console.warn('Challenges snapshot error, fallback to defaults:', error);
-      callback(DEFAULT_CHALLENGES);
-    });
+    let isSubscribed = true;
+
+    const poll = async () => {
+      if (!isSubscribed) return;
+      const data = await this.getChallenges();
+      if (isSubscribed) callback(data);
+    };
+
+    poll();
+    const interval = setInterval(poll, 60000);
+    const onFocus = () => { poll(); };
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      isSubscribed = false;
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+    };
   },
 
   async saveChallenges(challenges: ArenaChallenge[]): Promise<void> {
-    if (!db) throw new Error('Firestore not initialized');
-    const docRef = doc(db, 'system_config', 'challenges');
-    await setDoc(docRef, {
-      challenges,
-      lastUpdated: new Date().toISOString()
-    }, { merge: true });
+    const user = auth.currentUser;
+    const token = user ? await user.getIdToken() : '';
+    await fetch('/api/admin/system-config/challenges', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify({
+        challenges,
+        lastUpdated: new Date().toISOString()
+      })
+    });
   }
 };

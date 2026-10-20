@@ -4,8 +4,6 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Brain, Loader2, CheckCircle2, XCircle, ArrowRight, RefreshCw, Settings2, Bookmark, Timer, Flag, LayoutGrid, ChevronLeft, ChevronRight, Lock, Calculator as CalcIcon, Lightbulb } from 'lucide-react';
 import MarkdownRenderer from './MarkdownRenderer';
 import { AIService } from '../services/ai';
-import { db } from '../firebase';
-import { doc, getDoc, collection, getDocs } from 'firebase/firestore';
 import { useAuth } from '../context/AuthContext';
 import { usePremiumStatus } from '../hooks/usePremiumStatus';
 import PricingModal from './PricingModal';
@@ -120,35 +118,31 @@ export default function QuizGenerator({
       let subTopicForQuiz = subTopic ? { ...subTopic } : undefined;
 
       if (courseId) {
-        if (subTopicForQuiz && !subTopicForQuiz.content) {
-          let lessonDoc = await getDoc(doc(db, `courses/${courseId}/modules/${module.id}/lessons`, subTopicForQuiz.id));
+        try {
+          const { CourseService } = await import('../services/courseService');
+          const lessons = await CourseService.getLessons(courseId, module.id);
           
-          if (!lessonDoc.exists() && subTopicForQuiz.id.includes('-')) {
-            const legacyId = subTopicForQuiz.id.split('-')[1];
-            if (legacyId) {
-              lessonDoc = await getDoc(doc(db, `courses/${courseId}/modules/${module.id}/lessons`, legacyId));
+          if (subTopicForQuiz && !subTopicForQuiz.content) {
+            const target = lessons.find(l => l.id === subTopicForQuiz.id || (subTopicForQuiz.id.includes('-') && l.id === subTopicForQuiz.id.split('-')[1]));
+            if (target && target.content) {
+              subTopicForQuiz.content = target.content;
             }
+          } else if (!subTopicForQuiz) {
+            const lessonsContentMap: Record<string, string> = {};
+            lessons.forEach(l => {
+              if (l.content) lessonsContentMap[l.id] = l.content;
+            });
+            moduleForQuiz.subTopics = moduleForQuiz.subTopics.map(st => ({
+              ...st,
+              content: st.content || lessonsContentMap[st.id] || lessonsContentMap[st.id.split('-')[1] || ''] || ''
+            }));
           }
-
-          if (lessonDoc.exists() && lessonDoc.data().content) {
-            subTopicForQuiz.content = lessonDoc.data().content;
-          }
-        } else if (!subTopicForQuiz) {
-          // Module level quiz - fetch all lessons
-          const lessonsSnap = await getDocs(collection(db, `courses/${courseId}/modules/${module.id}/lessons`));
-          const lessonsContentMap: Record<string, string> = {};
-          lessonsSnap.forEach(doc => {
-            if (doc.data().content) {
-              lessonsContentMap[doc.id] = doc.data().content;
-            }
-          });
-          
-          moduleForQuiz.subTopics = moduleForQuiz.subTopics.map(st => ({
-            ...st,
-            content: st.content || lessonsContentMap[st.id] || ''
-          }));
+        } catch (lErr) {
+          console.warn('[QuizGenerator] Failed to load lesson content via API:', lErr);
         }
       }
+          
+
 
       // Check if there is actual content to generate questions from
       const hasContent = subTopicForQuiz ? !!subTopicForQuiz.content : moduleForQuiz.subTopics.some(st => st.content);
@@ -342,24 +336,24 @@ export default function QuizGenerator({
       triggerMilestoneCelebration();
     }
 
-    // Persist Quiz Attempt to Firestore for Mastery Telemetry & Weak Spot tracking
+    // Persist Quiz Attempt to Neon API
     if (user && courseId) {
-      try {
-        const { addDoc, collection } = await import('firebase/firestore');
-        await addDoc(collection(db, `users/${user.uid}/quizAttempts`), {
-          userId: user.uid,
-          courseId,
-          moduleId: module.id,
-          moduleTitle: module.title,
-          subTopicId: subTopic?.id || null,
-          mode,
-          score: percentage,
-          totalQuestions: questions.length,
-          completedAt: new Date().toISOString()
-        });
-      } catch (err) {
-        console.warn("Could not record quiz attempt:", err);
-      }
+      user.getIdToken().then(token => {
+        fetch('/api/quiz/record-attempt', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            courseId,
+            moduleId: module.id,
+            quizId: subTopic?.id || 'default',
+            scorePct: percentage,
+            passed: percentage >= 70
+          })
+        }).catch(err => console.warn("Could not record quiz attempt:", err));
+      }).catch(err => console.warn("Could not get idToken for quiz attempt:", err));
     }
 
     // Update Spaced Repetition System
@@ -403,29 +397,20 @@ export default function QuizGenerator({
           module.id,
           subTopic?.id
         ).then(async (cards) => {
-          if (cards && cards.length > 0) {
-            const { writeBatch, doc, collection } = await import('firebase/firestore');
-            const batch = writeBatch(db);
-            const flashcardsRef = collection(db, `users/${user.uid}/flashcards`);
+          if (cards && cards.length > 0 && user?.uid) {
+            const token = await user.getIdToken();
             cards.forEach(c => {
-              let cardId = c.id && c.id.length > 3 && !c.id.includes('/') ? c.id : undefined;
-              if (!cardId) {
-                cardId = typeof crypto !== 'undefined' && crypto.randomUUID 
-                  ? crypto.randomUUID() 
-                  : Math.random().toString(36).substring(2) + Date.now().toString(36);
-              }
-              batch.set(doc(flashcardsRef, cardId), {
-                ...c,
-                id: cardId,
-                userId: user.uid,
-                interval: 0,
-                repetition: 0,
-                efactor: 2.5,
-                nextReviewDate: new Date().toISOString()
-              });
+              fetch('/api/user/srs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({
+                  cardId: c.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'c_' + Date.now()),
+                  courseId: courseId || module.id,
+                  rating: 1
+                })
+              }).catch(err => console.warn('Failed to save remedial flashcard:', err));
             });
-            await batch.commit();
-            console.log("Remedial flashcards injected silently!");
+            console.log("Remedial flashcards injected silently via SRS API!");
           }
         }).catch(err => console.error("Silently failed generating remedial flashcards", err));
       }

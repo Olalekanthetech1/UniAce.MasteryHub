@@ -1,5 +1,4 @@
-import { db, auth } from '../firebase';
-import { collection, doc, setDoc, serverTimestamp, query, orderBy, limit, getDocs, where, onSnapshot } from 'firebase/firestore';
+import { auth } from '../firebase';
 
 export type LogLevel = 'info' | 'warning' | 'error' | 'success';
 export type LogCategory = 'user' | 'admin' | 'system' | 'ai';
@@ -40,7 +39,6 @@ export const LogService = {
         clientMemoryLogs.pop();
       }
 
-      // Only send error or admin logs to the server to prevent client-driven Firestore write amplification
       if (level !== 'error' && category !== 'admin') {
         return;
       }
@@ -79,21 +77,23 @@ export const LogService = {
     }
   },
 
-  async getLogs(count: number = 50, category?: string) {
+  async getLogs(count: number = 50, category?: string): Promise<SystemLog[]> {
     try {
-      const fetchLimit = Math.min(Math.max(count, 20), 50);
-      const q = query(collection(db, 'system_logs'), orderBy('timestamp', 'desc'), limit(fetchLimit));
+      const user = auth.currentUser;
+      const token = user ? await user.getIdToken(false) : null;
+      if (!token) return clientMemoryLogs.slice(0, count);
 
-      const querySnapshot = await getDocs(q);
-      const allLogs = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as SystemLog[];
-
-      if (category && category !== 'all') {
-        return allLogs.filter(l => l.category === category).slice(0, count);
+      const url = `/api/logs?limit=${count}${category ? `&category=${encodeURIComponent(category)}` : ''}`;
+      const res = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json.logs)) {
+          return json.logs;
+        }
       }
-      return allLogs.slice(0, count);
+      return clientMemoryLogs.slice(0, count);
     } catch (error) {
       console.error('Failed to fetch system logs:', error);
       return clientMemoryLogs.slice(0, count);
@@ -101,20 +101,19 @@ export const LogService = {
   },
 
   subscribeToLogs(callback: (logs: SystemLog[]) => void, count: number = 50, category?: string) {
-    const fetchLimit = Math.min(Math.max(count, 20), 50);
-    const q = query(collection(db, 'system_logs'), orderBy('timestamp', 'desc'), limit(fetchLimit));
+    let isActive = true;
+    const poll = async () => {
+      if (!isActive) return;
+      const logs = await this.getLogs(count, category);
+      if (isActive) callback(logs);
+    };
 
-    return onSnapshot(q, (snapshot) => {
-      const allLogs = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as SystemLog[];
-      const filtered = category && category !== 'all'
-        ? allLogs.filter(l => l.category === category).slice(0, count)
-        : allLogs.slice(0, count);
-      callback(filtered);
-    }, (error) => {
-      console.error('Failed to subscribe to logs:', error);
-    });
+    poll();
+    const interval = setInterval(poll, 10000);
+
+    return () => {
+      isActive = false;
+      clearInterval(interval);
+    };
   }
 };

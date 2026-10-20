@@ -1,8 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
-import { db } from '../firebase';
 import { DEPARTMENTS as INITIAL_DEPARTMENTS, FACULTIES as INITIAL_FACULTIES, DEPARTMENT_TO_FACULTY as INITIAL_MAP } from '../constants';
 import { Department } from '../types';
+import { auth } from '../firebase';
 
 interface InstitutionState {
   departments: Department[];
@@ -23,69 +22,88 @@ export function InstitutionProvider({ children }: { children: ReactNode }) {
   const [departmentToFaculty, setDepartmentToFaculty] = useState<Record<string, string>>(INITIAL_MAP);
   const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => {
-    if (!db) return;
-    
-    // Seed and listen to institution config
-    const docRef = doc(db, 'system_config', 'institution');
-    
-    const unsubscribe = onSnapshot(docRef, async (snapshot) => {
-      if (snapshot.exists()) {
-        const data = snapshot.data();
-        setDepartments(data.departments || INITIAL_DEPARTMENTS);
-        setFaculties(data.faculties || INITIAL_FACULTIES);
-        setDepartmentToFaculty(data.departmentToFaculty || INITIAL_MAP);
-        setIsLoading(false);
-      } else {
-        setIsLoading(false);
+  const fetchInstitution = async (isMounted = true) => {
+    try {
+      const res = await fetch('/api/system/config/institution');
+      if (res.ok && isMounted) {
+        const json = await res.json();
+        const data = json.data || {};
+        if (Array.isArray(data.departments)) setDepartments(data.departments);
+        if (Array.isArray(data.faculties)) setFaculties(data.faculties);
+        if (data.departmentToFaculty) setDepartmentToFaculty(data.departmentToFaculty);
       }
-    }, (error) => {
-      console.warn("Error listening to institution config:", error);
-      setIsLoading(false); 
-    });
+    } catch (err) {
+      console.warn('Non-fatal: using default institution config:', err);
+    } finally {
+      if (isMounted) setIsLoading(false);
+    }
+  };
 
-    return () => unsubscribe();
+  useEffect(() => {
+    let isMounted = true;
+    fetchInstitution(true);
+
+    const onFocus = () => { fetchInstitution(true); };
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      isMounted = false;
+      window.removeEventListener('focus', onFocus);
+    };
   }, []);
 
+  const saveConfig = async (newDepts: Department[], newFaculties: string[], newMap: Record<string, string>) => {
+    try {
+      const user = auth.currentUser;
+      const token = user ? await user.getIdToken() : '';
+      await fetch('/api/admin/system-config/institution', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          departments: newDepts,
+          faculties: newFaculties,
+          departmentToFaculty: newMap
+        })
+      });
+    } catch (err) {
+      console.warn('Failed to save institution config:', err);
+    }
+  };
+
   const addDepartment = async (dept: string, faculty: string) => {
-    if (!db) return;
     if (!departments.includes(dept)) {
       const newDepts = [...departments, dept].sort();
       const newMap = { ...departmentToFaculty, [dept]: faculty };
-      await setDoc(doc(db, 'system_config', 'institution'), {
-        departments: newDepts,
-        departmentToFaculty: newMap
-      }, { merge: true });
+      setDepartments(newDepts);
+      setDepartmentToFaculty(newMap);
+      await saveConfig(newDepts, faculties, newMap);
     }
   };
 
   const removeDepartment = async (dept: string) => {
-    if (!db) return;
     const newDepts = departments.filter(d => d !== dept);
     const newMap = { ...departmentToFaculty };
     delete newMap[dept];
-    await setDoc(doc(db, 'system_config', 'institution'), {
-      departments: newDepts,
-      departmentToFaculty: newMap
-    }, { merge: true });
+    setDepartments(newDepts);
+    setDepartmentToFaculty(newMap);
+    await saveConfig(newDepts, faculties, newMap);
   };
 
   const addFaculty = async (faculty: string) => {
-    if (!db) return;
     if (!faculties.includes(faculty)) {
       const newFaculties = [...faculties, faculty].sort();
-      await setDoc(doc(db, 'system_config', 'institution'), {
-        faculties: newFaculties
-      }, { merge: true });
+      setFaculties(newFaculties);
+      await saveConfig(departments, newFaculties, departmentToFaculty);
     }
   };
 
   const removeFaculty = async (faculty: string) => {
-    if (!db) return;
     const newFaculties = faculties.filter(f => f !== faculty);
-    await setDoc(doc(db, 'system_config', 'institution'), {
-      faculties: newFaculties
-    }, { merge: true });
+    setFaculties(newFaculties);
+    await saveConfig(departments, newFaculties, departmentToFaculty);
   };
 
   return (

@@ -168,6 +168,19 @@ export class MultiInstanceCatalogCache {
   }
 
   /**
+   * Invalidates full catalog and list entries across local cache
+   */
+  public invalidateFullCatalog(): void {
+    for (const key of Array.from(this.cache.keys())) {
+      if (key.includes('catalog:full') || key.includes('catalog:list')) {
+        const entry = this.cache.get(key);
+        if (entry) this.currentBytes -= entry.byteSize;
+        this.cache.delete(key);
+      }
+    }
+  }
+
+  /**
    * Registers a listener for cross-instance invalidation broadcasts
    */
   public onInvalidation(fn: (msg: string) => void): () => void {

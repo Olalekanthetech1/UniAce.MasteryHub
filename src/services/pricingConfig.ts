@@ -1,5 +1,4 @@
-import { db } from '../firebase';
-import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
+import { auth } from '../firebase';
 
 export interface PricingPlan {
   id: string;
@@ -82,48 +81,55 @@ export const DEFAULT_PRICING_PLANS: PricingPlan[] = [
 export const PricingService = {
   async getPricingConfig(): Promise<PricingConfig> {
     try {
-      if (!db) return { plans: DEFAULT_PRICING_PLANS };
-      const docRef = doc(db, 'system_config', 'pricing');
-      const snap = await getDoc(docRef);
-      if (snap.exists()) {
-        const data = snap.data() as PricingConfig;
-        if (data.plans && data.plans.length > 0) {
-          return data;
+      const res = await fetch('/api/system/config/pricing');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.data && Array.isArray(json.data.plans) && json.data.plans.length > 0) {
+          return json.data as PricingConfig;
         }
       }
-    } catch (e) {
-      console.warn('Using default pricing config due to fetch error:', e);
+    } catch {
+      // Non-fatal, return default
     }
     return { plans: DEFAULT_PRICING_PLANS };
   },
 
   subscribePricingConfig(callback: (config: PricingConfig) => void): () => void {
-    if (!db) {
-      callback({ plans: DEFAULT_PRICING_PLANS });
-      return () => {};
-    }
-    const docRef = doc(db, 'system_config', 'pricing');
-    return onSnapshot(docRef, (snap) => {
-      if (snap.exists()) {
-        const data = snap.data() as PricingConfig;
-        if (data.plans && data.plans.length > 0) {
-          callback(data);
-          return;
-        }
-      }
-      callback({ plans: DEFAULT_PRICING_PLANS });
-    }, (error) => {
-      console.warn('Pricing snapshot error, fallback to defaults:', error);
-      callback({ plans: DEFAULT_PRICING_PLANS });
-    });
+    let isMounted = true;
+    const load = async () => {
+      const config = await PricingService.getPricingConfig();
+      if (isMounted) callback(config);
+    };
+
+    load();
+    const interval = setInterval(load, 60000);
+    const onFocus = () => { load(); };
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+    };
   },
 
-  async savePricingConfig(config: PricingConfig): Promise<void> {
-    if (!db) throw new Error('Firestore not initialized');
-    const docRef = doc(db, 'system_config', 'pricing');
-    await setDoc(docRef, {
-      ...config,
-      lastUpdated: new Date().toISOString()
-    }, { merge: true });
+  async savePricingConfig(config: PricingConfig, token?: string): Promise<void> {
+    const res = await fetch('/api/admin/config', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify({
+        key: 'pricing',
+        data: {
+          ...config,
+          lastUpdated: new Date().toISOString()
+        }
+      })
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to save pricing config: ${res.statusText}`);
+    }
   }
 };
