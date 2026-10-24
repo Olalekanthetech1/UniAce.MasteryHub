@@ -13,8 +13,8 @@ import {
   updateRuntimeFlag
 } from '../config/features';
 import { checkPostgresHealth, getPostgresPool, queryPostgres } from '../postgresPool';
-import { runProgressDeltaCatchUp, runProgressParityAudit } from '../../scripts/verify-progress-parity';
-import { runSparksParityAudit } from '../../scripts/verify-sparks-parity';
+import { runProgressDeltaCatchUp, runProgressParityAudit } from '../services/progressParityService';
+import { runSparksParityAudit } from '../services/sparksParityService';
 import { clearBootstrapCache } from './student';
 import { catalogCache } from '../cache/catalogCache';
 
