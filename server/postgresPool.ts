@@ -96,3 +96,68 @@ export async function queryPostgres<T = any>(
     throw err;
   }
 }
+
+export interface NeonHealthStatus {
+  connected: boolean;
+  latencyMs: number;
+  host: string;
+  database: string;
+  error?: string;
+}
+
+export async function probeNeonConnection(timeoutMs = 5000): Promise<NeonHealthStatus> {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    return {
+      connected: false,
+      latencyMs: 0,
+      host: 'UNCONFIGURED',
+      database: 'UNCONFIGURED',
+      error: 'DATABASE_URL environment variable is not set.'
+    };
+  }
+
+  let host = 'unknown';
+  let database = 'unknown';
+  try {
+    const u = new URL(connectionString);
+    host = u.hostname;
+    database = u.pathname.replace(/^\//, '');
+  } catch {
+    host = 'invalid-url';
+  }
+
+  const p = getPostgresPool();
+  if (!p) {
+    return {
+      connected: false,
+      latencyMs: 0,
+      host,
+      database,
+      error: 'Failed to obtain PostgreSQL pool'
+    };
+  }
+
+  const t0 = Date.now();
+  try {
+    const client = await p.connect();
+    const res = await client.query('SELECT NOW() as now, current_database() as db;');
+    client.release();
+    const latencyMs = Date.now() - t0;
+    return {
+      connected: true,
+      latencyMs,
+      host,
+      database: res.rows[0]?.db || database
+    };
+  } catch (err: any) {
+    return {
+      connected: false,
+      latencyMs: Date.now() - t0,
+      host,
+      database,
+      error: err?.message || String(err)
+    };
+  }
+}
+

@@ -156,7 +156,7 @@ import {
   toKobo,
   toNgn
 } from './server/sparkRollups';
-import { probeNeonConnection } from './scripts/test-neon-connection';
+import { probeNeonConnection } from './server/postgresPool';
 import { courseRepository } from './server/repositories/courseRepository';
 import { progressRepository } from './server/repositories/progressRepository';
 import { JobRepository } from './server/repositories/jobRepository';
@@ -169,7 +169,7 @@ initRuntimeFlagsSync().catch((err) => {
 });
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 // --- Global AI Providers & Circuit Breakers ---
 // Initialize providers unconditionally so they can dynamically fetch keys from Firestore
