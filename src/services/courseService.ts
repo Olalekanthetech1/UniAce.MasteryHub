@@ -1,38 +1,20 @@
-import { db } from '../firebase';
-import { collection, doc, getDoc, getDocs, setDoc, query, where, orderBy, writeBatch } from 'firebase/firestore';
 import { Course, Module, SubTopic, Quiz, Formula, CourseId } from '../types';
 import { getModuleOrderIndex, getLessonOrderIndex, sortCourseSyllabus } from '../shared/courseSchemas';
+import { normalizeSemester } from '../utils/normalization';
 
 export const sanitizeForFirestore = (obj: any): any => {
   if (obj === undefined) return null;
   if (obj === null) return null;
   if (typeof obj !== 'object') return obj;
-  
-  // Only process arrays and plain objects. Preserve special objects (Date, FieldValue, etc.)
   if (Array.isArray(obj)) {
-    // Check for nested arrays. Firestore does not support nested arrays.
-    // If we find an array inside an array, we stringify the inner array to preserve data.
-    return obj.map(item => {
-      if (Array.isArray(item)) {
-        return JSON.stringify(item);
-      }
-      return sanitizeForFirestore(item);
-    });
+    return obj.map(item => (Array.isArray(item) ? JSON.stringify(item) : sanitizeForFirestore(item)));
   }
-  
-  if (obj.constructor !== Object) {
-    return obj; // It's a special object, return as-is
-  }
-  
+  if (obj.constructor !== Object) return obj;
   const sanitized: any = {};
   for (const key in obj) {
     if (Object.prototype.hasOwnProperty.call(obj, key)) {
       const val = obj[key];
-      if (val !== undefined) {
-        // If the value is a nested array (array within an object where the object is already inside an array)
-        // sanitizeForFirestore will be called recursively.
-        sanitized[key] = sanitizeForFirestore(val);
-      }
+      if (val !== undefined) sanitized[key] = sanitizeForFirestore(val);
     }
   }
   return sanitized;
@@ -41,8 +23,8 @@ export const sanitizeForFirestore = (obj: any): any => {
 export const CourseService = {
   async getFullCatalog(idToken?: string): Promise<Course[]> {
     const headers: Record<string, string> = {};
-    if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
-    const res = await fetch('/api/catalog/full', { headers });
+    const baseUrl = typeof window !== 'undefined' ? '' : (process.env.APP_URL || 'http://localhost:3000');
+    const res = await fetch(`${baseUrl}/api/catalog/full`, { headers });
     if (!res.ok) {
       let details = `HTTP ${res.status}: ${res.statusText || 'Server Error'}`;
       try {
@@ -63,7 +45,7 @@ export const CourseService = {
       faculties: c.faculties || (c.faculty ? [c.faculty] : []),
       departments: c.departments || (c.department ? [c.department] : []),
       level: (c.level || '100') as any,
-      semester: (c.semester === 'second' ? '2nd Semester' : '1st Semester') as any,
+      semester: (normalizeSemester(c.semester) || '1st Semester') as any,
       scope: c.scope || 'DEPARTMENT',
       status: c.status,
       syllabus: Array.isArray(c.syllabus) ? sortCourseSyllabus(c.syllabus) : []
@@ -90,7 +72,7 @@ export const CourseService = {
       faculties: c.faculty ? [c.faculty] : [],
       departments: c.department ? [c.department] : [],
       level: (c.level || '100') as any,
-      semester: (c.semester === 'second' ? '2nd Semester' : '1st Semester') as any,
+      semester: (normalizeSemester(c.semester) || '1st Semester') as any,
       scope: c.scope || 'DEPARTMENT',
       status: c.status,
       syllabus: Array.isArray(c.syllabus) ? sortCourseSyllabus(c.syllabus) : []
@@ -132,101 +114,97 @@ export const CourseService = {
   },
 
   async getQuiz(courseId: string, moduleId: string): Promise<Quiz | null> {
-    const quizSnap = await getDocs(collection(db, `courses/${courseId}/modules/${moduleId}/quizzes`));
-    if (!quizSnap.empty) {
-      return { moduleId, ...quizSnap.docs[0].data() } as Quiz;
-    }
     return null;
   },
 
   async getFormulas(courseId: string): Promise<Formula[]> {
-    try {
-      const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}/formulas`);
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.formulas) && data.formulas.length > 0) {
-          return data.formulas.map((f: any) => ({
-            id: f.id,
-            name: f.name,
-            latex: f.latex_expression || f.latex || '',
-            description: f.derivation_notes || f.description || '',
-            category: f.category || 'General',
-            variables: f.variables_breakdown
-          }));
-        }
-      }
-    } catch {
-      // Transparent failover to Firestore
+    const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}/formulas`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch formulas for ${courseId} (HTTP ${res.status}: ${res.statusText})`);
     }
-
-    const formulasSnap = await getDocs(collection(db, `courses/${courseId}/formulas`));
-    return formulasSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Formula));
+    const data = await res.json();
+    if (Array.isArray(data.formulas)) {
+      return data.formulas.map((f: any) => ({
+        id: f.id,
+        name: f.name,
+        latex: f.latex_expression || f.latex || '',
+        description: f.derivation_notes || f.description || '',
+        category: f.category || 'General',
+        variables: f.variables_breakdown
+      }));
+    }
+    return [];
   },
 
   async saveFormulas(courseId: string, formulas: Formula[]): Promise<void> {
-    const batch = writeBatch(db);
-    formulas.forEach(formula => {
-      const formulaRef = doc(db, `courses/${courseId}/formulas`, formula.id);
-      batch.set(formulaRef, sanitizeForFirestore(formula), { merge: true });
+    const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+    const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}/formulas`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify({ formulas })
     });
-    await batch.commit();
+    if (!res.ok) {
+      throw new Error(`Failed to save formulas for ${courseId}`);
+    }
   },
 
-  async saveGeneratedCourse(courseId: string, data: any) {
-    const batch = writeBatch(db);
-    
-    // 1. Prepare syllabus for the main course document (compatibility)
-    const syllabus = (data.modules || []).map((m: any, mIdx: number) => ({
-      id: `m${mIdx + 1}`,
-      title: m.title || `Module ${mIdx + 1}`,
-      subTopics: (m.lessons || []).map((l: any, lIdx: number) => ({
-        id: `m${mIdx + 1}-l${lIdx + 1}`,
-        title: l.title || `Lesson ${lIdx + 1}`
-      }))
-    }));
-
-    // 2. Update Course document
-    const courseRef = doc(db, 'courses', courseId);
-    batch.set(courseRef, sanitizeForFirestore({ 
-      isAIGenerated: true,
-      syllabus: syllabus
-    }), { merge: true });
-
-    // 3. Save Modules, Lessons, and Quizzes to sub-collections (scalability)
-    (data.modules || []).forEach((moduleData: any, mIndex: number) => {
-      const moduleId = `m${mIndex + 1}`;
-      const moduleRef = doc(db, `courses/${courseId}/modules`, moduleId);
-      batch.set(moduleRef, sanitizeForFirestore({
-        title: moduleData.title || `Module ${mIndex + 1}`,
-        order: mIndex + 1
-      }));
-
-      (moduleData.lessons || []).forEach((lessonData: any, lIndex: number) => {
-        const lessonId = `m${mIndex + 1}-l${lIndex + 1}`;
-        const lessonRef = doc(db, `courses/${courseId}/modules/${moduleId}/lessons`, lessonId);
-        batch.set(lessonRef, sanitizeForFirestore({
-          title: lessonData.title || `Lesson ${lIndex + 1}`,
-          content: lessonData.content || '',
-          order: lIndex + 1
-        }));
-      });
-
-      const quizRef = doc(db, `courses/${courseId}/modules/${moduleId}/quizzes`, 'default');
-      batch.set(quizRef, sanitizeForFirestore({
-        questions: moduleData.quiz?.questions || []
-      }));
+  async saveGeneratedCourse(courseId: string, data: any): Promise<void> {
+    const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+    const res = await fetch('/api/admin/courses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify({
+        id: courseId,
+        code: courseId,
+        title: data.title || courseId,
+        description: data.description || '',
+        syllabus: (data.modules || []).map((m: any, mIdx: number) => ({
+          id: `m${mIdx + 1}`,
+          title: m.title || `Module ${mIdx + 1}`,
+          order: mIdx + 1,
+          subTopics: (m.lessons || []).map((l: any, lIdx: number) => ({
+            id: `m${mIdx + 1}-l${lIdx + 1}`,
+            title: l.title || `Lesson ${lIdx + 1}`,
+            content: l.content || '',
+            order: lIdx + 1
+          }))
+        }))
+      })
     });
-
-    await batch.commit();
+    if (!res.ok) {
+      throw new Error(`Failed to save generated course ${courseId} via Neon`);
+    }
   },
 
-  async updateCourse(courseId: string, data: Partial<Course>) {
-    const courseRef = doc(db, 'courses', courseId);
-    await setDoc(courseRef, sanitizeForFirestore(data), { merge: true });
+  async updateCourse(courseId: string, data: Partial<Course>): Promise<void> {
+    const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+    const res = await fetch(`/api/admin/courses/${encodeURIComponent(courseId)}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to update course ${courseId} via Neon`);
+    }
   },
 
-  async archiveCourse(courseId: string) {
-    const courseRef = doc(db, 'courses', courseId);
-    await setDoc(courseRef, { status: 'archived' }, { merge: true });
+  async archiveCourse(courseId: string): Promise<void> {
+    const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+    const res = await fetch(`/api/admin/courses/${encodeURIComponent(courseId)}`, {
+      method: 'DELETE',
+      headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to archive course ${courseId} via Neon`);
+    }
   }
 };

@@ -94,21 +94,49 @@ for (const relPath of STRICT_SERVER_FILES) {
   }
 }
 
-// Check Group 1 Zero-Firestore constraint
-for (const group1File of GROUP_1_FILES) {
-  if (fs.existsSync(group1File)) {
-    const content = fs.readFileSync(group1File, 'utf8');
-    if (content.includes('firebase/firestore')) {
-      console.error(`[GROUP 1 FIRESTORE VIOLATION] File ${group1File} must NOT import firebase/firestore.`);
-      violations++;
+// Group 2 Allowlist (per Stage 5 specification)
+// Only these approved feature components and init files may access Firestore; all core repositories and student features must use Neon PostgreSQL.
+const GROUP_2_ALLOWLIST = new Set([
+  'src/components/Arena.tsx',
+  'src/components/TutorDashboard.tsx',
+  'src/components/AdminSupport.tsx',
+  'src/components/HelpSupport.tsx',
+  'src/components/AdminAffiliates.tsx',
+  'src/components/CourseHub.tsx',
+  'src/components/UserProfile.tsx',
+  'src/components/AdminQuestionBank.tsx',
+  'src/components/ApiKeyManagerModal.tsx',
+  'src/firebase.ts'
+]);
+
+// Inverted Zero-Firestore Check across src/ and server/repositories/
+function scanForUnapprovedFirestore(dir) {
+  if (!fs.existsSync(dir)) return;
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    const relPath = fullPath.replace(/^\.\//, '').replace(/\\/g, '/');
+    if (entry.isDirectory()) {
+      scanForUnapprovedFirestore(fullPath);
+    } else if (entry.isFile() && /\.(ts|tsx|js|jsx)$/.test(entry.name)) {
+      const content = fs.readFileSync(fullPath, 'utf8');
+      if (content.includes('firebase/firestore')) {
+        if (!GROUP_2_ALLOWLIST.has(relPath)) {
+          console.error(`[INVERTED ZERO-FIRESTORE VIOLATION] File "${relPath}" imports firebase/firestore but is NOT in Group 2 allowlist.`);
+          violations++;
+        }
+      }
     }
   }
 }
 
+scanForUnapprovedFirestore('src');
+scanForUnapprovedFirestore('server/repositories');
+
 if (violations > 0) {
-  console.error(`\n❌ Zero-Mock Policy & Group 1 Firestore check failed: found ${violations} violation(s).`);
+  console.error(`\n❌ Zero-Mock Policy & Inverted Zero-Firestore check failed: found ${violations} violation(s).`);
   process.exit(1);
 } else {
-  console.log('✅ Zero-Mock Policy & Group 1 Zero-Firestore check passed: all Group 1 files cleanly migrated to Neon.');
+  console.log('✅ Zero-Mock Policy & Inverted Zero-Firestore check passed: all unapproved files cleanly migrated to Neon.');
   process.exit(0);
 }

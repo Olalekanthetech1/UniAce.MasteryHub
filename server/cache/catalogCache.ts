@@ -209,6 +209,10 @@ export class MultiInstanceCatalogCache {
     this.cache.clear();
     this.currentBytes = 0;
   }
+
+  public invalidateAll(): void {
+    this.clear();
+  }
 }
 
 // Global process-local singleton

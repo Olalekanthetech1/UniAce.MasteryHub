@@ -1,8 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { MessageCircle, ArrowRight } from 'lucide-react';
-import { doc, getDoc } from 'firebase/firestore';
-import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { LogService } from '../services/logService';
 import toast from 'react-hot-toast';
@@ -20,20 +18,10 @@ export default function WhatsAppPromoModal({ onClose }: { onClose?: () => void }
           const json = await res.json();
           if (json.data?.whatsappLink) {
             setWhatsappLink(json.data.whatsappLink);
-            return;
           }
         }
-      } catch {
-        // Non-fatal
-      }
-
-      try {
-        const snap = await getDoc(doc(db, 'system_config', 'community'));
-        if (snap.exists() && snap.data().whatsappLink) {
-          setWhatsappLink(snap.data().whatsappLink);
-        }
       } catch (e) {
-        console.warn("Failed to fetch whatsapp link from fallback:", e);
+        console.warn("Failed to fetch whatsapp link from Neon system_config:", e);
       }
     };
     fetchLink();

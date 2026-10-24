@@ -17,7 +17,8 @@ import {
   HelpCircle,
   FileText,
   Brain,
-  MessageSquare
+  MessageSquare,
+  UserMinus
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { Module, CourseId, CourseObjective, UserProgress } from '../types';
@@ -27,8 +28,6 @@ import { usePremiumStatus } from '../hooks/usePremiumStatus';
 import { LogService } from '../services/logService';
 import { getModuleIcon } from '../utils/moduleIcons';
 import CourseContextBar from './CourseContextBar';
-import { db } from '../firebase';
-import { collection, addDoc, serverTimestamp, doc, updateDoc, getDoc } from 'firebase/firestore';
 import { getCourseProgramStatus, isCourseEligibleForUser } from '../utils/courseEligibility';
 import { sortCourseSyllabus } from '../shared/courseSchemas';
 import toast from 'react-hot-toast';
@@ -120,17 +119,24 @@ export default function CourseSyllabus({
     if (!activeCourseId || !activeCourse) return;
     setIsRequestingGeneration(true);
     try {
-      await addDoc(collection(db, 'system_alerts'), {
-        type: 'SYLLABUS_REQUEST',
-        courseId: activeCourseId,
-        courseTitle: activeCourse.title,
-        requestedBy: user?.uid || 'anonymous',
-        userEmail: user?.email || '',
-        department: profile?.department || '',
-        level: profile?.academic_level || '',
-        semester: activeSemester,
-        timestamp: serverTimestamp(),
-        status: 'pending'
+      const token = user ? await user.getIdToken() : null;
+      await fetch('/api/system/alert', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          type: 'SYLLABUS_REQUEST',
+          courseId: activeCourseId,
+          courseTitle: activeCourse.title,
+          requestedBy: user?.uid || 'anonymous',
+          userEmail: user?.email || '',
+          department: profile?.department || '',
+          level: profile?.academic_level || '',
+          semester: activeSemester,
+          status: 'pending'
+        })
       });
       setGenerationRequested(true);
       toast.success("Syllabus request submitted to academic team!");
@@ -238,19 +244,31 @@ export default function CourseSyllabus({
             </div>
             
             {activeCourseId && liveSyllabusStatus === 'ready' && (
-              <div className="shrink-0">
+              <div className="shrink-0 flex items-center gap-3">
                 {isEnrolled ? (
-                  <button
-                    onClick={() => {
-                      if (onViewSelect) {
-                        onViewSelect('dashboard');
-                      }
-                    }}
-                    className="inline-flex items-center gap-2 px-6 py-3.5 rounded-2xl bg-emerald-500 hover:bg-emerald-600 text-white font-semibold shadow-lg shadow-emerald-500/30 transition-all hover:scale-105 active:scale-95 text-sm sm:text-base"
-                  >
-                    <Activity size={20} />
-                    <span>Continue Studying</span>
-                  </button>
+                  <>
+                    <button
+                      onClick={() => {
+                        if (onViewSelect) {
+                          onViewSelect('dashboard');
+                        }
+                      }}
+                      className="inline-flex items-center gap-2 px-6 py-3.5 rounded-2xl bg-emerald-500 hover:bg-emerald-600 text-white font-semibold shadow-lg shadow-emerald-500/30 transition-all hover:scale-105 active:scale-95 text-sm sm:text-base"
+                    >
+                      <Activity size={20} />
+                      <span>Continue Studying</span>
+                    </button>
+                    {onUnenroll && (
+                      <button
+                        onClick={() => setShowUnenrollConfirm(true)}
+                        className="inline-flex items-center gap-2 px-4 py-3.5 rounded-2xl bg-rose-50 text-rose-600 dark:bg-rose-950/40 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/50 font-semibold border border-rose-200 dark:border-rose-900/50 transition-all hover:scale-105 active:scale-95 text-sm"
+                        title="Unenroll from this course"
+                      >
+                        <UserMinus size={18} />
+                        <span className="hidden sm:inline">Unenroll</span>
+                      </button>
+                    )}
+                  </>
                 ) : (
                   <button
                     onClick={onEnroll}
@@ -565,6 +583,44 @@ export default function CourseSyllabus({
               </div>
             )}
           </section>
+        )}
+
+        {/* Unenroll Confirmation Modal */}
+        {showUnenrollConfirm && activeCourse && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
+            <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl space-y-6">
+              <div className="w-12 h-12 bg-rose-100 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 rounded-2xl flex items-center justify-center mx-auto">
+                <UserMinus size={24} />
+              </div>
+
+              <div className="text-center space-y-2">
+                <h3 className="text-xl font-bold text-slate-900 dark:text-white">
+                  Unenroll from {activeCourse.id}?
+                </h3>
+                <p className="text-sm text-slate-500 dark:text-zinc-400 leading-relaxed">
+                  Are you sure you want to remove <strong>{activeCourse.title}</strong> from your active courses? Your study progress and history will be preserved if you re-enroll later.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3 pt-2">
+                <button
+                  onClick={() => setShowUnenrollConfirm(false)}
+                  className="flex-1 px-5 py-3 rounded-xl border border-slate-200 dark:border-zinc-800 font-semibold text-slate-700 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors text-sm"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    setShowUnenrollConfirm(false);
+                    if (onUnenroll) onUnenroll();
+                  }}
+                  className="flex-1 px-5 py-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-semibold transition-all shadow-lg shadow-rose-600/30 hover:scale-105 active:scale-95 text-sm"
+                >
+                  Unenroll
+                </button>
+              </div>
+            </div>
+          </div>
         )}
 
       </div>

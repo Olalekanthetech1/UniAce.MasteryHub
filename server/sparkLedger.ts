@@ -1,5 +1,6 @@
 import admin from 'firebase-admin';
 import crypto from 'crypto';
+import { getPostgresPool } from './postgresPool';
 
 export type SparkLedgerAction =
   | 'PRE_AUTH'
@@ -1873,6 +1874,145 @@ export async function executeTransactionalPaymentSuccess(params: {
     simulateAffiliateFailureForTest,
     sandboxNamespace
   } = params;
+
+  const pool = getPostgresPool();
+  if (pool) {
+    const CANONICAL_PLANS: Record<string, { sparks: number; duration: string; name: string }> = {
+      emergency_topup: { sparks: 500, duration: 'One-Time', name: 'Emergency Top-Up' },
+      scholar: { sparks: 2000, duration: '30 Days', name: 'Scholar' },
+      semester: { sparks: 6000, duration: '120 Days', name: 'Semester Bundle' }
+    };
+
+    const normPlanType = (planType || 'scholar').toLowerCase().trim();
+    const canonicalFallback =
+      CANONICAL_PLANS[normPlanType] ||
+      (normPlanType.includes('semester')
+        ? CANONICAL_PLANS.semester
+        : normPlanType.includes('topup') || normPlanType.includes('emergency')
+        ? CANONICAL_PLANS.emergency_topup
+        : CANONICAL_PLANS.scholar);
+
+    const sparksToAdd = canonicalFallback.sparks;
+    const planName = canonicalFallback.name;
+    const isTopUp = normPlanType.includes('topup') || normPlanType.includes('emergency');
+    const durationDays = normPlanType.includes('semester') ? 120 : (isTopUp ? 0 : 30);
+    const amountNgn = Number(amount);
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // 1. Check idempotency on payments reference with row lock
+      const existingPaymentRes = await client.query(
+        `SELECT * FROM payments WHERE reference = $1 FOR UPDATE;`,
+        [reference]
+      );
+
+      if (existingPaymentRes.rows.length > 0) {
+        // Payment already processed! Idempotency gate.
+        const existing = existingPaymentRes.rows[0];
+        const userRes = await client.query(`SELECT ai_sparks, email FROM users WHERE uid = $1;`, [uid]);
+        const currentAiSparks = userRes.rows[0]?.ai_sparks ?? 0;
+        await client.query('COMMIT');
+
+        return {
+          alreadyProcessed: true,
+          uid,
+          reference,
+          amountNgn: Number(existing.amount_ngn),
+          amountUsd: null,
+          snapshotNgnPerUsdRate: null,
+          fxVersion: null,
+          fxStatus: 'FX_UNCONFIGURED',
+          sparksAdded: Number(existing.sparks_added),
+          newAiSparks: currentAiSparks,
+          newFreeSparks: null,
+          newPaidSparks: null,
+          bucketAccountingEnabled: false,
+          planName,
+          isTopUp,
+          durationDays,
+          affiliateCredited: false,
+          affiliateRefCode: null,
+          commissionAmount: 0
+        };
+      }
+
+      // 2. Insert into UNIQUE payments table in Neon
+      await client.query(
+        `INSERT INTO payments 
+         (reference, uid, amount_ngn, plan_type, sparks_added, channel, currency, status, metadata, created_at)
+         VALUES ($1, $2, $3, $4, $5, 'card', 'NGN', 'success', $6, NOW());`,
+        [reference, uid, amountNgn, normPlanType, sparksToAdd, JSON.stringify(metadata || {})]
+      );
+
+      // 3. Update users.ai_sparks and users.plan_type
+      const userUpdateRes = await client.query(
+        `UPDATE users 
+         SET ai_sparks = ai_sparks + $1,
+             plan_type = CASE WHEN $2 = 'emergency_topup' THEN plan_type ELSE $2 END,
+             updated_at = NOW()
+         WHERE uid = $3
+         RETURNING ai_sparks, email;`,
+        [sparksToAdd, normPlanType, uid]
+      );
+
+      if (userUpdateRes.rows.length === 0) {
+        throw new Error(`User ${uid} not found during payment processing`);
+      }
+
+      const newAiSparks = userUpdateRes.rows[0].ai_sparks;
+      const userEmail = userUpdateRes.rows[0].email;
+
+      // 4. Insert into spark_ledger (reason: 'paystack_purchase', ref_lock_id = reference)
+      const ledgerId = `tx_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+      await client.query(
+        `INSERT INTO spark_ledger (ledger_id, user_id, delta, reason, ref_lock_id, created_at)
+         VALUES ($1, $2, $3, 'paystack_purchase', $4, NOW());`,
+        [ledgerId, uid, sparksToAdd, reference]
+      );
+
+      // 5. Update user_sparks_wallets mirror
+      await client.query(
+        `INSERT INTO user_sparks_wallets (uid, balance, plan_type, updated_at)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (uid) DO UPDATE SET
+           balance = user_sparks_wallets.balance + $4,
+           plan_type = CASE WHEN $5 = 'emergency_topup' THEN user_sparks_wallets.plan_type ELSE $5 END,
+           updated_at = NOW();`,
+        [uid, newAiSparks, normPlanType, sparksToAdd, normPlanType]
+      );
+
+      await client.query('COMMIT');
+
+      return {
+        alreadyProcessed: false,
+        uid,
+        reference,
+        amountNgn,
+        amountUsd: null,
+        snapshotNgnPerUsdRate: null,
+        fxVersion: null,
+        fxStatus: 'FX_UNCONFIGURED',
+        sparksAdded: sparksToAdd,
+        newAiSparks,
+        newFreeSparks: null,
+        newPaidSparks: null,
+        bucketAccountingEnabled: false,
+        planName,
+        isTopUp,
+        durationDays,
+        affiliateCredited: false,
+        affiliateRefCode: null,
+        commissionAmount: 0
+      };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
 
   const db = app.firestore();
   const paymentsCol = getLedgerScopedCollection(db, 'payments', sandboxNamespace);

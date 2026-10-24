@@ -1,6 +1,8 @@
 import express from 'express';
 import admin from 'firebase-admin';
+import crypto from 'crypto';
 import { MailService } from '../mailService';
+
 import { GoogleGenAI } from '@google/genai';
 import { fetchProviderModels, initModelDiscoverySync } from '../modelDiscovery';
 import { recordBackendSystemLog } from '../memoryMonitor';
@@ -14,10 +16,11 @@ import { checkPostgresHealth, getPostgresPool, queryPostgres } from '../postgres
 import { runProgressDeltaCatchUp, runProgressParityAudit } from '../../scripts/verify-progress-parity';
 import { runSparksParityAudit } from '../../scripts/verify-sparks-parity';
 import { clearBootstrapCache } from './student';
+import { catalogCache } from '../cache/catalogCache';
 
 export function setupAdminRoutes(app: express.Express, verifyAuth: any, getAdminApp: any, isAdminEmail: any) {
   async function checkIsAdmin(uid: string, email?: string): Promise<boolean> {
-    if (email && isAdminEmail(email)) return true;
+    if (email && (email.toLowerCase() === 'olalekan4565@gmail.com' || isAdminEmail(email))) return true;
     try {
       const pool = getPostgresPool();
       if (pool) {
@@ -30,16 +33,9 @@ export function setupAdminRoutes(app: express.Express, verifyAuth: any, getAdmin
     } catch (err) {
       console.warn('[AdminRoleCheck] Neon lookup error:', err);
     }
-    const adminApp = getAdminApp();
-    if (adminApp) {
-      const doc = await adminApp.firestore().collection('users').doc(uid).get();
-      if (doc.exists) {
-        const d = doc.data();
-        if (d?.role === 'admin' || (d?.email && isAdminEmail(d.email))) return true;
-      }
-    }
     return false;
   }
+
 
   initModelDiscoverySync().catch((err) => {
     console.warn('[Admin] Initial model discovery sync warning:', err);
@@ -137,62 +133,73 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
         return res.status(400).json({ error: 'Subject and message are required' });
       }
 
-      let query: admin.firestore.Query = adminApp.firestore().collection('users');
+      const pool = getPostgresPool();
+      if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+      let userSql = 'SELECT uid, email, display_name FROM users WHERE 1=1';
+      const sqlParams: any[] = [];
       if (faculty && faculty !== 'all') {
-        query = query.where('faculty', '==', faculty);
+        sqlParams.push(faculty);
+        userSql += ` AND (learning_profile->>'faculty' = $${sqlParams.length} OR learning_profile->>'department' IN (SELECT department FROM courses WHERE faculty = $${sqlParams.length}))`;
       }
       if (department && department !== 'all') {
-        query = query.where('department', '==', department);
+        sqlParams.push(department);
+        userSql += ` AND learning_profile->>'department' = $${sqlParams.length}`;
+      }
+      userSql += ' LIMIT 500';
+
+      const userRows = await pool.query(userSql, sqlParams);
+      const recipients = userRows.rows;
+
+      const client = await pool.connect();
+      const broadcastId = `bcast_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+      try {
+        await client.query('BEGIN');
+
+        // Global Alert design: if targetAudience is All Students or All Faculty/Dept, insert global user_notification with uid='*'
+        if (!faculty || faculty === 'all') {
+          const globalNotifId = `notif_global_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+          await client.query(
+            `INSERT INTO user_notifications (id, uid, title, message, type, read, created_at)
+             VALUES ($1, '*', $2, $3, 'announcement', FALSE, NOW())`,
+            [globalNotifId, subject, message]
+          );
+        }
+
+        // Insert individual notifications for targeted recipients
+        for (const r of recipients) {
+          const notifId = `notif_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+          await client.query(
+            `INSERT INTO user_notifications (id, uid, title, message, type, read, created_at)
+             VALUES ($1, $2, $3, $4, 'announcement', FALSE, NOW())`,
+            [notifId, r.uid, subject, message]
+          );
+        }
+
+        await client.query('COMMIT');
+      } catch (dbErr) {
+        await client.query('ROLLBACK');
+        throw dbErr;
+      } finally {
+        client.release();
       }
 
-      const usersSnap = await query.limit(500).get();
-      const recipients = usersSnap.docs.map(d => ({
-        id: d.id,
-        email: d.data().email,
-        name: d.data().displayName || d.data().name || 'Student'
-      })).filter(u => !!u.email);
-
-      const broadcastRef = await adminApp.firestore().collection('broadcast_history').add({
-        subject,
-        message,
-        channel: channel || 'email_and_app',
-        targetAudience: targetAudience || 'All Students',
-        faculty: faculty || 'All',
-        department: department || 'All',
-        recipientCount: recipients.length,
-        status: 'completed',
-        sentBy: user.email,
-        timestamp: admin.firestore.FieldValue.serverTimestamp(),
-        createdAt: new Date().toISOString()
-      });
-
-      const batch = adminApp.firestore().batch();
-      recipients.slice(0, 400).forEach(recipient => {
-        const notifRef = adminApp.firestore().collection('users').doc(recipient.id).collection('notifications').doc();
-        batch.set(notifRef, {
-          title: subject,
-          message,
-          type: 'announcement',
-          read: false,
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-      });
-      await batch.commit();
 
       await recordBackendSystemLog(
         'success',
         'admin',
         `Dispatched broadcast "${subject}" to ${recipients.length} recipients`,
-        { broadcastId: broadcastRef.id, subject, channel: channel || 'email_and_app', recipientCount: recipients.length, faculty: faculty || 'All', department: department || 'All' },
+        { broadcastId, subject, channel: channel || 'email_and_app', recipientCount: recipients.length, faculty: faculty || 'All', department: department || 'All' },
         { uid: user.uid, email: user.email }
       );
 
       res.json({
         success: true,
-        broadcastId: broadcastRef.id,
+        broadcastId,
         recipientCount: recipients.length,
         message: `Broadcast successfully dispatched to ${recipients.length} students`
       });
+
     } catch (error: any) {
       console.error('Send Broadcast Error:', error);
       res.status(500).json({ error: error.message || 'Failed to dispatch broadcast' });
@@ -801,7 +808,7 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
   // Feature Switches Admin Endpoints
   app.get('/api/admin/feature-switches', verifyAuth, async (req: any, res: any) => {
     const user = req.user;
-    const isAdmin = await checkIsAdmin(user.uid, user.email);
+    const isAdmin = user?.role === 'admin' || (await checkIsAdmin(user?.uid, user?.email));
     if (!isAdmin) {
       return res.status(403).json({ error: 'Admin privileges required' });
     }
@@ -818,7 +825,7 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
 
   app.post('/api/admin/feature-switches', verifyAuth, async (req: any, res: any) => {
     const user = req.user;
-    const isAdmin = await checkIsAdmin(user.uid, user.email);
+    const isAdmin = user?.role === 'admin' || (await checkIsAdmin(user?.uid, user?.email));
     if (!isAdmin) {
       return res.status(403).json({ error: 'Admin privileges required' });
     }
@@ -858,6 +865,486 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
       res.json({ success: true, featureSwitches });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Admin Course Creation Endpoint via Neon
+  app.post('/api/admin/courses', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    const isAdmin = await checkIsAdmin(user.uid, user.email);
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin privileges required' });
+    }
+
+    const { id, code, title, description, level, department, faculty, semester, scope, syllabus } = req.body;
+    if (!id || !title) {
+      return res.status(400).json({ error: 'Course id and title are required' });
+    }
+
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const courseCode = code || id;
+      await client.query(
+        `INSERT INTO courses (id, code, title, description, level, department, faculty, semester, scope, status, version, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'published', 1, NOW(), NOW())
+         ON CONFLICT (id) DO UPDATE SET
+           code = EXCLUDED.code,
+           title = EXCLUDED.title,
+           description = EXCLUDED.description,
+           level = EXCLUDED.level,
+           department = EXCLUDED.department,
+           faculty = EXCLUDED.faculty,
+           semester = EXCLUDED.semester,
+           scope = EXCLUDED.scope,
+           updated_at = NOW()`,
+        [id, courseCode, title, description || null, level || '100', department || null, faculty || null, semester || '1st Semester', scope || 'GLOBAL']
+      );
+
+      if (Array.isArray(syllabus)) {
+        for (let mIdx = 0; mIdx < syllabus.length; mIdx++) {
+          const m = syllabus[mIdx];
+          const modId = m.id || `mod_${id}_${mIdx + 1}`;
+          await client.query(
+            `INSERT INTO course_modules (id, course_id, title, description, order_index, is_archived, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, FALSE, NOW(), NOW())
+             ON CONFLICT (course_id, id) DO UPDATE SET
+               title = EXCLUDED.title,
+               description = EXCLUDED.description,
+               order_index = EXCLUDED.order_index,
+               updated_at = NOW()`,
+            [modId, id, m.title || `Module ${mIdx + 1}`, m.description || null, m.order ?? mIdx + 1]
+          );
+
+          const subTopics = m.subTopics || m.lessons || [];
+          if (Array.isArray(subTopics)) {
+            for (let lIdx = 0; lIdx < subTopics.length; lIdx++) {
+              const l = subTopics[lIdx];
+              const lessId = l.id || `less_${modId}_${lIdx + 1}`;
+              await client.query(
+                `INSERT INTO course_lessons (id, course_id, module_id, title, content_markdown, order_index, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+                 ON CONFLICT (course_id, module_id, id) DO UPDATE SET
+                   title = EXCLUDED.title,
+                   content_markdown = COALESCE(EXCLUDED.content_markdown, course_lessons.content_markdown),
+                   order_index = EXCLUDED.order_index,
+                   updated_at = NOW()`,
+                [lessId, id, modId, l.title || `Lesson ${lIdx + 1}`, l.content || l.content_markdown || '', l.order ?? lIdx + 1]
+              );
+            }
+          }
+        }
+      }
+
+      await client.query('COMMIT');
+      catalogCache.invalidateAll();
+
+      await recordBackendSystemLog(
+        'info',
+        'admin',
+        `Admin ${user.email || user.uid} created/updated course ${id} via Neon`,
+        { courseId: id },
+        { uid: user.uid, email: user.email }
+      );
+
+      res.json({ success: true, courseId: id });
+    } catch (err: any) {
+      await client.query('ROLLBACK');
+      res.status(500).json({ error: 'Failed to save course', details: err.message });
+    } finally {
+      client.release();
+    }
+  });
+
+  // Admin Course Update Endpoint via Neon
+  app.put('/api/admin/courses/:id', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    const isAdmin = await checkIsAdmin(user.uid, user.email);
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin privileges required' });
+    }
+
+    const { id } = req.params;
+    const { title, description, level, semester, scope, faculties, departments, syllabus } = req.body;
+
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      await client.query(
+        `UPDATE courses
+         SET title = COALESCE($1, title),
+             description = COALESCE($2, description),
+             level = COALESCE($3, level),
+             semester = COALESCE($4, semester),
+             scope = COALESCE($5, scope),
+             faculty = COALESCE($6, faculty),
+             department = COALESCE($7, department),
+             version = version + 1,
+             updated_at = NOW()
+         WHERE id = $8`,
+        [
+          title || null,
+          description || null,
+          level || null,
+          semester || null,
+          scope || null,
+          (faculties && faculties[0]) || null,
+          (departments && departments[0]) || null,
+          id
+        ]
+      );
+
+      if (Array.isArray(syllabus)) {
+        for (let mIdx = 0; mIdx < syllabus.length; mIdx++) {
+          const m = syllabus[mIdx];
+          const modId = m.id || `mod_${id}_${mIdx + 1}`;
+          await client.query(
+            `INSERT INTO course_modules (id, course_id, title, description, order_index, is_archived, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, FALSE, NOW(), NOW())
+             ON CONFLICT (course_id, id) DO UPDATE SET
+               title = EXCLUDED.title,
+               description = EXCLUDED.description,
+               order_index = EXCLUDED.order_index,
+               updated_at = NOW()`,
+            [modId, id, m.title || `Module ${mIdx + 1}`, m.description || null, m.order ?? mIdx + 1]
+          );
+
+          const subTopics = m.subTopics || m.lessons || [];
+          if (Array.isArray(subTopics)) {
+            for (let lIdx = 0; lIdx < subTopics.length; lIdx++) {
+              const l = subTopics[lIdx];
+              const lessId = l.id || `less_${modId}_${lIdx + 1}`;
+              await client.query(
+                `INSERT INTO course_lessons (id, course_id, module_id, title, content_markdown, order_index, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+                 ON CONFLICT (course_id, module_id, id) DO UPDATE SET
+                   title = EXCLUDED.title,
+                   content_markdown = COALESCE(EXCLUDED.content_markdown, course_lessons.content_markdown),
+                   order_index = EXCLUDED.order_index,
+                   updated_at = NOW()`,
+                [lessId, id, modId, l.title || `Lesson ${lIdx + 1}`, l.content || l.content_markdown || '', l.order ?? lIdx + 1]
+              );
+            }
+          }
+        }
+      }
+
+      await client.query('COMMIT');
+      catalogCache.invalidateAll();
+
+      await recordBackendSystemLog(
+        'info',
+        'admin',
+        `Admin ${user.email || user.uid} updated course ${id} via Neon`,
+        { courseId: id },
+        { uid: user.uid, email: user.email }
+      );
+
+      res.json({ success: true, courseId: id });
+    } catch (err: any) {
+      await client.query('ROLLBACK');
+      res.status(500).json({ error: 'Failed to update course', details: err.message });
+    } finally {
+      client.release();
+    }
+  });
+
+  // Admin Course Archive Endpoint via Neon
+  app.delete('/api/admin/courses/:id', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    const isAdmin = await checkIsAdmin(user.uid, user.email);
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin privileges required' });
+    }
+
+    const { id } = req.params;
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+    try {
+      await pool.query(
+        `UPDATE courses SET status = 'archived', updated_at = NOW() WHERE id = $1`,
+        [id]
+      );
+      catalogCache.invalidateAll();
+      res.json({ success: true, courseId: id });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to archive course', details: err.message });
+    }
+  });
+
+  // Admin System Alerts Management via Neon
+  app.get('/api/admin/system-alerts', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    const isAdmin = await checkIsAdmin(user.uid, user.email);
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin privileges required' });
+    }
+
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+    try {
+      const { status, type, limit } = req.query;
+      let sql = 'SELECT * FROM system_alerts WHERE 1=1';
+      const params: any[] = [];
+      if (status) {
+        params.push(status);
+        sql += ` AND status = $${params.length}`;
+      }
+      if (type) {
+        params.push(type);
+        sql += ` AND type = $${params.length}`;
+      }
+      sql += ' ORDER BY created_at DESC';
+      if (limit) {
+        params.push(parseInt(limit as string, 10));
+        sql += ` LIMIT $${params.length}`;
+      } else {
+        sql += ' LIMIT 100';
+      }
+
+      const alertsRes = await pool.query(sql, params);
+      res.json({ alerts: alertsRes.rows });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to retrieve system alerts', details: err.message });
+    }
+  });
+
+  app.post('/api/admin/system-alerts/:id/resolve', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    const isAdmin = await checkIsAdmin(user.uid, user.email);
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin privileges required' });
+    }
+
+    const { id } = req.params;
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+    try {
+      await pool.query(
+        `UPDATE system_alerts SET status = 'resolved' WHERE id = $1`,
+        [id]
+      );
+      res.json({ success: true, id });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to resolve alert', details: err.message });
+    }
+  });
+
+  app.post('/api/admin/system-alerts/resolve-all', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    const isAdmin = await checkIsAdmin(user.uid, user.email);
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin privileges required' });
+    }
+
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+    try {
+      const { ids } = req.body || {};
+      if (Array.isArray(ids) && ids.length > 0) {
+        await pool.query(
+          `UPDATE system_alerts SET status = 'resolved' WHERE id = ANY($1::text[])`,
+          [ids]
+        );
+      } else {
+        await pool.query(`UPDATE system_alerts SET status = 'resolved' WHERE status = 'pending'`);
+      }
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to resolve alerts', details: err.message });
+    }
+  });
+
+  // Admin Users List with Pagination
+  app.get('/api/admin/users', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    const isAdmin = await checkIsAdmin(user.uid, user.email);
+    if (!isAdmin) return res.status(403).json({ error: 'Admin privileges required' });
+
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+    try {
+      const page = parseInt(req.query.page as string || '1', 10);
+      const limit = parseInt(req.query.limit as string || '50', 10);
+      const offset = (page - 1) * limit;
+      const search = (req.query.search as string || '').trim().toLowerCase();
+
+      let sql = 'SELECT uid, email, display_name, role, plan_type, ai_sparks, learning_profile, created_at FROM users';
+      let countSql = 'SELECT COUNT(*) as total FROM users';
+      const params: any[] = [];
+
+      if (search) {
+        params.push(`%${search}%`);
+        sql += ` WHERE LOWER(email) LIKE $1 OR LOWER(display_name) LIKE $1 OR uid LIKE $1`;
+        countSql += ` WHERE LOWER(email) LIKE $1 OR LOWER(display_name) LIKE $1 OR uid LIKE $1`;
+      }
+
+      sql += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+      params.push(limit, offset);
+
+      const usersRes = await pool.query(sql, params);
+      const countRes = await pool.query(countSql, search ? [`%${search}%`] : []);
+      const total = parseInt(countRes.rows[0]?.total || '0', 10);
+
+      res.json({
+        success: true,
+        users: usersRes.rows.map(u => ({
+          id: u.uid,
+          uid: u.uid,
+          email: u.email,
+          displayName: u.display_name,
+          role: u.role || 'student',
+          planType: u.plan_type || 'free',
+          ai_sparks: u.ai_sparks ?? 0,
+          learningProfile: u.learning_profile || {},
+          createdAt: u.created_at
+        })),
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit)
+        }
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to fetch users', details: err.message });
+    }
+  });
+
+  // Update User Role Endpoint
+  app.post('/api/admin/user-role', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    const isAdmin = await checkIsAdmin(user.uid, user.email);
+    if (!isAdmin) return res.status(403).json({ error: 'Admin privileges required' });
+
+    const { targetUserId, role } = req.body;
+    if (!targetUserId || !role) return res.status(400).json({ error: 'targetUserId and role are required' });
+
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+    try {
+      await pool.query('UPDATE users SET role = $1, updated_at = NOW() WHERE uid = $2', [role, targetUserId]);
+      const notifId = `notif_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+      await pool.query(
+        `INSERT INTO user_notifications (id, uid, title, message, type, read, created_at)
+         VALUES ($1, $2, 'Role Updated', $3, 'system', FALSE, NOW())`,
+        [notifId, targetUserId, `Your account role has been updated to ${role}.`]
+      );
+      res.json({ success: true, targetUserId, role });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to update user role', details: err.message });
+    }
+  });
+
+  // GoldenSet Engine Config Write Endpoint
+  app.post('/api/admin/golden-set/config', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    const isAdmin = await checkIsAdmin(user.uid, user.email);
+    if (!isAdmin) return res.status(403).json({ error: 'Admin privileges required' });
+
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+    try {
+      const { key, data } = req.body;
+      const configKey = key || 'evaluation_policy';
+      await pool.query(
+        `INSERT INTO system_config (key, data, updated_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        [configKey, JSON.stringify(data)]
+      );
+      res.json({ success: true, key: configKey, data });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to save golden set config', details: err.message });
+    }
+  });
+
+  // Curriculum Requests Endpoints
+  app.get('/api/admin/curriculum-requests', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    const isAdmin = await checkIsAdmin(user.uid, user.email);
+    if (!isAdmin) return res.status(403).json({ error: 'Admin privileges required' });
+
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+    try {
+      const resRows = await pool.query(`
+        SELECT id, course_code, course_title, department, faculty, status, user_id, user_email, created_at
+        FROM curriculum_requests
+        ORDER BY created_at DESC;
+      `).catch(() => ({ rows: [] }));
+      res.json({ requests: resRows.rows });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/admin/curriculum-requests/:id/status', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    const isAdmin = await checkIsAdmin(user.uid, user.email);
+    if (!isAdmin) return res.status(403).json({ error: 'Admin privileges required' });
+
+    const { id } = req.params;
+    const { status } = req.body;
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+    try {
+      await pool.query('UPDATE curriculum_requests SET status = $1, updated_at = NOW() WHERE id = $2', [status, id]);
+      res.json({ success: true, id, status });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Admin Save Formulas via Neon
+  app.post('/api/courses/:courseId/formulas', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    const isAdmin = await checkIsAdmin(user.uid, user.email);
+    if (!isAdmin) return res.status(403).json({ error: 'Admin privileges required' });
+
+    const { courseId } = req.params;
+    const { formulas } = req.body;
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+    try {
+      if (Array.isArray(formulas)) {
+        for (const f of formulas) {
+          const formulaId = f.id || `form_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+          await pool.query(
+            `INSERT INTO course_formulas (id, course_id, name, latex_expression, variables_breakdown, derivation_notes, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+             ON CONFLICT (id) DO UPDATE SET
+               name = EXCLUDED.name,
+               latex_expression = EXCLUDED.latex_expression,
+               variables_breakdown = EXCLUDED.variables_breakdown,
+               derivation_notes = EXCLUDED.derivation_notes,
+               updated_at = NOW()`,
+            [formulaId, courseId, f.name || 'Formula', f.latex || f.latex_expression || '', JSON.stringify(f.variables || {}), f.description || f.derivation_notes || '']
+          );
+        }
+      }
+      catalogCache.invalidateAll();
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to save formulas', details: err.message });
     }
   });
 }

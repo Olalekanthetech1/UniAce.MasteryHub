@@ -56,9 +56,6 @@ import { Menu, Mic, Video } from 'lucide-react';
 import { Toaster } from 'react-hot-toast';
 import { View, ChatMessage, CourseId, Department, Semester } from './types';
 import { generateModuleContent, generateCourseSkeleton } from './services/aiCourseGenerator';
-import { db } from './firebase';
-import { doc, setDoc, updateDoc } from 'firebase/firestore';
-import { sanitizeForFirestore } from './services/courseService';
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { InstitutionProvider } from './context/InstitutionContext';
@@ -92,6 +89,25 @@ function AppContent() {
   
   // Activate advanced self-healing for robust dynamic client-state integrity
   useSelfHealing();
+
+  const [currentPath, setCurrentPath] = useState(() => typeof window !== 'undefined' ? window.location.pathname : '/');
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setCurrentPath(window.location.pathname);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const navigateTo = (path: string, view: View = 'hub') => {
+    if (typeof window !== 'undefined') {
+      window.history.pushState({}, '', path);
+      setCurrentPath(path);
+      setActiveView(view);
+      try { localStorage.setItem('uniace_active_view', view); } catch {}
+    }
+  };
 
   const [activeCourseId, setActiveCourseId] = useState<CourseId | null>(null);
   const [activeView, setActiveView] = useState<View>(() => {
@@ -291,6 +307,10 @@ function AppContent() {
 
   const handleViewSelect = (view: View) => {
     setActiveView(view);
+    if (currentPath !== '/') {
+      window.history.pushState({}, '', '/');
+      setCurrentPath('/');
+    }
     try {
       localStorage.setItem('uniace_active_view', view);
     } catch {}
@@ -372,15 +392,21 @@ function AppContent() {
   }
 
   if (!user) {
-    if (window.location.pathname === '/admin/login' || window.location.pathname === '/admin/dashboard') {
-      return <AdminLogin requireGoogleLogin={true} />;
+    if (currentPath === '/admin/login' || currentPath === '/admin/dashboard') {
+      return (
+        <AdminLogin 
+          requireGoogleLogin={true} 
+          onBackToApp={() => navigateTo('/', 'hub')} 
+          onSuccess={() => navigateTo('/admin/dashboard')} 
+        />
+      );
     }
     return <LandingPage />;
   }
 
-  if (window.location.pathname === '/admin/login') {
+  if (currentPath === '/admin/login') {
     if (!isAdmin) {
-      window.location.href = '/';
+      navigateTo('/', 'hub');
       return null;
     }
     
@@ -388,16 +414,21 @@ function AppContent() {
     const isVerified = (verifiedUntil && new Date(verifiedUntil.toDate ? verifiedUntil.toDate() : verifiedUntil).getTime() > Date.now()) || (typeof window !== 'undefined' && sessionStorage.getItem('admin_pin_verified') === 'true');
     
     if (isVerified) {
-      window.location.href = '/admin/dashboard';
+      navigateTo('/admin/dashboard');
       return null;
     }
     
-    return <AdminLogin />;
+    return (
+      <AdminLogin 
+        onBackToApp={() => navigateTo('/', 'hub')} 
+        onSuccess={() => navigateTo('/admin/dashboard')} 
+      />
+    );
   }
 
-  if (window.location.pathname === '/admin/dashboard') {
+  if (currentPath === '/admin/dashboard') {
     if (!isAdmin) {
-      window.location.href = '/';
+      navigateTo('/', 'hub');
       return null;
     }
     
@@ -406,11 +437,11 @@ function AppContent() {
     const isVerified = (verifiedUntil && new Date(verifiedUntil.toDate ? verifiedUntil.toDate() : verifiedUntil).getTime() > Date.now()) || (typeof window !== 'undefined' && sessionStorage.getItem('admin_pin_verified') === 'true');
     
     if (!isVerified) {
-      window.location.href = '/admin/login';
+      navigateTo('/admin/login');
       return null;
     }
 
-    return <AdminDashboard />;
+    return <AdminDashboard onBackToApp={() => navigateTo('/', 'hub')} />;
   }
 
   const needsAcademicProfile = user && profile && !profile.onboarding_completed && (!profile.department || !profile.academic_level || !profile.semester);

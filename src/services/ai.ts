@@ -956,20 +956,20 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
     syllabus: Module[],
     userId?: string
   ) => {
-    // 1. Fetch SRS data if available to enhance prediction
+    // 1. Fetch SRS data from Neon endpoint if available to enhance prediction
     let srsData: any[] = [];
     if (userId) {
       try {
-        const { SRSService } = await import('./srsService');
-        const db = (await import('../firebase')).db;
-        const { collection, getDocs } = await import('firebase/firestore');
-        
-        // We need to fetch all SRS records for the user to get a holistic view
-        // This is a simplified approach; in a real app, you might want a specific BKT service
-        const srsSnap = await getDocs(collection(db, `users/${userId}/spaced_repetition`));
-        srsData = srsSnap.docs.map(d => d.data());
+        const token = await getAuthToken();
+        const res = await fetch('/api/user/srs', {
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+        });
+        if (res.ok) {
+          const json = await res.json();
+          srsData = json.cards || [];
+        }
       } catch (error) {
-        console.error("Failed to fetch SRS data for BKT:", error);
+        console.error("Failed to fetch SRS data for BKT from Neon:", error);
       }
     }
 

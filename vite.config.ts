@@ -106,8 +106,10 @@ export default defineConfig(({mode}) => {
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
+        'react': path.resolve(__dirname, 'node_modules/react'),
+        'react-dom': path.resolve(__dirname, 'node_modules/react-dom'),
       },
-      dedupe: ['react', 'react-dom', 'react/jsx-runtime', 'react/jsx-dev-runtime'],
+      dedupe: ['react', 'react-dom', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'zustand', 'use-sync-external-store'],
     },
     optimizeDeps: {
       include: [
@@ -115,6 +117,9 @@ export default defineConfig(({mode}) => {
         'react-dom',
         'react/jsx-runtime',
         'react/jsx-dev-runtime',
+        'zustand',
+        'zustand/middleware',
+        'use-sync-external-store',
         '@tanstack/react-query',
         'react-router-dom',
         'lucide-react',

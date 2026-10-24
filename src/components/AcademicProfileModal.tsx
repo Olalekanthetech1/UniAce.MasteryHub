@@ -4,8 +4,6 @@ import { GraduationCap, Building2, Layers, Calendar, Loader2, MessageCircle, Arr
 import { useAuth } from '../context/AuthContext';
 import { Department, Level, Semester } from '../types';
 import { useInstitution } from '../context/InstitutionContext';
-import { doc, getDoc } from 'firebase/firestore';
-import { db } from '../firebase';
 import { LogService } from '../services/logService';
 
 const LEVELS: Level[] = ['100', '200', '300', '400', '500'];
@@ -30,20 +28,10 @@ export default function AcademicProfileModal({ onClose }: { onClose?: () => void
           const json = await res.json();
           if (json.data?.whatsappLink) {
             setWhatsappLink(json.data.whatsappLink);
-            return;
           }
         }
-      } catch {
-        // Non-fatal
-      }
-
-      try {
-        const snap = await getDoc(doc(db, 'system_config', 'community'));
-        if (snap.exists() && snap.data().whatsappLink) {
-          setWhatsappLink(snap.data().whatsappLink);
-        }
       } catch (e) {
-        console.warn("Failed to fetch whatsapp link from fallback:", e);
+        console.warn("Failed to fetch whatsapp link from Neon system_config:", e);
       }
     };
     fetchLink();

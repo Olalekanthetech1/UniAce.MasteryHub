@@ -131,17 +131,119 @@ export class MaintenanceSweeps {
   }
 
   /**
+   * Prunes chat analytics older than 90 days retention window using subquery batching
+   */
+  static async pruneOldChatAnalytics(limit = 1000): Promise<number> {
+    const pool = getPostgresPool();
+    if (!pool) return 0;
+    try {
+      const sql = `
+        DELETE FROM chat_analytics WHERE id IN (
+          SELECT id FROM chat_analytics
+          WHERE created_at < NOW() - INTERVAL '90 days'
+          LIMIT $1
+        );
+      `;
+      const res = await pool.query(sql, [limit]);
+      return res.rowCount || 0;
+    } catch (err: any) {
+      logger.error({ err: err.message }, '[MaintenanceSweeps] Chat analytics prune failed');
+      return 0;
+    }
+  }
+
+  /**
+   * Prunes struggle analytics older than 90 days retention window using subquery batching
+   */
+  static async pruneOldStruggleAnalytics(limit = 1000): Promise<number> {
+    const pool = getPostgresPool();
+    if (!pool) return 0;
+    try {
+      const sql = `
+        DELETE FROM struggle_analytics WHERE id IN (
+          SELECT id FROM struggle_analytics
+          WHERE created_at < NOW() - INTERVAL '90 days'
+          LIMIT $1
+        );
+      `;
+      const res = await pool.query(sql, [limit]);
+      return res.rowCount || 0;
+    } catch (err: any) {
+      logger.error({ err: err.message }, '[MaintenanceSweeps] Struggle analytics prune failed');
+      return 0;
+    }
+  }
+
+  /**
+   * Prunes resolved system alerts older than 90 days retention window using subquery batching
+   */
+  static async pruneOldSystemAlerts(limit = 1000): Promise<number> {
+    const pool = getPostgresPool();
+    if (!pool) return 0;
+    try {
+      const sql = `
+        DELETE FROM system_alerts WHERE id IN (
+          SELECT id FROM system_alerts
+          WHERE status = 'resolved' AND created_at < NOW() - INTERVAL '90 days'
+          LIMIT $1
+        );
+      `;
+      const res = await pool.query(sql, [limit]);
+      return res.rowCount || 0;
+    } catch (err: any) {
+      logger.error({ err: err.message }, '[MaintenanceSweeps] System alerts prune failed');
+      return 0;
+    }
+  }
+
+  /**
+   * Prunes message reaction feedback older than 90 days retention window using subquery batching
+   */
+  static async pruneOldMessageReactions(limit = 1000): Promise<number> {
+    const pool = getPostgresPool();
+    if (!pool) return 0;
+    try {
+      const sql = `
+        DELETE FROM message_reactions WHERE id IN (
+          SELECT id FROM message_reactions
+          WHERE created_at < NOW() - INTERVAL '90 days'
+          LIMIT $1
+        );
+      `;
+      const res = await pool.query(sql, [limit]);
+      return res.rowCount || 0;
+    } catch (err: any) {
+      logger.error({ err: err.message }, '[MaintenanceSweeps] Message reactions prune failed');
+      return 0;
+    }
+  }
+
+  /**
    * Runs all maintenance sweeps in sequence
    */
-  static async runMaintenanceSweep(): Promise<SweepResults> {
+  static async runMaintenanceSweep(): Promise<SweepResults & {
+    prunedChatAnalyticsCount: number;
+    prunedStruggleAnalyticsCount: number;
+    prunedAlertsCount: number;
+    prunedReactionsCount: number;
+  }> {
     const expiredEscrowsCount = await this.expireEscrowLocksWithRefund();
     const prunedTicketsCount = await this.pruneSseTickets();
     const prunedLogsCount = await this.pruneOldLogs();
+    const prunedChatAnalyticsCount = await this.pruneOldChatAnalytics();
+    const prunedStruggleAnalyticsCount = await this.pruneOldStruggleAnalytics();
+    const prunedAlertsCount = await this.pruneOldSystemAlerts();
+    const prunedReactionsCount = await this.pruneOldMessageReactions();
 
     return {
       expiredEscrowsCount,
       prunedTicketsCount,
-      prunedLogsCount
+      prunedLogsCount,
+      prunedChatAnalyticsCount,
+      prunedStruggleAnalyticsCount,
+      prunedAlertsCount,
+      prunedReactionsCount
     };
   }
 }
+

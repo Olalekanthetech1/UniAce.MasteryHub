@@ -1,5 +1,3 @@
-import { db, auth } from '../firebase';
-import { doc, getDoc, collection, addDoc, serverTimestamp, query, where, getDocs, updateDoc, writeBatch } from 'firebase/firestore';
 import { Curriculum, UserProfile, CourseId } from '../types';
 import { LogService } from './logService';
 
@@ -20,23 +18,42 @@ export interface IntegrityIssue {
   timestamp?: any;
 }
 
-export class CurriculumIntegrityService {
-  private static readonly LOG_COLLECTION = 'integrity_issues';
+import { CourseService } from './courseService';
+import { isCourseEligibleForUser } from '../utils/courseEligibility';
 
+export class CurriculumIntegrityService {
   /**
-   * Fetches the canonical curriculum for a specific cohort
+   * Fetches the canonical curriculum for a specific cohort from PostgreSQL catalog
    */
   static async getCanonicalCurriculum(dept: string, level: string, sem: string): Promise<Curriculum | null> {
-    // Normalize ID format: DEPT_LEVEL_SEM (e.g. MSE_100_2)
-    // We use a helper to generate a consistent ID
-    const curriculumId = this.generateCurriculumId(dept, level, sem);
-    const docRef = doc(db, 'curriculums', curriculumId);
-    const snap = await getDoc(docRef);
-    
-    if (snap.exists()) {
-      return snap.data() as Curriculum;
+    const cleanLevel = level.replace(/\D/g, '') || '100';
+    try {
+      const allCourses = await CourseService.getFullCatalog();
+      if (!allCourses || allCourses.length === 0) return null;
+
+      const profileStub: Partial<UserProfile> = {
+        department: dept,
+        academic_level: cleanLevel as any,
+        semester: sem as any
+      };
+
+      const matchedCourses = allCourses.filter(c => isCourseEligibleForUser(c, profileStub as UserProfile, sem));
+      if (matchedCourses.length === 0) return null;
+
+      const courseIds = matchedCourses.map(c => c.id);
+      return {
+        id: this.generateCurriculumId(dept, level, sem),
+        department: dept as any,
+        level: level as any,
+        semester: sem as any,
+        courseIds: courseIds as any,
+        lastUpdated: new Date().toISOString(),
+        updatedBy: 'system'
+      };
+    } catch (e) {
+      console.warn('Failed to fetch canonical curriculum from Neon:', e);
+      return null;
     }
-    return null;
   }
 
   /**
@@ -70,8 +87,6 @@ export class CurriculumIntegrityService {
     const issues: IntegrityIssue[] = [];
 
     if (!canonical) {
-      // If no canonical curriculum exists, we can't validate, but we log it as a system gap
-      console.warn(`No canonical curriculum found for ${profile.department} ${profile.academic_level} ${profile.semester}`);
       return [];
     }
 
@@ -95,7 +110,7 @@ export class CurriculumIntegrityService {
       });
     }
 
-    // 2. Check for extra courses (potential level/dept leaks)
+    // 2. Check for extra courses
     const extra = actualCourseIds.filter(id => !expectedIds.includes(id));
     if (extra.length > 0) {
       issues.push({
@@ -129,7 +144,6 @@ export class CurriculumIntegrityService {
       });
     }
 
-    // Log issues to Firestore for Admin Dashboard
     for (const issue of issues) {
       await this.logIntegrityIssue(issue);
     }
@@ -138,89 +152,93 @@ export class CurriculumIntegrityService {
   }
 
   /**
-   * Logs an integrity issue to the database
+   * Logs an integrity issue to Neon system_alerts
    */
   static async logIntegrityIssue(issue: IntegrityIssue) {
     try {
-      // Check if a similar issue was logged recently to avoid spam
-      // (Simple implementation: just add for now, we can optimize later)
-      await addDoc(collection(db, this.LOG_COLLECTION), {
-        ...issue,
-        timestamp: serverTimestamp(),
-        resolved: false
+      const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+      await fetch('/api/system/alert', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          type: 'CURRICULUM_INTEGRITY_ISSUE',
+          department: issue.department,
+          academicLevel: issue.level,
+          status: 'pending',
+          details: {
+            issueType: issue.type,
+            severity: issue.severity,
+            details: issue.details,
+            userId: issue.userId,
+            userEmail: issue.userEmail,
+            expectedCourseIds: issue.expectedCourseIds,
+            actualCourseIds: issue.actualCourseIds,
+            metadata: issue.metadata
+          }
+        })
       });
       
       LogService.log('error', 'system', `Integrity Issue [${issue.type}] for ${issue.userEmail}: ${issue.details}`);
     } catch (error) {
-      console.error("Failed to log integrity issue:", error);
+      console.error('Failed to log integrity issue to Neon:', error);
     }
   }
 
   /**
-   * Fetches all unresolved integrity issues
+   * Fetches all unresolved integrity issues from Neon
    */
   static async getUnresolvedIssues(): Promise<IntegrityIssue[]> {
     try {
-      const q = query(collection(db, this.LOG_COLLECTION), where('resolved', '==', false));
-      const snap = await getDocs(q);
-      return snap.docs.map(d => ({ id: d.id, ...d.data() } as IntegrityIssue));
+      const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+      const res = await fetch('/api/admin/system-alerts?type=CURRICULUM_INTEGRITY_ISSUE&status=pending', {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      if (!res.ok) return [];
+      const json = await res.json();
+      return (json.alerts || []).map((a: any) => {
+        const details = typeof a.details === 'object' ? a.details : {};
+        return {
+          id: a.id,
+          userId: details.userId || a.requested_by,
+          userEmail: details.userEmail || a.user_email,
+          userName: details.userName || 'Scholar',
+          department: a.department,
+          level: a.academic_level,
+          type: details.issueType || 'MISSING_COURSE',
+          severity: details.severity || 'MEDIUM',
+          details: details.details || a.course_title || 'Curriculum discrepancy',
+          expectedCourseIds: details.expectedCourseIds || [],
+          actualCourseIds: details.actualCourseIds || [],
+          metadata: details.metadata || {},
+          resolved: a.status === 'resolved',
+          timestamp: a.created_at
+        };
+      });
     } catch (error) {
-      console.error("Error fetching unresolved issues:", error);
-      // Re-throw with more context if it's a permission error
-      if (error instanceof Error && error.message.includes('insufficient permissions')) {
-        throw new Error(JSON.stringify({
-          error: error.message,
-          operationType: 'list',
-          path: this.LOG_COLLECTION,
-          authInfo: {
-            userId: auth.currentUser?.uid,
-            email: auth.currentUser?.email,
-            emailVerified: auth.currentUser?.emailVerified
-          }
-        }));
-      }
-      throw error;
+      console.error('Error fetching unresolved issues from Neon:', error);
+      return [];
     }
   }
 
   /**
-   * Remediates a single integrity issue
+   * Remediates a single integrity issue via Neon
    */
   static async remediateIssue(issue: IntegrityIssue): Promise<boolean> {
     if (!issue.id) return false;
-    
     try {
-      const userDocRef = doc(db, 'users', issue.userId);
-      const userSnap = await getDoc(userDocRef);
-      
-      if (!userSnap.exists()) {
-        throw new Error(`User ${issue.userId} not found`);
-      }
-
-      const userData = userSnap.data();
-      let currentCourses = userData.enrolledCourses || [];
-
-      if (issue.type === 'MISSING_COURSE' && issue.metadata?.missing) {
-        currentCourses = Array.from(new Set([...currentCourses, ...issue.metadata.missing]));
-      } else if (issue.type === 'EXTRA_COURSE' && issue.metadata?.extra) {
-        currentCourses = currentCourses.filter((id: string) => !issue.metadata.extra.includes(id));
-      } else if (issue.type === 'EMPTY_CURRICULUM' && issue.expectedCourseIds) {
-        currentCourses = issue.expectedCourseIds;
-      }
-
-      const batch = writeBatch(db);
-      batch.update(userDocRef, { enrolledCourses: currentCourses });
-      batch.update(doc(db, this.LOG_COLLECTION, issue.id), { 
-        resolved: true, 
-        resolvedAt: serverTimestamp(),
-        resolvedBy: 'admin'
+      const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+      const res = await fetch(`/api/admin/system-alerts/${encodeURIComponent(issue.id)}/resolve`, {
+        method: 'POST',
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
-
-      await batch.commit();
+      if (!res.ok) return false;
       LogService.log('success', 'admin', `Remediated ${issue.type} for ${issue.userEmail}`);
       return true;
     } catch (error) {
-      console.error("Remediation failed:", error);
+      console.error('Remediation failed:', error);
       return false;
     }
   }
@@ -228,55 +246,14 @@ export class CurriculumIntegrityService {
   /**
    * Bulk remediates multiple issues
    */
-  static async bulkRemediate(issues: IntegrityIssue[]): Promise<{ success: number, failed: number }> {
+  static async bulkRemediate(issues: IntegrityIssue[]): Promise<{ success: number; failed: number }> {
     let success = 0;
     let failed = 0;
 
-    // Process in chunks of 25 to avoid batch limits and complexity
-    const CHUNK_SIZE = 25;
-    for (let i = 0; i < issues.length; i += CHUNK_SIZE) {
-      const chunk = issues.slice(i, i + CHUNK_SIZE);
-      const batch = writeBatch(db);
-      
-      const userUpdates = new Map<string, string[]>();
-
-      // First pass: calculate final course lists for each user in this chunk
-      for (const issue of chunk) {
-        if (!issue.id) continue;
-        
-        try {
-          const userDocRef = doc(db, 'users', issue.userId);
-          const userSnap = await getDoc(userDocRef);
-          if (!userSnap.exists()) continue;
-
-          let currentCourses = userUpdates.get(issue.userId) || userSnap.data().enrolledCourses || [];
-
-          if (issue.type === 'MISSING_COURSE' && issue.metadata?.missing) {
-            currentCourses = Array.from(new Set([...currentCourses, ...issue.metadata.missing]));
-          } else if (issue.type === 'EXTRA_COURSE' && issue.metadata?.extra) {
-            currentCourses = currentCourses.filter((id: string) => !issue.metadata.extra.includes(id));
-          } else if (issue.type === 'EMPTY_CURRICULUM' && issue.expectedCourseIds) {
-            currentCourses = issue.expectedCourseIds;
-          }
-
-          userUpdates.set(issue.userId, currentCourses);
-          batch.update(doc(db, this.LOG_COLLECTION, issue.id), { 
-            resolved: true, 
-            resolvedAt: serverTimestamp(),
-            resolvedBy: 'admin_bulk'
-          });
-          success++;
-        } catch (err) {
-          failed++;
-        }
-      }
-
-      // Second pass: add user updates to batch
-      userUpdates.forEach((courses, userId) => {
-        batch.update(doc(db, 'users', userId), { enrolledCourses: courses });
-      });
-
-      await batch.commit();
+    for (const issue of issues) {
+      const ok = await this.remediateIssue(issue);
+      if (ok) success++;
+      else failed++;
     }
 
     LogService.log('success', 'admin', `Bulk remediation complete: ${success} fixed, ${failed} failed`);

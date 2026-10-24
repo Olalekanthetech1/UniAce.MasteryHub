@@ -7,8 +7,6 @@ import { useAuth } from '../context/AuthContext';
 import { useCourses } from '../context/CourseContext';
 import { getModuleIcon } from '../utils/moduleIcons';
 import CourseContextBar from './CourseContextBar';
-import { db } from '../firebase';
-import { collection, addDoc, serverTimestamp, query, where, getDocs, orderBy, limit } from 'firebase/firestore';
 import toast from 'react-hot-toast';
 
 interface QuizHubProps {
@@ -44,44 +42,50 @@ export default function QuizHub({
 
   const activeCourse = courseId ? courses[courseId] : null;
 
-  // Log alert for empty syllabus to Firestore system_alerts
+  // Log alert for empty syllabus via Neon system_alerts endpoint
   useEffect(() => {
     if (activeCourse && (!syllabus || syllabus.length === 0) && !hasLoggedEmptyAlert) {
       setHasLoggedEmptyAlert(true);
       (async () => {
         try {
-          await addDoc(collection(db, 'system_alerts'), {
-            type: 'EMPTY_SYLLABUS_ALERT',
-            courseId: activeCourse.id,
-            courseTitle: activeCourse.title,
-            department: profile?.department || '',
-            level: profile?.academic_level || '',
-            semester: activeSemester,
-            timestamp: serverTimestamp(),
-            status: 'pending'
+          const token = user ? await user.getIdToken() : null;
+          await fetch('/api/system/alert', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+            },
+            body: JSON.stringify({
+              type: 'EMPTY_SYLLABUS_ALERT',
+              courseId: activeCourse.id,
+              courseTitle: activeCourse.title,
+              department: profile?.department || '',
+              academicLevel: profile?.academic_level || '',
+              semester: activeSemester,
+              status: 'pending'
+            })
           });
         } catch (e) {
           console.warn("Could not log empty syllabus alert:", e);
         }
       })();
     }
-  }, [activeCourse, syllabus, hasLoggedEmptyAlert, profile, activeSemester]);
+  }, [activeCourse, syllabus, hasLoggedEmptyAlert, profile, activeSemester, user]);
 
-  // Fetch recent attempts for active course
+  // Fetch recent attempts for active course from Neon endpoint
   useEffect(() => {
     if (!user || !courseId) return;
     setIsLoadingAttempts(true);
     (async () => {
       try {
-        const q = query(
-          collection(db, `users/${user.uid}/quizAttempts`),
-          where('courseId', '==', courseId),
-          orderBy('completedAt', 'desc'),
-          limit(5)
-        );
-        const snap = await getDocs(q);
-        const attempts = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setRecentAttempts(attempts);
+        const token = await user.getIdToken();
+        const res = await fetch(`/api/quiz/recent-attempts?courseId=${encodeURIComponent(courseId)}`, {
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setRecentAttempts(data.attempts || []);
+        }
       } catch (err) {
         console.warn("Failed loading quiz attempts:", err);
       } finally {

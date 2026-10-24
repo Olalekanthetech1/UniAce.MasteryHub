@@ -10,7 +10,7 @@ export const DEPARTMENTS: Department[] = [
   'Public Health', 'Software Engineering', 'General Studies', 'General Engineering Training', 'Zoology'
 ];
 
-export const LEVELS: Level[] = ['100', '200', '300', '400', '500'];
+export const LEVELS: Level[] = ['100', '200', '300', '400', '500', '600'];
 export const SEMESTERS: Semester[] = ['1st Semester', '2nd Semester'];
 
 const DEPT_MAPPINGS: Record<string, Department> = {
@@ -38,6 +38,7 @@ const DEPT_MAPPINGS: Record<string, Department> = {
 export const normalizeDepartment = (input: string): Department | null => {
   if (!input) return null;
   const trimmed = input.trim();
+  if (!trimmed) return null;
   
   // Direct match
   if (DEPARTMENTS.includes(trimmed as Department)) {
@@ -59,14 +60,17 @@ export const normalizeDepartment = (input: string): Department | null => {
   const foundDepluralized = DEPARTMENTS.find(d => d.toLowerCase() === depluralized);
   if (foundDepluralized) return foundDepluralized;
 
-  // Partial match search in mappings
+  // Word-boundary match search in mappings (avoids false substring matches like "Robotics" matching "CS")
   for (const [key, value] of Object.entries(DEPT_MAPPINGS)) {
-    if (lower.includes(key.toLowerCase())) {
+    const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`(^|\\b|\\s)${escaped}(\\b|\\s|$)`, 'i');
+    if (regex.test(trimmed)) {
       return value;
     }
   }
 
-  return null;
+  // Future-proof fallback: dynamically preserve and return trimmed department name
+  return trimmed as Department;
 };
 
 /**
@@ -98,6 +102,9 @@ export const normalizeLevel = (input: string): Level | null => {
   if (match) {
     const num = match[0];
     if (LEVELS.includes(num as Level)) {
+      return num as Level;
+    }
+    if (num.length === 3) {
       return num as Level;
     }
   }

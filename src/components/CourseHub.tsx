@@ -112,7 +112,7 @@ export default function CourseHub({ onSelectCourse, onProfileClick, onViewSelect
     });
 
     return result;
-  }, [courses, activeTab, debouncedSearchQuery, profile, enrolledCourses, progress]);
+  }, [courses, activeTab, debouncedSearchQuery, profile, activeSemester, enrolledCourses, progress]);
 
   if (coursesLoading && Object.keys(courses).length === 0) {
     return (

@@ -1,8 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Save } from 'lucide-react';
 import { Course, Module, Department, Level, Semester, CourseScope } from '../types';
-import { doc, setDoc } from 'firebase/firestore';
-import { db } from '../firebase';
 import { LEVELS, SEMESTERS } from '../constants';
 import { useInstitution } from '../context/InstitutionContext';
 import { normalizeDeptId } from '../utils/normalization';
@@ -53,22 +51,33 @@ export default function CourseCreateModal({ onClose, onSave }: CourseCreateModal
         type: scope === 'GLOBAL' ? ('global' as const) : ('core' as const)
       }));
 
-      const courseRef = doc(db, 'courses', sanitizedId);
-      await setDoc(courseRef, {
-        id: sanitizedId,
-        title,
-        description,
-        department,
-        level,
-        semester,
-        scope,
-        academicStandard: activeStandard,
-        faculties: scope === 'FACULTY' ? faculties : [],
-        departments: targetDepts,
-        offerings,
-        syllabus: modules,
-        createdAt: new Date().toISOString()
+      const idToken = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+      const res = await fetch('/api/admin/courses', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(idToken ? { 'Authorization': `Bearer ${idToken}` } : {})
+        },
+        body: JSON.stringify({
+          id: sanitizedId,
+          code: sanitizedId,
+          title,
+          description,
+          department,
+          level,
+          semester,
+          scope,
+          faculties: scope === 'FACULTY' ? faculties : [],
+          departments: targetDepts,
+          syllabus: modules
+        })
       });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || 'Failed to create course via Neon');
+      }
+
       onSave();
       onClose();
     } catch (error) {

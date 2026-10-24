@@ -4,7 +4,7 @@ import { Shield, Eye, EyeOff, ArrowLeft, Loader2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { auth } from '../firebase';
 
-export default function AdminLogin({ onSuccess, requireGoogleLogin }: { onSuccess?: () => void, requireGoogleLogin?: boolean }) {
+export default function AdminLogin({ onSuccess, onBackToApp, requireGoogleLogin }: { onSuccess?: () => void; onBackToApp?: () => void; requireGoogleLogin?: boolean }) {
   const [pin, setPin] = useState('');
   const [showPin, setShowPin] = useState(false);
   const [error, setError] = useState('');
@@ -36,8 +36,8 @@ export default function AdminLogin({ onSuccess, requireGoogleLogin }: { onSucces
         if (onSuccess) {
           onSuccess();
         } else {
-          // Force a reload to ensure the new Firestore claims/timestamps are picked up
-          window.location.href = '/admin/dashboard';
+          window.history.pushState({}, '', '/admin/dashboard');
+          window.dispatchEvent(new PopStateEvent('popstate'));
         }
       } else {
         setError(data.error || 'Invalid PIN. Please try again.');
@@ -149,8 +149,15 @@ export default function AdminLogin({ onSuccess, requireGoogleLogin }: { onSucces
 
         {/* Back Link */}
         <button 
-          onClick={() => window.location.href = '/'}
-          className="mt-8 flex items-center gap-2 text-blue-400/70 hover:text-blue-400 text-sm font-medium transition-colors"
+          onClick={() => {
+            if (onBackToApp) {
+              onBackToApp();
+            } else {
+              window.history.pushState({}, '', '/');
+              window.dispatchEvent(new PopStateEvent('popstate'));
+            }
+          }}
+          className="mt-8 flex items-center gap-2 text-blue-400/70 hover:text-blue-400 text-sm font-medium transition-colors cursor-pointer"
         >
           <ArrowLeft size={16} />
           Back to UniAce

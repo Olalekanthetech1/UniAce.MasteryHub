@@ -76,15 +76,11 @@ export function setupMathRoutes(
             isAdmin = true;
           }
         }
-        if (!isAdmin && adminApp) {
-          const userDoc = await adminApp.firestore().collection('users').doc(user.uid).get();
-          const userData = userDoc.data();
-          isAdmin = userData?.role === 'admin' || userData?.role === 'tutor';
-        }
       }
       if (!isAdmin) {
         return res.status(403).json({ error: 'Forbidden: Admin or Tutor access required' });
       }
+
 
       const { 
         operation = 'derivative', 
@@ -223,15 +219,11 @@ export function setupMathRoutes(
             isAdmin = true;
           }
         }
-        if (!isAdmin && adminApp) {
-          const userDoc = await adminApp.firestore().collection('users').doc(user.uid).get();
-          const userData = userDoc.data();
-          isAdmin = userData?.role === 'admin';
-        }
       }
       if (!isAdmin) {
         return res.status(403).json({ error: 'Forbidden: Admin access required' });
       }
+
 
       const updated = await saveMathEngineConfig(req.body);
       return res.json({ success: true, config: updated });

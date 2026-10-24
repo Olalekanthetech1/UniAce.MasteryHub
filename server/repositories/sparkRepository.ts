@@ -226,14 +226,6 @@ export class SparkRepository {
         );
       }
 
-      // Also append to spark_transactions_ledger for compatibility
-      const txId = `tx_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
-      await client.query(
-        `INSERT INTO spark_transactions_ledger (transaction_id, uid, delta, balance_after, type, reason, escrow_id, created_at)
-         VALUES ($1, $2, $3, $4, 'pre_auth_lock', $5, $6, NOW());`,
-        [txId, uid, -deductionAmount, newBalance, reason || `Pre-auth lock for ${taskType}`, escrowId]
-      );
-
       await client.query('COMMIT');
 
       return {
@@ -352,13 +344,6 @@ export class SparkRepository {
            ON CONFLICT (ref_lock_id, reason) WHERE ref_lock_id IS NOT NULL DO NOTHING;`,
           [ledgerId, escrow.uid, refund, 'settlement_refund', escrowId]
         );
-
-        const txId = `tx_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
-        await client.query(
-          `INSERT INTO spark_transactions_ledger (transaction_id, uid, delta, balance_after, type, reason, escrow_id, created_at)
-           VALUES ($1, $2, $3, $4, 'settlement_refund', $5, $6, NOW());`,
-          [txId, escrow.uid, refund, finalBalance, reason || `Refund difference for escrow ${escrowId}`, escrowId]
-        );
       }
 
       await client.query('COMMIT');
@@ -472,13 +457,6 @@ export class SparkRepository {
            ON CONFLICT (ref_lock_id, reason) WHERE ref_lock_id IS NOT NULL DO NOTHING;`,
           [ledgerId, escrow.uid, refundedAmount, reason || 'refund_escrow', escrowId]
         );
-
-        const txId = `tx_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
-        await client.query(
-          `INSERT INTO spark_transactions_ledger (transaction_id, uid, delta, balance_after, type, reason, escrow_id, created_at)
-           VALUES ($1, $2, $3, $4, 'settlement_refund', $5, $6, NOW());`,
-          [txId, escrow.uid, refundedAmount, finalBalance, reason, escrowId]
-        );
       }
 
       await client.query('COMMIT');
@@ -551,14 +529,6 @@ export class SparkRepository {
         `INSERT INTO spark_ledger (ledger_id, user_id, delta, reason, created_at)
          VALUES ($1, $2, $3, $4, NOW());`,
         [ledgerId, uid, amount, `${type}: ${reason}`]
-      );
-
-      // Also append to spark_transactions_ledger
-      const txId = `tx_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
-      await client.query(
-        `INSERT INTO spark_transactions_ledger (transaction_id, uid, delta, balance_after, type, reason, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW());`,
-        [txId, uid, amount, finalBalance, type, reason]
       );
 
       await client.query('COMMIT');

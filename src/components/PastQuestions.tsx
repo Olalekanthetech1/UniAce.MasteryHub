@@ -7,8 +7,6 @@ import { useAuth } from '../context/AuthContext';
 import { useCourses } from '../context/CourseContext';
 import { usePremiumStatus } from '../hooks/usePremiumStatus';
 import PricingModal from './PricingModal';
-import { db } from '../firebase';
-import { collection, getDocs, addDoc, serverTimestamp } from 'firebase/firestore';
 import toast from 'react-hot-toast';
 import CourseContextBar from './CourseContextBar';
 import { isCourseEligibleForUser } from '../utils/courseEligibility';
@@ -72,12 +70,11 @@ export default function PastQuestions({
   useEffect(() => {
     const fetchPapers = async () => {
       try {
-        const querySnapshot = await getDocs(collection(db, 'past_papers'));
-        const dbPapers: PastPaper[] = [];
-        querySnapshot.forEach((doc) => {
-          dbPapers.push({ id: doc.id, ...doc.data() } as PastPaper);
-        });
-        setAllPapers(dbPapers);
+        const res = await fetch('/api/past-papers');
+        if (res.ok) {
+          const data = await res.json();
+          setAllPapers(data.papers || []);
+        }
       } catch (error) {
         console.error("Error fetching past papers:", error);
       } finally {

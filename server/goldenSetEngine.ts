@@ -10,6 +10,8 @@ import {
 } from './promptShield';
 import { executeQualityBountyRefund, TokenPricingRateEntry } from './sparkLedger';
 import { ModelProvider } from './providers';
+import { getPostgresPool } from './postgresPool';
+
 
 export type AcademicDomain = 'Mathematics' | 'Physics' | 'Computer Science' | 'Chemistry';
 export type BenchmarkSuiteType = 'core_150' | 'regression_promoted';
@@ -397,6 +399,20 @@ export async function updateEvaluationPolicy(params: {
   };
 
   await ref.set(merged, { merge: true });
+  try {
+    const pool = getPostgresPool();
+    if (pool) {
+      await pool.query(
+        `INSERT INTO system_config (key, data, updated_at)
+         VALUES ('evaluation_policy', $1, NOW())
+         ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        [JSON.stringify(merged)]
+      );
+    }
+  } catch (err: any) {
+    console.warn('[GoldenSetEngine] Failed to sync evaluation_policy to Neon:', err?.message);
+  }
+
   await Promise.all([
     db.collection('system_logs').add({
       level: 'info',
@@ -591,6 +607,20 @@ export async function updateTokenPricingConfig(params: {
   };
 
   await ref.set(updatedDoc, { merge: true });
+  try {
+    const pool = getPostgresPool();
+    if (pool) {
+      await pool.query(
+        `INSERT INTO system_config (key, data, updated_at)
+         VALUES ('token_pricing', $1, NOW())
+         ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        [JSON.stringify(updatedDoc)]
+      );
+    }
+  } catch (err: any) {
+    console.warn('[GoldenSetEngine] Failed to sync token_pricing to Neon:', err?.message);
+  }
+
   await Promise.all([
     db.collection('system_logs').add({
       level: 'info',
@@ -1990,16 +2020,28 @@ export async function syncDevSplitRoutingAndTiers(params: {
     reason: `Synced empirical Tier-1 providers (${derivedTier1Providers.join(', ') || 'none'}) and domain routing from dev_routing split of run ${runId}`
   });
 
-  // Also sync domain routing preferences to `system_config/routing`
-  await db.collection('system_config').doc('routing').set(
-    {
-      domainProviderRouting,
-      verifiedTier1Providers: derivedTier1Providers,
-      updatedFromGoldenSetRunId: runId,
-      updatedAt: new Date().toISOString()
-    },
-    { merge: true }
-  );
+  // Also sync domain routing preferences to system_config/routing (Firestore & Neon)
+  const routingData = {
+    domainProviderRouting,
+    verifiedTier1Providers: derivedTier1Providers,
+    updatedFromGoldenSetRunId: runId,
+    updatedAt: new Date().toISOString()
+  };
+  await db.collection('system_config').doc('routing').set(routingData, { merge: true });
+  try {
+    const pool = getPostgresPool();
+    if (pool) {
+      await pool.query(
+        `INSERT INTO system_config (key, data, updated_at)
+         VALUES ('routing', $1, NOW())
+         ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        [JSON.stringify(routingData)]
+      );
+    }
+  } catch (err: any) {
+    console.warn('[GoldenSetEngine] Failed to sync routing to Neon:', err?.message);
+  }
+
 
   return {
     policy: updatedPolicy,

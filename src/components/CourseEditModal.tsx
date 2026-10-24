@@ -1,8 +1,6 @@
 import React, { useState } from 'react';
 import { X, Save, Trash2, Edit2 } from 'lucide-react';
 import { Course, Module, Department, Level, Semester, CourseScope } from '../types';
-import { doc, updateDoc } from 'firebase/firestore';
-import { db } from '../firebase';
 import { LEVELS, SEMESTERS } from '../constants';
 import { useInstitution } from '../context/InstitutionContext';
 import { normalizeDeptId } from '../utils/normalization';
@@ -37,11 +35,10 @@ export default function CourseEditModal({ course, onClose, onSave }: CourseEditM
         ? (customStandard.trim() || 'Custom Dynamic Academic Benchmark')
         : academicStandard;
 
-      const courseRef = doc(db, 'courses', course.id);
-      
+      const idToken = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+
       // Track instructor edits telemetry
       try {
-        const idToken = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
         if (idToken) {
           // Find modules that were edited (simple comparison of syllabus array)
           modules.forEach(m => {
@@ -61,26 +58,29 @@ export default function CourseEditModal({ course, onClose, onSave }: CourseEditM
         ? Array.from(new Set([(course.department || ''), ...departments].filter(Boolean)))
         : (scope === 'GLOBAL' ? [] : departments);
 
-      const offerings = targetDepts.map(dept => ({
-        departmentId: normalizeDeptId(dept),
-        departmentName: dept,
-        level: level || '100',
-        semester: semester || '1st Semester',
-        type: scope === 'GLOBAL' ? ('global' as const) : ('core' as const)
-      }));
-
-      await updateDoc(courseRef, {
-        title,
-        description,
-        level,
-        semester,
-        scope,
-        academicStandard: activeStandard,
-        faculties: scope === 'FACULTY' ? faculties : [],
-        departments: targetDepts,
-        offerings,
-        syllabus: modules
+      const res = await fetch(`/api/admin/courses/${encodeURIComponent(course.id)}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(idToken ? { 'Authorization': `Bearer ${idToken}` } : {})
+        },
+        body: JSON.stringify({
+          title,
+          description,
+          level,
+          semester,
+          scope,
+          faculties: scope === 'FACULTY' ? faculties : [],
+          departments: targetDepts,
+          syllabus: modules
+        })
       });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || 'Failed to update course via Neon');
+      }
+
       onSave();
       onClose();
     } catch (error) {

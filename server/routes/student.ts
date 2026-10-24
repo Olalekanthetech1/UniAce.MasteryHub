@@ -1,6 +1,5 @@
 import express from 'express';
 import { getPostgresPool } from '../postgresPool';
-import { getAdminApp } from '../firebaseAdmin';
 import { logger } from '../logger';
 
 // In-memory UID-keyed cache for bootstrap payloads (60-second TTL)
@@ -37,7 +36,10 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
     try {
       const pool = getPostgresPool();
       if (!pool) {
-        return res.status(503).json({ error: 'Database service unavailable' });
+        return res.status(503).json({
+          error: 'Database service unavailable',
+          message: 'PostgreSQL connection pool unavailable. Bootstrap requests involving live sparks and progress cannot be served in degraded state to prevent balance divergence.'
+        });
       }
 
       // 1. Check in-memory cache: if valid, overlay fresh live sparks AND live progress so state is NEVER stale
@@ -85,30 +87,35 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
           updatedAt: u.updated_at
         };
       } else {
-        // Fallback to Firestore Admin if user not yet mirrored
-        const adminApp = getAdminApp();
-        if (adminApp) {
-          const docSnap = await adminApp.firestore().collection('users').doc(uid).get();
-          if (docSnap.exists) {
-            profile = { uid, ...docSnap.data() };
-            // Upsert into Neon users table
-            await pool.query(
-              'INSERT INTO users (uid, email, display_name, role, plan_type, ai_sparks, learning_profile, created_at, updated_at) ' +
-              'VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW()) ' +
-              'ON CONFLICT (uid) DO UPDATE SET ' +
-              'display_name = EXCLUDED.display_name, role = EXCLUDED.role, plan_type = EXCLUDED.plan_type, ai_sparks = EXCLUDED.ai_sparks, updated_at = NOW()',
-              [
-                uid,
-                profile.email || user.email || '',
-                profile.displayName || user.name || 'Scholar',
-                profile.role || 'student',
-                profile.plan_type || 'free',
-                profile.ai_sparks ?? 100,
-                JSON.stringify(profile.learningProfile || {})
-              ]
-            ).catch(() => {});
-          }
-        }
+        // Initialize new user in PostgreSQL directly from Firebase Auth token identity (zero Firestore read)
+        profile = {
+          uid,
+          email: user.email || '',
+          displayName: user.name || 'Scholar',
+          role: 'student',
+          plan_type: 'free',
+          ai_sparks: 100,
+          learningProfile: {},
+          sessionId: null,
+          sessionVersion: 1,
+          updatedAt: new Date().toISOString()
+        };
+        await pool.query(
+          'INSERT INTO users (uid, email, display_name, role, plan_type, ai_sparks, learning_profile, created_at, updated_at) ' +
+          'VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW()) ' +
+          'ON CONFLICT (uid) DO UPDATE SET display_name = EXCLUDED.display_name, updated_at = NOW()',
+          [
+            uid,
+            profile.email,
+            profile.displayName,
+            profile.role,
+            profile.plan_type,
+            profile.ai_sparks,
+            JSON.stringify(profile.learningProfile)
+          ]
+        ).catch((err: any) => {
+          logger.warn({ uid, error: err.message }, '[StudentRoutes] Failed to ensure user in Neon users');
+        });
       }
 
       // 3. Fetch Course Progress from Neon
@@ -187,12 +194,13 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
 
     try {
       const result = await pool.query(
-        'SELECT id, uid, title, message, type, read, created_at FROM user_notifications WHERE uid = $1 ORDER BY created_at DESC LIMIT 50',
+        "SELECT id, uid, title, message, type, read, created_at FROM user_notifications WHERE uid = $1 OR uid = '*' ORDER BY created_at DESC LIMIT 50",
         [user.uid]
       );
 
       return res.json({ notifications: result.rows });
     } catch (err: any) {
+
       logger.error({ uid: user.uid, err: err.message }, '[StudentRoutes] Failed to fetch notifications');
       return res.status(500).json({ error: 'Failed to fetch notifications' });
     }

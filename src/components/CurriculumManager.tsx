@@ -3,8 +3,6 @@ import { BookOpen, Plus, Trash2, AlertCircle, Layers, Search, Filter, Copy, Chec
 import { useCourses } from '../context/CourseContext';
 import { LEVELS, SEMESTERS } from '../constants';
 import { Course, Department, Level, Semester, CourseScope } from '../types';
-import { doc, updateDoc, writeBatch } from 'firebase/firestore';
-import { db } from '../firebase';
 import { useInstitution } from '../context/InstitutionContext';
 
 export const CurriculumManager: React.FC = () => {
@@ -84,8 +82,6 @@ export const CurriculumManager: React.FC = () => {
       onConfirm: async () => {
         setConfirmModal(null);
         try {
-          const courseRef = doc(db, 'courses', course.id);
-          
           if (course.scope === 'GLOBAL') {
             setConfirmModal({ title: "Error", message: "Cannot remove a GLOBAL course from a specific department. Change its scope first.", onConfirm: () => setConfirmModal(null), isAlert: true });
             return;
@@ -100,10 +96,18 @@ export const CurriculumManager: React.FC = () => {
           }
 
           const newDepartments = (course.departments || []).filter(d => d !== selectedDepartment);
-          
-          await updateDoc(courseRef, {
-            departments: newDepartments
+          const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+          const res = await fetch(`/api/admin/courses/${encodeURIComponent(course.id)}`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+            },
+            body: JSON.stringify({
+              departments: newDepartments
+            })
           });
+          if (!res.ok) throw new Error('Failed to update course in PostgreSQL');
           
         } catch (error) {
           console.error("Error removing course:", error);
@@ -117,27 +121,26 @@ export const CurriculumManager: React.FC = () => {
     if (!selectedDepartment || selectedCoursesToAdd.size === 0) return;
     
     try {
-      const batch = writeBatch(db);
+      const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
       
-      selectedCoursesToAdd.forEach(courseId => {
+      for (const courseId of selectedCoursesToAdd) {
         const course = courses[courseId];
-        if (!course) return;
+        if (!course) continue;
         
-        const courseRef = doc(db, 'courses', course.id);
-        const newDepartments = [...(course.departments || []), selectedDepartment];
-        
-        const updates: any = {
-          departments: Array.from(new Set(newDepartments))
-        };
-        
-        if (!course.scope) {
-          updates.scope = 'DEPARTMENT';
-        }
-        
-        batch.update(courseRef, updates);
-      });
-
-      await batch.commit();
+        const newDepartments = Array.from(new Set([...(course.departments || []), selectedDepartment]));
+        const res = await fetch(`/api/admin/courses/${encodeURIComponent(course.id)}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          },
+          body: JSON.stringify({
+            departments: newDepartments,
+            scope: course.scope || 'DEPARTMENT'
+          })
+        });
+        if (!res.ok) throw new Error(`Failed to update course ${course.id}`);
+      }
       
       setIsAddingCourse(false);
       setSelectedCoursesToAdd(new Set());
@@ -175,28 +178,32 @@ export const CurriculumManager: React.FC = () => {
             return false;
           });
 
-          const batch = writeBatch(db);
+          const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
           let count = 0;
 
-          sourceCourses.forEach(course => {
+          for (const course of sourceCourses) {
             // Skip if already in target department
             if (course.scope === 'FACULTY') {
                const targetFaculty = DEPARTMENT_TO_FACULTY[selectedDepartment as Department];
-               if (targetFaculty && course.faculties?.includes(targetFaculty)) return;
+               if (targetFaculty && course.faculties?.includes(targetFaculty)) continue;
             }
-            if (course.departments?.includes(selectedDepartment as Department)) return;
+            if (course.departments?.includes(selectedDepartment as Department)) continue;
 
-            const courseRef = doc(db, 'courses', course.id);
-            const newDepartments = [...(course.departments || []), selectedDepartment];
-            
-            batch.update(courseRef, {
-              departments: Array.from(new Set(newDepartments))
+            const newDepartments = Array.from(new Set([...(course.departments || []), selectedDepartment]));
+            const res = await fetch(`/api/admin/courses/${encodeURIComponent(course.id)}`, {
+              method: 'PUT',
+              headers: {
+                'Content-Type': 'application/json',
+                ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+              },
+              body: JSON.stringify({
+                departments: newDepartments
+              })
             });
-            count++;
-          });
+            if (res.ok) count++;
+          }
 
           if (count > 0) {
-            await batch.commit();
             setConfirmModal({ title: "Success", message: `Successfully cloned ${count} courses to ${selectedDepartment}.`, onConfirm: () => setConfirmModal(null), isAlert: true });
           } else {
             setConfirmModal({ title: "Info", message: "No new courses to clone. The target department already has these courses or they are global.", onConfirm: () => setConfirmModal(null), isAlert: true });

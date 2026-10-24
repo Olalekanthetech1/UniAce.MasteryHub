@@ -1,20 +1,18 @@
 /**
  * UniAce Mastery Hub: Course Catalog Repository
  *
- * Implements Stage 5C Phase 1: Production Catalog Read Cutover.
- * - When ENABLE_POSTGRES_CATALOG is true:
- *   - Reads prioritize Neon PostgreSQL with sub-50ms latency.
- *   - Transparent read-failover to Firestore with audit logging if PostgreSQL is temporarily unavailable.
- *   - L1 MultiInstanceCatalogCache (<5ms) active for repeated requests.
- *   - Writes enforce Safeguard #2: Zero Silent Fallback Writes (throws immediately on Postgres error).
- * - When ENABLE_POSTGRES_CATALOG is false: routes through Firestore baseline.
+ * Implements Stage 5C Phase 1: Authoritative PostgreSQL Course Catalog.
+ * - All catalog, modules, lessons, and formulas reads prioritize Neon PostgreSQL.
+ * - L1 MultiInstanceCatalogCache (<5ms) active for repeated requests.
+ * - When PostgreSQL is unreachable or L1 misses: returns cached data or throws clean
+ *   database service unavailable error (HTTP 503). Zero Firestore fallback reads permitted.
+ * - Writes enforce Safeguard #2: Zero Silent Fallback Writes (throws immediately on Postgres error).
  */
 
 import crypto from 'crypto';
 import { getFeatureFlags } from '../config/features';
 import { catalogCache } from '../cache/catalogCache';
 import { CourseEntity, CourseModuleEntity, CourseLessonEntity, CourseFormulaEntity } from '../../src/types/databaseSchema';
-import { getAdminApp } from '../firebaseAdmin';
 import { queryPostgres } from '../postgresPool';
 import { logger } from '../logger';
 import { sortCourseSyllabus, getModuleOrderIndex, getLessonOrderIndex } from '../../src/shared/courseSchemas';
@@ -28,27 +26,6 @@ export interface CourseQueryFilter {
 
 export class CourseRepository {
   /**
-   * Helper to log audit alert on read failover
-   */
-  private async logFailoverAlert(operation: string, errorMsg: string): Promise<void> {
-    logger.warn({ operation, error: errorMsg }, '[CourseRepository] PostgreSQL read failed; initiating transparent Firestore failover');
-    try {
-      const app = getAdminApp();
-      if (app) {
-        await app.firestore().collection('system_logs').add({
-          type: 'DATABASE_FAILOVER',
-          source: 'postgres_catalog',
-          operation,
-          error: errorMsg,
-          timestamp: new Date().toISOString()
-        });
-      }
-    } catch (logErr: any) {
-      logger.warn({ logErr: logErr.message }, '[CourseRepository] Failed to record failover alert in system_logs');
-    }
-  }
-
-  /**
    * Fetches published courses list with caching & resilient routing
    */
   async listPublishedCourses(filter: CourseQueryFilter = {}): Promise<CourseEntity[]> {
@@ -61,7 +38,7 @@ export class CourseRepository {
       return cached;
     }
 
-    // 2. Authoritative PostgreSQL Path (Phase 1 Read Cutover)
+    // 2. Authoritative PostgreSQL Path
     if (flags.ENABLE_POSTGRES_CATALOG) {
       try {
         let sql = `
@@ -116,59 +93,16 @@ export class CourseRepository {
         catalogCache.setPublished(cacheKey, courses, 1);
         return courses;
       } catch (err: any) {
-        // Confirmed Decision 3: Transparent failover to Firestore with alert logging
-        await this.logFailoverAlert('listPublishedCourses', err.message);
+        logger.warn({ error: err.message }, '[CourseRepository] PostgreSQL listPublishedCourses query failed');
       }
     }
 
-    // 3. Fallback / Baseline Firestore Read Path
-    return this.listPublishedCoursesFirestore(filter, cacheKey);
-  }
-
-  private async listPublishedCoursesFirestore(filter: CourseQueryFilter, cacheKey: string): Promise<CourseEntity[]> {
-    const app = getAdminApp();
-    if (!app) throw new Error('Database connection unavailable');
-    const db = app.firestore();
-
-    let query: FirebaseFirestore.Query = db.collection('courses');
-    if (filter.status) {
-      query = query.where('status', '==', filter.status);
-    } else {
-      query = query.where('status', '==', 'published');
+    // Zero-Firestore fallback: check if cached in L1 or throw clean error
+    const staleCached = catalogCache.getPublished<CourseEntity[]>(cacheKey);
+    if (staleCached) {
+      return staleCached;
     }
-    if (filter.department) {
-      query = query.where('department', '==', filter.department);
-    }
-    if (filter.limit) {
-      query = query.limit(filter.limit);
-    }
-
-    const snap = await query.get().catch(() => ({ docs: [] } as any));
-    const courses: CourseEntity[] = snap.docs.map((d: any) => {
-      const data = d.data();
-      return {
-        id: d.id,
-        code: data.code || '',
-        title: data.title || '',
-        description: data.description || null,
-        level: data.level || 'undergraduate',
-        department: data.department || null,
-        faculty: data.faculty || null,
-        semester: data.semester || null,
-        thumbnail_url: data.thumbnailUrl || data.thumbnail_url || null,
-        author_id: data.authorId || data.author_id || '',
-        status: data.status || 'published',
-        generation_status: data.generationStatus || 'none',
-        generation_job_id: data.generationJobId || null,
-        version: Number(data.version || 1),
-        content_hash: data.contentHash || null,
-        created_at: data.createdAt || new Date().toISOString(),
-        updated_at: data.updatedAt || new Date().toISOString()
-      };
-    });
-
-    catalogCache.setPublished(cacheKey, courses, 1);
-    return courses;
+    throw new Error('Database service unavailable: PostgreSQL catalog is unreachable');
   }
 
   /**
@@ -219,41 +153,15 @@ export class CourseRepository {
         }
         return null;
       } catch (err: any) {
-        await this.logFailoverAlert(`getCourseById:${courseId}`, err.message);
+        logger.warn({ courseId, error: err.message }, '[CourseRepository] PostgreSQL getCourseById query failed');
       }
     }
 
-    // Fallback to Firestore
-    const app = getAdminApp();
-    if (!app) throw new Error('Database connection unavailable');
-    const db = app.firestore();
-
-    const doc = await db.collection('courses').doc(courseId).get().catch(() => null);
-    if (!doc || !doc.exists) return null;
-
-    const data = doc.data() || {};
-    const course: CourseEntity = {
-      id: doc.id,
-      code: data.code || '',
-      title: data.title || '',
-      description: data.description || null,
-      level: data.level || 'undergraduate',
-      department: data.department || null,
-      faculty: data.faculty || null,
-      semester: data.semester || null,
-      thumbnail_url: data.thumbnailUrl || data.thumbnail_url || null,
-      author_id: data.authorId || data.author_id || '',
-      status: data.status || 'draft',
-      generation_status: data.generationStatus || 'none',
-      generation_job_id: data.generationJobId || null,
-      version: Number(data.version || 1),
-      content_hash: data.contentHash || null,
-      created_at: data.createdAt || new Date().toISOString(),
-      updated_at: data.updatedAt || new Date().toISOString()
-    };
-
-    catalogCache.setPublished(cacheKey, course, course.version);
-    return course;
+    const staleCached = catalogCache.getPublished<CourseEntity>(cacheKey);
+    if (staleCached) {
+      return staleCached;
+    }
+    throw new Error(`Database service unavailable: PostgreSQL course ${courseId} is unreachable`);
   }
 
   /**
@@ -281,32 +189,15 @@ export class CourseRepository {
         catalogCache.setPublished(cacheKey, modules, 1);
         return modules;
       } catch (err: any) {
-        await this.logFailoverAlert(`getCourseModules:${courseId}`, err.message);
+        logger.warn({ courseId, error: err.message }, '[CourseRepository] PostgreSQL getCourseModules query failed');
       }
     }
 
-    // Firestore fallback
-    const app = getAdminApp();
-    if (!app) throw new Error('Database connection unavailable');
-    const db = app.firestore();
-
-    const snap = await db.collection('courses').doc(courseId).collection('modules').orderBy('order', 'asc').get().catch(() => ({ docs: [] } as any));
-    const modules: CourseModuleEntity[] = snap.docs.map((d: any, idx: number) => {
-      const data = d.data();
-      return {
-        id: d.id,
-        course_id: courseId,
-        title: data.title || `Module ${idx + 1}`,
-        description: data.description || null,
-        order_index: typeof data.order === 'number' ? data.order : idx + 1,
-        estimated_minutes: Number(data.estimatedMinutes || 60),
-        created_at: data.createdAt || new Date().toISOString(),
-        updated_at: data.updatedAt || new Date().toISOString()
-      };
-    });
-
-    catalogCache.setPublished(cacheKey, modules, 1);
-    return modules;
+    const staleCached = catalogCache.getPublished<CourseModuleEntity[]>(cacheKey);
+    if (staleCached) {
+      return staleCached;
+    }
+    throw new Error(`Database service unavailable: PostgreSQL modules for ${courseId} unreachable`);
   }
 
   /**
@@ -328,7 +219,7 @@ export class CourseRepository {
           [courseId, moduleId]
         );
         if (modRes.rows.length === 0 || modRes.rows[0].is_archived) {
-          return null;
+          return [];
         }
 
         const sql = `
@@ -343,35 +234,15 @@ export class CourseRepository {
         catalogCache.setPublished(cacheKey, lessons, 1);
         return lessons;
       } catch (err: any) {
-        await this.logFailoverAlert(`getCourseLessons:${courseId}:${moduleId}`, err.message);
+        logger.warn({ courseId, moduleId, error: err.message }, '[CourseRepository] PostgreSQL getCourseLessons query failed');
       }
     }
 
-    // Firestore fallback
-    const app = getAdminApp();
-    if (!app) throw new Error('Database connection unavailable');
-    const db = app.firestore();
-
-    const snap = await db.collection('courses').doc(courseId).collection('modules').doc(moduleId).collection('lessons').orderBy('order', 'asc').get().catch(() => ({ docs: [] } as any));
-    const lessons: CourseLessonEntity[] = snap.docs.map((d: any, idx: number) => {
-      const data = d.data();
-      return {
-        id: d.id,
-        course_id: courseId,
-        module_id: moduleId,
-        title: data.title || `Lesson ${idx + 1}`,
-        content_markdown: data.content || '',
-        order_index: typeof data.order === 'number' ? data.order : idx + 1,
-        key_terms: Array.isArray(data.keyTerms) ? data.keyTerms : [],
-        learning_outcomes: Array.isArray(data.learningOutcomes) ? data.learningOutcomes : [],
-        asset_references: Array.isArray(data.assetReferences) ? data.assetReferences : [],
-        created_at: data.createdAt || new Date().toISOString(),
-        updated_at: data.updatedAt || new Date().toISOString()
-      };
-    });
-
-    catalogCache.setPublished(cacheKey, lessons, 1);
-    return lessons;
+    const staleCached = catalogCache.getPublished<CourseLessonEntity[]>(cacheKey);
+    if (staleCached) {
+      return staleCached;
+    }
+    throw new Error(`Database service unavailable: PostgreSQL lessons for ${courseId}/${moduleId} unreachable`);
   }
 
   /**
@@ -399,31 +270,15 @@ export class CourseRepository {
         catalogCache.setPublished(cacheKey, formulas, 1);
         return formulas;
       } catch (err: any) {
-        await this.logFailoverAlert(`getCourseFormulas:${courseId}`, err.message);
+        logger.warn({ courseId, error: err.message }, '[CourseRepository] PostgreSQL getCourseFormulas query failed');
       }
     }
 
-    // Firestore fallback
-    const app = getAdminApp();
-    if (!app) throw new Error('Database connection unavailable');
-    const db = app.firestore();
-
-    const snap = await db.collection('courses').doc(courseId).collection('formulas').get().catch(() => ({ docs: [] } as any));
-    const formulas: CourseFormulaEntity[] = snap.docs.map((d: any) => {
-      const data = d.data();
-      return {
-        id: d.id,
-        course_id: courseId,
-        name: data.name || '',
-        latex_expression: data.latexExpression || data.latex_expression || '',
-        variables_breakdown: data.variablesBreakdown || data.variables_breakdown || {},
-        derivation_notes: data.derivationNotes || data.derivation_notes || null,
-        created_at: data.createdAt || new Date().toISOString()
-      };
-    });
-
-    catalogCache.setPublished(cacheKey, formulas, 1);
-    return formulas;
+    const staleCached = catalogCache.getPublished<CourseFormulaEntity[]>(cacheKey);
+    if (staleCached) {
+      return staleCached;
+    }
+    throw new Error(`Database service unavailable: PostgreSQL formulas for ${courseId} unreachable`);
   }
 
   /**
@@ -433,55 +288,30 @@ export class CourseRepository {
   async publishCourse(courseId: string, authorUid: string): Promise<{ success: boolean; newVersion: number }> {
     const flags = getFeatureFlags();
 
-    if (flags.ENABLE_POSTGRES_CATALOG) {
-      // Must execute atomic Postgres update and throw on any error
-      // ZERO SILENT FALLBACK TO FIRESTORE PERMITTED ON WRITES
-      const checkRes = await queryPostgres<{ version: number }>(
-        'SELECT version FROM courses WHERE id = $1',
-        [courseId]
-      );
-      if (checkRes.rows.length === 0) {
-        throw new Error(`Course ${courseId} not found in PostgreSQL catalog`);
-      }
-
-      const currentVersion = Number(checkRes.rows[0].version || 1);
-      const newVersion = currentVersion + 1;
-      const nowIso = new Date().toISOString();
-
-      await queryPostgres(
-        `UPDATE courses
-         SET status = 'published', version = $1, updated_at = $2
-         WHERE id = $3`,
-        [newVersion, nowIso, courseId]
-      );
-
-      // Invalidate local and broadcast cache immediately
-      catalogCache.invalidateCourse(courseId, newVersion);
-      return { success: true, newVersion };
+    if (!flags.ENABLE_POSTGRES_CATALOG) {
+      throw new Error('Course publishing unavailable: ENABLE_POSTGRES_CATALOG is disabled');
     }
 
-    // Default Firestore write path
-    const app = getAdminApp();
-    if (!app) throw new Error('Database connection unavailable');
-    const db = app.firestore();
+    // Must execute atomic Postgres update and throw on any error
+    // ZERO SILENT FALLBACK TO FIRESTORE PERMITTED ON WRITES
+    const checkRes = await queryPostgres<{ version: number }>(
+      'SELECT version FROM courses WHERE id = $1',
+      [courseId]
+    );
+    if (checkRes.rows.length === 0) {
+      throw new Error(`Course ${courseId} not found in PostgreSQL catalog`);
+    }
 
-    const ref = db.collection('courses').doc(courseId);
-    let newVersion = 2;
+    const currentVersion = Number(checkRes.rows[0].version || 1);
+    const newVersion = currentVersion + 1;
+    const nowIso = new Date().toISOString();
 
-    await db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
-      if (!snap.exists) throw new Error(`Course ${courseId} not found`);
-      const current = snap.data() || {};
-      newVersion = Number(current.version || 1) + 1;
-
-      tx.update(ref, {
-        status: 'published',
-        version: newVersion,
-        publishedAt: new Date().toISOString(),
-        publishedBy: authorUid,
-        updatedAt: new Date().toISOString()
-      });
-    });
+    await queryPostgres(
+      `UPDATE courses
+       SET status = 'published', version = $1, updated_at = $2
+       WHERE id = $3`,
+      [newVersion, nowIso, courseId]
+    );
 
     // Invalidate local and broadcast cache immediately
     catalogCache.invalidateCourse(courseId, newVersion);
@@ -502,131 +332,97 @@ export class CourseRepository {
     }
 
     if (flags.ENABLE_POSTGRES_CATALOG) {
-      const coursesRes = await queryPostgres<any>(
-        `SELECT id, title, description, department, faculty, level, semester, status, scope, updated_at
-         FROM courses
-         WHERE status = 'published'
-         ORDER BY id ASC`
-      );
+      try {
+        const coursesRes = await queryPostgres<any>(
+          `SELECT id, title, description, department, faculty, level, semester, status, scope, updated_at
+           FROM courses
+           WHERE status = 'published'
+           ORDER BY id ASC`
+        );
 
-      const modulesRes = await queryPostgres<any>(
-        `SELECT id, course_id, title, description, order_index, updated_at
-         FROM course_modules
-         WHERE (is_archived IS NOT TRUE OR is_archived IS NULL)
-         ORDER BY course_id, order_index ASC`
-      );
+        const modulesRes = await queryPostgres<any>(
+          `SELECT id, course_id, title, description, order_index, updated_at
+           FROM course_modules
+           WHERE (is_archived IS NOT TRUE OR is_archived IS NULL)
+           ORDER BY course_id, order_index ASC`
+        );
 
-      const lessonsRes = await queryPostgres<any>(
-        `SELECT id, course_id, module_id, title, order_index, updated_at
-         FROM course_lessons
-         ORDER BY course_id, module_id, order_index ASC`
-      );
+        const lessonsRes = await queryPostgres<any>(
+          `SELECT id, course_id, module_id, title, order_index, updated_at
+           FROM course_lessons
+           ORDER BY course_id, module_id, order_index ASC`
+        );
 
-      const modulesByCourse: Record<string, any[]> = {};
-      for (const m of modulesRes.rows) {
-        if (!modulesByCourse[m.course_id]) modulesByCourse[m.course_id] = [];
-        modulesByCourse[m.course_id].push({
-          id: m.id,
-          title: m.title,
-          description: m.description || '',
-          order: m.order_index,
-          subTopics: []
-        });
-      }
+        const modulesByCourse: Record<string, any[]> = {};
+        for (const m of modulesRes.rows) {
+          if (!modulesByCourse[m.course_id]) modulesByCourse[m.course_id] = [];
+          modulesByCourse[m.course_id].push({
+            id: m.id,
+            title: m.title,
+            description: m.description || '',
+            order: m.order_index,
+            subTopics: []
+          });
+        }
 
-      const lessonsByModule: Record<string, any[]> = {};
-      for (const l of lessonsRes.rows) {
-        const key = `${l.course_id}:${l.module_id}`;
-        if (!lessonsByModule[key]) lessonsByModule[key] = [];
-        lessonsByModule[key].push({
-          id: l.id,
-          title: l.title,
-          order: l.order_index
-        });
-      }
+        const lessonsByModule: Record<string, any[]> = {};
+        for (const l of lessonsRes.rows) {
+          const key = `${l.course_id}:${l.module_id}`;
+          if (!lessonsByModule[key]) lessonsByModule[key] = [];
+          lessonsByModule[key].push({
+            id: l.id,
+            title: l.title,
+            order: l.order_index
+          });
+        }
 
-      let maxUpdatedAt = '1970-01-01T00:00:00.000Z';
+        let maxUpdatedAt = '1970-01-01T00:00:00.000Z';
 
-      const fullCourses = coursesRes.rows.map(c => {
-        if (c.updated_at && c.updated_at > maxUpdatedAt) maxUpdatedAt = c.updated_at;
-        const cMods = (modulesByCourse[c.id] || []).map(m => {
-          const mKey = `${c.id}:${m.id}`;
-          const rawLessons = (lessonsByModule[mKey] || []).sort((a, b) => (a.order || 0) - (b.order || 0));
+        const fullCourses = coursesRes.rows.map(c => {
+          if (c.updated_at && c.updated_at > maxUpdatedAt) maxUpdatedAt = c.updated_at;
+          const cMods = (modulesByCourse[c.id] || []).map(m => {
+            const mKey = `${c.id}:${m.id}`;
+            const rawLessons = (lessonsByModule[mKey] || []).sort((a, b) => (a.order || 0) - (b.order || 0));
+
+            return {
+              ...m,
+              subTopics: rawLessons
+            };
+          }).sort((a, b) => (a.order || 0) - (b.order || 0));
 
           return {
-            ...m,
-            subTopics: rawLessons
+            id: c.id,
+            title: c.title,
+            description: c.description || '',
+            department: c.department || '',
+            faculty: c.faculty || '',
+            faculties: c.faculty ? [c.faculty] : [],
+            departments: c.department ? [c.department] : [],
+            level: c.level || '100',
+            semester: (String(c.semester || '').toLowerCase().includes('2') || String(c.semester || '').toLowerCase().includes('second')) ? '2nd Semester' : '1st Semester',
+            scope: c.scope || 'DEPARTMENT',
+            status: c.status,
+            syllabus: sortCourseSyllabus(cMods)
           };
-        }).sort((a, b) => (a.order || 0) - (b.order || 0));
+        });
 
-        return {
-          id: c.id,
-          title: c.title,
-          description: c.description || '',
-          department: c.department || '',
-          faculty: c.faculty || '',
-          faculties: c.faculty ? [c.faculty] : [],
-          departments: c.department ? [c.department] : [],
-          level: c.level || '100',
-          semester: c.semester === 'second' ? '2nd Semester' : '1st Semester',
-          scope: c.scope || 'DEPARTMENT',
-          status: c.status,
-          syllabus: sortCourseSyllabus(cMods)
-        };
-      });
+        const payloadStr = JSON.stringify(fullCourses);
+        const etag = `W/"${crypto.createHash('sha256').update(payloadStr).digest('hex').substring(0, 16)}"`;
 
-      const payloadStr = JSON.stringify(fullCourses);
-      const etag = `W/"${crypto.createHash('sha256').update(payloadStr).digest('hex').substring(0, 16)}"`;
-
-      const result = { courses: fullCourses, etag, maxUpdatedAt };
-      catalogCache.setPublished(cacheKey, result, 1);
-      return result;
+        const result = { courses: fullCourses, etag, maxUpdatedAt };
+        catalogCache.setPublished(cacheKey, result, 1);
+        return result;
+      } catch (err: any) {
+        logger.warn({ error: err.message }, '[CourseRepository] PostgreSQL getFullCatalogWithSyllabus read failed');
+      }
     }
 
-    // Fallback to Firestore
-    const app = getAdminApp();
-    if (!app) throw new Error('Database connection unavailable');
-    const db = app.firestore();
-
-    const snap = await db.collection('courses').where('status', '==', 'published').get();
-    const fullCourses: any[] = [];
-    let maxUpdatedAt = '1970-01-01T00:00:00.000Z';
-
-    for (const doc of snap.docs) {
-      const data = doc.data();
-      if (data.deleted) continue;
-      const updatedAt = data.updatedAt || new Date().toISOString();
-      if (updatedAt > maxUpdatedAt) maxUpdatedAt = updatedAt;
-
-      const syllabus = Array.isArray(data.syllabus) ? sortCourseSyllabus(data.syllabus.map((m: any) => ({
-        id: m.id,
-        title: m.title,
-        order: m.order,
-        subTopics: (m.subTopics || m.lessons || []).map((l: any) => ({
-          id: l.id,
-          title: l.title,
-          order: l.order
-        }))
-      }))) : [];
-
-      fullCourses.push({
-        id: doc.id,
-        title: data.title,
-        description: data.description || '',
-        department: data.department || '',
-        faculty: data.faculty || '',
-        level: data.level || '100',
-        semester: data.semester === 'second' ? '2nd Semester' : '1st Semester',
-        status: data.status,
-        syllabus
-      });
+    // Zero-Firestore fallback: check if cached in L1 or throw clean 503 error
+    const staleCached = catalogCache.getPublished<{ courses: any[]; etag: string; maxUpdatedAt: string }>(cacheKey);
+    if (staleCached) {
+      return staleCached;
     }
-
-    const payloadStr = JSON.stringify(fullCourses);
-    const etag = `W/"${crypto.createHash('sha256').update(payloadStr).digest('hex').substring(0, 16)}"`;
-    const result = { courses: fullCourses, etag, maxUpdatedAt };
-    catalogCache.setPublished(cacheKey, result, 1);
-    return result;
+    throw new Error('Database service unavailable: PostgreSQL full catalog is unreachable');
   }
 }
 

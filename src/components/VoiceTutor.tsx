@@ -3,8 +3,6 @@ import { motion, AnimatePresence } from 'motion/react';
 import { X, Mic, Loader2, Volume2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AIPersonality } from '../types';
-import { db } from '../firebase';
-import { doc, getDoc } from 'firebase/firestore';
 
 const stripThinkTags = (text: string) => {
   return text.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
@@ -29,16 +27,15 @@ export default function VoiceTutor({ isOpen, onClose, pdfContent, systemInstruct
   useEffect(() => {
     const fetchDefaultPersonality = async () => {
       try {
-        const docRef = doc(db, 'system_config', 'routing');
-        const snap = await getDoc(docRef);
-        if (snap.exists()) {
-          const data = snap.data();
-          if (data && data.default_personality) {
-            setDefaultPersonality(data.default_personality as AIPersonality);
+        const res = await fetch('/api/system/config/routing');
+        if (res.ok) {
+          const json = await res.json();
+          if (json.data && json.data.default_personality) {
+            setDefaultPersonality(json.data.default_personality as AIPersonality);
           }
         }
       } catch (e) {
-        console.warn("Failed to fetch default personality in VoiceTutor:", e);
+        console.warn("Failed to fetch default personality in VoiceTutor from Neon:", e);
       }
     };
     fetchDefaultPersonality();

@@ -24,12 +24,19 @@ export interface SystemFeatureFlags {
   /** Enables PostgreSQL for AI Spark wallet balances, escrow locks, and transaction ledger (Phase 3) */
   ENABLE_POSTGRES_SPARKS_ESCROW: boolean;
 
+  /** Enables PostgreSQL for RAG vector embeddings (course_knowledge_chunks_v2) */
+  ENABLE_POSTGRES_RAG_VECTORS: boolean;
+
+  /** Enables PostgreSQL for users profiles, gamification, and system audit logs */
+  ENABLE_POSTGRES_USERS_LOGS: boolean;
+
   /**
    * PROHIBITED: Permanent shadow-writes / dual-writes are strictly forbidden.
    * This flag must remain false to prevent split-brain states across databases.
    */
   ENABLE_POSTGRES_SHADOW_WRITE: boolean;
 }
+
 
 export interface RuntimeFlagRecord {
   flag_key: string;
@@ -40,22 +47,50 @@ export interface RuntimeFlagRecord {
   updated_at: string;
 }
 
-// In-memory runtime cache with safe baseline defaults
+// In-memory runtime cache with safe baseline defaults (strictly disabled if no PostgreSQL pool)
+const initialHasPostgres = Boolean(process.env.DATABASE_URL && getPostgresPool() !== null);
+
 let cachedFlags: SystemFeatureFlags = {
-  ENABLE_POSTGRES_CATALOG: true,
-  ENABLE_POSTGRES_PROGRESS: true,
-  ENABLE_POSTGRES_GENERATION_JOBS: process.env.ENABLE_POSTGRES_GENERATION_JOBS === 'true',
+  ENABLE_POSTGRES_CATALOG: initialHasPostgres,
+  ENABLE_POSTGRES_PROGRESS: initialHasPostgres,
+  ENABLE_POSTGRES_GENERATION_JOBS: initialHasPostgres && process.env.ENABLE_POSTGRES_GENERATION_JOBS === 'true',
   ENABLE_POSTGRES_SPARKS_ESCROW: false,
+  ENABLE_POSTGRES_RAG_VECTORS: initialHasPostgres,
+  ENABLE_POSTGRES_USERS_LOGS: initialHasPostgres,
   ENABLE_POSTGRES_SHADOW_WRITE: false // Strictly prohibited
 };
 
+
 let cachedFlagRecords: Map<string, RuntimeFlagRecord> = new Map();
 let syncIntervalId: NodeJS.Timeout | null = null;
+let hasLoggedNoPool = false;
+
+// Log startup backend status once
+if (!initialHasPostgres) {
+  logger.info('[RuntimeFlags] PostgreSQL pool unavailable at startup (DATABASE_URL unset or pool uninstantiated). All Postgres feature flags default to FALSE; running with Firestore/degraded fallbacks.');
+  hasLoggedNoPool = true;
+} else {
+  logger.info('[RuntimeFlags] PostgreSQL pool detected at startup. Postgres feature flags enabled.');
+}
 
 /**
  * Returns the current runtime feature flag snapshot (0ms in-memory read).
+ * Gates on pool availability as a defense-in-depth safety net.
  */
 export function getFeatureFlags(): Readonly<SystemFeatureFlags> {
+  const pool = getPostgresPool();
+  if (!pool) {
+    return Object.freeze({
+      ENABLE_POSTGRES_CATALOG: false,
+      ENABLE_POSTGRES_PROGRESS: false,
+      ENABLE_POSTGRES_GENERATION_JOBS: false,
+      ENABLE_POSTGRES_SPARKS_ESCROW: false,
+      ENABLE_POSTGRES_RAG_VECTORS: false,
+      ENABLE_POSTGRES_USERS_LOGS: false,
+      ENABLE_POSTGRES_SHADOW_WRITE: false
+    });
+
+  }
   return Object.freeze({ ...cachedFlags });
 }
 
@@ -121,7 +156,21 @@ export function getAllRuntimeFlagRecords(): RuntimeFlagRecord[] {
 export async function refreshRuntimeFlagsFromDb(): Promise<void> {
   const pool = getPostgresPool();
   if (!pool) {
-    // Database URL not configured yet, retain in-memory fallback
+    // When no pool is available, guarantee all Postgres flags in the cache are forced to false
+    if (cachedFlags.ENABLE_POSTGRES_CATALOG || cachedFlags.ENABLE_POSTGRES_PROGRESS || cachedFlags.ENABLE_POSTGRES_GENERATION_JOBS || cachedFlags.ENABLE_POSTGRES_SPARKS_ESCROW) {
+      cachedFlags = {
+        ...cachedFlags,
+        ENABLE_POSTGRES_CATALOG: false,
+        ENABLE_POSTGRES_PROGRESS: false,
+        ENABLE_POSTGRES_GENERATION_JOBS: false,
+        ENABLE_POSTGRES_SPARKS_ESCROW: false,
+        ENABLE_POSTGRES_SHADOW_WRITE: false
+      };
+    }
+    if (!hasLoggedNoPool) {
+      logger.info('[RuntimeFlags] PostgreSQL pool unavailable (DATABASE_URL unset or pool uninstantiated). Postgres flags forced to FALSE; running with Firestore/degraded fallbacks.');
+      hasLoggedNoPool = true;
+    }
     return;
   }
 
@@ -149,8 +198,13 @@ export async function refreshRuntimeFlagsFromDb(): Promise<void> {
         updatedFlags.ENABLE_POSTGRES_GENERATION_JOBS = Boolean(row.enabled);
       } else if (row.flag_key === 'ENABLE_POSTGRES_SPARKS_ESCROW') {
         updatedFlags.ENABLE_POSTGRES_SPARKS_ESCROW = Boolean(row.enabled);
+      } else if (row.flag_key === 'ENABLE_POSTGRES_RAG_VECTORS' || row.flag_key === 'RAG_VECTORS') {
+        updatedFlags.ENABLE_POSTGRES_RAG_VECTORS = Boolean(row.enabled);
+      } else if (row.flag_key === 'ENABLE_POSTGRES_USERS_LOGS' || row.flag_key === 'USERS_LOGS') {
+        updatedFlags.ENABLE_POSTGRES_USERS_LOGS = Boolean(row.enabled);
       }
     }
+
 
     cachedFlagRecords = newRecordsMap;
     cachedFlags = {
