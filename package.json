@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "NODE_OPTIONS=\"--max-old-space-size=$(node -e 'const fs=require(\"fs\"),os=require(\"os\");let m=os.totalmem();for(const p of [\"/sys/fs/cgroup/memory.max\",\"/sys/fs/cgroup/memory/memory.limit_in_bytes\"]){try{const v=parseInt(fs.readFileSync(p,\"utf8\").trim(),10);if(v>0&&v<m)m=v;}catch{}}console.log(Math.floor((m/(1024*1024))*0.65))')\" tsx server.ts",
-    "build": "npm run lint && vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
-    "start": "NODE_OPTIONS=\"--max-old-space-size=$(node -e 'const fs=require(\"fs\"),os=require(\"os\");let m=os.totalmem();for(const p of [\"/sys/fs/cgroup/memory.max\",\"/sys/fs/cgroup/memory/memory.limit_in_bytes\"]){try{const v=parseInt(fs.readFileSync(p,\"utf8\").trim(),10);if(v>0&&v<m)m=v;}catch{}}console.log(Math.floor((m/(1024*1024))*0.65))')\" node dist/server.cjs",
+    "build": "npm run lint && vite build && esbuild server.ts --bundle --platform=node --format=esm --packages=external --sourcemap --outfile=dist/server.js",
+    "start": "NODE_OPTIONS=\"--max-old-space-size=$(node -e 'const fs=require(\"fs\"),os=require(\"os\");let m=os.totalmem();for(const p of [\"/sys/fs/cgroup/memory.max\",\"/sys/fs/cgroup/memory/memory.limit_in_bytes\"]){try{const v=parseInt(fs.readFileSync(p,\"utf8\").trim(),10);if(v>0&&v<m)m=v;}catch{}}console.log(Math.floor((m/(1024*1024))*0.65))')\" node dist/server.js",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit && node scripts/check-zero-fallback.js && npx tsx scripts/test-prompt-shield.ts",
