@@ -3,6 +3,7 @@ import { motion } from 'motion/react';
 import { Shield, Eye, EyeOff, ArrowLeft, Loader2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { auth } from '../firebase';
+import { safeFetchJson } from '../utils/safeFetch';
 
 export default function AdminLogin({ onSuccess, onBackToApp, requireGoogleLogin }: { onSuccess?: () => void; onBackToApp?: () => void; requireGoogleLogin?: boolean }) {
   const [pin, setPin] = useState('');
@@ -18,7 +19,7 @@ export default function AdminLogin({ onSuccess, onBackToApp, requireGoogleLogin 
 
     try {
       const token = await auth.currentUser?.getIdToken();
-      const response = await fetch('/api/admin/verify-pin', {
+      const res = await safeFetchJson<any>('/api/admin/verify-pin', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -27,9 +28,7 @@ export default function AdminLogin({ onSuccess, onBackToApp, requireGoogleLogin 
         body: JSON.stringify({ pin })
       });
 
-      const data = await response.json();
-
-      if (response.ok && data.success) {
+      if (res.ok && res.data?.success) {
         try {
           sessionStorage.setItem('admin_pin_verified', 'true');
         } catch {}
@@ -40,7 +39,7 @@ export default function AdminLogin({ onSuccess, onBackToApp, requireGoogleLogin 
           window.dispatchEvent(new PopStateEvent('popstate'));
         }
       } else {
-        setError(data.error || 'Invalid PIN. Please try again.');
+        setError(res.error || res.data?.error || 'Invalid PIN. Please try again.');
       }
     } catch (err) {
       setError('Connection error. Please try again.');

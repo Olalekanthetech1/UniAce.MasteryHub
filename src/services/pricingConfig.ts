@@ -1,4 +1,5 @@
 import { auth } from '../firebase';
+import { safeFetchJson } from '../utils/safeFetch';
 
 export interface PricingPlan {
   id: string;
@@ -81,9 +82,9 @@ export const DEFAULT_PRICING_PLANS: PricingPlan[] = [
 export const PricingService = {
   async getPricingConfig(): Promise<PricingConfig> {
     try {
-      const res = await fetch('/api/system/config/pricing');
-      if (res.ok) {
-        const json = await res.json();
+      const res = await safeFetchJson<any>('/api/system/config/pricing');
+      if (res.ok && res.data) {
+        const json = res.data;
         if (json.data && Array.isArray(json.data.plans) && json.data.plans.length > 0) {
           return json.data as PricingConfig;
         }

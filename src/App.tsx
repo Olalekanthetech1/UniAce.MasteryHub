@@ -59,6 +59,7 @@ import { generateModuleContent, generateCourseSkeleton } from './services/aiCour
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { InstitutionProvider } from './context/InstitutionContext';
+import { safeFetchJson } from './utils/safeFetch';
 
 const queryClient = new QueryClient();
 
@@ -323,12 +324,11 @@ function AppContent() {
     let isMounted = true;
     const checkConnectivity = async () => {
       try {
-        const res = await fetch('/api/health');
-        if (res.ok) {
-          const data = await res.json();
-          if (isMounted) console.log('Backend connectivity check:', data);
-        } else {
-          if (isMounted) console.warn('Backend connectivity check non-200:', res.status);
+        const res = await safeFetchJson<any>('/api/health');
+        if (res.ok && isMounted) {
+          console.log('Backend connectivity check:', res.data);
+        } else if (isMounted) {
+          console.warn('Backend connectivity check non-200:', res.status);
         }
       } catch (err) {
         if (isMounted) console.warn('Backend connectivity check pending server initialization:', err);
@@ -343,14 +343,14 @@ function AppContent() {
     if (user && chatMessages.length === 0) {
       user.getIdToken()
         .then(token => {
-          if (!token) return;
-          return fetch('/api/chat/nudge', {
+          if (!token) return null;
+          return safeFetchJson<any>('/api/chat/nudge', {
             headers: { 'Authorization': `Bearer ${token}` }
           });
         })
         .then(res => {
-          if (!res || !res.ok) return null;
-          return res.json();
+          if (!res || !res.ok || !res.data) return null;
+          return res.data;
         })
         .then(data => {
           if (isSubscribed && data?.message) {
@@ -383,7 +383,7 @@ function AppContent() {
     return <FirebaseSetup />;
   }
 
-  if (loading || (user && !profile)) {
+  if (loading && !profile && !user) {
     return (
       <div className="h-screen w-full flex items-center justify-center bg-slate-50 dark:bg-zinc-950">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-500"></div>

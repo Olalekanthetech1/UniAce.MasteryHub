@@ -1,4 +1,5 @@
 import { auth } from '../firebase';
+import { safeFetchJson } from '../utils/safeFetch';
 
 export interface ArenaChallenge {
   id: string;
@@ -62,9 +63,9 @@ export const DEFAULT_CHALLENGES: ArenaChallenge[] = [
 export const ChallengesService = {
   async getChallenges(): Promise<ArenaChallenge[]> {
     try {
-      const res = await fetch('/api/system/config/challenges');
-      if (res.ok) {
-        const json = await res.json();
+      const res = await safeFetchJson<any>('/api/system/config/challenges');
+      if (res.ok && res.data) {
+        const json = res.data;
         if (json.data && Array.isArray(json.data.challenges) && json.data.challenges.length > 0) {
           return json.data.challenges as ArenaChallenge[];
         }

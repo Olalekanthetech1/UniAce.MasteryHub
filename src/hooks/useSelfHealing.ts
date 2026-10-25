@@ -5,6 +5,7 @@ import { useNotifications } from './useNotifications';
 import { LogService } from '../services/logService';
 import { GamificationService, BADGES } from '../services/gamification';
 import { UserProgress, Achievement } from '../types';
+import { safeFetchJson } from '../utils/safeFetch';
 
 const INITIAL_ACHIEVEMENTS: Achievement[] = BADGES.map(b => ({
   id: b.id,
@@ -115,11 +116,10 @@ export function useSelfHealing() {
     try {
       // 1. Silent re-sync with authoritative Neon server data via bootstrap endpoint
       const token = await user.getIdToken(false);
-      const bootstrapRes = await fetch('/api/user/bootstrap', {
+      const bootstrapRes = await safeFetchJson<any>('/api/user/bootstrap', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      const bootstrapJson = bootstrapRes.ok ? await bootstrapRes.json() : null;
-      const serverData = (bootstrapJson?.profile as Partial<UserProgress>) || {};
+      const serverData = (bootstrapRes.ok && bootstrapRes.data?.profile as Partial<UserProgress>) || {};
       
       // 2. Perform advanced data cleaning & repairs
       const repairedXp = Math.max(0, serverData.xp ?? progress.xp ?? 0);

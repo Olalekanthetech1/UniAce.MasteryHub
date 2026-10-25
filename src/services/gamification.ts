@@ -1,4 +1,5 @@
 import { UserProgress, Achievement, LeaderboardEntry } from '../types';
+import { safeFetchJson } from '../utils/safeFetch';
 
 export const LEVELS = [
   { level: 1, xp: 0, title: 'Novice' },
@@ -112,9 +113,9 @@ export class GamificationService {
 
   static async getLeaderboard(): Promise<LeaderboardEntry[]> {
     try {
-      const res = await fetch('/api/gamification/leaderboard');
-      if (res.ok) {
-        const json = await res.json();
+      const res = await safeFetchJson<any>('/api/gamification/leaderboard');
+      if (res.ok && res.data) {
+        const json = res.data;
         if (json.leaderboard) {
           return json.leaderboard.map((l: any, idx: number) => ({
             userId: l.id,

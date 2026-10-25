@@ -111,30 +111,61 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     console.log("AuthContext: Syncing user profile for", currentUser.uid);
     const cachedProfile = loadCachedProfile(currentUser.uid);
 
+    // Resolve immediate admin role if applicable
+    const adminEmails = (import.meta.env.VITE_ADMIN_EMAILS || '').split(',').map((e: string) => e.trim().toLowerCase()).filter(Boolean);
+    const isUserAdmin = Boolean(currentUser.email && adminEmails.includes(currentUser.email.toLowerCase()));
+
+    // Instant optimistic hydration from cache or user object to prevent blank-screen blocking
+    const initialProfile: UserProfile = {
+      uid: currentUser.uid,
+      email: currentUser.email || cachedProfile?.email || "",
+      displayName: cachedProfile?.displayName || currentUser.displayName || "Scholar",
+      bio: cachedProfile?.bio,
+      photoURL: cachedProfile?.photoURL || currentUser.photoURL || "",
+      role: isUserAdmin ? 'admin' : (cachedProfile?.role || 'student'),
+      plan_type: cachedProfile?.plan_type || (isUserAdmin ? 'scholar' : 'free'),
+      subscription_expiry: cachedProfile?.subscription_expiry,
+      subscription_status: cachedProfile?.subscription_status || 'none',
+      subscription_start_date: cachedProfile?.subscription_start_date,
+      ai_sparks: cachedProfile?.ai_sparks ?? (isUserAdmin ? 999999 : 50),
+      xp: cachedProfile?.xp ?? 0,
+      level: cachedProfile?.level ?? 1,
+      streak: cachedProfile?.streak ?? 0,
+      themeColor: cachedProfile?.themeColor,
+      rank: cachedProfile?.rank,
+      created_at: cachedProfile?.created_at || new Date().toISOString(),
+      sessionId: currentSessionId,
+      department: cachedProfile?.department || (typeof window !== 'undefined' ? localStorage.getItem('activeDepartment') || undefined : undefined),
+      faculty: cachedProfile?.faculty,
+      academic_level: cachedProfile?.academic_level,
+      semester: cachedProfile?.semester || (typeof window !== 'undefined' ? localStorage.getItem('activeSemester') || undefined : undefined),
+      learningProfile: cachedProfile?.learningProfile,
+      has_seen_whatsapp: cachedProfile?.has_seen_whatsapp ?? false,
+      onboarding_completed: cachedProfile?.onboarding_completed ?? false,
+      referralCode: cachedProfile?.referralCode || currentUser.uid.substring(0, 6).toUpperCase(),
+      referredBy: cachedProfile?.referredBy
+    };
+
+    setProfile(initialProfile);
+    setLoading(false);
+
     try {
       const firestoreData: Record<string, any> = {};
       let backendProfile: Record<string, any> | null = null;
 
-      let userRole: 'student' | 'admin' | 'tutor' | 'moderator' = firestoreData.role || cachedProfile?.role || 'student';
-      
-      // Default admin emails
-      const adminEmails = (import.meta.env.VITE_ADMIN_EMAILS || '').split(',').map((e: string) => e.trim().toLowerCase()).filter(Boolean);
-      if (currentUser.email && adminEmails.includes(currentUser.email.toLowerCase())) {
-        userRole = 'admin';
-      }
-
+      let userRole: 'student' | 'admin' | 'tutor' | 'moderator' = isUserAdmin ? 'admin' : (firestoreData.role || cachedProfile?.role || 'student');
       let plan_type: PlanType = firestoreData.plan_type || cachedProfile?.plan_type || (userRole === 'admin' ? 'scholar' : 'free');
-      let ai_sparks: number = firestoreData.ai_sparks ?? cachedProfile?.ai_sparks ?? 0;
+      let ai_sparks: number = firestoreData.ai_sparks ?? cachedProfile?.ai_sparks ?? (userRole === 'admin' ? 999999 : 50);
       let subscription_expiry: string | undefined = firestoreData.subscription_expiry || cachedProfile?.subscription_expiry;
       let subscription_status: 'active' | 'expired' | 'none' = firestoreData.subscription_status || cachedProfile?.subscription_status || 'none';
       let subscription_start_date: string | undefined = firestoreData.subscription_start_date || cachedProfile?.subscription_start_date;
 
-      // Fetch accurate quota and authoritative profile from backend (Single Source of Truth)
-      const fetchQuota = async (retries = 4, attempt = 1): Promise<boolean> => {
+      // Fetch accurate quota and authoritative profile from backend without blocking UI
+      const fetchQuota = async (retries = 1, attempt = 1): Promise<boolean> => {
         try {
           const token = await currentUser.getIdToken();
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 10000);
+          const timeoutId = setTimeout(() => controller.abort(), 4000);
 
           const response = await fetch('/api/user/quota', {
             headers: {
@@ -147,8 +178,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           clearTimeout(timeoutId);
 
           if (response.ok) {
-            const contentType = response.headers.get('content-type');
-            if (contentType && contentType.includes('application/json')) {
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
               const data = await response.json();
               ai_sparks = data.sparks;
               plan_type = data.plan;
@@ -160,20 +191,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 backendProfile = data.profile;
               }
               return true;
-            } else {
-              throw new Error(`Server returned non-JSON response (${contentType || 'unknown'})`);
             }
           } else if (retries > 0) {
-            await new Promise(resolve => setTimeout(resolve, attempt * 1500));
+            await new Promise(resolve => setTimeout(resolve, 800));
             return fetchQuota(retries - 1, attempt + 1);
           }
           return false;
-        } catch (err) {
+        } catch {
           if (retries > 0) {
-            await new Promise(resolve => setTimeout(resolve, attempt * 1500));
+            await new Promise(resolve => setTimeout(resolve, 800));
             return fetchQuota(retries - 1, attempt + 1);
           }
-          console.warn("Quota fetch fallback to cached/default profile:", err);
           return false;
         }
       };
@@ -370,7 +398,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.warn("AuthContext: Safety timeout reached, forcing loading to false");
         setLoading(false);
       }
-    }, 20000);
+    }, 2500);
 
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       console.log("AuthContext: Auth state changed", currentUser?.uid || "No user");

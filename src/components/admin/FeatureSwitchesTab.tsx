@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ToggleLeft, ToggleRight, Shield, Swords, Users, Loader2, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import toast from 'react-hot-toast';
+import { safeFetchJson } from '../../utils/safeFetch';
 
 interface FeatureSwitches {
   arena: boolean;
@@ -20,12 +21,12 @@ export default function FeatureSwitchesTab() {
     setLoading(true);
     try {
       const token = await user.getIdToken();
-      const res = await fetch('/api/admin/feature-switches', {
+      if (!token) return;
+      const res = await safeFetchJson<any>('/api/admin/feature-switches', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      if (res.ok) {
-        const json = await res.json();
-        setSwitches(json.featureSwitches || { arena: false, tutor_dashboard: false });
+      if (res.ok && res.data) {
+        setSwitches(res.data.featureSwitches || { arena: false, tutor_dashboard: false });
       } else {
         toast.error('Failed to load feature switches');
       }

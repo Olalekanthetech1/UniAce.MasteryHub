@@ -4,6 +4,7 @@ import { MessageCircle, ArrowRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { LogService } from '../services/logService';
 import toast from 'react-hot-toast';
+import { safeFetchJson } from '../utils/safeFetch';
 
 export default function WhatsAppPromoModal({ onClose }: { onClose?: () => void }) {
   const [whatsappLink, setWhatsappLink] = useState('');
@@ -13,12 +14,9 @@ export default function WhatsAppPromoModal({ onClose }: { onClose?: () => void }
   useEffect(() => {
     const fetchLink = async () => {
       try {
-        const res = await fetch('/api/system/config/community');
-        if (res.ok) {
-          const json = await res.json();
-          if (json.data?.whatsappLink) {
-            setWhatsappLink(json.data.whatsappLink);
-          }
+        const res = await safeFetchJson<any>('/api/system/config/community');
+        if (res.ok && res.data?.data?.whatsappLink) {
+          setWhatsappLink(res.data.data.whatsappLink);
         }
       } catch (e) {
         console.warn("Failed to fetch whatsapp link from Neon system_config:", e);

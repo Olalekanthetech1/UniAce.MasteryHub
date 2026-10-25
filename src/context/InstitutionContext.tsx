@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, ReactNode } from
 import { DEPARTMENTS as INITIAL_DEPARTMENTS, FACULTIES as INITIAL_FACULTIES, DEPARTMENT_TO_FACULTY as INITIAL_MAP } from '../constants';
 import { Department } from '../types';
 import { auth } from '../firebase';
+import { safeFetchJson } from '../utils/safeFetch';
 
 interface InstitutionState {
   departments: Department[];
@@ -24,9 +25,9 @@ export function InstitutionProvider({ children }: { children: ReactNode }) {
 
   const fetchInstitution = async (isMounted = true) => {
     try {
-      const res = await fetch('/api/system/config/institution');
-      if (res.ok && isMounted) {
-        const json = await res.json();
+      const res = await safeFetchJson<any>('/api/system/config/institution');
+      if (res.ok && res.data && isMounted) {
+        const json = res.data;
         const data = json.data || {};
         if (Array.isArray(data.departments)) setDepartments(data.departments);
         if (Array.isArray(data.faculties)) setFaculties(data.faculties);

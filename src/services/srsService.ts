@@ -1,4 +1,5 @@
 import { auth } from '../firebase';
+import { safeFetchJson } from '../utils/safeFetch';
 
 export interface SRSRecord {
   userId: string;
@@ -95,11 +96,11 @@ export const SRSService = {
     try {
       const token = await auth.currentUser?.getIdToken();
       if (!token) return null;
-      const res = await fetch('/api/user/srs', {
+      const res = await safeFetchJson<any>('/api/user/srs', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      if (res.ok) {
-        const json = await res.json();
+      if (res.ok && res.data) {
+        const json = res.data;
         if (Array.isArray(json.cards)) {
           const match = json.cards.find((c: any) => c.card_id === topicId || c.id === topicId);
           if (match) {
@@ -133,11 +134,11 @@ export const SRSService = {
     try {
       const token = await user?.getIdToken();
       if (token) {
-        const res = await fetch('/api/user/srs', {
+        const res = await safeFetchJson<any>('/api/user/srs', {
           headers: { 'Authorization': `Bearer ${token}` }
         });
-        if (res.ok) {
-          const json = await res.json();
+        if (res.ok && res.data) {
+          const json = res.data;
           if (Array.isArray(json.cards)) {
             const now = Date.now();
             return json.cards

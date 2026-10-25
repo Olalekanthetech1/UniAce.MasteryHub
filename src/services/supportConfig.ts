@@ -1,4 +1,5 @@
 import { auth } from '../firebase';
+import { safeFetchJson } from '../utils/safeFetch';
 
 export interface FaqItem {
   id: string;
@@ -94,9 +95,9 @@ export const DEFAULT_TUTORIALS: TutorialItem[] = [
 export const SupportService = {
   async getSupportConfig(): Promise<SupportConfig> {
     try {
-      const res = await fetch('/api/system/config/support');
-      if (res.ok) {
-        const json = await res.json();
+      const res = await safeFetchJson<any>('/api/system/config/support');
+      if (res.ok && res.data) {
+        const json = res.data;
         if (json.data && typeof json.data === 'object') {
           const data = json.data as SupportConfig;
           return {

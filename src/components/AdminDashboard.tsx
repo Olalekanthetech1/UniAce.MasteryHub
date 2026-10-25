@@ -40,6 +40,7 @@ import AdminAffiliates from './AdminAffiliates';
 import MarkdownRenderer from './MarkdownRenderer';
 
 import { jsonrepair } from 'jsonrepair';
+import { safeFetchJson } from '../utils/safeFetch';
 
 function parseFirestoreDate(val: any): Date | null {
   if (!val) return null;
@@ -355,7 +356,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   const [isPruningLogs, setIsPruningLogs] = useState<boolean>(false);
 
   useEffect(() => {
-    if (user) {
+    if (user && isAdmin) {
       fetchUsers();
       fetchCurriculumRequests();
       fetchKbStats();
@@ -620,15 +621,15 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   const fetchRoutingConfig = async () => {
     try {
       const idToken = await auth.currentUser?.getIdToken();
-      const res = await fetch('/api/admin/config', {
+      if (!idToken) return;
+      const res = await safeFetchJson<any>('/api/admin/config', {
         headers: { 'Authorization': `Bearer ${idToken}` }
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.routing) setRoutingConfig(prev => ({ ...prev, ...data.routing }));
+      if (res.ok && res.data?.routing) {
+        setRoutingConfig(prev => ({ ...prev, ...res.data.routing }));
       }
     } catch (error) {
-      console.error("Error fetching routing config:", error);
+      console.warn("Notice fetching routing config:", error);
     }
   };
 
@@ -638,15 +639,15 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   const fetchCommunityConfig = async () => {
     try {
       const idToken = await auth.currentUser?.getIdToken();
-      const res = await fetch('/api/admin/config', {
+      if (!idToken) return;
+      const res = await safeFetchJson<any>('/api/admin/config', {
         headers: { 'Authorization': `Bearer ${idToken}` }
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.community?.whatsappLink) setCommunityLink(data.community.whatsappLink);
+      if (res.ok && res.data?.community?.whatsappLink) {
+        setCommunityLink(res.data.community.whatsappLink);
       }
     } catch (error) {
-      console.error("Error fetching community config:", error);
+      console.warn("Notice fetching community config:", error);
     }
   };
 
@@ -851,14 +852,11 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
 
         // Fetch live circuit breaker & real-time provider health
         try {
-          const healthRes = await fetch('/api/admin/provider-health', {
+          const healthRes = await safeFetchJson<any>('/api/admin/provider-health', {
             headers: { 'Authorization': `Bearer ${idToken}` }
           });
-          if (healthRes.ok) {
-            const healthData = await healthRes.json();
-            if (healthData.health) {
-              setProviderHealth(healthData.health);
-            }
+          if (healthRes.ok && healthRes.data?.health) {
+            setProviderHealth(healthRes.data.health);
           }
         } catch (hErr) {
           console.warn('Provider health fetch warning:', hErr);
@@ -1653,15 +1651,15 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   const fetchKbStats = async () => {
     try {
       const idToken = await auth.currentUser?.getIdToken();
-      const res = await fetch('/api/admin/database/engine-health', {
+      if (!idToken) return;
+      const res = await safeFetchJson<any>('/api/admin/database/engine-health', {
         headers: { 'Authorization': `Bearer ${idToken}` }
       });
-      if (res.ok) {
-        const data = await res.json();
-        setKbStats({ totalChunks: data.tableCounts?.courses || 0 });
+      if (res.ok && res.data) {
+        setKbStats({ totalChunks: res.data.tableCounts?.courses || 0 });
       }
     } catch (error: any) {
-      console.error("Error fetching KB stats:", error);
+      console.warn("Notice fetching KB stats:", error?.message || error);
     }
   };
 
@@ -2000,15 +1998,14 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
     setIsLoadingRequests(true);
     try {
       const idToken = await auth.currentUser?.getIdToken();
-      const res = await fetch('/api/admin/curriculum-requests', {
+      const res = await safeFetchJson<any>('/api/admin/curriculum-requests', {
         headers: { 'Authorization': `Bearer ${idToken}` }
       });
-      if (res.ok) {
-        const data = await res.json();
-        setCurriculumRequests(data.requests || []);
+      if (res.ok && res.data) {
+        setCurriculumRequests(res.data.requests || []);
       }
     } catch (error) {
-      console.error("Error fetching curriculum requests:", error);
+      console.warn("Notice fetching curriculum requests:", error);
     } finally {
       setIsLoadingRequests(false);
     }
@@ -2018,12 +2015,11 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
     setIsLoadingUsers(true);
     try {
       const idToken = await auth.currentUser?.getIdToken();
-      const res = await fetch('/api/admin/users?limit=100', {
+      const res = await safeFetchJson<any>('/api/admin/users?limit=100', {
         headers: { 'Authorization': `Bearer ${idToken}` }
       });
-      if (res.ok) {
-        const data = await res.json();
-        const userList = data.users || [];
+      if (res.ok && res.data) {
+        const userList = res.data.users || [];
         const stats = {
           total: userList.length,
           students: userList.filter((u: any) => u.role === 'student').length,
@@ -2036,7 +2032,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
         setUserStats(stats);
       }
     } catch (error) {
-      console.error("Error fetching users:", error);
+      console.warn("Notice fetching users:", error);
     } finally {
       setIsLoadingUsers(false);
     }
@@ -2083,10 +2079,6 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
     });
   };
 
-  useEffect(() => {
-    fetchUsers();
-    fetchCurriculumRequests();
-  }, []);
 
   const handleRestoreCourse = async (courseId: string) => {
     showToast("Direct Firestore course writes are paused during Postgres catalog migration. Use Postgres administrative API.", "info");

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { safeFetchJson } from '../utils/safeFetch';
 
 export interface FeatureSwitches {
   arena: boolean;
@@ -25,12 +26,11 @@ export function useFeatureSwitches() {
 
       try {
         const token = await user.getIdToken();
-        const res = await fetch('/api/user/bootstrap', {
+        const res = await safeFetchJson<any>('/api/user/bootstrap', {
           headers: { 'Authorization': `Bearer ${token}` }
         });
-        if (res.ok && isMounted) {
-          const json = await res.json();
-          const fs = json.systemConfig?.feature_switches || { arena: false, tutor_dashboard: false };
+        if (res.ok && res.data && isMounted) {
+          const fs = res.data.systemConfig?.feature_switches || { arena: false, tutor_dashboard: false };
           setSwitches(fs);
         }
       } catch (err) {

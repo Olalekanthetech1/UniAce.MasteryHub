@@ -1,6 +1,7 @@
 import { Course, Module, SubTopic, Quiz, Formula, CourseId } from '../types';
 import { getModuleOrderIndex, getLessonOrderIndex, sortCourseSyllabus } from '../shared/courseSchemas';
 import { normalizeSemester } from '../utils/normalization';
+import { safeFetchJson } from '../utils/safeFetch';
 
 export const sanitizeForFirestore = (obj: any): any => {
   if (obj === undefined) return null;
@@ -23,19 +24,13 @@ export const sanitizeForFirestore = (obj: any): any => {
 export const CourseService = {
   async getFullCatalog(idToken?: string): Promise<Course[]> {
     const headers: Record<string, string> = {};
+    if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
     const baseUrl = typeof window !== 'undefined' ? '' : (process.env.APP_URL || 'http://localhost:3000');
-    const res = await fetch(`${baseUrl}/api/catalog/full`, { headers });
-    if (!res.ok) {
-      let details = `HTTP ${res.status}: ${res.statusText || 'Server Error'}`;
-      try {
-        const errData = await res.json();
-        if (errData.message || errData.error) {
-          details = `HTTP ${res.status}: ${errData.message || errData.error}`;
-        }
-      } catch {}
-      throw new Error(`Failed to fetch catalog (${details})`);
+    const res = await safeFetchJson<any>(`${baseUrl}/api/catalog/full`, { headers });
+    if (!res.ok || !res.data) {
+      throw new Error(`Failed to fetch catalog (${res.error || `HTTP ${res.status}`})`);
     }
-    const data = await res.json();
+    const data = res.data;
     return (data.courses || []).map((c: any) => ({
       id: c.id,
       title: c.title,
@@ -53,16 +48,13 @@ export const CourseService = {
   },
 
   async getCourse(courseId: string): Promise<Course | null> {
-    const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}`);
-    if (res.status === 404) {
-      return null;
-    }
+    const res = await safeFetchJson<any>(`/api/courses/${encodeURIComponent(courseId)}`);
     if (!res.ok) {
-      throw new Error(`Failed to fetch course ${courseId} (HTTP ${res.status}: ${res.statusText})`);
+      if (res.status === 404) return null;
+      throw new Error(`Failed to fetch course ${courseId} (${res.error || `HTTP ${res.status}`})`);
     }
-    const data = await res.json();
-    if (!data.course) return null;
-    const c = data.course;
+    if (!res.data?.course) return null;
+    const c = res.data.course;
     return {
       id: c.id,
       title: c.title,
@@ -80,11 +72,11 @@ export const CourseService = {
   },
 
   async getModules(courseId: string): Promise<Module[]> {
-    const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}/modules`);
-    if (!res.ok) {
-      throw new Error(`Failed to fetch modules for course ${courseId} (HTTP ${res.status}: ${res.statusText})`);
+    const res = await safeFetchJson<any>(`/api/courses/${encodeURIComponent(courseId)}/modules`);
+    if (!res.ok || !res.data) {
+      throw new Error(`Failed to fetch modules for course ${courseId} (${res.error || `HTTP ${res.status}`})`);
     }
-    const data = await res.json();
+    const data = res.data;
     if (!Array.isArray(data.modules)) {
       return [];
     }
@@ -97,11 +89,11 @@ export const CourseService = {
   },
 
   async getLessons(courseId: string, moduleId: string): Promise<SubTopic[]> {
-    const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}/modules/${encodeURIComponent(moduleId)}/lessons`);
-    if (!res.ok) {
-      throw new Error(`Failed to fetch lessons for ${courseId}/${moduleId} (HTTP ${res.status}: ${res.statusText})`);
+    const res = await safeFetchJson<any>(`/api/courses/${encodeURIComponent(courseId)}/modules/${encodeURIComponent(moduleId)}/lessons`);
+    if (!res.ok || !res.data) {
+      throw new Error(`Failed to fetch lessons for ${courseId}/${moduleId} (${res.error || `HTTP ${res.status}`})`);
     }
-    const data = await res.json();
+    const data = res.data;
     if (!Array.isArray(data.lessons)) {
       return [];
     }

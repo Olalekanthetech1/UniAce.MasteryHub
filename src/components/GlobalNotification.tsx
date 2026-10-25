@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { AlertCircle, X, Zap, ExternalLink, Info, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
+import { safeFetchJson } from '../utils/safeFetch';
 
 export interface AnnouncementDoc {
   id: string;
@@ -41,12 +42,12 @@ export default function GlobalNotification() {
     const loadDismissals = async () => {
       try {
         const token = await user.getIdToken(false);
-        const res = await fetch('/api/user/announcements/dismissals', {
+        if (!token) return;
+        const res = await safeFetchJson<any>('/api/user/announcements/dismissals', {
           headers: { 'Authorization': `Bearer ${token}` }
         });
-        if (res.ok && isMounted) {
-          const json = await res.json();
-          setDismissedIds(new Set(json.dismissedIds || []));
+        if (res.ok && res.data && isMounted) {
+          setDismissedIds(new Set(res.data.dismissedIds || []));
         }
       } catch (err) {
         console.warn('Failed to load announcement dismissals:', err);
@@ -63,9 +64,9 @@ export default function GlobalNotification() {
     let isMounted = true;
     const fetchAnnouncements = async () => {
       try {
-        const res = await fetch('/api/announcements/active');
-        if (res.ok && isMounted) {
-          const json = await res.json();
+        const res = await safeFetchJson<any>('/api/announcements/active');
+        if (res.ok && res.data && isMounted) {
+          const json = res.data;
           const items: AnnouncementDoc[] = [];
           const now = new Date();
 

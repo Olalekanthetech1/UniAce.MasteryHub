@@ -10,6 +10,7 @@ import { LogService } from '../services/logService';
 import { isCourseEligibleForUser } from '../utils/courseEligibility';
 import { CourseService } from '../services/courseService';
 import { generateCourseContent } from '../services/aiCourseGenerator';
+import { safeFetchJson } from '../utils/safeFetch';
 
 const INITIAL_ACHIEVEMENTS: Achievement[] = BADGES.map(b => ({
   id: b.id,
@@ -279,11 +280,12 @@ export function useUserProgress() {
       const fetchInitialProgress = async () => {
         try {
           const token = await user.getIdToken();
-          const res = await fetch('/api/user/bootstrap', {
+          if (!token) return;
+          const res = await safeFetchJson<any>('/api/user/bootstrap', {
             headers: { 'Authorization': `Bearer ${token}` }
           });
-          if (res.ok && isMounted) {
-            const data = await res.json();
+          if (res.ok && res.data && isMounted) {
+            const data = res.data;
             const serverData = data.profile || {};
             setProgress(prev => {
               const mergedData = mergeProgress(prev, {

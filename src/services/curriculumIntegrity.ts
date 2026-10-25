@@ -1,5 +1,6 @@
 import { Curriculum, UserProfile, CourseId } from '../types';
 import { LogService } from './logService';
+import { safeFetchJson } from '../utils/safeFetch';
 
 export interface IntegrityIssue {
   id?: string;
@@ -193,11 +194,11 @@ export class CurriculumIntegrityService {
   static async getUnresolvedIssues(): Promise<IntegrityIssue[]> {
     try {
       const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
-      const res = await fetch('/api/admin/system-alerts?type=CURRICULUM_INTEGRITY_ISSUE&status=pending', {
+      const res = await safeFetchJson<any>('/api/admin/system-alerts?type=CURRICULUM_INTEGRITY_ISSUE&status=pending', {
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
-      if (!res.ok) return [];
-      const json = await res.json();
+      if (!res.ok || !res.data) return [];
+      const json = res.data;
       return (json.alerts || []).map((a: any) => {
         const details = typeof a.details === 'object' ? a.details : {};
         return {

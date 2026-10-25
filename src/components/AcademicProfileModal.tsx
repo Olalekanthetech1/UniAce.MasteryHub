@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { Department, Level, Semester } from '../types';
 import { useInstitution } from '../context/InstitutionContext';
 import { LogService } from '../services/logService';
+import { safeFetchJson } from '../utils/safeFetch';
 
 const LEVELS: Level[] = ['100', '200', '300', '400', '500'];
 const SEMESTERS: Semester[] = ['1st Semester', '2nd Semester'];
@@ -23,12 +24,9 @@ export default function AcademicProfileModal({ onClose }: { onClose?: () => void
   useEffect(() => {
     const fetchLink = async () => {
       try {
-        const res = await fetch('/api/system/config/community');
-        if (res.ok) {
-          const json = await res.json();
-          if (json.data?.whatsappLink) {
-            setWhatsappLink(json.data.whatsappLink);
-          }
+        const res = await safeFetchJson<any>('/api/system/config/community');
+        if (res.ok && res.data?.data?.whatsappLink) {
+          setWhatsappLink(res.data.data.whatsappLink);
         }
       } catch (e) {
         console.warn("Failed to fetch whatsapp link from Neon system_config:", e);

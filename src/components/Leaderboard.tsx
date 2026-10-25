@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Trophy, Medal, Crown, User, Zap, Star, ArrowUp, ArrowDown, Minus, Flame } from 'lucide-react';
+import { safeFetchJson } from '../utils/safeFetch';
 
 interface LeaderboardEntry {
   uid: string;
@@ -20,9 +21,9 @@ export default function Leaderboard() {
     let isMounted = true;
     const fetchLeaders = async () => {
       try {
-        const res = await fetch('/api/gamification/leaderboard');
-        if (res.ok && isMounted) {
-          const json = await res.json();
+        const res = await safeFetchJson<any>('/api/gamification/leaderboard');
+        if (res.ok && res.data && isMounted) {
+          const json = res.data;
           if (json.leaderboard) {
             const data = json.leaderboard.map((item: any) => ({
               uid: item.id,
