@@ -12,14 +12,14 @@
     "lint": "tsc --noEmit && node scripts/check-zero-fallback.js && npx tsx scripts/test-prompt-shield.ts",
     "lint:fallback": "node scripts/check-zero-fallback.js",
     "test:shield": "npx tsx scripts/test-prompt-shield.ts",
-    "eval:golden": "npx tsx scripts/runGoldenSetEval.ts"
+    "eval:golden": "npx tsx scripts/runGoldenSetEval.ts",
+    "deploy:rules": "npx tsx scripts/deploy-firestore-rules.ts"
   },
   "dependencies": {
     "@google/genai": "^2.10.0",
     "@huggingface/inference": "^4.13.15",
     "@mistralai/mistralai": "^2.1.2",
     "@paystack/inline-js": "^2.22.8",
-    "@tailwindcss/typography": "^0.5.19",
     "@tailwindcss/vite": "^4.1.14",
     "@tanstack/react-query": "^5.96.1",
     "@vitejs/plugin-react": "^5.0.4",
@@ -79,7 +79,6 @@
     "@types/node": "^22.14.0",
     "@types/nodemailer": "^7.0.11",
     "@types/papaparse": "^5.5.2",
-    "@types/pdfjs-dist": "^2.10.377",
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.28.0",

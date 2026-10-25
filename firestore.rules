@@ -4,6 +4,13 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // ===============================================================
+    // Global Default-Deny Catch-All
+    // ===============================================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ===============================================================
     // Helper Functions
     // ===============================================================
 
@@ -33,10 +40,6 @@ service cloud.firestore {
       return isAuthenticated() && 
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', 'student') in ['admin', 'moderator']);
-    }
-    
-    function isEditor() {
-      return isTutor();
     }
 
     function hasRequiredFields(fields) {
@@ -151,12 +154,12 @@ service cloud.firestore {
     }
 
     // ===============================================================
-    // Collection Rules
+    // Collection Rules (Strictly Authenticated & RBAC Protected)
     // ===============================================================
 
     match /curriculums/{curriculumId} {
       allow read: if isAuthenticated();
-      allow write: if isAdmin();
+      allow write: if isAdmin() && isValidCurriculum(request.resource.data);
     }
 
     match /announcements/{announcementId} {
@@ -169,11 +172,12 @@ service cloud.firestore {
     match /integrity_issues/{issueId} {
       allow read: if isAdmin() || isModerator() || (isAuthenticated() && resource.data.userId == request.auth.uid);
       allow write: if isAdmin();
-      allow create: if isAuthenticated(); // Allow system to log from client side
+      allow create: if isAuthenticated();
     }
 
     match /study_plans/{userId} {
-      allow read, write: if isOwner(userId) || isAdmin() || isTutor();
+      allow read: if isOwner(userId) || isAdmin() || isTutor();
+      allow write: if (isOwner(userId) || isAdmin() || isTutor()) && isValidStudyPlan(request.resource.data);
     }
 
     match /users/{userId} {
@@ -278,29 +282,28 @@ service cloud.firestore {
 
     match /past_papers/{paperId} {
       allow read: if isAuthenticated();
-      allow create: if isAdmin();
-      allow update: if isAdmin();
-      allow delete: if isAdmin();
-    }
-
-    match /ccmas_cores/{coreId} {
-      allow read: if true;
       allow write: if isAdmin();
     }
 
+    match /ccmas_cores/{coreId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Courses and Curriculum are strictly served by Neon PostgreSQL API
     match /courses/{courseId} {
-      allow read: if true;
-      allow write: if isEditor();
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
 
       match /{subcollection}/{docId=**} {
          allow read: if isAuthenticated();
-         allow write: if isEditor();
+         allow write: if isAdmin();
       }
     }
 
     match /archived_courses/{courseId} {
       allow read: if isAuthenticated();
-      allow write: if isEditor();
+      allow write: if isAdmin();
     }
 
     match /analytics/{docId} {
@@ -308,7 +311,7 @@ service cloud.firestore {
     }
 
     match /settings/{configId} {
-      allow read: if true;
+      allow read: if isAuthenticated();
       allow write: if isAdmin();
     }
 
@@ -317,44 +320,35 @@ service cloud.firestore {
     }
 
     match /system_config/{configId} {
-      allow read: if true;
+      allow read: if isAuthenticated();
       allow write: if isAdmin();
     }
 
     match /challenges/{challengeId} {
-      allow read: if true;
+      allow read: if isAuthenticated();
       allow write: if isAdmin();
     }
 
     match /formulas/{formulaId} {
       allow read: if isAuthenticated();
-      allow write: if isEditor();
-    }
-
-    match /system_logs/{logId} {
-      allow read: if isAdmin();
-      allow create, update, delete: if false;
+      allow write: if isAdmin();
     }
 
     match /knowledge_base/{docId} {
       allow read: if isAuthenticated();
-      allow write: if isEditor();
-    }
-
-    match /test/{docId} {
-      allow read: if true;
       allow write: if isAdmin();
     }
 
+    match /test/{docId} {
+      allow read, write: if isAdmin();
+    }
+
     match /public_leaderboard/{userId} {
-      // Readable by authenticated students; zero access to private user documents or fields
       allow read: if isAuthenticated();
-      // Only Admin / Backend SDK can write to public_leaderboard with strict sanitized schema
       allow write: if isAdmin() && isValidPublicLeaderboard(request.resource.data);
     }
 
     match /affiliates/{affiliateId} {
-      // Authenticated users can read their own affiliate record or check non-existent records safely; Admins can read all
       allow read: if isAdmin() || (isAuthenticated() && (resource == null || resource.data.userId == request.auth.uid));
       allow write: if isAdmin();
       allow update: if isAuthenticated() &&
@@ -379,9 +373,8 @@ service cloud.firestore {
     }
     
     match /payout_requests/{requestId} {
-      // Authenticated users can read their own payout requests or check non-existent requests; Admins can read all
       allow read: if isAdmin() || (isAuthenticated() && (resource == null || resource.data.userId == request.auth.uid));
-      allow create: if false; // Through backend
+      allow create: if false;
       allow update, delete: if isAdmin();
     }
 
@@ -402,36 +395,44 @@ service cloud.firestore {
       allow write: if isAuthenticated();
     }
 
+    // ===============================================================
+    // Server-Only Collections (Direct Client Access Blocked)
+    // Managed solely via Firebase Admin SDK / Neon PostgreSQL
+    // ===============================================================
+
+    match /system_logs/{logId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
     match /system_math_telemetry/{telemetryId} {
       allow read: if isAdmin();
-      allow write: if false; // Only written via backend server SDK
+      allow write: if false;
     }
 
     match /spark_ledger/{entryId} {
-      allow get: if isAdmin() || (isAuthenticated() && resource != null && resource.data.uid == request.auth.uid);
-      allow list: if isAdmin() || (isAuthenticated() && resource.data.uid == request.auth.uid);
-      allow write, create, update, delete: if false; // Strictly server-only state machine via Firebase Admin SDK
+      allow read: if isAdmin() || (isAuthenticated() && resource != null && resource.data.uid == request.auth.uid);
+      allow write: if false;
     }
 
     match /chat_analytics/{analyticsId} {
       allow read: if isAdmin();
-      allow write, create, update, delete: if false; // Strictly server-only telemetry via Firebase Admin SDK
+      allow write: if false;
     }
 
     match /answer_reports/{reportId} {
-      allow get: if isAdmin() || isTutor() || (isAuthenticated() && resource != null && resource.data.uid == request.auth.uid);
-      allow list: if isAdmin() || isTutor() || (isAuthenticated() && resource.data.uid == request.auth.uid);
-      allow write, create, update, delete: if false; // Strictly server-only via /api/chat/report-wrong and /api/admin/answer-reports/:id/triage
+      allow read: if isAdmin() || isTutor() || (isAuthenticated() && resource != null && resource.data.uid == request.auth.uid);
+      allow write: if false;
     }
 
     match /golden_set_benchmarks/{questionId} {
       allow read: if isAdmin() || isTutor();
-      allow write, create, update, delete: if false; // Strictly server-only via SME Corpus Manager endpoints
+      allow write: if false;
     }
 
     match /golden_set_runs/{runId} {
       allow read: if isAdmin() || isTutor();
-      allow write, create, update, delete: if false; // Strictly server-only via Resumable Golden Set Evaluator
+      allow write: if false;
     }
   }
 }
