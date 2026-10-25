@@ -1,6 +1,0 @@
-{
-  "summary": "Phase 5 v11 implementation plan: addresses both key cutover decisions (deleting dev-admin in Firestore + skip-list guard to prevent delta resurrection, and serving RAG from Neon with ENABLE_POSTGRES_RAG_VECTORS to avoid embedding space mismatch); updates invariant query #3; stores soak_clock_start in system_runtime_flags; defines dynamic user parity formula; adds ANALYZE and EXPLAIN checks for T1/T2; and excludes embedding_model from chunk metadata parity.",
-  "updatedAt": "2026-10-16T08:44:21.268611672Z",
-  "requestFeedback": true,
-  "userFacing": true
-}

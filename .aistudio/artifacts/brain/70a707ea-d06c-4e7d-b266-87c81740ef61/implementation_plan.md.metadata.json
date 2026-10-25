@@ -1,6 +1,0 @@
-{
-  "summary": "Comprehensive architectural explanation and revised implementation plan addressing all four user questions: (1) Stage 5B timeline for adding Neon DATABASE_URL, (2) Admin Dashboard enhancements within the dedicated Database tab, (3) Safe database configuration policy vs. UI security constraints, and (4) Definitive roles of Neon PostgreSQL (authoritative for courses, high-frequency progress, quizzes, and queues) vs. Firestore/Firebase (authoritative for Auth, real-time presence, and historical ledger audit).",
-  "updatedAt": "2026-10-12T14:39:29.738994669Z",
-  "requestFeedback": true,
-  "userFacing": true
-}
