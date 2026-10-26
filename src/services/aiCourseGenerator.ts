@@ -213,19 +213,29 @@ export function sanitizeLatex(content: any): any {
   sanitized = sanitized.replace(/([^a-zA-Z\\])\\\s*(\n|$)/g, '$1$2');
   sanitized = sanitized.replace(/^\\\s*(\n|$)/gm, '$1');
   
-  // 6. Ensure \begin{...} and \end{...} are wrapped in $$ if they aren't already
-  // This is a common issue where AI outputs raw LaTeX environments without markdown math delimiters
-  const envs = ['align', 'equation', 'eqnarray', 'gather', 'multline', 'matrix', 'pmatrix', 'bmatrix', 'Bmatrix', 'vmatrix', 'Vmatrix'];
+  // 6. Convert top-level AMS environments (align, equation, gather) to KaTeX-compatible inner environments (aligned, gathered)
+  sanitized = sanitized
+    .replace(/\\begin\{align\*?\}/g, '\\begin{aligned}')
+    .replace(/\\end\{align\*?\}/g, '\\end{aligned}')
+    .replace(/\\begin\{equation\*?\}/g, '\\begin{aligned}')
+    .replace(/\\end\{equation\*?\}/g, '\\end{aligned}')
+    .replace(/\\begin\{gather\*?\}/g, '\\begin{gathered}')
+    .replace(/\\end\{gather\*?\}/g, '\\end{gathered}')
+    .replace(/\\begin\{multline\*?\}/g, '\\begin{aligned}')
+    .replace(/\\end\{multline\*?\}/g, '\\end{aligned}');
+
+  // 6.1 Ensure \begin{...} and \end{...} are wrapped in $$ if they aren't already
+  const envs = ['aligned', 'gathered', 'cases', 'matrix', 'pmatrix', 'bmatrix', 'Bmatrix', 'vmatrix', 'Vmatrix', 'array'];
   const envPattern = envs.join('|');
   
-  // First, strip existing $$ around these environments to avoid duplicates
+  // Strip existing $$ around these environments to avoid duplicate delimiters
   const stripBeginRegex = new RegExp(`\\$\\$\\s*(\\\\begin\\{(?:${envPattern})\\*?\\})`, 'g');
   sanitized = sanitized.replace(stripBeginRegex, '$1');
   
   const stripEndRegex = new RegExp(`(\\\\end\\{(?:${envPattern})\\*?\\})\\s*\\$\\$`, 'g');
   sanitized = sanitized.replace(stripEndRegex, '$1');
 
-  // Then, wrap all of them in $$
+  // Wrap all standalone environments in $$ display math
   const wrapBeginRegex = new RegExp(`(\\\\begin\\{(?:${envPattern})\\*?\\})`, 'g');
   sanitized = sanitized.replace(wrapBeginRegex, '\n$$$$\n$1');
   

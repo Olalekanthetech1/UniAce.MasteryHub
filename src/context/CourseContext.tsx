@@ -61,10 +61,12 @@ export function CourseProvider({ children }: { children: React.ReactNode }) {
       setError(null);
       lastFetchTimeRef.current = Date.now();
     } catch (err: any) {
-      console.error('[CourseContext] Failed to load catalog:', err);
-      // Only surface blocking error if we don't have cached courses
+      console.warn('[CourseContext] Notice loading catalog, scheduling retry:', err?.message || err);
       if (Object.keys(coursesRef.current).length === 0) {
-        setError(err.message || 'Failed to connect to course catalog');
+        setTimeout(() => {
+          inFlightRef.current = false;
+          fetchCatalog(true);
+        }, 1800);
       }
     } finally {
       inFlightRef.current = false;

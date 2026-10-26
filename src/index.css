@@ -179,7 +179,30 @@
 }
 
 .katex-display {
-  @apply my-4 overflow-x-auto overflow-y-hidden py-2;
+  display: flex !important;
+  justify-content: center !important;
+  margin: 1.25rem 0 !important;
+  padding: 0.5rem 0 !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  text-align: center !important;
+}
+
+/* Strictly hide screen-reader MathML duplication from visible rendering */
+.katex-mathml {
+  display: none !important;
+  position: absolute !important;
+  clip: rect(1px, 1px, 1px, 1px) !important;
+  padding: 0 !important;
+  border: 0 !important;
+  height: 1px !important;
+  width: 1px !important;
+  overflow: hidden !important;
+}
+
+.katex {
+  font-size: 1.05em;
+  text-rendering: auto;
 }
 
 /* KaTeX Dark Mode Support */
@@ -195,12 +218,13 @@
   @apply text-zinc-100;
 }
 
-/* Ensure math formulas are not hidden by overflow in small containers */
+/* Ensure math formulas are centered and scrollable if they exceed narrow mobile screens */
 .markdown-body .katex-display > .katex {
   @apply max-w-full overflow-x-auto overflow-y-hidden;
+  text-align: center !important;
 }
 
-/* Hide KaTeX error red color so it blends with text if there's a parse error */
+/* Hide KaTeX error red color so it blends gracefully with text if there is a parse anomaly */
 .katex-error {
   color: inherit !important;
 }

@@ -47,12 +47,14 @@ export const useWebSocketChat = () => {
           }
           if (isMounted && wsRef.current === ws) {
             setIsConnected(false);
+            // Schedule auto-reconnect
+            setTimeout(() => {
+              if (isMounted) connect();
+            }, 1500);
           }
         };
 
         ws.onerror = () => {
-          // In iframe or restricted environments, WebSocket may be blocked.
-          // Silently mark as disconnected so ChatBot smoothly uses HTTP streaming.
           if (isMounted && wsRef.current === ws) {
             setIsConnected(false);
             setError('WebSocket unavailable');

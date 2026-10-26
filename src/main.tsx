@@ -3,6 +3,7 @@ import {createRoot} from 'react-dom/client';
 import App from "./App";
 import { BrowserRouter } from "react-router-dom";
 import './index.css';
+import 'katex/dist/katex.min.css';
 import { AuthProvider } from './context/AuthContext';
 import { CourseProvider } from './context/CourseContext';
 import ErrorBoundary from './components/ErrorBoundary';

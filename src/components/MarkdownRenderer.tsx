@@ -203,16 +203,30 @@ function preprocessMarkdownContent(text: string): string {
     .replace(/```latex\n([\s\S]+?)\n```/g, '\n\n$$\n$1\n$$\n\n') // fenced latex code blocks
     .replace(/\\infinity\b/gi, '\\infty');
 
+  // Convert top-level AMS environments (align, equation, gather) to KaTeX-compatible inner environments
+  processedText = processedText
+    .replace(/\\begin\{align\*?\}/g, '\\begin{aligned}')
+    .replace(/\\end\{align\*?\}/g, '\\end{aligned}')
+    .replace(/\\begin\{equation\*?\}/g, '\\begin{aligned}')
+    .replace(/\\end\{equation\*?\}/g, '\\end{aligned}')
+    .replace(/\\begin\{gather\*?\}/g, '\\begin{gathered}')
+    .replace(/\\end\{gather\*?\}/g, '\\end{gathered}')
+    .replace(/\\begin\{multline\*?\}/g, '\\begin{aligned}')
+    .replace(/\\end\{multline\*?\}/g, '\\end{aligned}');
+
   // Normalize LaTeX delimiters \( ... \) -> $ ... $ and \[ ... \] -> $$ ... $$
   processedText = processedText
     .replace(/\\\[([\s\S]+?)\\\]/g, (_m, p1) => `\n\n$$\n${p1.trim()}\n$$\n\n`)
     .replace(/\\\(([\s\S]+?)\\\)/g, (_m, p1) => `$${p1.trim()}$`);
 
-  // Wrap standalone \begin{aligned|matrix|cases|...} blocks in $$ if not already wrapped
+  // Wrap standalone \begin{aligned|gathered|cases|...} blocks in $$ if not already wrapped
   processedText = processedText.replace(
-    /(?<!\$|`)\\begin\{(aligned|cases|matrix|pmatrix|bmatrix|vmatrix|Vmatrix|array)\}([\s\S]*?)\\end\{\1\}(?!\$|`)/g,
+    /(?<!\$|`)\\begin\{(aligned|gathered|cases|matrix|pmatrix|bmatrix|vmatrix|Vmatrix|array)\}([\s\S]*?)\\end\{\1\}(?!\$|`)/g,
     '\n\n$$\n\\begin{$1}$2\\end{$1}\n$$\n\n'
   );
+
+  // Normalize inline $$...$$ that are glued to preceding or following text so remark-math parses them as display blocks
+  processedText = processedText.replace(/([^\n$])\s*\$\$([^\n$][\s\S]*?[^\n$])\$\$\s*([^\n$])/g, '$1\n\n$$\n$2\n$$\n\n$3');
 
   // 1. Temporarily extract and protect math blocks from regex operations that strip backslashes
   const mathBlocks: string[] = [];

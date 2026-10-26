@@ -22,12 +22,16 @@ export const sanitizeForFirestore = (obj: any): any => {
 };
 
 export const CourseService = {
-  async getFullCatalog(idToken?: string): Promise<Course[]> {
+  async getFullCatalog(idToken?: string, retries = 2): Promise<Course[]> {
     const headers: Record<string, string> = {};
     if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
     const baseUrl = typeof window !== 'undefined' ? '' : (process.env.APP_URL || 'http://localhost:3000');
     const res = await safeFetchJson<any>(`${baseUrl}/api/catalog/full`, { headers });
     if (!res.ok || !res.data) {
+      if (retries > 0) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        return this.getFullCatalog(idToken, retries - 1);
+      }
       throw new Error(`Failed to fetch catalog (${res.error || `HTTP ${res.status}`})`);
     }
     const data = res.data;

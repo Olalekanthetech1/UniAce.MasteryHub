@@ -569,37 +569,55 @@ export default function ChatBot({
         console.warn("Could not retrieve user auth token:", tokErr);
       }
 
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        signal: abortController.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Idempotency-Key': idempotencyToken,
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({
-          message: userMsg.text,
-          image: userMsg.image,
-          history: messages.map(m => ({
-            role: m.role,
-            parts: [{ text: m.text }]
-          })),
-          context: chatContext,
-          complexity: isProMode ? 'high' : 'standard',
-          isHintRequest,
-          masteryLevel,
-          personality: currentPersonality,
-          currentSparks: knownSparks,
-          planType: (profile || authProfile)?.plan_type ?? 'free',
-          idempotency_token: idempotencyToken
-        })
-      });
+      const sendHttpChatRequest = async (retriesLeft = 2): Promise<Response> => {
+        try {
+          const res = await fetch('/api/chat', {
+            method: 'POST',
+            signal: abortController.signal,
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Idempotency-Key': idempotencyToken,
+              ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+            },
+            body: JSON.stringify({
+              message: userMsg.text,
+              image: userMsg.image,
+              history: messages.map(m => ({
+                role: m.role,
+                parts: [{ text: m.text }]
+              })),
+              context: chatContext,
+              complexity: isProMode ? 'high' : 'standard',
+              isHintRequest,
+              masteryLevel,
+              personality: currentPersonality,
+              currentSparks: knownSparks,
+              planType: (profile || authProfile)?.plan_type ?? 'free',
+              idempotency_token: idempotencyToken
+            })
+          });
+
+          if (!res.ok && (res.status === 502 || res.status === 503 || res.status === 504) && retriesLeft > 0) {
+            await new Promise(r => setTimeout(r, 1200));
+            return sendHttpChatRequest(retriesLeft - 1);
+          }
+          return res;
+        } catch (fetchErr: any) {
+          if (retriesLeft > 0 && fetchErr?.name !== 'AbortError' && !abortController.signal?.aborted) {
+            await new Promise(r => setTimeout(r, 1200));
+            return sendHttpChatRequest(retriesLeft - 1);
+          }
+          throw fetchErr;
+        }
+      };
+
+      const response = await sendHttpChatRequest();
 
       const contentType = response.headers.get('content-type') || '';
       const responseText = await response.text();
 
       let data: any = null;
-      if (contentType.includes('application/json')) {
+      if (responseText && responseText.trim().length > 0) {
         try {
           data = JSON.parse(responseText);
         } catch {
@@ -620,17 +638,19 @@ export default function ChatBot({
         throw new Error(errorMsg);
       }
 
-      if (!data || !data.response) {
+      const answerText = data?.response || data?.text || data?.message || (typeof responseText === 'string' && !responseText.startsWith('<') ? responseText : null);
+
+      if (!answerText) {
         throw new Error("Unable to parse tutor response. Please try sending your message again.");
       }
 
       const modelMsg: ChatMessage = {
-        id: data.id || `ai-${Date.now()}`,
+        id: data?.id || `ai-${Date.now()}`,
         role: "model",
-        text: data.response,
+        text: answerText,
         meta: {
-          ...(data.meta || {}),
-          sparksCost: data.sparksCost ?? data.meta?.sparksCost
+          ...(data?.meta || {}),
+          sparksCost: data?.sparksCost ?? data?.meta?.sparksCost
         },
         timestamp: new Date().toISOString()
       };
