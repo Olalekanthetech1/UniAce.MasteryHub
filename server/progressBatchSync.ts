@@ -1,5 +1,6 @@
 import admin from 'firebase-admin';
 import { dbTelemetry } from './dbTelemetry';
+import { getPostgresPool } from './postgresPool';
 
 const PROTECTED_USER_FIELDS = new Set([
   'uid',
@@ -44,7 +45,7 @@ function stableJson(val: any): string {
 }
 
 export interface ProgressBatchSyncInput {
-  db: admin.firestore.Firestore;
+  db?: admin.firestore.Firestore | null;
   uid: string;
   syncBatchId?: string | null;
   clientSequence?: number | null;
@@ -60,12 +61,11 @@ export interface ProgressBatchSyncResult {
   profile: Record<string, any>;
 }
 
+const appliedNeonProgressBatches = new Set<string>();
+
 /**
  * Applies student progress & study-time updates idempotently inside an atomic transaction.
- * - Uses `user_progress_batches/{syncBatchId}` to retain every applied batch ID so out-of-order
- *   or retried older batches are recognized as no-ops (Essential Safeguard #2).
- * - Enforces cumulative monotonic rules on `studyTime`, `topicLastStudied`, and `quizzesCompleted`.
- * - Skips writing to `users/{uid}` when incoming fields are identical to stored state.
+ * Uses Neon PostgreSQL (`users` table) in production, and only uses Firestore if `sandboxNamespace` is provided for CLI test sandboxes.
  */
 export async function executeIdempotentProgressBatchSync(
   input: ProgressBatchSyncInput
@@ -86,6 +86,157 @@ export async function executeIdempotentProgressBatchSync(
         { statusCode: 403 }
       );
     }
+  }
+
+  const pool = getPostgresPool();
+  if (!sandboxNamespace && pool) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const userRes = await client.query(`SELECT * FROM users WHERE uid = $1 FOR UPDATE`, [uid]);
+      const row = userRes.rows[0] || {};
+      const existingProfile = typeof row.learning_profile === 'object' && row.learning_profile ? row.learning_profile : {};
+      const existingUser: Record<string, any> = {
+        ...existingProfile,
+        uid,
+        email: row.email || existingProfile.email,
+        displayName: row.display_name || existingProfile.displayName,
+        role: row.role || existingProfile.role || 'student',
+        plan_type: row.plan_type || existingProfile.plan_type || 'free',
+        ai_sparks: row.ai_sparks ?? existingProfile.ai_sparks ?? 50
+      };
+
+      const persistedBatches: string[] = Array.isArray(existingProfile._appliedSyncBatches)
+        ? existingProfile._appliedSyncBatches
+        : [];
+
+      if (normalizedBatchId && (appliedNeonProgressBatches.has(normalizedBatchId) || persistedBatches.includes(normalizedBatchId))) {
+        await client.query('COMMIT');
+        dbTelemetry.recordSuppressedWrite('users', 'idempotent_duplicate_progress_batch', 1);
+        return {
+          success: true,
+          deduplicated: true,
+          userModified: false,
+          syncBatchId: normalizedBatchId,
+          profile: existingUser
+        };
+      }
+
+      const cleanUpdates: Record<string, any> = {};
+      for (const [key, value] of Object.entries(payload || {})) {
+        if (key === 'syncBatchId' || key === 'clientSequence') continue;
+        if (!PROTECTED_USER_FIELDS.has(key) && value !== undefined) {
+          cleanUpdates[key] = value;
+        }
+      }
+
+      if (cleanUpdates.studyTime && typeof cleanUpdates.studyTime === 'object') {
+        const existingStudyTime =
+          existingUser.studyTime && typeof existingUser.studyTime === 'object'
+            ? existingUser.studyTime
+            : {};
+        const mergedStudyTime: Record<string, number> = { ...existingStudyTime };
+        for (const [topicId, mins] of Object.entries(cleanUpdates.studyTime)) {
+          const incVal = Number(mins);
+          const curVal = Number(existingStudyTime[topicId] || 0);
+          if (Number.isFinite(incVal) && incVal >= 0) {
+            mergedStudyTime[topicId] = Math.max(curVal, incVal);
+          }
+        }
+        cleanUpdates.studyTime = mergedStudyTime;
+      }
+
+      if (cleanUpdates.topicLastStudied && typeof cleanUpdates.topicLastStudied === 'object') {
+        const existingDates =
+          existingUser.topicLastStudied && typeof existingUser.topicLastStudied === 'object'
+            ? existingUser.topicLastStudied
+            : {};
+        const mergedDates: Record<string, string> = { ...existingDates };
+        for (const [topicId, isoStr] of Object.entries(cleanUpdates.topicLastStudied)) {
+          if (typeof isoStr === 'string') {
+            const incMs = Date.parse(isoStr);
+            const curMs = existingDates[topicId] ? Date.parse(existingDates[topicId]) : 0;
+            if (!Number.isNaN(incMs) && (Number.isNaN(curMs) || incMs >= curMs)) {
+              mergedDates[topicId] = isoStr;
+            }
+          }
+        }
+        cleanUpdates.topicLastStudied = mergedDates;
+      }
+
+      if (cleanUpdates.quizzesCompleted !== undefined) {
+        const incQ = Number(cleanUpdates.quizzesCompleted);
+        const curQ = Number(existingUser.quizzesCompleted || 0);
+        if (Number.isFinite(incQ) && incQ >= 0) {
+          cleanUpdates.quizzesCompleted = Math.max(curQ, incQ);
+        } else {
+          delete cleanUpdates.quizzesCompleted;
+        }
+      }
+
+      let hasActualChange = userRes.rows.length === 0;
+      for (const [k, v] of Object.entries(cleanUpdates)) {
+        if (stableJson(existingUser[k]) !== stableJson(v)) {
+          hasActualChange = true;
+          break;
+        }
+      }
+
+      const nowIso = new Date().toISOString();
+      if (normalizedBatchId) {
+        appliedNeonProgressBatches.add(normalizedBatchId);
+      }
+      const nextBatches = normalizedBatchId
+        ? [...persistedBatches.slice(-49), normalizedBatchId]
+        : persistedBatches;
+
+      if (hasActualChange || normalizedBatchId) {
+        const mergedProfile = {
+          ...existingProfile,
+          ...cleanUpdates,
+          _appliedSyncBatches: nextBatches,
+          updatedAt: nowIso
+        };
+        const displayName = cleanUpdates.displayName || row.display_name || 'Student';
+        const email = cleanUpdates.email || row.email || null;
+        await client.query(
+          `INSERT INTO users (uid, email, display_name, learning_profile, updated_at)
+           VALUES ($1, $2, $3, $4::jsonb, NOW())
+           ON CONFLICT (uid) DO UPDATE SET
+             display_name = COALESCE($3, users.display_name),
+             learning_profile = $4::jsonb,
+             updated_at = NOW()`,
+          [uid, email, displayName, JSON.stringify(mergedProfile)]
+        );
+        await client.query('COMMIT');
+        return {
+          success: true,
+          deduplicated: false,
+          userModified: hasActualChange,
+          syncBatchId: normalizedBatchId,
+          profile: { ...existingUser, ...cleanUpdates, uid, updatedAt: nowIso }
+        };
+      } else {
+        await client.query('COMMIT');
+        dbTelemetry.recordSuppressedWrite('users', 'unchanged_user_profile_or_progress_sync', 1);
+        return {
+          success: true,
+          deduplicated: false,
+          userModified: false,
+          syncBatchId: normalizedBatchId,
+          profile: existingUser
+        };
+      }
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  if (!db) {
+    throw new Error('Database not initialized for progress batch sync');
   }
 
   const usersCol = getScopedCollection(db, 'users', sandboxNamespace);

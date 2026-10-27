@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { ArrowLeft, Search, ChevronDown, ChevronUp, Play, Send, CheckCircle2, MessageSquare, BookOpen, HelpCircle, Mail, User, Bot, X, ChevronLeft, ChevronRight } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { db, auth } from '../firebase';
-import { collection, addDoc, serverTimestamp, query, where, onSnapshot, orderBy, doc, setDoc } from 'firebase/firestore';
+import { auth } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { SupportService, FaqItem, TutorialItem, DEFAULT_FAQS, DEFAULT_TUTORIALS } from '../services/supportConfig';
 
@@ -88,30 +87,35 @@ export default function HelpSupport({ onBack }: HelpSupportProps) {
     }
   }, [chatMessages]);
 
-  // Listen for chat messages
+  // Poll for chat messages from Neon PostgreSQL
   useEffect(() => {
     if (!user || !isChatOpen) return;
 
     const cid = `chat_${user.uid}`;
     setChatId(cid);
 
-    const path = `support_chats/${cid}/messages`;
-    const q = query(
-      collection(db, 'support_chats', cid, 'messages'),
-      orderBy('timestamp', 'asc')
-    );
+    let active = true;
+    const fetchMessages = async () => {
+      try {
+        const token = await user.getIdToken();
+        const res = await fetch(`/api/support/chats/${encodeURIComponent(cid)}/messages`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.ok && active) {
+          const data = await res.json();
+          setChatMessages(Array.isArray(data.messages) ? data.messages : []);
+        }
+      } catch (err) {
+        handleFirestoreError(err, OperationType.LIST, `support_chats/${cid}/messages`);
+      }
+    };
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const msgs = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as ChatMessage[];
-      setChatMessages(msgs);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
-    });
-
-    return () => unsubscribe();
+    void fetchMessages();
+    const timer = setInterval(fetchMessages, 4000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
   }, [user, isChatOpen]);
 
   const handleSendMessage = async (e: React.FormEvent) => {
@@ -122,23 +126,25 @@ export default function HelpSupport({ onBack }: HelpSupportProps) {
     setNewMessage('');
 
     try {
-      // Ensure chat document exists
-      await setDoc(doc(db, 'support_chats', chatId), {
-        userId: user.uid,
-        userName: user.displayName,
-        status: 'active',
-        lastMessage: msg,
-        updatedAt: serverTimestamp()
-      }, { merge: true });
-
-      // Add message
-      const msgRef = doc(collection(db, 'support_chats', chatId, 'messages'));
-      await setDoc(msgRef, {
-        senderId: user.uid,
-        senderName: user.displayName,
-        text: msg,
-        timestamp: serverTimestamp()
-      }, { merge: true });
+      const token = await user.getIdToken();
+      const res = await fetch(`/api/support/chats/${encodeURIComponent(chatId)}/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          text: msg,
+          senderName: user.displayName || 'Student',
+          userName: user.displayName || 'Student'
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.messages)) {
+          setChatMessages(data.messages);
+        }
+      }
     } catch (error) {
       console.error('Error sending message:', error);
     }
@@ -151,16 +157,21 @@ export default function HelpSupport({ onBack }: HelpSupportProps) {
     setFormStatus('sending');
     
     try {
-      const ticketRef = doc(collection(db, 'support_tickets'));
-      await setDoc(ticketRef, {
-        userId: user.uid,
-        name: formData.name,
-        email: formData.email,
-        subject: formData.subject,
-        message: formData.message,
-        status: 'open',
-        createdAt: serverTimestamp()
-      }, { merge: true });
+      const token = await user.getIdToken();
+      const res = await fetch('/api/support/tickets', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          name: formData.name,
+          email: formData.email,
+          subject: formData.subject,
+          message: formData.message
+        })
+      });
+      if (!res.ok) throw new Error('Failed to submit ticket');
       
       setFormStatus('success');
       setFormData({ ...formData, subject: '', message: '' });

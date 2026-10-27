@@ -18,8 +18,7 @@ import {
   Info,
   Edit3
 } from 'lucide-react';
-import { db, auth } from '../firebase';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { auth } from '../firebase';
 import { sanitizeForFirestore } from '../services/courseService';
 
 interface ApiKeyManagerModalProps {
@@ -153,31 +152,30 @@ export default function ApiKeyManagerModal({ provider, onClose }: ApiKeyManagerM
     setIsLoading(true);
     setError(null);
     try {
-      const docRef = doc(db, 'system_settings', 'api_keys');
-      const docSnap = await getDoc(docRef);
-      
+      const idToken = await auth.currentUser?.getIdToken();
+      const res = await fetch('/api/admin/settings/api-keys', {
+        headers: idToken ? { Authorization: `Bearer ${idToken}` } : {}
+      });
+      const json = res.ok ? await res.json().catch(() => ({})) : {};
+      const data = json?.data || {};
+
       let loadedModel = '';
       let loadedFallback = '';
       let loadedKeys: any[] = [];
 
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        const providerData =
-          data[provider] ||
-          data[provider.replace('_direct', '')] ||
-          data[provider.replace('_free', '')] ||
-          data[`${provider}_direct`] ||
-          data[`${provider}_free`] ||
-          { keys: [] };
-        loadedKeys = providerData.keys || [];
-        loadedModel = providerData.model || '';
-        loadedFallback = providerData.fallbackModel || '';
-        setKeys(loadedKeys);
-        setModel(loadedModel);
-        setFallbackModel(loadedFallback);
-      } else {
-        setKeys([]);
-      }
+      const providerData =
+        data[provider] ||
+        data[provider.replace('_direct', '')] ||
+        data[provider.replace('_free', '')] ||
+        data[`${provider}_direct`] ||
+        data[`${provider}_free`] ||
+        { keys: [] };
+      loadedKeys = providerData.keys || [];
+      loadedModel = providerData.model || '';
+      loadedFallback = providerData.fallbackModel || '';
+      setKeys(loadedKeys);
+      setModel(loadedModel);
+      setFallbackModel(loadedFallback);
 
       const activeKey =
         loadedKeys.find((k: any) => k?.key && !k.isExhausted)?.key ||
@@ -222,9 +220,13 @@ export default function ApiKeyManagerModal({ provider, onClose }: ApiKeyManagerM
 
   const readFirestoreDiscoveredModels = async (prov: string): Promise<DiscoveredModel[] | null> => {
     try {
-      const snap = await getDoc(doc(db, 'system_settings', 'discovered_models'));
-      if (!snap.exists()) return null;
-      const d = snap.data() || {};
+      const idToken = await auth.currentUser?.getIdToken();
+      const res = await fetch('/api/admin/settings/discovered-models', {
+        headers: idToken ? { Authorization: `Bearer ${idToken}` } : {}
+      });
+      if (!res.ok) return null;
+      const json = await res.json().catch(() => ({}));
+      const d = json?.data || {};
       const norm = prov.toLowerCase().trim();
       const entry =
         d[norm] ||
@@ -236,7 +238,7 @@ export default function ApiKeyManagerModal({ provider, onClose }: ApiKeyManagerM
         return entry.models as DiscoveredModel[];
       }
     } catch {
-      // Ignore Firestore read errors here
+      // Ignore read errors here
     }
     return null;
   };
@@ -315,35 +317,6 @@ export default function ApiKeyManagerModal({ provider, onClose }: ApiKeyManagerM
             httpBackendError = directErr?.message || null;
           }
         }
-      }
-
-      // Request live backend refresh via Firestore RPC and read discovered_models
-      try {
-        const reqId = `${provider}_${Date.now()}`;
-        await setDoc(doc(db, 'system_settings', 'discovered_models'), {
-          refreshRequest: {
-            provider,
-            apiKeyOverride: effectiveKey || null,
-            requestId: reqId,
-            requestedAt: Date.now()
-          }
-        }, { merge: true });
-
-        for (let attempt = 0; attempt < 6; attempt++) {
-          await new Promise(r => setTimeout(r, 500));
-          const snap = await getDoc(doc(db, 'system_settings', 'discovered_models'));
-          if (snap.exists()) {
-            const d = snap.data() || {};
-            if (d.lastCompletedRequestId === reqId) {
-              if (d.lastError) {
-                httpBackendError = d.lastError;
-              }
-              break;
-            }
-          }
-        }
-      } catch {
-        // Ignore RPC write error
       }
 
       const fallbackFirestoreModels = await readFirestoreDiscoveredModels(provider);
@@ -502,13 +475,6 @@ export default function ApiKeyManagerModal({ provider, onClose }: ApiKeyManagerM
     setIsSaving(true);
     setError(null);
     try {
-      const docRef = doc(db, 'system_settings', 'api_keys');
-      
-      // Fetch current data to preserve other provider configurations
-      const docSnap = await getDoc(docRef);
-      const currentData = docSnap.exists() ? docSnap.data() : {};
-
-      // Filter and sanitize keys array to ensure no undefined values or non-persistent UI fields
       const sanitizedKeys = keys
         .filter(k => k && typeof k.key === 'string' && k.key.trim().length > 0)
         .map(k => {
@@ -521,9 +487,8 @@ export default function ApiKeyManagerModal({ provider, onClose }: ApiKeyManagerM
           }
           return item;
         });
-      
+
       const payload = sanitizeForFirestore({
-        ...currentData,
         [provider]: {
           keys: sanitizedKeys,
           model: (model || '').trim(),
@@ -531,11 +496,22 @@ export default function ApiKeyManagerModal({ provider, onClose }: ApiKeyManagerM
         }
       });
 
-      await setDoc(docRef, payload, { merge: true });
-      
+      const token = await auth.currentUser?.getIdToken();
+      const saveRes = await fetch('/api/admin/settings/api-keys', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify(payload)
+      });
+      if (!saveRes.ok) {
+        const errJson = await saveRes.json().catch(() => ({}));
+        throw new Error(errJson.error || 'Failed to save API keys');
+      }
+
       // Notify backend to immediately reload provider cache and clear any tripped circuit breakers
       try {
-        const token = await auth.currentUser?.getIdToken();
         if (token) {
           await fetch('/api/admin/reset-breakers', {
             method: 'POST',
@@ -545,7 +521,7 @@ export default function ApiKeyManagerModal({ provider, onClose }: ApiKeyManagerM
       } catch (backendNotifyErr) {
         console.warn('Backend breaker reset notification notice:', backendNotifyErr);
       }
-      
+
       onClose();
     } catch (err: any) {
       console.error('Error saving API keys:', err);

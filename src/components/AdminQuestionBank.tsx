@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Upload, FileText, Plus, CheckCircle, Loader2, AlertCircle, Save, Trash2, Edit2, Search, List, FileUp, Bot, Shield, Zap, Star, Cpu, Download } from 'lucide-react';
-import { db, auth } from '../firebase';
-import { collection, getDocs, getDoc, doc, deleteDoc, updateDoc } from 'firebase/firestore';
+import { auth } from '../firebase';
 import { jsonrepair } from 'jsonrepair';
 import Papa from 'papaparse';
 import { exportJsonToExcel } from '../utils/exportUtils';
@@ -51,12 +50,14 @@ export default function AdminQuestionBank() {
   useEffect(() => {
     const fetchRoutingConfig = async () => {
       try {
-        const docRef = doc(db, 'system_config', 'routing');
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          const config = docSnap.data();
+        const token = await auth.currentUser?.getIdToken();
+        const res = await fetch('/api/admin/routing-config', {
+          headers: token ? { Authorization: `Bearer ${token}` } : {}
+        });
+        if (res.ok) {
+          const json = await res.json();
+          const config = json?.config || {};
           if (config.past_questions) {
-            // Map old values to new ones if necessary
             const provider = config.past_questions;
             if (provider === 'gemini') setSelectedProvider('gemini_direct');
             else if (provider === 'mistral') setSelectedProvider('mistral_direct');
@@ -73,9 +74,13 @@ export default function AdminQuestionBank() {
   const fetchPapers = async () => {
     setIsLoading(true);
     try {
-      const snapshot = await getDocs(collection(db, 'past_papers'));
-      const fetchedPapers = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setPapers(fetchedPapers);
+      const token = await auth.currentUser?.getIdToken();
+      const res = await fetch('/api/admin/past-papers', {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+      if (!res.ok) throw new Error('Failed to fetch past papers');
+      const data = await res.json();
+      setPapers(Array.isArray(data.papers) ? data.papers : []);
     } catch (err: any) {
       setError('Failed to fetch questions: ' + err.message);
     } finally {

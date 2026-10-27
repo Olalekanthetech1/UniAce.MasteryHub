@@ -2,6 +2,7 @@ import React from 'react';
 import { Bot, Zap, Calculator, Settings, X, BookOpen, RotateCcw, ChevronDown, Sparkles, CheckCircle2, ArrowLeft, LayoutGrid } from 'lucide-react';
 import { CourseId, AIPersonality, UserProgress } from '../../types';
 import { UniAceLogo } from '../UniAceLogo';
+import { usePremiumStatus } from '../../hooks/usePremiumStatus';
 
 interface ChatHeaderProps {
   activeCourseId: CourseId | null;
@@ -40,8 +41,9 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
   isFullPage = false,
   onToggleFullPage
 }) => {
+  const { isPremium } = usePremiumStatus();
   const isAdmin = profile?.role === 'admin' || (import.meta.env.VITE_ADMIN_EMAILS || '').split(',').includes(profile?.email || '');
-  const hasUnlimitedSparks = profile?.plan_type !== 'free' || ['tutor', 'moderator'].includes(profile?.role) || isAdmin;
+  const hasUnlimitedSparks = isPremium || ['tutor', 'moderator'].includes(profile?.role) || isAdmin;
 
   // Calculate mastery for active topic or enrolled courses
   let topicMastery = 0;

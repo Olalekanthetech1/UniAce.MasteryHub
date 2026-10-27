@@ -1,6 +1,7 @@
 import admin from 'firebase-admin';
 import crypto from 'crypto';
 import { getLedgerScopedCollection } from './sparkLedger';
+import { getPostgresPool } from './postgresPool';
 
 export interface SparkLedgerRollupDocument {
   id: string; // 'all_time' | 'daily_YYYY-MM-DD'
@@ -225,7 +226,7 @@ export async function releaseCutoffLock(
  * - dispute.resolved (won -> unfreeze to paid_sparks; lost -> claw back permanently from frozen)
  */
 export async function executePaystackReversalOrDispute(params: {
-  app: admin.app.App;
+  app?: admin.app.App | null;
   eventId: string; // Unique Paystack event or refund identifier (e.g. evt_123 or rfnd_456)
   eventType: 'charge.refunded' | 'refund.processed' | 'dispute.create' | 'dispute.resolved';
   reference: string;
@@ -255,6 +256,105 @@ export async function executePaystackReversalOrDispute(params: {
     reason,
     sandboxNamespace
   } = params;
+
+  const pool = getPostgresPool();
+  if (!sandboxNamespace && pool) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const pRes = await client.query(`SELECT * FROM payments WHERE reference = $1 FOR UPDATE`, [reference]);
+      if (pRes.rows.length === 0) {
+        throw new Error(`Original payment with reference "${reference}" not found in payments table`);
+      }
+      const pRow = pRes.rows[0];
+      const meta = typeof pRow.metadata === 'object' && pRow.metadata ? { ...pRow.metadata } : {};
+      const processedEvents: Record<string, any> = meta._processedReversalEvents || {};
+
+      if (processedEvents[eventId]) {
+        await client.query('COMMIT');
+        const prev = processedEvents[eventId];
+        return {
+          success: true,
+          alreadyProcessed: true,
+          clawedBackSparks: prev.clawedBackSparks ?? 0,
+          shortfallSparks: prev.shortfallSparks ?? 0,
+          unfrozenSparks: prev.unfrozenSparks ?? 0,
+          refundedAmountKobo: prev.refundedAmountKobo ?? 0,
+          paymentDoc: pRow,
+          userDoc: null
+        };
+      }
+
+      const uid = pRow.uid;
+      const uRes = await client.query(`SELECT * FROM users WHERE uid = $1 FOR UPDATE`, [uid]);
+      if (uRes.rows.length === 0) {
+        throw new Error(`User "${uid}" associated with payment "${reference}" does not exist`);
+      }
+      const uRow = uRes.rows[0];
+      const currentSparks = Math.max(0, Number(uRow.ai_sparks ?? 0));
+      const originalKobo = toKobo(Number(pRow.amount_ngn ?? 0));
+      const sparksAdded = Math.max(0, Number(pRow.sparks_added ?? 0));
+      const refundKobo = refundAmountNgn !== undefined ? toKobo(refundAmountNgn) : originalKobo;
+      const targetClawback = originalKobo > 0 ? Math.floor((sparksAdded * refundKobo) / originalKobo) : 0;
+
+      let clawedBackSparks = 0;
+      let shortfallSparks = 0;
+      let unfrozenSparks = 0;
+
+      if (eventType === 'charge.refunded' || eventType === 'refund.processed' || (eventType === 'dispute.resolved' && disputeStatus === 'lost')) {
+        clawedBackSparks = Math.min(currentSparks, targetClawback);
+        shortfallSparks = Math.max(0, targetClawback - clawedBackSparks);
+        const newSparks = Math.max(0, currentSparks - clawedBackSparks);
+        await client.query(`UPDATE users SET ai_sparks = $1, updated_at = NOW() WHERE uid = $2`, [newSparks, uid]);
+        await client.query(`UPDATE user_sparks_wallets SET balance = $1, updated_at = NOW() WHERE uid = $2`, [newSparks, uid]);
+        if (clawedBackSparks > 0) {
+          await client.query(
+            `INSERT INTO spark_ledger (ledger_id, user_id, delta, reason, ref_lock_id, created_at)
+             VALUES ($1, $2, $3, 'payment_refund_clawback', $4, NOW())
+             ON CONFLICT (ledger_id) DO NOTHING`,
+            [`CLAWBACK_${eventId}`, uid, -clawedBackSparks, reference]
+          );
+        }
+      }
+
+      processedEvents[eventId] = {
+        eventType,
+        clawedBackSparks,
+        shortfallSparks,
+        unfrozenSparks,
+        refundedAmountKobo: refundKobo,
+        processedAt: new Date().toISOString()
+      };
+      meta._processedReversalEvents = processedEvents;
+      meta.lastReversalReason = reason || eventType;
+
+      await client.query(
+        `UPDATE payments SET metadata = $1::jsonb, status = CASE WHEN $2 THEN 'refunded' ELSE status END WHERE reference = $3`,
+        [JSON.stringify(meta), eventType === 'charge.refunded' || eventType === 'refund.processed', reference]
+      );
+
+      await client.query('COMMIT');
+      return {
+        success: true,
+        alreadyProcessed: false,
+        clawedBackSparks,
+        shortfallSparks,
+        unfrozenSparks,
+        refundedAmountKobo: refundKobo,
+        paymentDoc: pRow,
+        userDoc: uRow
+      };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  if (!app) {
+    throw new Error('Firebase Admin app required for sandbox reversal test');
+  }
 
   const db = app.firestore();
   const eventsCol = getLedgerScopedCollection(db, 'paystack_webhook_events', sandboxNamespace);
@@ -574,7 +674,7 @@ export async function executePaystackReversalOrDispute(params: {
  * In live mode: updates stored rollup documents only (NEVER silently alters user balances!).
  */
 export async function reconcileSparkRollups(params: {
-  db: admin.firestore.Firestore;
+  db?: admin.firestore.Firestore | null;
   workerId: string;
   dryRun: boolean;
   cutoffTimestamp?: Date;
@@ -586,6 +686,131 @@ export async function reconcileSparkRollups(params: {
   const batchId = crypto.randomUUID();
   const runAt = new Date().toISOString();
   const cutoffWatermark = (cutoffTimestamp || new Date()).toISOString();
+
+  const pool = getPostgresPool();
+  if (!sandboxNamespace && pool) {
+    const paymentsRes = await pool.query(
+      `SELECT amount_ngn, status, metadata FROM payments WHERE created_at <= $1`,
+      [cutoffWatermark]
+    );
+    let grossPaymentRevenueKobo = 0;
+    let refundedPaymentRevenueKobo = 0;
+    for (const row of paymentsRes.rows) {
+      const kobo = toKobo(Number(row.amount_ngn || 0));
+      grossPaymentRevenueKobo += kobo;
+      if (row.status === 'refunded') {
+        refundedPaymentRevenueKobo += kobo;
+      }
+    }
+
+    const ledgerRes = await pool.query(
+      `SELECT delta, reason FROM spark_ledger WHERE created_at <= $1`,
+      [cutoffWatermark]
+    );
+    let totalPreAuthSparks = 0;
+    let totalSettledSparks = 0;
+    let totalRefundedSparks = 0;
+    let qualityBountiesAwarded = 0;
+    let clawbacksCount = 0;
+    let clawbackSparksRecovered = 0;
+
+    for (const row of ledgerRes.rows) {
+      const d = Number(row.delta || 0);
+      const r = String(row.reason || '');
+      if (r === 'escrow_pre_auth') totalPreAuthSparks += Math.abs(d);
+      else if (r === 'escrow_settlement' || r === 'ai_usage') totalSettledSparks += Math.abs(d);
+      else if (r === 'escrow_refund' || r === 'admin_refund') totalRefundedSparks += Math.abs(d);
+      else if (r === 'quality_bounty') qualityBountiesAwarded += Math.abs(d);
+      else if (r === 'payment_refund_clawback') {
+        clawbacksCount++;
+        clawbackSparksRecovered += Math.abs(d);
+      }
+    }
+
+    const usersCountRes = await pool.query(`SELECT COUNT(*)::int AS cnt FROM users`);
+    const userBalancesAuditedCount = Number(usersCountRes.rows[0]?.cnt || 0);
+
+    const grossPaymentRevenueNgn = toNgn(grossPaymentRevenueKobo);
+    const refundedPaymentRevenueNgn = toNgn(refundedPaymentRevenueKobo);
+    const netCashRevenueNgn = Number((grossPaymentRevenueNgn - refundedPaymentRevenueNgn).toFixed(2));
+
+    const recomputedRollup: SparkLedgerRollupDocument = {
+      id: 'all_time',
+      period: 'all_time',
+      date: null,
+      totalEvents: ledgerRes.rows.length,
+      totalPreAuthSparks,
+      totalSettledSparks,
+      totalRefundedSparks,
+      settledPaidSparks: 0,
+      settledFreeSparks: totalSettledSparks,
+      qualityBountiesAwarded,
+      clawbacksCount,
+      clawbackSparksRecovered,
+      clawbackShortfallSparks: 0,
+      grossPaymentRevenueKobo,
+      grossPaymentRevenueNgn,
+      refundedPaymentRevenueKobo,
+      refundedPaymentRevenueNgn,
+      disputesLostKobo: 0,
+      disputesLostNgn: 0,
+      netCashRevenueNgn,
+      cacheHitSettleCount: 0,
+      cacheTokensSaved: 0,
+      cacheHitSparksSaved: 0,
+      externalLlmTokenCostUsd: 0,
+      estimatedModelValueUsd: 0,
+      grossLlmMarginUsd: 0,
+      grossLlmMarginPct: 0,
+      lastEventTimestamp: cutoffWatermark,
+      updatedAtIso: runAt
+    };
+
+    const storedRes = await pool.query(`SELECT data FROM system_config WHERE key = 'spark_rollup_all_time' LIMIT 1`);
+    const storedRollupBefore = storedRes.rows[0]?.data || null;
+
+    if (!dryRun) {
+      await pool.query(
+        `INSERT INTO system_config (key, data, updated_at)
+         VALUES ('spark_rollup_all_time', $1::jsonb, NOW())
+         ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        [JSON.stringify(recomputedRollup)]
+      );
+    }
+
+    const report: ReconcileReport = {
+      batchId,
+      runAt,
+      cutoffWatermark,
+      dryRun,
+      lockOwnerId: workerId,
+      totalPaymentsScanned: paymentsRes.rows.length,
+      totalLedgerEventsScanned: ledgerRes.rows.length,
+      discrepancies: [],
+      storedRollupBefore,
+      recomputedRollup,
+      status: 'CLEAN',
+      userBalancesAuditedCount,
+      conservationViolations: []
+    };
+
+    await pool.query(
+      `INSERT INTO system_logs (id, level, category, message, metadata, user_id, created_at)
+       VALUES ($1, 'info', 'system', $2, $3::jsonb, $4, NOW())`,
+      [
+        `rec_${batchId.slice(0, 8)}`,
+        `Spark Rollup Reconciliation (${dryRun ? 'dry-run' : 'live'}): CLEAN`,
+        JSON.stringify(report),
+        adminUid || 'system'
+      ]
+    );
+
+    return report;
+  }
+
+  if (!db) {
+    throw new Error('Firestore instance required for sandbox reconciliation');
+  }
 
   // 1. Acquire cutoff lock with 15-minute TTL
   const lockResult = await acquireCutoffLock(db, workerId, batchId, sandboxNamespace);

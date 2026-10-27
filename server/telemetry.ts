@@ -1,5 +1,5 @@
-import admin from 'firebase-admin';
 import { dbTelemetry } from './dbTelemetry';
+import { getSystemSettingsDoc, setSystemSettingsDoc } from './systemConfigStore';
 
 interface ProviderMetrics {
   requests: number;
@@ -28,11 +28,11 @@ class TelemetryService {
 
   private resetMetrics() {
     const providers = [
-      'gemini_direct', 
-      'groq', 
-      'mistral_direct', 
-      'openrouter_free', 
-      'cohere', 
+      'gemini_direct',
+      'groq',
+      'mistral_direct',
+      'openrouter_free',
+      'cohere',
       'huggingface',
       'nvidia'
     ];
@@ -44,21 +44,10 @@ class TelemetryService {
   async initialize() {
     if (this.isInitialized) return;
     try {
-      try {
-        admin.app();
-      } catch (e) {
-        console.warn('[Telemetry] Firebase Admin not initialized. Skipping Firestore initialization.');
-        this.startFlushing();
-        return;
-      }
-
-      const doc = await admin.firestore().collection('system_stats').doc('ai_telemetry').get();
-      if (doc.exists) {
-        const data = doc.data();
-        if (data && data.metrics) {
-          this.metrics = { ...this.metrics, ...data.metrics };
-          console.log('[Telemetry] Initialized from Firestore');
-        }
+      const data = await getSystemSettingsDoc('ai_telemetry');
+      if (data && data.metrics) {
+        this.metrics = { ...this.metrics, ...data.metrics };
+        console.log('[Telemetry] Initialized from Neon PostgreSQL');
       }
       this.isInitialized = true;
       this.startFlushing();
@@ -130,18 +119,12 @@ class TelemetryService {
       return;
     }
     try {
-      try {
-        admin.app();
-      } catch (e) {
-        return;
-      }
-
       this.isDirty = false;
-      await admin.firestore().collection('system_stats').doc('ai_telemetry').set({
+      await setSystemSettingsDoc('ai_telemetry', {
         metrics: this.metrics,
-        lastUpdated: admin.firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
-      console.log('[Telemetry] Flushed dirty metrics to Firestore');
+        lastUpdated: new Date().toISOString()
+      }, true);
+      console.log('[Telemetry] Flushed dirty metrics to Neon PostgreSQL');
     } catch (e) {
       this.isDirty = true;
       console.error('[Telemetry] Failed to flush metrics:', e);

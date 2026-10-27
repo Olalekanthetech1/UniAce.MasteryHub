@@ -12,7 +12,7 @@ import {
 import { fetchFromArxiv } from './academic/arxivAdapter.js';
 import { fetchFromSemanticScholar, lookupPaperSemanticScholar } from './academic/semanticScholarAdapter.js';
 import { fetchFromOpenAlex, fetchOpenAlexConceptDefinitions } from './academic/openAlexAdapter.js';
-import { getAdminApp } from './firebaseAdmin.js';
+import { getPostgresPool } from './postgresPool.js';
 
 // Default Admin Configuration
 let activeConfig: AcademicConfig = {
@@ -104,18 +104,15 @@ function calculateRelevanceScore(paper: AcademicPaper, queryTerms: string[]): nu
   return Number((textScore + citationBonus + recencyBonus + doiBonus).toFixed(2));
 }
 
-// Check Firestore Cache
+// Check Neon PostgreSQL Cache (`system_config` key `academic_cache_${cacheKey}`)
 async function getCachedSearch(cacheKey: string): Promise<AcademicSearchResponse | null> {
-  const adminApp = getAdminApp();
-  if (!adminApp) return null;
+  const pool = getPostgresPool();
+  if (!pool) return null;
 
   try {
-    const db = adminApp.firestore();
-    const docRef = db.collection('academic_query_cache').doc(cacheKey);
-    const snap = await docRef.get();
-
-    if (snap.exists) {
-      const data = snap.data() as AcademicSearchResponse & { cachedAt: string };
+    const res = await pool.query(`SELECT data FROM system_config WHERE key = $1 LIMIT 1`, [`academic_cache_${cacheKey}`]);
+    if (res.rows.length > 0 && res.rows[0].data) {
+      const data = res.rows[0].data as AcademicSearchResponse & { cachedAt: string };
       const cachedTime = new Date(data.cachedAt).getTime();
       const ageHours = (Date.now() - cachedTime) / (1000 * 60 * 60);
 
@@ -132,40 +129,53 @@ async function getCachedSearch(cacheKey: string): Promise<AcademicSearchResponse
   return null;
 }
 
-// Write to Firestore Cache
+// Write to Neon PostgreSQL Cache
 async function setCachedSearch(cacheKey: string, data: AcademicSearchResponse): Promise<void> {
-  const adminApp = getAdminApp();
-  if (!adminApp) return;
+  const pool = getPostgresPool();
+  if (!pool) return;
 
   try {
-    const db = adminApp.firestore();
-    await db.collection('academic_query_cache').doc(cacheKey).set({
+    const payload = {
       ...data,
       cachedAt: new Date().toISOString(),
-    });
+    };
+    await pool.query(
+      `INSERT INTO system_config (key, data, updated_at)
+       VALUES ($1, $2::jsonb, NOW())
+       ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+      [`academic_cache_${cacheKey}`, JSON.stringify(payload)]
+    );
   } catch (err) {
     console.warn('Academic Cache Write Warning:', err);
   }
 }
 
-// Log Query Telemetry
+// Log Query Telemetry to Neon PostgreSQL (`system_logs` category `'academic_research'`)
 async function logAcademicTelemetry(
   query: string,
   response: AcademicSearchResponse
 ): Promise<void> {
-  const adminApp = getAdminApp();
-  if (!adminApp) return;
+  const pool = getPostgresPool();
+  if (!pool) return;
 
   try {
-    const db = adminApp.firestore();
-    await db.collection('academic_research_logs').add({
-      query,
-      resultCount: response.totalResults,
-      latencyMs: response.latencyMs,
-      cached: response.cached,
-      providerBreakdown: response.providerBreakdown,
-      timestamp: new Date().toISOString(),
-    });
+    const id = `acad_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    await pool.query(
+      `INSERT INTO system_logs (id, level, category, message, metadata, created_at)
+       VALUES ($1, 'info', 'academic_research', $2, $3::jsonb, NOW())`,
+      [
+        id,
+        `Academic search: ${query.slice(0, 100)} (${response.totalResults} results)`,
+        JSON.stringify({
+          query,
+          resultCount: response.totalResults,
+          latencyMs: response.latencyMs,
+          cached: response.cached,
+          providerBreakdown: response.providerBreakdown,
+          timestamp: new Date().toISOString(),
+        }),
+      ]
+    );
   } catch (err) {
     console.warn('Academic Telemetry Log Warning:', err);
   }

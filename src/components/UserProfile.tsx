@@ -5,8 +5,7 @@ import { useUserProgress } from '../hooks/useUserProgress';
 import { useTheme } from '../context/ThemeContext';
 import { View, Department, Level, Semester } from '../types';
 import { useFeatureSwitches } from '../hooks/useFeatureSwitches';
-import { db, storage } from '../firebase';
-import { collection, query, where, orderBy, limit, getDocs, Timestamp } from 'firebase/firestore';
+import { storage } from '../firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -16,7 +15,8 @@ interface PaymentRecord {
   plan_type: string;
   reference: string;
   status: string;
-  timestamp: Timestamp;
+  createdAt?: string;
+  timestamp?: any;
   sparks_added: number;
 }
 
@@ -68,27 +68,20 @@ export default function UserProfile({ onBack, onNavigate }: UserProfileProps) {
 
   useEffect(() => {
     const fetchPayments = async () => {
-      if (!user?.uid || !db) return;
-      
+      if (!user?.uid) return;
+
       setIsLoadingPayments(true);
       try {
-        const q = query(
-          collection(db, 'payments'),
-          where('uid', '==', user.uid),
-          orderBy('timestamp', 'desc'),
-          limit(5)
-        );
-        
-        const querySnapshot = await getDocs(q);
-        const records: PaymentRecord[] = [];
-        querySnapshot.forEach((doc) => {
-          records.push({ id: doc.id, ...doc.data() } as PaymentRecord);
+        const token = await user.getIdToken();
+        const res = await fetch('/api/user/payments', {
+          headers: { Authorization: `Bearer ${token}` }
         });
-        setPayments(records);
+        if (res.ok) {
+          const data = await res.json();
+          setPayments(Array.isArray(data.payments) ? data.payments : []);
+        }
       } catch (error: any) {
         console.error("Error fetching payments:", error);
-        // Don't show error to user if it's just a permission issue on an empty collection
-        // but log it for debugging
       } finally {
         setIsLoadingPayments(false);
       }
@@ -612,7 +605,7 @@ export default function UserProfile({ onBack, onNavigate }: UserProfileProps) {
                         {payment.plan_type.replace('_', ' ')}
                       </p>
                       <p className="text-[10px] text-slate-500 dark:text-slate-400">
-                        {payment.timestamp?.toDate().toLocaleDateString()} • Ref: {payment.reference.slice(-6)}
+                        {(payment.createdAt ? new Date(payment.createdAt) : payment.timestamp?.toDate?.() || new Date()).toLocaleDateString()} • Ref: {(payment.reference || '').slice(-6)}
                       </p>
                     </div>
                   </div>

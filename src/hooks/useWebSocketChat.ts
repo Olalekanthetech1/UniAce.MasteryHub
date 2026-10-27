@@ -99,6 +99,10 @@ export const useWebSocketChat = () => {
               idempotency_token: activeTokenRef.current
             }));
           }
+          wsRef.current.onopen = null;
+          wsRef.current.onclose = null;
+          wsRef.current.onerror = null;
+          wsRef.current.onmessage = null;
           wsRef.current.close();
         } catch (_) {}
         wsRef.current = null;

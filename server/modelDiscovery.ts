@@ -1,4 +1,4 @@
-import { getDb } from './firebaseAdmin';
+import { getSystemSettingsDoc, setSystemSettingsDoc } from './systemConfigStore';
 
 export interface ProviderModelOption {
   id: string;
@@ -25,10 +25,9 @@ function getProviderAliases(provider: string): string[] {
   return [norm];
 }
 
-async function persistDiscoveredModelsToFirestore(provider: string, models: ProviderModelOption[], requestId?: string) {
+async function persistDiscoveredModelsToStore(provider: string, models: ProviderModelOption[], requestId?: string) {
   try {
-    const db = getDb();
-    if (!db || models.length === 0) return;
+    if (models.length === 0) return;
     const aliases = getProviderAliases(provider);
     const now = Date.now();
     const payload: Record<string, any> = {};
@@ -44,7 +43,7 @@ async function persistDiscoveredModelsToFirestore(provider: string, models: Prov
       payload.lastCompletedAt = now;
       payload.lastError = null;
     }
-    await db.collection('system_settings').doc('discovered_models').set(payload, { merge: true });
+    await setSystemSettingsDoc('discovered_models', payload, true);
   } catch (err) {
     console.warn(`[ModelDiscovery] Failed to persist discovered models for ${provider}:`, err);
   }
@@ -130,18 +129,16 @@ export async function fetchProviderModels(
     models: result
   });
 
-  // Persist live discovered models to Firestore so admin UI can access them even across iframe proxy gates
-  await persistDiscoveredModelsToFirestore(normalizedProvider, result, requestId);
+  // Persist live discovered models to Neon PostgreSQL system_config
+  await persistDiscoveredModelsToStore(normalizedProvider, result, requestId);
 
   return { models: result, cached: false };
 }
 
 let discoveryWatcherInitialized = false;
-let lastHandledRequestId = '';
 
 export async function initModelDiscoverySync() {
-  const db = getDb();
-  if (!db || discoveryWatcherInitialized) return;
+  if (discoveryWatcherInitialized) return;
   discoveryWatcherInitialized = true;
 
   const providers = ['groq', 'gemini_direct', 'mistral_direct', 'openrouter', 'nvidia', 'cohere', 'huggingface'];
@@ -150,54 +147,26 @@ export async function initModelDiscoverySync() {
       console.warn(`[ModelDiscovery] Startup sync skipped for ${p}: ${err.message}`);
     });
   }
-
-  try {
-    db.collection('system_settings').doc('discovered_models').onSnapshot(async (snap) => {
-      if (!snap.exists) return;
-      const data = snap.data() || {};
-      const req = data.refreshRequest;
-      if (!req || !req.requestId || req.requestId === lastHandledRequestId || !req.provider) return;
-      lastHandledRequestId = req.requestId;
-      try {
-        await fetchProviderModels(req.provider, req.apiKeyOverride, true, req.requestId);
-      } catch (err: any) {
-        await db.collection('system_settings').doc('discovered_models').set({
-          lastCompletedRequestId: req.requestId,
-          lastCompletedAt: Date.now(),
-          lastError: err.message || 'Failed to discover models'
-        }, { merge: true }).catch(() => {});
-      }
-    }, (err) => {
-      console.warn('[ModelDiscovery] Watcher error:', err.message);
-    });
-  } catch (err) {
-    console.warn('[ModelDiscovery] Could not attach Firestore discovery watcher:', err);
-  }
 }
 
 /**
- * Retrieve active API key from Firestore system_settings/api_keys or environment variables
+ * Retrieve active API key from Neon system_config (settings_api_keys) or environment variables
  */
 async function getActiveKeyForProvider(provider: string): Promise<string | null> {
-  // 1. Try Firestore system_settings/api_keys
+  // 1. Try Neon system_config settings_api_keys
   try {
-    const db = getDb();
-    if (db) {
-      const docRef = db.collection('system_settings').doc('api_keys');
-      const doc = await docRef.get();
-      if (doc.exists) {
-        const data = doc.data() || {};
-        const provData = data[provider] || data[provider.replace('_direct', '')] || data[provider.replace('_free', '')] || data[`${provider}_direct`] || data[`${provider}_free`];
-        if (provData && Array.isArray(provData.keys)) {
-          const activeKeyObj = provData.keys.find((k: any) => k.key && !k.isExhausted) || provData.keys.find((k: any) => k.key);
-          if (activeKeyObj && activeKeyObj.key) {
-            return activeKeyObj.key.trim();
-          }
+    const data = await getSystemSettingsDoc('api_keys');
+    if (data) {
+      const provData = data[provider] || data[provider.replace('_direct', '')] || data[provider.replace('_free', '')] || data[`${provider}_direct`] || data[`${provider}_free`];
+      if (provData && Array.isArray(provData.keys)) {
+        const activeKeyObj = provData.keys.find((k: any) => k.key && !k.isExhausted) || provData.keys.find((k: any) => k.key);
+        if (activeKeyObj && activeKeyObj.key) {
+          return activeKeyObj.key.trim();
         }
       }
     }
   } catch (err) {
-    console.warn(`[ModelDiscovery] Firestore read failed for provider key:`, err);
+    console.warn(`[ModelDiscovery] Neon read failed for provider key:`, err);
   }
 
   // 2. Fallback to server process.env

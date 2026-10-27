@@ -7,6 +7,7 @@ import { Component, ErrorInfo, ReactNode, Suspense } from 'react';
 import MermaidViewer from './renderers/MermaidViewer';
 import FunctionPlotViewer from './renderers/FunctionPlotViewer';
 import VennDiagramViewer from './renderers/VennDiagramViewer';
+import SvgDiagramViewer from './renderers/SvgDiagramViewer';
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -433,10 +434,18 @@ export default function MarkdownRenderer({ content = '', className = '' }: Markd
                 );
               }
 
-              if (!isInline && (lang === 'function-plot' || lang === 'math-plot' || lang === 'graph')) {
+              if (!isInline && (lang === 'function-plot' || lang === 'math-plot' || lang === 'graph' || lang === 'plot' || lang === 'cartesian')) {
                 return (
                   <Suspense fallback={<div className="p-4 text-xs font-mono text-slate-400">Loading plot...</div>}>
                     <FunctionPlotViewer code={codeString} />
+                  </Suspense>
+                );
+              }
+
+              if (!isInline && (lang === 'svg' || lang === 'svg-diagram' || lang === 'geometry' || lang === 'vector-diagram')) {
+                return (
+                  <Suspense fallback={<div className="p-4 text-xs font-mono text-slate-400">Loading diagram...</div>}>
+                    <SvgDiagramViewer code={codeString} />
                   </Suspense>
                 );
               }

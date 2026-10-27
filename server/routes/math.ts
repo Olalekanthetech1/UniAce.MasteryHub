@@ -122,24 +122,14 @@ export function setupMathRoutes(
   // 3. Telemetry & Analytics Endpoint (Real-Time Stats for Admin Dashboard)
   app.get('/api/math/stats', verifyAuth, async (req: express.Request, res: express.Response) => {
     try {
-      const adminApp = getAdminApp();
-      if (!adminApp) return res.status(503).json({ error: 'Firebase not initialized' });
+      const pool = getPostgresPool();
+      if (!pool) return res.status(503).json({ error: 'Neon PostgreSQL not initialized' });
 
-      const db = adminApp.firestore();
-      
-      // Fetch recent 50 telemetry logs
-      let logsSnap;
-      try {
-        logsSnap = await db.collection('system_math_telemetry')
-          .orderBy('timestamp', 'desc')
-          .limit(50)
-          .get();
-      } catch {
-        // Fallback without order if index is building
-        logsSnap = await db.collection('system_math_telemetry')
-          .limit(50)
-          .get();
-      }
+      const logsRes = await pool.query(
+        `SELECT id, metadata, created_at FROM system_logs
+         WHERE category = 'math_telemetry'
+         ORDER BY created_at DESC LIMIT 50`
+      );
 
       const recentLogs: any[] = [];
       let totalLatency = 0;
@@ -153,15 +143,15 @@ export function setupMathRoutes(
         simplify: 0
       };
 
-      logsSnap.forEach((doc: any) => {
-        const data = doc.data();
-        recentLogs.push({ id: doc.id, ...data });
-        if (data.latencyMs) totalLatency += data.latencyMs;
+      for (const row of logsRes.rows) {
+        const data = typeof row.metadata === 'object' && row.metadata ? row.metadata : {};
+        recentLogs.push({ id: row.id, ...data, timestamp: data.timestamp || new Date(row.created_at).toISOString() });
+        if (data.latencyMs) totalLatency += Number(data.latencyMs);
         if (data.success) successCount++;
         if (data.operation && opCounts[data.operation] !== undefined) {
           opCounts[data.operation]++;
         }
-      });
+      }
 
       const totalCount = recentLogs.length;
       const avgLatencyMs = totalCount > 0 ? Math.round(totalLatency / totalCount) : 18;

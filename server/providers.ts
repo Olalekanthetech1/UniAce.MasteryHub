@@ -1,6 +1,5 @@
 import { z } from 'zod';
-import admin from 'firebase-admin';
-import { getAdminApp } from './firebaseAdmin';
+import { getSystemSettingsDoc, setSystemSettingsDoc } from './systemConfigStore';
 import { GoogleGenAI } from "@google/genai";
 import Groq from "groq-sdk";
 import { Mistral } from '@mistralai/mistralai';
@@ -264,15 +263,11 @@ export class DynamicKeyRotator {
       return;
     }
     try {
-      const app = getAdminApp();
-      if (!app) return;
-      const docRef = app.firestore().collection('system_settings').doc('api_keys');
       let data: Record<string, any> | null = null;
       if (!force && sharedApiKeysSnapshotCache.fetchedAt > 0 && now - sharedApiKeysSnapshotCache.fetchedAt < API_KEYS_CACHE_TTL_MS) {
         data = sharedApiKeysSnapshotCache.data;
       } else {
-        const doc = await docRef.get();
-        data = doc.exists ? (doc.data() || null) : null;
+        data = await getSystemSettingsDoc('api_keys', force);
         sharedApiKeysSnapshotCache = { data, fetchedAt: now };
       }
 
@@ -304,10 +299,11 @@ export class DynamicKeyRotator {
           });
 
           if (needsUpdate) {
-            await docRef.update({
-              [`${this.providerName}.keys`]: updatedKeys
-            });
-            data[this.providerName].keys = updatedKeys;
+            data[this.providerName] = {
+              ...data[this.providerName],
+              keys: updatedKeys
+            };
+            await setSystemSettingsDoc('api_keys', { [this.providerName]: data[this.providerName] }, true);
           } else {
             dbTelemetry.recordSuppressedWrite('system_settings', 'unchanged_api_key_reset_check', 1);
           }
@@ -391,7 +387,7 @@ export class DynamicKeyRotator {
     const wasAlreadyExhaustedInMemory = this.exhaustedKeys.has(trimmedKey);
     this.exhaustedKeys.add(trimmedKey);
 
-    // If this key is not a Firestore-managed dbKey (e.g. env fallback key), or was already marked exhausted within 60s, skip DB write
+    // If this key is not a DB-managed key (e.g. env fallback key), or was already marked exhausted within 60s, skip DB write
     const throttleKey = `${this.providerName}:${trimmedKey}`;
     const lastWriteAt = lastExhaustedWriteByProviderKey.get(throttleKey) || 0;
     const now = Date.now();
@@ -401,34 +397,30 @@ export class DynamicKeyRotator {
     }
 
     try {
-      const app = getAdminApp();
-      if (!app) return;
-      const docRef = app.firestore().collection('system_settings').doc('api_keys');
-      const docSnap = await docRef.get();
-      if (docSnap.exists) {
-        const data = docSnap.data();
-        if (data && data[this.providerName] && Array.isArray(data[this.providerName].keys)) {
-          let actuallyChanged = false;
-          const updatedKeys = data[this.providerName].keys.map((k: any) => {
-            if (k && typeof k.key === 'string' && k.key.trim() === trimmedKey) {
-              if (!k.isExhausted) {
-                actuallyChanged = true;
-                return { ...k, isExhausted: true, exhaustedAt: now };
-              }
+      const data = await getSystemSettingsDoc('api_keys', true);
+      if (data && data[this.providerName] && Array.isArray(data[this.providerName].keys)) {
+        let actuallyChanged = false;
+        const updatedKeys = data[this.providerName].keys.map((k: any) => {
+          if (k && typeof k.key === 'string' && k.key.trim() === trimmedKey) {
+            if (!k.isExhausted) {
+              actuallyChanged = true;
+              return { ...k, isExhausted: true, exhaustedAt: now };
             }
-            return k;
-          });
-          if (actuallyChanged) {
-            lastExhaustedWriteByProviderKey.set(throttleKey, now);
-            await docRef.update({
-              [`${this.providerName}.keys`]: updatedKeys
-            });
-            if (sharedApiKeysSnapshotCache.data && sharedApiKeysSnapshotCache.data[this.providerName]) {
-              sharedApiKeysSnapshotCache.data[this.providerName].keys = updatedKeys;
-            }
-          } else {
-            dbTelemetry.recordSuppressedWrite('system_settings', 'key_already_marked_exhausted_in_db', 1);
           }
+          return k;
+        });
+        if (actuallyChanged) {
+          lastExhaustedWriteByProviderKey.set(throttleKey, now);
+          const updatedProviderEntry = {
+            ...data[this.providerName],
+            keys: updatedKeys
+          };
+          await setSystemSettingsDoc('api_keys', { [this.providerName]: updatedProviderEntry }, true);
+          if (sharedApiKeysSnapshotCache.data && sharedApiKeysSnapshotCache.data[this.providerName]) {
+            sharedApiKeysSnapshotCache.data[this.providerName].keys = updatedKeys;
+          }
+        } else {
+          dbTelemetry.recordSuppressedWrite('system_settings', 'key_already_marked_exhausted_in_db', 1);
         }
       }
     } catch (e) {

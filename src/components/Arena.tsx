@@ -3,8 +3,6 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Swords, Trophy, Timer, Shield, Zap, Skull, Crown, User, Search, X, Heart, CheckCircle, AlertCircle, Loader2, Star, Target, ArrowRight, Flame } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useCourses } from '../context/CourseContext';
-import { db } from '../firebase';
-import { collection, addDoc, query, where, getDocs, onSnapshot, doc, updateDoc, deleteDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { Battle, BattlePlayer, QuizQuestion, CourseId } from '../types';
 import { AIService } from '../services/ai';
 import Leaderboard from './Leaderboard';
@@ -56,79 +54,44 @@ export default function Arena({ activeCourseId }: ArenaProps) {
     }
   };
 
-  // 1. Matchmaking Logic
+  // 1. Matchmaking Logic (Neon PostgreSQL)
   const findMatch = async () => {
     if (!user || !activeCourseId) return;
     setView('matching');
     setMatchStatus('Scanning the arena...');
 
     try {
-      const battlesRef = collection(db, 'battles');
-      // Find waiting battles for this course
-      const q = query(
-        battlesRef, 
-        where('status', '==', 'waiting'),
-        where('topicId', '==', activeCourseId)
-      );
-      
-      const snapshot = await getDocs(q);
-      
-      // Filter out battles created by self (if any exist due to stale state)
-      const validBattles = snapshot.docs.filter(doc => doc.data().player1.uid !== user.uid);
+      setMatchStatus('Preparing battle arena...');
+      const questions = await generateBattleQuestions(activeCourseId);
 
-      if (validBattles.length > 0) {
-        // JOIN EXISTING BATTLE
-        const battleDoc = validBattles[0];
-        setMatchStatus('Opponent found! Entering arena...');
-        
-        const player2: BattlePlayer = {
-          uid: user.uid,
-          name: user.displayName || 'Challenger',
-          avatar: profile?.photoURL || user.photoURL || '',
-          score: 0,
-          currentQuestionIndex: 0,
-          health: MAX_HEALTH,
-          status: 'ready'
-        };
+      const player: BattlePlayer = {
+        uid: user.uid,
+        name: user.displayName || 'Gladiator',
+        avatar: profile?.photoURL || user.photoURL || '',
+        score: 0,
+        currentQuestionIndex: 0,
+        health: MAX_HEALTH,
+        status: 'ready'
+      };
 
-        await updateDoc(doc(db, 'battles', battleDoc.id), {
-          player2,
-          status: 'active'
-        });
-        
-        setBattleId(battleDoc.id);
-      } else {
-        // CREATE NEW BATTLE
-        setMatchStatus('Creating arena...');
-        
-        // Generate questions using AI or fetch from bank
-        const questions = await generateBattleQuestions(activeCourseId);
-
-        const player1: BattlePlayer = {
-          uid: user.uid,
-          name: user.displayName || 'Gladiator',
-          avatar: profile?.photoURL || user.photoURL || '',
-          score: 0,
-          currentQuestionIndex: 0,
-          health: MAX_HEALTH,
-          status: 'ready'
-        };
-
-        const newBattle: Omit<Battle, 'id'> = {
-          status: 'waiting',
-          player1,
-          player2: null,
-          questions,
-          winner: null,
-          createdAt: new Date().toISOString(),
-          topicId: activeCourseId
-        };
-
-        const docRef = doc(battlesRef);
-        await setDoc(docRef, newBattle, { merge: true });
-        setBattleId(docRef.id);
-        setMatchStatus('Waiting for a challenger...');
-      }
+      const token = await user.getIdToken();
+      const res = await fetch('/api/arena/matchmake', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          topicId: activeCourseId,
+          player,
+          questions
+        })
+      });
+      if (!res.ok) throw new Error('Matchmaking failed');
+      const data = await res.json();
+      setBattleId(data.battleId);
+      if (data.battle) setBattleData(data.battle);
+      setMatchStatus(data.joined ? 'Opponent found! Entering arena...' : 'Waiting for a challenger...');
     } catch (error) {
       console.error("Matchmaking error:", error);
       setMatchStatus('Error finding match. Try again.');
@@ -136,37 +99,48 @@ export default function Arena({ activeCourseId }: ArenaProps) {
     }
   };
 
-  // 2. Real-time Battle Listener
+  // 2. Real-time Battle Listener (Polls Neon PostgreSQL)
   useEffect(() => {
-    if (!battleId) return;
+    if (!battleId || !user) return;
 
-    const unsubscribe = onSnapshot(doc(db, 'battles', battleId), (doc) => {
-      if (doc.exists()) {
-        const data = doc.data() as Battle;
-        setBattleData(data);
-
-        // Transition to battle view when active
-        if (data.status === 'active' && view === 'matching') {
-          setView('battle');
+    let active = true;
+    const pollBattle = async () => {
+      try {
+        const token = await user.getIdToken();
+        const res = await fetch(`/api/arena/battles/${encodeURIComponent(battleId)}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!active) return;
+        if (res.status === 404) {
+          setView('lobby');
+          setBattleId(null);
+          return;
         }
-
-        // Transition to result view when finished
-        if (data.status === 'finished') {
-          setView('result');
+        if (res.ok) {
+          const json = await res.json();
+          const data = json.battle as Battle;
+          if (data) {
+            setBattleData(data);
+            if (data.status === 'active' && view === 'matching') {
+              setView('battle');
+            }
+            if (data.status === 'finished') {
+              setView('result');
+            }
+          }
         }
-      } else {
-        // Battle deleted or cancelled
-        setView('lobby');
-        setBattleId(null);
+      } catch (error) {
+        console.error("Arena: Error polling battle:", error);
       }
-    }, (error) => {
-      console.error("Arena: Error listening to battle:", error);
-      setView('lobby');
-      setBattleId(null);
-    });
+    };
 
-    return () => unsubscribe();
-  }, [battleId, view]);
+    void pollBattle();
+    const timer = setInterval(pollBattle, 2000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [battleId, view, user]);
 
   // 3. Timer Logic
   useEffect(() => {
@@ -186,6 +160,23 @@ export default function Arena({ activeCourseId }: ArenaProps) {
     return () => clearInterval(timer);
   }, [view]);
 
+  const patchBattle = async (updates: Record<string, any>) => {
+    if (!battleId || !user) return;
+    const token = await user.getIdToken();
+    const res = await fetch(`/api/arena/battles/${encodeURIComponent(battleId)}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify(updates)
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.battle) setBattleData(json.battle);
+    }
+  };
+
   // 4. Gameplay Logic
   const handleAnswer = async (option: string) => {
     if (!battleData || !user || selectedAnswer) return;
@@ -200,37 +191,28 @@ export default function Arena({ activeCourseId }: ArenaProps) {
     setSelectedAnswer(option);
     setIsCorrect(correct);
 
-    // Update Score & Progress
-    const battleRef = doc(db, 'battles', battleId!);
-    
     if (correct) {
-      // Deal damage to opponent
       const updateKey = isPlayer1 ? 'player2.health' : 'player1.health';
       const opponentHealth = isPlayer1 ? battleData.player2!.health : battleData.player1.health;
       const newHealth = Math.max(0, opponentHealth - DAMAGE_PER_HIT);
       
-      await updateDoc(battleRef, {
+      const updates: Record<string, any> = {
         [isPlayer1 ? 'player1.score' : 'player2.score']: player.score + 100,
         [isPlayer1 ? 'player1.currentQuestionIndex' : 'player2.currentQuestionIndex']: player.currentQuestionIndex + 1,
         [updateKey]: newHealth
-      });
+      };
 
       if (newHealth === 0) {
-        // Knockout Victory!
-        await updateDoc(battleRef, {
-          status: 'finished',
-          winner: user.uid
-        });
+        updates.status = 'finished';
+        updates.winner = user.uid;
       }
-
+      await patchBattle(updates);
     } else {
-      // Just advance question, no damage
-      await updateDoc(battleRef, {
-         [isPlayer1 ? 'player1.currentQuestionIndex' : 'player2.currentQuestionIndex']: player.currentQuestionIndex + 1,
+      await patchBattle({
+        [isPlayer1 ? 'player1.currentQuestionIndex' : 'player2.currentQuestionIndex']: player.currentQuestionIndex + 1
       });
     }
 
-    // Reset for next question after delay
     setTimeout(() => {
       setSelectedAnswer(null);
       setIsCorrect(null);
@@ -240,7 +222,6 @@ export default function Arena({ activeCourseId }: ArenaProps) {
   const handleBattleEnd = async () => {
     if (!battleData || !user) return;
     
-    // Determine winner by score if time runs out
     const p1Score = battleData.player1.score;
     const p2Score = battleData.player2?.score || 0;
     
@@ -248,15 +229,19 @@ export default function Arena({ activeCourseId }: ArenaProps) {
     if (p1Score > p2Score) winnerId = battleData.player1.uid;
     if (p2Score > p1Score) winnerId = battleData.player2!.uid;
 
-    await updateDoc(doc(db, 'battles', battleId!), {
+    await patchBattle({
       status: 'finished',
       winner: winnerId
     });
   };
 
   const cancelMatchmaking = async () => {
-    if (battleId) {
-      await deleteDoc(doc(db, 'battles', battleId));
+    if (battleId && user) {
+      const token = await user.getIdToken();
+      await fetch(`/api/arena/battles/${encodeURIComponent(battleId)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      }).catch(() => {});
     }
     setBattleId(null);
     setView('lobby');

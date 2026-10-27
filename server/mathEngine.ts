@@ -1,5 +1,5 @@
 import * as math from 'mathjs';
-import { getDb } from './firebaseAdmin';
+import { getPostgresPool } from './postgresPool';
 import { redactPII } from './piiRedactor';
 
 export interface MathCalculationRequest {
@@ -53,35 +53,41 @@ export const DEFAULT_MATH_CONFIG: MathEngineConfig = {
 };
 
 /**
- * Retrieves Math Engine Configuration from Firestore or returns default.
+ * Retrieves Math Engine Configuration from Neon PostgreSQL (`system_config` key `'math_engine'`) or returns default.
  */
 export async function getMathEngineConfig(): Promise<MathEngineConfig> {
   try {
-    const db = getDb();
-    if (!db) return DEFAULT_MATH_CONFIG;
-    const docSnap = await db.collection('system_config').doc('math_engine').get();
-    if (docSnap.exists) {
-      return { ...DEFAULT_MATH_CONFIG, ...docSnap.data() } as MathEngineConfig;
+    const pool = getPostgresPool();
+    if (!pool) return DEFAULT_MATH_CONFIG;
+    const res = await pool.query(`SELECT data FROM system_config WHERE key = 'math_engine' LIMIT 1`);
+    if (res.rows.length > 0 && res.rows[0].data) {
+      return { ...DEFAULT_MATH_CONFIG, ...res.rows[0].data } as MathEngineConfig;
     }
   } catch (err) {
-    console.warn('[MathEngine] Failed to fetch config from Firestore, using default:', err);
+    console.warn('[MathEngine] Failed to fetch config from Neon PostgreSQL, using default:', err);
   }
   return DEFAULT_MATH_CONFIG;
 }
 
 /**
- * Saves updated Math Engine Configuration to Firestore.
+ * Saves updated Math Engine Configuration to Neon PostgreSQL (`system_config` key `'math_engine'`).
  */
 export async function saveMathEngineConfig(config: Partial<MathEngineConfig>): Promise<MathEngineConfig> {
-  const db = getDb();
-  if (!db) throw new Error('Firestore not initialized');
-  const updated = { ...DEFAULT_MATH_CONFIG, ...config, updatedAt: new Date().toISOString() };
-  await db.collection('system_config').doc('math_engine').set(updated, { merge: true });
+  const pool = getPostgresPool();
+  if (!pool) throw new Error('Neon PostgreSQL pool not initialized');
+  const current = await getMathEngineConfig();
+  const updated = { ...DEFAULT_MATH_CONFIG, ...current, ...config, updatedAt: new Date().toISOString() };
+  await pool.query(
+    `INSERT INTO system_config (key, data, updated_at)
+     VALUES ('math_engine', $1::jsonb, NOW())
+     ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+    [JSON.stringify(updated)]
+  );
   return updated;
 }
 
 /**
- * Logs calculation telemetry to Firestore asynchronously.
+ * Logs calculation telemetry to Neon PostgreSQL (`system_logs` category `'math_telemetry'`) asynchronously.
  */
 export async function logMathTelemetry(
   req: MathCalculationRequest,
@@ -89,8 +95,8 @@ export async function logMathTelemetry(
   userId?: string
 ): Promise<void> {
   try {
-    const db = getDb();
-    if (!db) return;
+    const pool = getPostgresPool();
+    if (!pool) return;
     const logDoc = {
       timestamp: new Date().toISOString(),
       operation: req.operation,
@@ -102,7 +108,18 @@ export async function logMathTelemetry(
       userId: userId || 'anonymous',
       rigorLevel: req.rigorLevel || 'granular',
     };
-    await db.collection('system_math_telemetry').add(logDoc);
+    const id = `math_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    await pool.query(
+      `INSERT INTO system_logs (id, level, category, message, metadata, user_id, created_at)
+       VALUES ($1, $2, 'math_telemetry', $3, $4::jsonb, $5, NOW())`,
+      [
+        id,
+        res.success ? 'info' : 'warning',
+        `Math ${req.operation}: ${logDoc.query.slice(0, 80)}`,
+        JSON.stringify(logDoc),
+        userId || 'anonymous',
+      ]
+    );
   } catch (err) {
     console.warn('[MathEngine] Failed to log telemetry:', err);
   }

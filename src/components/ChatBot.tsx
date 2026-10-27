@@ -10,6 +10,7 @@ import { AIService } from "../services/ai";
 import { useAuth } from "../context/AuthContext";
 import { useCourses } from "../context/CourseContext";
 import { useWebSocketChat } from "../hooks/useWebSocketChat";
+import { usePremiumStatus } from "../hooks/usePremiumStatus";
 import PricingModal from './PricingModal';
 import { ChatHeader } from './chat/ChatHeader';
 import { ChatMessageCard } from './chat/ChatMessageCard';
@@ -60,6 +61,7 @@ export default function ChatBot({
   const { user, profile: authProfile } = useAuth();
   const { courses } = useCourses();
   const { isConnected: isWsConnected, sendMessage: sendWsMessage, abortStream: abortWsStream } = useWebSocketChat();
+  const { isPremium, planType: effectivePlanType } = usePremiumStatus();
   const isAdmin = (profile || authProfile)?.role === 'admin' || (import.meta.env.VITE_ADMIN_EMAILS || '').split(',').includes(user?.email || '');
 
   // Dynamic context state (can be overridden by Syllabus Jumper)
@@ -412,12 +414,12 @@ export default function ChatBot({
       return;
     }
 
-    const isFreeUser = (profile || authProfile)?.plan_type === 'free';
+    const isFreeUser = !isPremium && !isAdmin;
     const rawSparks = sparksRemaining ?? (profile || authProfile)?.ai_sparks;
     const knownSparks: number | null =
       typeof rawSparks === 'number' && Number.isFinite(rawSparks) ? rawSparks : null;
     const hasNoSparks = knownSparks !== null && knownSparks <= 0;
-    if (isFreeUser && hasNoSparks && !isAdmin) {
+    if (isFreeUser && hasNoSparks) {
       setShowPricingModal(true);
       return;
     }
@@ -486,7 +488,7 @@ export default function ChatBot({
         masteryLevel,
         personality: currentPersonality,
         currentSparks: knownSparks ?? undefined,
-        planType: (profile || authProfile)?.plan_type ?? 'free',
+        planType: effectivePlanType,
         idempotency_token: idempotencyToken
       }, (chunk) => {
         setMessages(prev => {
@@ -592,7 +594,7 @@ export default function ChatBot({
               masteryLevel,
               personality: currentPersonality,
               currentSparks: knownSparks,
-              planType: (profile || authProfile)?.plan_type ?? 'free',
+              planType: effectivePlanType,
               idempotency_token: idempotencyToken
             })
           });

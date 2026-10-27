@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { ArrowLeft, MessageSquare, Ticket, CheckCircle2, Clock, User, Send, Search, Filter, MessageCircle, Bell, Megaphone, Sparkles, AlertTriangle, X, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { db, auth } from '../firebase';
-import { collection, query, orderBy, onSnapshot, doc, updateDoc, addDoc, setDoc, serverTimestamp, where, writeBatch, getDocs } from 'firebase/firestore';
+import { auth } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
 
@@ -128,48 +127,24 @@ export default function AdminSupport({ onBack }: AdminSupportProps) {
 
     setIsSendingNotif(true);
     try {
-      const announcementRef = doc(collection(db, 'announcements'));
-      const severity = notifType === 'error' ? 'urgent' : notifType === 'warning' ? 'warning' : 'info';
-
-      await setDoc(announcementRef, {
-        id: announcementRef.id,
-        title: titleClean,
-        message: messageClean,
-        active: true,
-        severity,
-        audience: 'all',
-        ctaUrl: ctaUrlClean || null,
-        ctaLabel: ctaUrlClean ? 'Join WhatsApp' : null,
-        createdAt: serverTimestamp(),
-        publishedBy: user?.email || 'admin',
-        impressions: 0,
-        dismissalsCount: 0
-      });
-
-      // Send individual notifications for notification center inbox
-      const usersSnapshot = await getDocs(collection(db, 'users'));
-      const batch = writeBatch(db);
-      
-      usersSnapshot.docs.forEach(userDoc => {
-        const notifRef = doc(collection(db, 'notifications'));
-        batch.set(notifRef, {
-          userId: userDoc.id,
+      const idToken = await user?.getIdToken();
+      const bRes = await fetch('/api/admin/support/broadcast', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(idToken ? { Authorization: `Bearer ${idToken}` } : {})
+        },
+        body: JSON.stringify({
           title: titleClean,
           message: messageClean,
-          link: ctaUrlClean,
-          type: notifType,
-          read: false,
-          createdAt: serverTimestamp()
-        });
+          ctaUrl: ctaUrlClean || null,
+          type: notifType
+        })
       });
+      if (!bRes.ok) throw new Error('Failed to publish broadcast');
 
-      // Clear legacy single alert doc if present
-      batch.set(doc(db, 'notifications', 'global_alert'), { active: false }, { merge: true });
-      await batch.commit();
-
-      // Backend broadcasts
+      // Backend push broadcasts
       try {
-        const idToken = await user?.getIdToken();
         fetch('/api/admin/broadcast-push', {
           method: 'POST',
           headers: {
@@ -204,49 +179,66 @@ export default function AdminSupport({ onBack }: AdminSupportProps) {
     }
   }, [chatMessages]);
 
-  // Listen for tickets
+  const fetchSupportOverview = async () => {
+    try {
+      const idToken = await auth.currentUser?.getIdToken();
+      const res = await fetch('/api/admin/support/overview', {
+        headers: idToken ? { Authorization: `Bearer ${idToken}` } : {}
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setTickets(Array.isArray(data.tickets) ? data.tickets : []);
+        setChats(Array.isArray(data.chats) ? data.chats : []);
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, 'admin_support_overview');
+    }
+  };
+
   useEffect(() => {
-    const path = 'support_tickets';
-    const q = query(collection(db, path), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setTickets(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as SupportTicket[]);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
-    });
-    return () => unsubscribe();
+    void fetchSupportOverview();
+    const timer = setInterval(fetchSupportOverview, 6000);
+    return () => clearInterval(timer);
   }, []);
 
-  // Listen for chats
-  useEffect(() => {
-    const path = 'support_chats';
-    const q = query(collection(db, path), orderBy('updatedAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setChats(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as SupportChat[]);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // Listen for messages in selected chat
+  // Poll messages in selected chat
   useEffect(() => {
     if (!selectedChat) return;
-    const path = `support_chats/${selectedChat.id}/messages`;
-    const q = query(
-      collection(db, 'support_chats', selectedChat.id, 'messages'),
-      orderBy('timestamp', 'asc')
-    );
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setChatMessages(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as ChatMessage[]);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
-    });
-    return () => unsubscribe();
+    let active = true;
+    const fetchChatMessages = async () => {
+      try {
+        const idToken = await auth.currentUser?.getIdToken();
+        const res = await fetch(`/api/support/chats/${encodeURIComponent(selectedChat.id)}/messages`, {
+          headers: idToken ? { Authorization: `Bearer ${idToken}` } : {}
+        });
+        if (res.ok && active) {
+          const data = await res.json();
+          setChatMessages(Array.isArray(data.messages) ? data.messages : []);
+        }
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, `support_chats/${selectedChat.id}/messages`);
+      }
+    };
+    void fetchChatMessages();
+    const timer = setInterval(fetchChatMessages, 4000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
   }, [selectedChat]);
 
   const handleResolveTicket = async (ticketId: string) => {
     try {
-      await updateDoc(doc(db, 'support_tickets', ticketId), { status: 'resolved' });
+      const idToken = await auth.currentUser?.getIdToken();
+      await fetch(`/api/admin/support/tickets/${encodeURIComponent(ticketId)}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(idToken ? { Authorization: `Bearer ${idToken}` } : {})
+        },
+        body: JSON.stringify({ status: 'resolved' })
+      });
+      await fetchSupportOverview();
     } catch (error) {
       console.error('Error resolving ticket:', error);
     }
@@ -260,18 +252,25 @@ export default function AdminSupport({ onBack }: AdminSupportProps) {
     setNewMessage('');
 
     try {
-      const msgRef = doc(collection(db, 'support_chats', selectedChat.id, 'messages'));
-      await setDoc(msgRef, {
-        senderId: user.uid,
-        senderName: 'Support Team',
-        text: msg,
-        timestamp: serverTimestamp()
-      }, { merge: true });
-
-      await updateDoc(doc(db, 'support_chats', selectedChat.id), {
-        lastMessage: msg,
-        updatedAt: serverTimestamp()
+      const idToken = await user.getIdToken();
+      const res = await fetch(`/api/support/chats/${encodeURIComponent(selectedChat.id)}/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`
+        },
+        body: JSON.stringify({
+          text: msg,
+          senderName: 'Support Team',
+          userName: selectedChat.userName || 'Student'
+        })
       });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.messages)) {
+          setChatMessages(data.messages);
+        }
+      }
     } catch (error) {
       console.error('Error sending message:', error);
     }

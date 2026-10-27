@@ -167,9 +167,11 @@ export class SparkRepository {
         uid: string;
         ai_sparks: number;
         role: string;
-        plan_type: 'free' | 'scholar' | 'admin';
+        plan_type: 'free' | 'scholar' | 'admin' | string;
+        subscription_status?: string | null;
+        subscription_expiry?: Date | string | null;
       }>(
-        `SELECT uid, ai_sparks, role, plan_type
+        `SELECT uid, ai_sparks, role, plan_type, subscription_status, subscription_expiry
          FROM users
          WHERE uid = $1
          FOR UPDATE;`,
@@ -177,7 +179,25 @@ export class SparkRepository {
       );
 
       const user = userRes.rows[0];
-      const isUnlimited = user.role === 'admin' || user.plan_type === 'admin' || user.plan_type === 'scholar';
+      let effectivePlan = user.plan_type || 'free';
+      if (user.role !== 'admin' && effectivePlan !== 'free' && effectivePlan !== 'admin') {
+        const expTime = user.subscription_expiry ? new Date(user.subscription_expiry).getTime() : NaN;
+        const isExpired =
+          user.subscription_status === 'expired' ||
+          (!isNaN(expTime) && Date.now() > expTime);
+        if (isExpired) {
+          effectivePlan = 'free';
+          await client.query(
+            `UPDATE users SET plan_type = 'free', subscription_status = 'expired', updated_at = NOW() WHERE uid = $1;`,
+            [uid]
+          );
+          await client.query(
+            `UPDATE user_sparks_wallets SET plan_type = 'free', updated_at = NOW() WHERE uid = $1;`,
+            [uid]
+          );
+        }
+      }
+      const isUnlimited = user.role === 'admin' || effectivePlan === 'admin' || effectivePlan === 'scholar' || effectivePlan === 'semester';
 
       // 3. Balance check for free tier
       if (!isUnlimited && user.ai_sparks < amount) {
@@ -294,16 +314,23 @@ export class SparkRepository {
         uid: string;
         ai_sparks: number;
         role: string;
-        plan_type: 'free' | 'scholar' | 'admin';
+        plan_type: 'free' | 'scholar' | 'admin' | string;
+        subscription_status?: string | null;
+        subscription_expiry?: Date | string | null;
       }>(
-        `SELECT uid, ai_sparks, role, plan_type
+        `SELECT uid, ai_sparks, role, plan_type, subscription_status, subscription_expiry
          FROM users
          WHERE uid = $1
          FOR UPDATE;`,
         [escrow.uid]
       );
       const user = userRes.rows[0];
-      const isUnlimited = user.role === 'admin' || user.plan_type === 'admin' || user.plan_type === 'scholar';
+      const expTime = user.subscription_expiry ? new Date(user.subscription_expiry).getTime() : NaN;
+      const isExpired =
+        user.subscription_status === 'expired' ||
+        (!isNaN(expTime) && Date.now() > expTime);
+      const effectivePlan = isExpired && user.role !== 'admin' ? 'free' : (user.plan_type || 'free');
+      const isUnlimited = user.role === 'admin' || effectivePlan === 'admin' || effectivePlan === 'scholar' || effectivePlan === 'semester';
 
       // 3. Compute refund difference
       const refund = isUnlimited ? 0 : Math.max(0, escrow.amount_locked - actualCost);
@@ -412,16 +439,23 @@ export class SparkRepository {
         uid: string;
         ai_sparks: number;
         role: string;
-        plan_type: 'free' | 'scholar' | 'admin';
+        plan_type: 'free' | 'scholar' | 'admin' | string;
+        subscription_status?: string | null;
+        subscription_expiry?: Date | string | null;
       }>(
-        `SELECT uid, ai_sparks, role, plan_type
+        `SELECT uid, ai_sparks, role, plan_type, subscription_status, subscription_expiry
          FROM users
          WHERE uid = $1
          FOR UPDATE;`,
         [escrow.uid]
       );
       const user = userRes.rows[0];
-      const isUnlimited = user.role === 'admin' || user.plan_type === 'admin' || user.plan_type === 'scholar';
+      const expTime = user.subscription_expiry ? new Date(user.subscription_expiry).getTime() : NaN;
+      const isExpired =
+        user.subscription_status === 'expired' ||
+        (!isNaN(expTime) && Date.now() > expTime);
+      const effectivePlan = isExpired && user.role !== 'admin' ? 'free' : (user.plan_type || 'free');
+      const isUnlimited = user.role === 'admin' || effectivePlan === 'admin' || effectivePlan === 'scholar' || effectivePlan === 'semester';
 
       const refundedAmount = isUnlimited ? 0 : Math.max(0, escrow.amount_locked - penaltyAmount);
       const finalBalance = user.ai_sparks + refundedAmount;

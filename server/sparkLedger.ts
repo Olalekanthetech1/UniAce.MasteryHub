@@ -1,6 +1,98 @@
 import admin from 'firebase-admin';
 import crypto from 'crypto';
 import { getPostgresPool } from './postgresPool';
+import { invalidateBootstrapCache } from './routes/student';
+import { getSystemConfigDoc } from './systemConfigStore';
+
+async function reconcileNeonUserLedgerSum(
+  client: any,
+  uid: string,
+  currentSparks: number
+): Promise<void> {
+  const sumRes = await client.query(
+    `SELECT COALESCE(SUM(delta), 0)::int AS ledger_sum FROM spark_ledger WHERE user_id = $1`,
+    [uid]
+  );
+  const ledgerSum = Number(sumRes.rows[0]?.ledger_sum ?? 0);
+  const diff = currentSparks - ledgerSum;
+  if (diff !== 0) {
+    const reconId = `recon_${uid}_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
+    await client.query(
+      `INSERT INTO spark_ledger (ledger_id, user_id, delta, reason, ref_lock_id, created_at)
+       VALUES ($1, $2, $3, 'ledger_reconciliation_sync', NULL, NOW())
+       ON CONFLICT (ledger_id) DO NOTHING`,
+      [reconId, uid, diff]
+    );
+  }
+}
+
+async function syncUserStateToNeonPostgres(params: {
+  uid: string;
+  aiSparks?: number;
+  planType?: string;
+  role?: string;
+  subscriptionStatus?: string;
+  subscriptionExpiry?: string | null;
+  subscriptionStartDate?: string | null;
+  sandboxNamespace?: string;
+}): Promise<void> {
+  if (params.sandboxNamespace) return;
+  invalidateBootstrapCache(params.uid);
+  const pool = getPostgresPool();
+  if (!pool) return;
+  try {
+    const setClauses: string[] = [];
+    const values: any[] = [];
+    let idx = 1;
+    if (typeof params.aiSparks === 'number' && Number.isFinite(params.aiSparks)) {
+      setClauses.push(`ai_sparks = $${idx++}`);
+      values.push(Math.max(0, Math.round(params.aiSparks)));
+    }
+    if (typeof params.planType === 'string' && params.planType) {
+      setClauses.push(`plan_type = $${idx++}`);
+      values.push(params.planType);
+    }
+    if (typeof params.role === 'string' && params.role) {
+      setClauses.push(`role = $${idx++}`);
+      values.push(params.role);
+    }
+    if (typeof params.subscriptionStatus === 'string' && params.subscriptionStatus) {
+      setClauses.push(`subscription_status = $${idx++}`);
+      values.push(params.subscriptionStatus);
+    }
+    if (params.subscriptionExpiry !== undefined) {
+      setClauses.push(`subscription_expiry = $${idx++}`);
+      values.push(params.subscriptionExpiry ? new Date(params.subscriptionExpiry) : null);
+    }
+    if (params.subscriptionStartDate !== undefined) {
+      setClauses.push(`subscription_start_date = $${idx++}`);
+      values.push(params.subscriptionStartDate ? new Date(params.subscriptionStartDate) : null);
+    }
+    if (setClauses.length > 0) {
+      setClauses.push(`updated_at = NOW()`);
+      values.push(params.uid);
+      await pool.query(
+        `UPDATE users SET ${setClauses.join(', ')} WHERE uid = $${idx};`,
+        values
+      );
+    }
+    if (typeof params.aiSparks === 'number' && Number.isFinite(params.aiSparks)) {
+      const walletBalance = Math.max(0, Math.round(params.aiSparks));
+      const walletPlan = params.planType || 'free';
+      await pool.query(
+        `INSERT INTO user_sparks_wallets (uid, balance, plan_type, updated_at)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (uid) DO UPDATE SET
+           balance = EXCLUDED.balance,
+           plan_type = COALESCE($4, user_sparks_wallets.plan_type),
+           updated_at = NOW();`,
+        [params.uid, walletBalance, walletPlan, params.planType || null]
+      );
+    }
+  } catch (err) {
+    console.warn(`[SparkLedger] Non-fatal Neon PostgreSQL sync warning for ${params.uid}:`, err);
+  }
+}
 
 export type SparkLedgerAction =
   | 'PRE_AUTH'
@@ -348,16 +440,248 @@ export async function executeSparkPreAuth(
     app,
     uid,
     userEmail,
-    idempotencyToken,
     complexity,
     maxPreAuth,
     rateLimitSeconds,
     endpoint,
     isAdminEmailFn
   } = params;
+  const idempotencyToken = params.idempotencyToken || `escrow_${uid}_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
+
+  const ns = params.sandboxNamespace;
+  const pool = !ns ? getPostgresPool() : null;
+
+  if (pool && !ns) {
+    const policyData = (await getSystemConfigDoc('evaluation_policy')) || {};
+    const configuredDailyFreeSparks: number | null =
+      params.dailyFreeSparks !== undefined
+        ? params.dailyFreeSparks
+        : typeof policyData.dailyFreeSparks === 'number' && policyData.dailyFreeSparks >= 0
+          ? policyData.dailyFreeSparks
+          : null;
+
+    const bucketAccountingEnabled: boolean =
+      params.enableSparkBucketLedger !== undefined
+        ? Boolean(params.enableSparkBucketLedger)
+        : Boolean(policyData.enableSparkBucketLedger);
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const existingLockRes = await client.query(
+        `SELECT escrow_id, uid, amount_locked, status, model_id, task_type
+         FROM spark_escrow_locks
+         WHERE escrow_id = $1
+         FOR UPDATE`,
+        [idempotencyToken]
+      );
+
+      let userRes = await client.query(
+        `SELECT uid, email, display_name, role, plan_type, ai_sparks, learning_profile,
+                last_spark_reset, subscription_status, subscription_expiry
+         FROM users
+         WHERE uid = $1
+         FOR UPDATE`,
+        [uid]
+      );
+
+      const now = new Date();
+      const todayStr = now.toISOString().split('T')[0];
+      let isNewUserPg = false;
+
+      if ((userRes.rowCount ?? 0) === 0) {
+        isNewUserPg = true;
+        const isUserAdmin = isAdminEmailFn(userEmail);
+        const initialRole = isUserAdmin ? 'admin' : 'student';
+        const initialSparks =
+          configuredDailyFreeSparks !== null && configuredDailyFreeSparks > 0
+            ? configuredDailyFreeSparks
+            : 50;
+        const seedDisplayName = userEmail ? userEmail.split('@')[0] : 'Student';
+
+        await client.query(
+          `INSERT INTO users (
+             uid, email, display_name, role, plan_type, ai_sparks,
+             learning_profile, last_spark_reset, subscription_status, created_at, updated_at
+           )
+           VALUES ($1, $2, $3, $4, 'free', $5, '{}'::jsonb, NOW(), 'none', NOW(), NOW())
+           ON CONFLICT (uid) DO NOTHING`,
+          [uid, userEmail || `${uid}@uniace.local`, seedDisplayName, initialRole, initialSparks]
+        );
+
+        await client.query(
+          `INSERT INTO user_sparks_wallets (uid, balance, plan_type, last_spark_reset, updated_at)
+           VALUES ($1, $2, 'free', NOW(), NOW())
+           ON CONFLICT (uid) DO UPDATE SET
+             balance = EXCLUDED.balance,
+             updated_at = NOW()`,
+          [uid, initialSparks]
+        );
+
+        userRes = await client.query(
+          `SELECT uid, email, display_name, role, plan_type, ai_sparks, learning_profile,
+                  last_spark_reset, subscription_status, subscription_expiry
+           FROM users
+           WHERE uid = $1
+           FOR UPDATE`,
+          [uid]
+        );
+      }
+
+      const userRow = userRes.rows[0];
+      let plan = userRow.plan_type || 'free';
+      const role = isAdminEmailFn(userEmail || userRow.email)
+        ? 'admin'
+        : (userRow.role || 'student');
+      const status = userRow.subscription_status || 'none';
+      const expiry = userRow.subscription_expiry ? new Date(userRow.subscription_expiry) : null;
+
+      if (role !== 'admin' && plan !== 'free') {
+        const isExpired = Boolean(
+          status === 'expired' ||
+          (expiry && !isNaN(expiry.getTime()) && now.getTime() > expiry.getTime())
+        );
+        if (isExpired) {
+          plan = 'free';
+          await client.query(
+            `UPDATE users
+             SET plan_type = 'free', subscription_status = 'expired', updated_at = NOW()
+             WHERE uid = $1`,
+            [uid]
+          );
+          await client.query(
+            `UPDATE user_sparks_wallets
+             SET plan_type = 'free', updated_at = NOW()
+             WHERE uid = $1`,
+            [uid]
+          );
+        }
+      }
+
+      const isFreeUser = plan === 'free' && role !== 'admin';
+      let currentSparks = Math.max(0, Number(userRow.ai_sparks ?? 0));
+
+      if ((existingLockRes.rowCount ?? 0) > 0) {
+        const lockRow = existingLockRes.rows[0];
+        await client.query('COMMIT');
+        return {
+          sparks: isFreeUser ? currentSparks : 999999,
+          freeSparks: isFreeUser ? currentSparks : null,
+          paidSparks: isFreeUser ? 0 : null,
+          bucketAccountingEnabled,
+          bucketSource: bucketAccountingEnabled ? 'tracked' : 'legacy_off',
+          plan,
+          role,
+          displayName: userRow.display_name || 'Student',
+          learningProfile: userRow.learning_profile || null,
+          isFreeUser,
+          preAuthDeduction: Number(lockRow.amount_locked ?? 0),
+          preAuthFreeSparks: Number(lockRow.amount_locked ?? 0),
+          preAuthPaidSparks: 0,
+          isNewUser: false,
+          alreadyPreAuthorized: true,
+          idempotencyToken
+        };
+      }
+
+      await reconcileNeonUserLedgerSum(client, uid, currentSparks);
+
+      if (isFreeUser) {
+        const lastResetStr = userRow.last_spark_reset
+          ? new Date(userRow.last_spark_reset).toISOString().split('T')[0]
+          : '';
+        if (
+          configuredDailyFreeSparks !== null &&
+          configuredDailyFreeSparks > 0 &&
+          lastResetStr !== todayStr &&
+          currentSparks < configuredDailyFreeSparks
+        ) {
+          const refillDelta = configuredDailyFreeSparks - currentSparks;
+          currentSparks = configuredDailyFreeSparks;
+          await client.query(
+            `INSERT INTO spark_ledger (ledger_id, user_id, delta, reason, ref_lock_id, created_at)
+             VALUES ($1, $2, $3, 'daily_free_refill', $4, NOW())
+             ON CONFLICT (ledger_id) DO NOTHING`,
+            [`${idempotencyToken}_REFILL`, uid, refillDelta, idempotencyToken]
+          );
+        }
+
+        if (currentSparks <= 0) {
+          throw new Error('Insufficient sparks. Please upgrade your plan or wait for daily reset.');
+        }
+      }
+
+      const preAuthDeduction = isFreeUser ? Math.min(currentSparks, maxPreAuth) : 0;
+      const newSparks = isFreeUser ? Math.max(0, currentSparks - preAuthDeduction) : currentSparks;
+
+      // Ensure user_sparks_wallets row exists BEFORE inserting into spark_escrow_locks (FK dependency)
+      await client.query(
+        `INSERT INTO user_sparks_wallets (uid, balance, plan_type, last_spark_reset, updated_at)
+         VALUES ($1, $2, $3, NOW(), NOW())
+         ON CONFLICT (uid) DO UPDATE SET
+           balance = EXCLUDED.balance,
+           plan_type = EXCLUDED.plan_type,
+           last_spark_reset = CASE WHEN $4 THEN NOW() ELSE user_sparks_wallets.last_spark_reset END,
+           updated_at = NOW()`,
+        [uid, newSparks, plan, isFreeUser]
+      );
+
+      await client.query(
+        `INSERT INTO spark_escrow_locks (escrow_id, uid, amount_locked, status, model_id, task_type, created_at)
+         VALUES ($1, $2, $3, 'locked', $4, $5, NOW())
+         ON CONFLICT (escrow_id) DO NOTHING`,
+        [idempotencyToken, uid, preAuthDeduction, endpoint, complexity]
+      );
+
+      if (isFreeUser && preAuthDeduction > 0) {
+        await client.query(
+          `INSERT INTO spark_ledger (ledger_id, user_id, delta, reason, ref_lock_id, created_at)
+           VALUES ($1, $2, $3, 'escrow_pre_auth', $4, NOW())
+           ON CONFLICT (ledger_id) DO NOTHING`,
+          [`${idempotencyToken}_PRE_AUTH`, uid, -preAuthDeduction, idempotencyToken]
+        );
+      }
+
+      if (isFreeUser) {
+        await client.query(
+          `UPDATE users
+           SET ai_sparks = $1, last_spark_reset = NOW(), updated_at = NOW()
+           WHERE uid = $2`,
+          [newSparks, uid]
+        );
+      }
+
+      await client.query('COMMIT');
+      invalidateBootstrapCache(uid);
+
+      return {
+        sparks: isFreeUser ? newSparks : 999999,
+        freeSparks: isFreeUser && bucketAccountingEnabled ? newSparks : null,
+        paidSparks: isFreeUser && bucketAccountingEnabled ? 0 : null,
+        bucketAccountingEnabled,
+        bucketSource: bucketAccountingEnabled ? 'tracked' : 'legacy_off',
+        plan,
+        role,
+        displayName: userRow.display_name || 'Student',
+        learningProfile: userRow.learning_profile || null,
+        isFreeUser,
+        preAuthDeduction,
+        preAuthFreeSparks: preAuthDeduction,
+        preAuthPaidSparks: 0,
+        isNewUser: isNewUserPg,
+        alreadyPreAuthorized: false,
+        idempotencyToken
+      };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
 
   const db = app.firestore();
-  const ns = params.sandboxNamespace;
   const userRef = getLedgerScopedCollection(db, 'users', ns).doc(uid);
   const preAuthDocId = `${idempotencyToken}_PRE_AUTH`;
   const preAuthLedgerRef = getLedgerScopedCollection(db, 'spark_ledger', ns).doc(preAuthDocId);
@@ -393,8 +717,19 @@ export async function executeSparkPreAuth(
     if (existingLedgerSnap.exists) {
       const ledgerData = existingLedgerSnap.data()!;
       const userData = doc.exists ? doc.data() : null;
-      const plan = userData?.plan_type || ledgerData.planType || 'free';
+      let plan = userData?.plan_type || ledgerData.planType || 'free';
       const role = userData?.role || ledgerData.role || 'student';
+      const status = userData?.subscription_status || 'none';
+      const expiry = userData?.subscription_expiry ? new Date(userData.subscription_expiry) : null;
+      if (role !== 'admin' && plan !== 'free') {
+        const isExpired = Boolean(
+          status === 'expired' ||
+          (expiry && !isNaN(expiry.getTime()) && now.getTime() > expiry.getTime())
+        );
+        if (isExpired) {
+          plan = 'free';
+        }
+      }
       const isFreeUser = plan === 'free' && role !== 'admin';
       const currentSparks = isFreeUser
         ? (userData?.ai_sparks ?? ledgerData.balanceAfter ?? 0)
@@ -541,7 +876,9 @@ export async function executeSparkPreAuth(
     const displayName = userData.displayName || 'Student';
     const learningProfile = userData.learningProfile || null;
     let role = userData.role || 'student';
-    const plan = userData.plan_type || 'free';
+    let plan = userData.plan_type || 'free';
+    const status = userData.subscription_status || 'none';
+    const expiry = userData.subscription_expiry ? new Date(userData.subscription_expiry) : null;
     const lastRequestAt = userData.last_request_at?.toDate
       ? userData.last_request_at.toDate()
       : new Date(0);
@@ -552,6 +889,19 @@ export async function executeSparkPreAuth(
     if (isAdminEmailFn(userEmail) && role !== 'admin') {
       updates.role = 'admin';
       role = 'admin';
+    }
+
+    // Dynamic runtime validation of subscription expiration
+    if (role !== 'admin' && plan !== 'free') {
+      const isExpired = Boolean(
+        status === 'expired' ||
+        (expiry && !isNaN(expiry.getTime()) && now.getTime() > expiry.getTime())
+      );
+      if (isExpired) {
+        plan = 'free';
+        updates.plan_type = 'free';
+        updates.subscription_status = 'expired';
+      }
     }
 
     const isFreeUser = plan === 'free' && role !== 'admin';
@@ -777,6 +1127,17 @@ export async function executeSparkPreAuth(
     };
   });
 
+  if (!params.sandboxNamespace && !txResult.alreadyPreAuthorized) {
+    await syncUserStateToNeonPostgres({
+      uid,
+      aiSparks: txResult.isFreeUser ? txResult.sparks : undefined,
+      planType: txResult.plan,
+      role: txResult.role,
+      subscriptionStatus: txResult.plan === 'free' ? 'expired' : undefined,
+      sandboxNamespace: params.sandboxNamespace
+    });
+  }
+
   return { ...txResult, isNewUser };
 }
 
@@ -841,8 +1202,172 @@ export async function executeSparkSettle(
     role
   } = params;
 
-  const db = app.firestore();
   const ns = params.sandboxNamespace;
+  const pool = !ns ? getPostgresPool() : null;
+
+  if (pool && !ns) {
+    const [pricingData, policyData] = await Promise.all([
+      getSystemConfigDoc('token_pricing'),
+      getSystemConfigDoc('evaluation_policy')
+    ]);
+    const pricingStaleAfterDays =
+      typeof policyData?.pricingStaleAfterDays === 'number' ? policyData.pricingStaleAfterDays : 14;
+    const impliedRevenuePerSparkUsd =
+      typeof pricingData?.impliedRevenuePerSparkUsd === 'number' && pricingData.impliedRevenuePerSparkUsd > 0
+        ? pricingData.impliedRevenuePerSparkUsd
+        : null;
+    const pricingVersion =
+      typeof pricingData?.pricingVersion === 'number' ? pricingData.pricingVersion : null;
+    const providerPricingEntry: TokenPricingRateEntry | null = pricingData?.rates?.[providerUsed] || null;
+    const bucketAccountingEnabled = Boolean(policyData?.enableSparkBucketLedger);
+    const bucketSource: SparkBucketSource = bucketAccountingEnabled ? 'tracked' : 'legacy_off';
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const lockRes = await client.query(
+        `SELECT escrow_id, uid, amount_locked, status
+         FROM spark_escrow_locks
+         WHERE escrow_id = $1
+         FOR UPDATE`,
+        [idempotencyToken]
+      );
+
+      const userRes = await client.query(
+        `SELECT uid, ai_sparks, plan_type, role
+         FROM users
+         WHERE uid = $1
+         FOR UPDATE`,
+        [uid]
+      );
+
+      const currentSparks = Math.max(0, Number(userRes.rows[0]?.ai_sparks ?? 0));
+
+      if ((lockRes.rowCount ?? 0) === 0) {
+        await client.query('COMMIT');
+        return {
+          finalSparks: isFreeUser ? currentSparks : 999999,
+          freeSparks: isFreeUser && bucketAccountingEnabled ? currentSparks : null,
+          paidSparks: isFreeUser && bucketAccountingEnabled ? 0 : null,
+          actualCost: 0,
+          freeSparksUsed: 0,
+          paidSparksUsed: 0,
+          refundDelta: 0,
+          alreadySettled: true,
+          bucketAccountingEnabled,
+          bucketSource,
+          costStatus: 'COST_UNKNOWN' as SparkCostStatus,
+          estimatedCostUsd: null,
+          estimatedRevenueUsd: null,
+          grossMarginUsd: null,
+          pricingStale: true
+        };
+      }
+
+      const lockRow = lockRes.rows[0];
+      if (lockRow.status === 'settled' || lockRow.status === 'refunded') {
+        await client.query('COMMIT');
+        return {
+          finalSparks: isFreeUser ? currentSparks : 999999,
+          freeSparks: isFreeUser && bucketAccountingEnabled ? currentSparks : null,
+          paidSparks: isFreeUser && bucketAccountingEnabled ? 0 : null,
+          actualCost: lockRow.status === 'settled' ? actualCost : 0,
+          freeSparksUsed: 0,
+          paidSparksUsed: 0,
+          refundDelta: 0,
+          alreadySettled: true,
+          bucketAccountingEnabled,
+          bucketSource,
+          costStatus: 'COST_UNKNOWN' as SparkCostStatus,
+          estimatedCostUsd: null,
+          estimatedRevenueUsd: null,
+          grossMarginUsd: null,
+          pricingStale: true
+        };
+      }
+
+      await reconcileNeonUserLedgerSum(client, uid, currentSparks);
+
+      const preAuthDeduction = Number(lockRow.amount_locked ?? fallbackPreAuthDeduction);
+      const effectiveCost = isFreeUser
+        ? Math.min(currentSparks + preAuthDeduction, Math.max(0, actualCost))
+        : 0;
+      const refundDelta = isFreeUser ? preAuthDeduction - effectiveCost : 0;
+      const newBalance = isFreeUser ? Math.max(0, currentSparks + refundDelta) : currentSparks;
+
+      await client.query(
+        `UPDATE spark_escrow_locks
+         SET status = 'settled', settled_at = NOW()
+         WHERE escrow_id = $1`,
+        [idempotencyToken]
+      );
+
+      if (isFreeUser && refundDelta !== 0) {
+        await client.query(
+          `INSERT INTO spark_ledger (ledger_id, user_id, delta, reason, ref_lock_id, created_at)
+           VALUES ($1, $2, $3, 'settlement_refund', $4, NOW())
+           ON CONFLICT (ledger_id) DO NOTHING`,
+          [`${idempotencyToken}_SETTLE`, uid, refundDelta, idempotencyToken]
+        );
+        await client.query(
+          `UPDATE users SET ai_sparks = $1, updated_at = NOW() WHERE uid = $2`,
+          [newBalance, uid]
+        );
+        await client.query(
+          `INSERT INTO user_sparks_wallets (uid, balance, plan_type, updated_at)
+           VALUES ($1, $2, $3, NOW())
+           ON CONFLICT (uid) DO UPDATE SET
+             balance = EXCLUDED.balance,
+             updated_at = NOW()`,
+          [uid, newBalance, planType || 'free']
+        );
+      }
+
+      const marginMetrics = computeSparkMarginMetrics(
+        providerUsed,
+        totalTokens,
+        effectiveCost,
+        complexity,
+        providerPricingEntry,
+        pricingStaleAfterDays,
+        impliedRevenuePerSparkUsd,
+        {
+          paidSparksUsed: 0,
+          bucketSource,
+          pricingVersion
+        }
+      );
+
+      await client.query('COMMIT');
+      invalidateBootstrapCache(uid);
+
+      return {
+        finalSparks: isFreeUser ? newBalance : 999999,
+        freeSparks: isFreeUser && bucketAccountingEnabled ? newBalance : null,
+        paidSparks: isFreeUser && bucketAccountingEnabled ? 0 : null,
+        actualCost: effectiveCost,
+        freeSparksUsed: effectiveCost,
+        paidSparksUsed: 0,
+        refundDelta,
+        alreadySettled: false,
+        bucketAccountingEnabled,
+        bucketSource,
+        costStatus: marginMetrics.costStatus,
+        estimatedCostUsd: marginMetrics.estimatedCostUsd,
+        estimatedRevenueUsd: marginMetrics.estimatedRevenueUsd,
+        grossMarginUsd: marginMetrics.grossMarginUsd,
+        pricingStale: marginMetrics.pricingStale
+      };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  const db = app.firestore();
   const userRef = getLedgerScopedCollection(db, 'users', ns).doc(uid);
   const preAuthDocId = `${idempotencyToken}_PRE_AUTH`;
   const settleDocId = `${idempotencyToken}_SETTLE`;
@@ -854,7 +1379,7 @@ export async function executeSparkSettle(
   const pricingRef = getLedgerScopedCollection(db, 'system_config', ns).doc('token_pricing');
   const policyRef = getLedgerScopedCollection(db, 'system_config', ns).doc('evaluation_policy');
 
-  return await db.runTransaction(async (t) => {
+  const settleTxResult = await db.runTransaction<SettleTransactionResult>(async (t) => {
     const [preAuthSnap, settleSnap, refundSnap, userSnap, pricingSnap, policySnap] = await Promise.all([
       t.get(preAuthRef),
       t.get(settleRef),
@@ -903,7 +1428,7 @@ export async function executeSparkSettle(
         alreadySettled: true,
         bucketAccountingEnabled: Boolean(preAuthData.bucketAccountingEnabled),
         bucketSource: (preAuthData.bucketSource as SparkBucketSource) || 'legacy_off',
-        costStatus: 'COST_UNKNOWN',
+        costStatus: 'COST_UNKNOWN' as SparkCostStatus,
         estimatedCostUsd: null,
         estimatedRevenueUsd: null,
         grossMarginUsd: null,
@@ -1110,6 +1635,18 @@ export async function executeSparkSettle(
       pricingStale: marginMetrics.pricingStale
     };
   });
+
+  if (!ns && !settleTxResult.alreadySettled) {
+    await syncUserStateToNeonPostgres({
+      uid,
+      aiSparks: isFreeUser ? settleTxResult.finalSparks : undefined,
+      planType,
+      role,
+      sandboxNamespace: ns
+    });
+  }
+
+  return settleTxResult;
 }
 
 export interface RefundParams {
@@ -1163,8 +1700,121 @@ export async function executeSparkRefund(
     reason
   } = params;
 
-  const db = app.firestore();
   const ns = params.sandboxNamespace;
+  const pool = !ns ? getPostgresPool() : null;
+
+  if (pool && !ns) {
+    const policyData = (await getSystemConfigDoc('evaluation_policy')) || {};
+    const bucketAccountingEnabled = Boolean(policyData.enableSparkBucketLedger);
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const lockRes = await client.query(
+        `SELECT escrow_id, uid, amount_locked, status
+         FROM spark_escrow_locks
+         WHERE escrow_id = $1
+         FOR UPDATE`,
+        [idempotencyToken]
+      );
+
+      const userRes = await client.query(
+        `SELECT uid, ai_sparks, plan_type, role
+         FROM users
+         WHERE uid = $1
+         FOR UPDATE`,
+        [uid]
+      );
+
+      const currentSparks = Math.max(0, Number(userRes.rows[0]?.ai_sparks ?? 0));
+
+      if ((lockRes.rowCount ?? 0) === 0) {
+        await client.query('COMMIT');
+        return {
+          refundedSparks: 0,
+          freeSparksRefunded: 0,
+          paidSparksRefunded: 0,
+          newBalance: isFreeUser ? currentSparks : 999999,
+          freeSparks: isFreeUser && bucketAccountingEnabled ? currentSparks : null,
+          paidSparks: isFreeUser && bucketAccountingEnabled ? 0 : null,
+          bucketAccountingEnabled,
+          alreadyProcessed: true
+        };
+      }
+
+      const lockRow = lockRes.rows[0];
+      if (lockRow.status === 'refunded' || lockRow.status === 'settled') {
+        await client.query('COMMIT');
+        return {
+          refundedSparks: 0,
+          freeSparksRefunded: 0,
+          paidSparksRefunded: 0,
+          newBalance: isFreeUser ? currentSparks : 999999,
+          freeSparks: isFreeUser && bucketAccountingEnabled ? currentSparks : null,
+          paidSparks: isFreeUser && bucketAccountingEnabled ? 0 : null,
+          bucketAccountingEnabled,
+          alreadyProcessed: true
+        };
+      }
+
+      await reconcileNeonUserLedgerSum(client, uid, currentSparks);
+
+      const preAuthDeduction = Number(lockRow.amount_locked ?? fallbackPreAuthDeduction);
+      const effectiveFee = isFreeUser ? Math.min(preAuthDeduction, Math.max(0, attemptFee)) : 0;
+      const refundBack = isFreeUser ? Math.max(0, preAuthDeduction - effectiveFee) : 0;
+      const newBalance = isFreeUser ? currentSparks + refundBack : currentSparks;
+
+      await client.query(
+        `UPDATE spark_escrow_locks
+         SET status = 'refunded', settled_at = NOW()
+         WHERE escrow_id = $1`,
+        [idempotencyToken]
+      );
+
+      if (isFreeUser && refundBack > 0) {
+        await client.query(
+          `INSERT INTO spark_ledger (ledger_id, user_id, delta, reason, ref_lock_id, created_at)
+           VALUES ($1, $2, $3, $4, $5, NOW())
+           ON CONFLICT (ledger_id) DO NOTHING`,
+          [`${idempotencyToken}_REFUND`, uid, refundBack, `Escrow refund: ${reason}`, idempotencyToken]
+        );
+        await client.query(
+          `UPDATE users SET ai_sparks = $1, updated_at = NOW() WHERE uid = $2`,
+          [newBalance, uid]
+        );
+        await client.query(
+          `INSERT INTO user_sparks_wallets (uid, balance, plan_type, updated_at)
+           VALUES ($1, $2, $3, NOW())
+           ON CONFLICT (uid) DO UPDATE SET
+             balance = EXCLUDED.balance,
+             updated_at = NOW()`,
+          [uid, newBalance, planType || 'free']
+        );
+      }
+
+      await client.query('COMMIT');
+      invalidateBootstrapCache(uid);
+
+      return {
+        refundedSparks: refundBack,
+        freeSparksRefunded: refundBack,
+        paidSparksRefunded: 0,
+        newBalance: isFreeUser ? newBalance : 999999,
+        freeSparks: isFreeUser && bucketAccountingEnabled ? newBalance : null,
+        paidSparks: isFreeUser && bucketAccountingEnabled ? 0 : null,
+        bucketAccountingEnabled,
+        alreadyProcessed: false
+      };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  const db = app.firestore();
   const userRef = getLedgerScopedCollection(db, 'users', ns).doc(uid);
   const preAuthDocId = `${idempotencyToken}_PRE_AUTH`;
   const settleDocId = `${idempotencyToken}_SETTLE`;
@@ -1174,7 +1824,7 @@ export async function executeSparkRefund(
   const settleRef = getLedgerScopedCollection(db, 'spark_ledger', ns).doc(settleDocId);
   const refundRef = getLedgerScopedCollection(db, 'spark_ledger', ns).doc(refundDocId);
 
-  return await db.runTransaction(async (t) => {
+  const refundTxResult = await db.runTransaction(async (t) => {
     const [preAuthSnap, settleSnap, refundSnap, userSnap] = await Promise.all([
       t.get(preAuthRef),
       t.get(settleRef),
@@ -1344,10 +1994,22 @@ export async function executeSparkRefund(
       alreadyProcessed: false
     };
   });
+
+  if (!ns && !refundTxResult.alreadyProcessed) {
+    await syncUserStateToNeonPostgres({
+      uid,
+      aiSparks: isFreeUser ? refundTxResult.newBalance : undefined,
+      planType,
+      role,
+      sandboxNamespace: ns
+    });
+  }
+
+  return refundTxResult;
 }
 
 export interface QualityBountyParams {
-  app: admin.app.App;
+  app?: admin.app.App | null;
   uid: string;
   userEmail?: string | null;
   idempotencyToken: string;
@@ -1374,10 +2036,8 @@ export interface QualityBountyResult {
 
 /**
  * STEP 4: Atomic Post-Settle `QUALITY_BOUNTY` Restitution.
- * - Reads `bucketAccountingEnabled` from the parent `_SETTLE` / `_PRE_AUTH` document.
- * - Restores settled `freeSparksUsed` and `paidSparksUsed` to their respective buckets,
- *   and credits `bonusSparksAwarded` strictly to `free_sparks`.
- * - Enforces `ai_sparks === free_sparks + paid_sparks`.
+ * Uses Neon PostgreSQL (`users`, `user_sparks_wallets`, `spark_ledger`) in production,
+ * and falls back to Firestore only when `sandboxNamespace` is set for CLI sandbox tests.
  */
 export async function executeQualityBountyRefund(
   params: QualityBountyParams
@@ -1394,17 +2054,100 @@ export async function executeQualityBountyRefund(
     reviewerNotes
   } = params;
 
-  const db = app.firestore();
   const ns = params.sandboxNamespace;
-  const userRef = getLedgerScopedCollection(db, 'users', ns).doc(uid);
   const safeToken = idempotencyToken && idempotencyToken.trim()
     ? idempotencyToken.trim()
     : `report_${reportId}`;
+  const bountyDocId = `${safeToken}_QUALITY_BOUNTY`;
+
+  const pool = getPostgresPool();
+  if (!ns && pool) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const existingBountyRes = await client.query(
+        `SELECT delta FROM spark_ledger WHERE ledger_id = $1 LIMIT 1`,
+        [bountyDocId]
+      );
+      const userRes = await client.query(
+        `SELECT ai_sparks, plan_type, role FROM users WHERE uid = $1 FOR UPDATE`,
+        [uid]
+      );
+      const currentSparks = Math.max(0, Number(userRes.rows[0]?.ai_sparks ?? 0));
+
+      if ((existingBountyRes.rowCount ?? 0) > 0) {
+        await client.query('COMMIT');
+        const delta = Math.max(0, Number(existingBountyRes.rows[0]?.delta ?? 0));
+        return {
+          creditedSparks: delta,
+          queryRefundSparks: Math.max(0, fallbackSparksCharged),
+          freeSparksRefunded: Math.max(0, fallbackSparksCharged),
+          paidSparksRefunded: 0,
+          bonusSparksAwarded: Math.max(0, delta - Math.max(0, fallbackSparksCharged)),
+          newBalance: currentSparks,
+          freeSparks: currentSparks,
+          paidSparks: 0,
+          bucketAccountingEnabled: true,
+          alreadyCredited: true
+        };
+      }
+
+      const queryRefundSparks = Math.max(0, Number(fallbackSparksCharged) || 0);
+      const effectiveBonus = isFirstReporter ? Math.max(0, Number(bonusSparks) || 0) : 0;
+      const totalCredited = queryRefundSparks + effectiveBonus;
+      const newBalance = currentSparks + totalCredited;
+
+      if (totalCredited > 0) {
+        await client.query(
+          `UPDATE users SET ai_sparks = $1, updated_at = NOW() WHERE uid = $2`,
+          [newBalance, uid]
+        );
+        await client.query(
+          `INSERT INTO user_sparks_wallets (uid, balance, plan_type, updated_at)
+           VALUES ($1, $2, $3, NOW())
+           ON CONFLICT (uid) DO UPDATE SET balance = $2, updated_at = NOW()`,
+          [uid, newBalance, userRes.rows[0]?.plan_type || 'free']
+        );
+        await client.query(
+          `INSERT INTO spark_ledger (ledger_id, user_id, delta, reason, ref_lock_id, created_at)
+           VALUES ($1, $2, $3, 'quality_bounty', $4, NOW())
+           ON CONFLICT (ledger_id) DO NOTHING`,
+          [bountyDocId, uid, totalCredited, safeToken]
+        );
+      }
+
+      await client.query('COMMIT');
+      invalidateBootstrapCache(uid);
+      return {
+        creditedSparks: totalCredited,
+        queryRefundSparks,
+        freeSparksRefunded: queryRefundSparks,
+        paidSparksRefunded: 0,
+        bonusSparksAwarded: effectiveBonus,
+        newBalance,
+        freeSparks: newBalance,
+        paidSparks: 0,
+        bucketAccountingEnabled: true,
+        alreadyCredited: false
+      };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  if (!app) {
+    throw new Error('Firebase Admin app is required for sandbox Firestore QUALITY_BOUNTY.');
+  }
+
+  const db = app.firestore();
+  const userRef = getLedgerScopedCollection(db, 'users', ns).doc(uid);
 
   const preAuthRef = getLedgerScopedCollection(db, 'spark_ledger', ns).doc(`${safeToken}_PRE_AUTH`);
   const settleRef = getLedgerScopedCollection(db, 'spark_ledger', ns).doc(`${safeToken}_SETTLE`);
   const refundRef = getLedgerScopedCollection(db, 'spark_ledger', ns).doc(`${safeToken}_REFUND`);
-  const bountyDocId = `${safeToken}_QUALITY_BOUNTY`;
   const bountyRef = getLedgerScopedCollection(db, 'spark_ledger', ns).doc(bountyDocId);
 
   return await db.runTransaction(async (t) => {
@@ -1637,7 +2380,7 @@ export interface LegacyBucketBackfillResult {
  * so heuristic payment allocations are kept strictly out of the tracked estimated-revenue KPI.
  */
 export async function executeBackfillUserSparkBuckets(params: {
-  app: admin.app.App;
+  app?: admin.app.App | null;
   mode: 'dry_run' | 'commit';
   adminUid: string;
   adminEmail: string;
@@ -1645,8 +2388,95 @@ export async function executeBackfillUserSparkBuckets(params: {
   sandboxNamespace?: string;
 }): Promise<LegacyBucketBackfillResult> {
   const { app, mode, adminUid, adminEmail, reason, sandboxNamespace } = params;
-  const db = app.firestore();
   const nowIso = new Date().toISOString();
+  const pool = getPostgresPool();
+  if (!sandboxNamespace && pool) {
+    const usersRes = await pool.query(`SELECT uid, email, ai_sparks, learning_profile FROM users`);
+    const paymentsRes = await pool.query(
+      `SELECT uid, COALESCE(SUM(sparks_added), 0)::int AS total_purchased
+       FROM payments WHERE status = 'success' GROUP BY uid`
+    );
+    const purchasedByUid = new Map<string, number>();
+    for (const row of paymentsRes.rows) {
+      if (row.uid) purchasedByUid.set(row.uid, Math.max(0, Number(row.total_purchased || 0)));
+    }
+    const previews: LegacyBucketBackfillUserPreview[] = [];
+    let totalPaidSparksAllocated = 0;
+    let totalFreeSparksAllocated = 0;
+    for (const row of usersRes.rows) {
+      const lp = typeof row.learning_profile === 'object' && row.learning_profile ? row.learning_profile : {};
+      if (lp.bucket_tracking_initialized === true) continue;
+      const aiSparks = Math.max(0, Number(row.ai_sparks ?? 0));
+      const totalPurchasedSparks = purchasedByUid.get(row.uid) || 0;
+      const allocatedPaidSparks = Math.min(aiSparks, totalPurchasedSparks);
+      const allocatedFreeSparks = Math.max(0, aiSparks - allocatedPaidSparks);
+      totalPaidSparksAllocated += allocatedPaidSparks;
+      totalFreeSparksAllocated += allocatedFreeSparks;
+      previews.push({
+        uid: row.uid,
+        email: row.email || null,
+        aiSparks,
+        totalPurchasedSparks,
+        allocatedPaidSparks,
+        allocatedFreeSparks,
+        previousBucketSource: lp.bucketSource || null,
+        newBucketSource: 'backfilled_estimate'
+      });
+    }
+    let migratedUsers = 0;
+    if (mode === 'commit' && previews.length > 0) {
+      for (const item of previews) {
+        await pool.query(
+          `UPDATE users
+           SET learning_profile = COALESCE(learning_profile, '{}'::jsonb) || $1::jsonb,
+               updated_at = NOW()
+           WHERE uid = $2`,
+          [
+            JSON.stringify({
+              free_sparks: item.allocatedFreeSparks,
+              paid_sparks: item.allocatedPaidSparks,
+              bucket_tracking_initialized: true,
+              bucketSource: 'backfilled_estimate',
+              bucket_backfilled_at: nowIso
+            }),
+            item.uid
+          ]
+        );
+        migratedUsers++;
+      }
+      await pool.query(
+        `INSERT INTO system_logs (id, level, category, message, metadata, user_id, user_email, created_at)
+         VALUES ($1, 'info', 'system', $2, $3::jsonb, $4, $5, NOW())`,
+        [
+          `bkf_${Date.now()}`,
+          `[Spark Bucket Backfill] Executed by ${adminEmail || adminUid}`,
+          JSON.stringify({
+            scannedUsers: usersRes.rows.length,
+            eligibleLegacyUsers: previews.length,
+            migratedUsers,
+            totalPaidSparksAllocated,
+            totalFreeSparksAllocated,
+            reason: (reason || 'One-time legacy user Spark bucket backfill').trim()
+          }),
+          adminUid,
+          adminEmail || 'unknown@uniace.edu'
+        ]
+      );
+    }
+    return {
+      mode,
+      scannedUsers: usersRes.rows.length,
+      eligibleLegacyUsers: previews.length,
+      migratedUsers,
+      totalPaidSparksAllocated,
+      totalFreeSparksAllocated,
+      previews: previews.slice(0, 100),
+      auditedAt: nowIso
+    };
+  }
+
+  if (!app) throw new Error('Firebase Admin app required for sandbox backfill');
+  const db = app.firestore();
   const usersCol = getLedgerScopedCollection(db, 'users', sandboxNamespace);
   const paymentsCol = getLedgerScopedCollection(db, 'payments', sandboxNamespace);
   const auditCol = getLedgerScopedCollection(db, 'system_config_audit', sandboxNamespace);
@@ -1876,7 +2706,7 @@ export async function executeTransactionalPaymentSuccess(params: {
   } = params;
 
   const pool = getPostgresPool();
-  if (pool) {
+  if (pool && !sandboxNamespace) {
     const CANONICAL_PLANS: Record<string, { sparks: number; duration: string; name: string }> = {
       emergency_topup: { sparks: 500, duration: 'One-Time', name: 'Emergency Top-Up' },
       scholar: { sparks: 2000, duration: '30 Days', name: 'Scholar' },
@@ -1914,6 +2744,7 @@ export async function executeTransactionalPaymentSuccess(params: {
         const userRes = await client.query(`SELECT ai_sparks, email FROM users WHERE uid = $1;`, [uid]);
         const currentAiSparks = userRes.rows[0]?.ai_sparks ?? 0;
         await client.query('COMMIT');
+        invalidateBootstrapCache(uid);
 
         return {
           alreadyProcessed: true,
@@ -1946,25 +2777,45 @@ export async function executeTransactionalPaymentSuccess(params: {
         [reference, uid, amountNgn, normPlanType, sparksToAdd, JSON.stringify(metadata || {})]
       );
 
-      // 3. Update users.ai_sparks and users.plan_type
+      // 3. Inspect current user row to compute subscription_expiry extension if active
+      const existingUserRes = await client.query(
+        `SELECT plan_type, subscription_expiry, subscription_start_date FROM users WHERE uid = $1 FOR UPDATE;`,
+        [uid]
+      );
+      if (existingUserRes.rows.length === 0) {
+        throw new Error(`User ${uid} not found during payment processing`);
+      }
+      const existingUserRow = existingUserRes.rows[0];
+      const now = new Date();
+      const nowIso = now.toISOString();
+      let computedExpiryDate: Date | null = null;
+      if (!isTopUp && durationDays > 0) {
+        const currentExp = existingUserRow.subscription_expiry ? new Date(existingUserRow.subscription_expiry) : null;
+        const isCurrentlyActive = currentExp && !isNaN(currentExp.getTime()) && currentExp.getTime() > now.getTime();
+        if (isCurrentlyActive && existingUserRow.plan_type === normPlanType) {
+          computedExpiryDate = new Date(currentExp.getTime() + durationDays * 24 * 60 * 60 * 1000);
+        } else {
+          computedExpiryDate = new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000);
+        }
+      }
+
+      // 4. Update users.ai_sparks, plan_type, subscription_status, subscription_start_date, subscription_expiry
       const userUpdateRes = await client.query(
         `UPDATE users 
          SET ai_sparks = ai_sparks + $1,
              plan_type = CASE WHEN $2 = 'emergency_topup' THEN plan_type ELSE $2 END,
+             subscription_status = CASE WHEN $2 = 'emergency_topup' THEN subscription_status ELSE 'active' END,
+             subscription_start_date = CASE WHEN $2 = 'emergency_topup' THEN subscription_start_date ELSE COALESCE(subscription_start_date, NOW()) END,
+             subscription_expiry = CASE WHEN $2 = 'emergency_topup' THEN subscription_expiry ELSE $4 END,
              updated_at = NOW()
          WHERE uid = $3
-         RETURNING ai_sparks, email;`,
-        [sparksToAdd, normPlanType, uid]
+         RETURNING ai_sparks, email, subscription_start_date, subscription_expiry;`,
+        [sparksToAdd, normPlanType, uid, computedExpiryDate]
       );
 
-      if (userUpdateRes.rows.length === 0) {
-        throw new Error(`User ${uid} not found during payment processing`);
-      }
-
       const newAiSparks = userUpdateRes.rows[0].ai_sparks;
-      const userEmail = userUpdateRes.rows[0].email;
 
-      // 4. Insert into spark_ledger (reason: 'paystack_purchase', ref_lock_id = reference)
+      // 5. Insert into spark_ledger (reason: 'paystack_purchase', ref_lock_id = reference)
       const ledgerId = `tx_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
       await client.query(
         `INSERT INTO spark_ledger (ledger_id, user_id, delta, reason, ref_lock_id, created_at)
@@ -1972,7 +2823,7 @@ export async function executeTransactionalPaymentSuccess(params: {
         [ledgerId, uid, sparksToAdd, reference]
       );
 
-      // 5. Update user_sparks_wallets mirror
+      // 6. Update user_sparks_wallets mirror
       await client.query(
         `INSERT INTO user_sparks_wallets (uid, balance, plan_type, updated_at)
          VALUES ($1, $2, $3, NOW())
@@ -1984,6 +2835,7 @@ export async function executeTransactionalPaymentSuccess(params: {
       );
 
       await client.query('COMMIT');
+      invalidateBootstrapCache(uid);
 
       return {
         alreadyProcessed: false,
@@ -2432,9 +3284,134 @@ export async function executeBucketAwareSparkDelta(params: {
     sandboxNamespace
   } = params;
 
-  const db = app.firestore();
   const scopedToken = resolveScopedIdempotencyToken(idempotencyToken, uid);
   const ledgerDocId = `${scopedToken}_${action}`;
+  const pool = !sandboxNamespace ? getPostgresPool() : null;
+
+  if (pool && !sandboxNamespace) {
+    const policyData = (await getSystemConfigDoc('evaluation_policy')) || {};
+    const bucketAccountingEnabled = Boolean(policyData.enableSparkBucketLedger);
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const existingLedgerRes = await client.query(
+        `SELECT ledger_id, delta FROM spark_ledger WHERE ledger_id = $1`,
+        [ledgerDocId]
+      );
+
+      const userRes = await client.query(
+        `SELECT uid, email, role, plan_type, ai_sparks, subscription_status, subscription_expiry
+         FROM users
+         WHERE uid = $1
+         FOR UPDATE`,
+        [uid]
+      );
+
+      if ((userRes.rowCount ?? 0) === 0) {
+        throw new Error('User profile not found');
+      }
+
+      const userRow = userRes.rows[0];
+      const currentSparks = Math.max(0, Number(userRow.ai_sparks ?? 0));
+
+      if ((existingLedgerRes.rowCount ?? 0) > 0) {
+        const lRow = existingLedgerRes.rows[0];
+        await client.query('COMMIT');
+        return {
+          alreadyProcessed: true,
+          appliedDelta: Number(lRow.delta ?? 0),
+          newBalance: currentSparks,
+          freeSparks: bucketAccountingEnabled ? currentSparks : null,
+          paidSparks: bucketAccountingEnabled ? 0 : null,
+          idempotencyToken: scopedToken
+        };
+      }
+
+      const role = userRow.role || 'student';
+      let plan = userRow.plan_type || 'free';
+      const status = userRow.subscription_status || 'none';
+      const expiry = userRow.subscription_expiry ? new Date(userRow.subscription_expiry) : null;
+      const now = new Date();
+      if (role !== 'admin' && plan !== 'free') {
+        const isExpired = Boolean(
+          status === 'expired' ||
+          (expiry && !isNaN(expiry.getTime()) && now.getTime() > expiry.getTime())
+        );
+        if (isExpired) {
+          plan = 'free';
+          await client.query(
+            `UPDATE users SET plan_type = 'free', subscription_status = 'expired', updated_at = NOW() WHERE uid = $1`,
+            [uid]
+          );
+          await client.query(
+            `UPDATE user_sparks_wallets SET plan_type = 'free', updated_at = NOW() WHERE uid = $1`,
+            [uid]
+          );
+        }
+      }
+
+      const userEmail = userRow.email || 'unknown@uniace.edu';
+      const isStaff =
+        ['admin', 'tutor', 'moderator'].includes(role) ||
+        Boolean(isAdminEmailFn && isAdminEmailFn(userEmail));
+      const isPaidPlan = plan !== 'free';
+
+      let effectiveDelta = Math.trunc(delta);
+      if (effectiveDelta < 0 && bypassDeductionIfStaffOrPaid && (isStaff || isPaidPlan)) {
+        effectiveDelta = 0;
+      }
+
+      if (effectiveDelta < 0 && currentSparks < Math.abs(effectiveDelta)) {
+        throw new Error('Insufficient sparks');
+      }
+
+      await reconcileNeonUserLedgerSum(client, uid, currentSparks);
+
+      const newBalance = Math.max(0, currentSparks + effectiveDelta);
+
+      await client.query(
+        `INSERT INTO spark_ledger (ledger_id, user_id, delta, reason, ref_lock_id, created_at)
+         VALUES ($1, $2, $3, $4, $5, NOW())`,
+        [ledgerDocId, uid, effectiveDelta, reason, scopedToken]
+      );
+
+      if (effectiveDelta !== 0) {
+        await client.query(
+          `UPDATE users SET ai_sparks = $1, updated_at = NOW() WHERE uid = $2`,
+          [newBalance, uid]
+        );
+        await client.query(
+          `INSERT INTO user_sparks_wallets (uid, balance, plan_type, updated_at)
+           VALUES ($1, $2, $3, NOW())
+           ON CONFLICT (uid) DO UPDATE SET
+             balance = EXCLUDED.balance,
+             updated_at = NOW()`,
+          [uid, newBalance, plan]
+        );
+      }
+
+      await client.query('COMMIT');
+      invalidateBootstrapCache(uid);
+
+      return {
+        alreadyProcessed: false,
+        appliedDelta: effectiveDelta,
+        newBalance,
+        freeSparks: bucketAccountingEnabled ? newBalance : null,
+        paidSparks: bucketAccountingEnabled ? 0 : null,
+        idempotencyToken: scopedToken
+      };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  const db = app.firestore();
   const usersCol = getLedgerScopedCollection(db, 'users', sandboxNamespace);
   const ledgerCol = getLedgerScopedCollection(db, 'spark_ledger', sandboxNamespace);
   const configCol = getLedgerScopedCollection(db, 'system_config', sandboxNamespace);

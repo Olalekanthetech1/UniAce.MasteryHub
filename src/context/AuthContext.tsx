@@ -87,11 +87,58 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const activeSessionIdRef = React.useRef<string | null>(null);
   const userIdRef = React.useRef<string | null>(null);
 
+  const normalizeTimestampIso = (raw: any): string | undefined => {
+    if (!raw) return undefined;
+    if (typeof raw === 'string') {
+      const d = new Date(raw);
+      return isNaN(d.getTime()) ? undefined : d.toISOString();
+    }
+    if (typeof raw === 'number') {
+      const d = new Date(raw);
+      return isNaN(d.getTime()) ? undefined : d.toISOString();
+    }
+    if (raw instanceof Date) {
+      return isNaN(raw.getTime()) ? undefined : raw.toISOString();
+    }
+    if (typeof raw === 'object') {
+      if (typeof raw.toDate === 'function') {
+        const d = raw.toDate();
+        return d instanceof Date && !isNaN(d.getTime()) ? d.toISOString() : undefined;
+      }
+      if (typeof raw._seconds === 'number') {
+        return new Date(raw._seconds * 1000).toISOString();
+      }
+      if (typeof raw.seconds === 'number') {
+        return new Date(raw.seconds * 1000).toISOString();
+      }
+      if (typeof raw.iso === 'string') {
+        const d = new Date(raw.iso);
+        return isNaN(d.getTime()) ? undefined : d.toISOString();
+      }
+    }
+    return undefined;
+  };
+
   const loadCachedProfile = (uid: string): Partial<UserProfile> | null => {
     try {
       const raw = localStorage.getItem(`uniace_user_profile_${uid}`);
       if (raw) {
-        return JSON.parse(raw);
+        const parsed = JSON.parse(raw);
+        const normalizedCreated = normalizeTimestampIso(parsed.created_at || parsed.createdAt);
+        if (normalizedCreated) {
+          parsed.created_at = normalizedCreated;
+        } else {
+          delete parsed.created_at;
+        }
+        if (parsed.plan_type && parsed.plan_type !== 'free') {
+          const expIso = normalizeTimestampIso(parsed.subscription_expiry);
+          const exp = expIso ? new Date(expIso) : null;
+          if (parsed.subscription_status === 'expired' || (exp && Date.now() > exp.getTime()) || !exp) {
+            parsed.plan_type = 'free';
+            parsed.subscription_status = 'expired';
+          }
+        }
+        return parsed;
       }
     } catch {
       // Ignore storage read errors
@@ -115,6 +162,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const adminEmails = (import.meta.env.VITE_ADMIN_EMAILS || '').split(',').map((e: string) => e.trim().toLowerCase()).filter(Boolean);
     const isUserAdmin = Boolean(currentUser.email && adminEmails.includes(currentUser.email.toLowerCase()));
 
+    const cachedExpIso = normalizeTimestampIso(cachedProfile?.subscription_expiry);
+    const cachedExp = cachedExpIso ? new Date(cachedExpIso) : null;
+    const isCachedExpired = Boolean(
+      cachedProfile?.subscription_status === 'expired' ||
+      (cachedExp && Date.now() > cachedExp.getTime()) ||
+      (cachedProfile?.plan_type && cachedProfile.plan_type !== 'free' && !cachedExp)
+    );
+    const resolvedInitialPlan = isUserAdmin ? 'scholar' : (isCachedExpired ? 'free' : (cachedProfile?.plan_type || 'free'));
+    const authCreationIso = normalizeTimestampIso(currentUser.metadata?.creationTime);
+
     // Instant optimistic hydration from cache or user object to prevent blank-screen blocking
     const initialProfile: UserProfile = {
       uid: currentUser.uid,
@@ -123,17 +180,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       bio: cachedProfile?.bio,
       photoURL: cachedProfile?.photoURL || currentUser.photoURL || "",
       role: isUserAdmin ? 'admin' : (cachedProfile?.role || 'student'),
-      plan_type: cachedProfile?.plan_type || (isUserAdmin ? 'scholar' : 'free'),
-      subscription_expiry: cachedProfile?.subscription_expiry,
-      subscription_status: cachedProfile?.subscription_status || 'none',
-      subscription_start_date: cachedProfile?.subscription_start_date,
+      plan_type: resolvedInitialPlan,
+      subscription_expiry: cachedExpIso,
+      subscription_status: isCachedExpired ? 'expired' : (cachedProfile?.subscription_status || 'none'),
+      subscription_start_date: normalizeTimestampIso(cachedProfile?.subscription_start_date),
       ai_sparks: cachedProfile?.ai_sparks ?? (isUserAdmin ? 999999 : 50),
       xp: cachedProfile?.xp ?? 0,
       level: cachedProfile?.level ?? 1,
       streak: cachedProfile?.streak ?? 0,
       themeColor: cachedProfile?.themeColor,
       rank: cachedProfile?.rank,
-      created_at: cachedProfile?.created_at || new Date().toISOString(),
+      created_at: normalizeTimestampIso(cachedProfile?.created_at) || authCreationIso,
       sessionId: currentSessionId,
       department: cachedProfile?.department || (typeof window !== 'undefined' ? localStorage.getItem('activeDepartment') || undefined : undefined),
       faculty: cachedProfile?.faculty,
@@ -257,6 +314,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         (resolvedDepartment && resolvedAcademicLevel && resolvedSemester)
       );
 
+      const normalizedExpIso = normalizeTimestampIso(subscription_expiry);
+      subscription_expiry = normalizedExpIso;
+      subscription_start_date = normalizeTimestampIso(subscription_start_date);
+
+      // Dynamic runtime verification of subscription expiration
+      if (userRole !== 'admin' && plan_type !== 'free') {
+        const expDate = normalizedExpIso ? new Date(normalizedExpIso) : null;
+        if (subscription_status === 'expired' || (expDate && Date.now() > expDate.getTime()) || !expDate) {
+          plan_type = 'free';
+          subscription_status = 'expired';
+        }
+      }
+
       const profileData: UserProfile = {
         uid: currentUser.uid,
         email: currentUser.email || mergedSource.email || "",
@@ -274,9 +344,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         streak: Math.max(Number(firestoreData.streak || 0), Number(mergedSource.streak || 0)),
         themeColor: mergedSource.themeColor,
         rank: mergedSource.rank,
-        created_at: firestoreData.createdAt?.toDate
-          ? firestoreData.createdAt.toDate().toISOString()
-          : (mergedSource.createdAt || mergedSource.created_at || new Date().toISOString()),
+        created_at:
+          normalizeTimestampIso(mergedSource.created_at) ||
+          normalizeTimestampIso(mergedSource.createdAt) ||
+          normalizeTimestampIso(firestoreData.createdAt) ||
+          authCreationIso,
         sessionId: currentSessionId,
         admin_pin_verified_until: firestoreData.admin_pin_verified_until || mergedSource.admin_pin_verified_until,
         department: resolvedDepartment,

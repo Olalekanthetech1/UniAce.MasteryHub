@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Users, Link as LinkIcon, Copy, CheckCircle2, TrendingUp, AlertCircle, ArrowLeft, Loader2, MousePointerClick, CreditCard, Send } from 'lucide-react';
-import { doc, getDoc } from 'firebase/firestore';
-import { db, auth } from '../firebase';
+import { auth } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { toast } from 'react-hot-toast';
 
@@ -34,36 +33,13 @@ export default function TutorDashboard({ onBack }: TutorDashboardProps) {
     setIsLoading(true);
     setError('');
     try {
-      if (!db) return;
-      
-      let refCode = user.uid.substring(0, 6).toUpperCase();
-      try {
-        const userRef = await getDoc(doc(db, 'users', user.uid));
-        if (userRef.exists() && userRef.data().referralCode) {
-          refCode = userRef.data().referralCode;
-        }
-      } catch (uErr) {
-        console.warn("User doc fetch fallback:", uErr);
-      }
-
-      let foundData: any = null;
-      try {
-        const affDoc = await getDoc(doc(db, 'affiliates', refCode));
-        if (affDoc.exists()) {
-          foundData = { id: affDoc.id, ...affDoc.data() };
-        } else {
-          // Secondary fallback: query by userId
-          const { collection, query, where, getDocs, limit } = await import('firebase/firestore');
-          const qSnap = await getDocs(query(collection(db, 'affiliates'), where('userId', '==', user.uid), limit(1)));
-          if (!qSnap.empty) {
-            const doc0 = qSnap.docs[0];
-            foundData = { id: doc0.id, ...doc0.data() };
-          }
-        }
-      } catch (affErr) {
-        console.warn("Affiliate record direct read fallback:", affErr);
-      }
-
+      const token = await user.getIdToken();
+      const res = await fetch('/api/affiliate/me', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error('Failed to load affiliate metrics');
+      const data = await res.json();
+      const foundData = data.affiliate;
       if (foundData) {
         setAffiliateData(foundData);
         if (foundData.payoutDetails) {
@@ -71,32 +47,10 @@ export default function TutorDashboard({ onBack }: TutorDashboardProps) {
           setAccountName(foundData.payoutDetails.accountName || '');
           setAccountNumber(foundData.payoutDetails.accountNumber || '');
         }
-      } else {
-        // Fallback: the affiliate doc doesn't exist yet, meaning 0 referrals so far.
-        setAffiliateData({ 
-          id: refCode, 
-          signups: 0, 
-          clicks: 0, 
-          paidConversions: 0, 
-          totalEarned: 0, 
-          pendingBalance: 0 
-        });
       }
-
-      // Fetch payout history
-      try {
-        const { collection, query, where, getDocs } = await import('firebase/firestore');
-        const pSnapshot = await getDocs(query(collection(db, 'payout_requests'), where('userId', '==', user.uid)));
-        const pData: any[] = [];
-        pSnapshot.forEach(d => pData.push({ id: d.id, ...d.data() }));
-        pData.sort((a, b) => (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0));
-        setPayoutHistories(pData);
-      } catch (err) {
-        console.error("Failed to load payout history", err);
-      }
+      setPayoutHistories(Array.isArray(data.payouts) ? data.payouts : []);
     } catch (e: any) {
       console.error("Error in fetchAffiliateData:", e);
-      // Fallback display if complete fetch fails
       const fallbackCode = user.uid.substring(0, 6).toUpperCase();
       setAffiliateData({ 
         id: fallbackCode, 
@@ -440,7 +394,7 @@ export default function TutorDashboard({ onBack }: TutorDashboardProps) {
                     {payoutHistories.map((h, i) => (
                       <tr key={i} className="border-b border-slate-100 dark:border-zinc-800/50 hover:bg-slate-50 dark:hover:bg-zinc-800/50 transition-colors">
                         <td className="py-4 px-4 whitespace-nowrap text-sm text-slate-600 dark:text-slate-400">
-                           {h.createdAt ? new Date(h.createdAt.toDate()).toLocaleDateString() : 'N/A'}
+                           {h.createdAt ? new Date(h.createdAt?.toDate ? h.createdAt.toDate() : h.createdAt).toLocaleDateString() : 'N/A'}
                         </td>
                         <td className="py-4 px-4 font-bold text-emerald-600 dark:text-emerald-400">
                           ₦{(h.amount || 0).toLocaleString()}

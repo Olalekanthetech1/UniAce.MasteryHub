@@ -94,20 +94,8 @@ for (const relPath of STRICT_SERVER_FILES) {
   }
 }
 
-// Group 2 Allowlist (per Stage 5 specification)
-// Only these approved feature components and init files may access Firestore; all core repositories and student features must use Neon PostgreSQL.
-const GROUP_2_ALLOWLIST = new Set([
-  'src/components/Arena.tsx',
-  'src/components/TutorDashboard.tsx',
-  'src/components/AdminSupport.tsx',
-  'src/components/HelpSupport.tsx',
-  'src/components/AdminAffiliates.tsx',
-  'src/components/CourseHub.tsx',
-  'src/components/UserProfile.tsx',
-  'src/components/AdminQuestionBank.tsx',
-  'src/components/ApiKeyManagerModal.tsx',
-  'src/firebase.ts'
-]);
+// Group 2 Allowlist — Now empty: 100% of frontend components, hooks, services, and repositories are migrated to Neon PostgreSQL.
+const GROUP_2_ALLOWLIST = new Set([]);
 
 // Inverted Zero-Firestore Check across src/ and server/repositories/
 function scanForUnapprovedFirestore(dir) {

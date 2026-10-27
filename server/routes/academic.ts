@@ -7,7 +7,7 @@ import {
   getAcademicConfig,
   updateAcademicConfig,
 } from '../academicResearchEngine.js';
-import { getAdminApp } from '../firebaseAdmin.js';
+import { getPostgresPool } from '../postgresPool.js';
 
 const router = Router();
 
@@ -85,11 +85,11 @@ router.get('/stats', async (req: Request, res: Response) => {
     const config = getAcademicConfig();
 
     let totalLogCount = 0;
-    const adminApp = getAdminApp();
-    if (adminApp) {
+    const pool = getPostgresPool();
+    if (pool) {
       try {
-        const snap = await adminApp.firestore().collection('academic_research_logs').get();
-        totalLogCount = snap.size;
+        const countRes = await pool.query(`SELECT COUNT(*)::int AS cnt FROM system_logs WHERE category = 'academic_research'`);
+        totalLogCount = Number(countRes.rows[0]?.cnt || 0);
       } catch (err) {
         console.warn('Log count error:', err);
       }

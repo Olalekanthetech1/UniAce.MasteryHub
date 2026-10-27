@@ -104,7 +104,17 @@ export function validateLessonSyntax(content: string, pedagogyType: DisciplinePe
     }
   }
 
-  // 3. Domain-Specific Pedagogical Expectation Check
+  // 3. Diagram & Visualization Integrity Check
+  // Mermaid quadrantChart must never be used for Cartesian coordinate geometry or continuous math curves
+  const mermaidBlocks = trimmed.match(/```mermaid[\s\S]*?```/gi) || [];
+  for (const block of mermaidBlocks) {
+    if (/quadrantChart/i.test(block) && /(origin|circle|tangent|radius|slope|x\^2|y\^2|coordinate|axis)/i.test(block)) {
+      errors.push('Invalid mathematical visualization: Mermaid quadrantChart was used for Cartesian geometry/curves. Use ```function-plot or ```svg instead.');
+      break;
+    }
+  }
+
+  // 4. Domain-Specific Pedagogical Expectation Check
   if (pedagogyType === 'STEM_MATHEMATICAL') {
     // Expect at least some mathematical notation or quantitative concepts
     const hasMath = trimmed.includes('$') || trimmed.includes('\\') || /\b(equation|formula|theorem|parameter|derivative|matrix|vector|integral|ratio|constant)\b/i.test(trimmed);

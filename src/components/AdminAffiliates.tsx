@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Users, Link as LinkIcon, Plus, Copy, CheckCircle2, TrendingUp, AlertCircle, X, Loader2, Save, Percent, ShieldCheck, Settings } from 'lucide-react';
-import { doc, setDoc, getDocs, collection, query, serverTimestamp, getDoc, where } from 'firebase/firestore';
-import { db, auth } from '../firebase';
+import { auth } from '../firebase';
 
 export default function AdminAffiliates() {
   const [affiliates, setAffiliates] = useState<any[]>([]);
@@ -26,35 +25,35 @@ export default function AdminAffiliates() {
   const [isSavingCommission, setIsSavingCommission] = useState(false);
 
   useEffect(() => {
-    fetchAffiliates();
-    fetchCommissionRate();
-    fetchPayouts();
+    fetchOverview();
   }, []);
 
-  const fetchPayouts = async () => {
+  const fetchOverview = async () => {
+    setIsLoading(true);
     setIsLoadingPayouts(true);
     try {
-      if (!db) return;
-      // Fetch payouts descending
-      const snapshot = await getDocs(query(collection(db, 'payout_requests')));
-      const data: any[] = [];
-      snapshot.forEach(doc => {
-        data.push({ id: doc.id, ...doc.data() });
+      const token = await auth.currentUser?.getIdToken();
+      const res = await fetch('/api/admin/affiliates-overview', {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
-      // sort by createdAt desc
-      data.sort((a, b) => {
-        const timeA = a.createdAt?.toMillis() || 0;
-        const timeB = b.createdAt?.toMillis() || 0;
-        return timeB - timeA;
-      });
-      setPayouts(data);
+      if (!res.ok) throw new Error('Failed to load affiliates overview');
+      const data = await res.json();
+      setAffiliates(Array.isArray(data.affiliates) ? data.affiliates : []);
+      setPayouts(Array.isArray(data.payouts) ? data.payouts : []);
+      if (typeof data.commissionRate === 'number') {
+        setGlobalCommissionRate(data.commissionRate <= 1 ? data.commissionRate * 100 : data.commissionRate);
+      }
     } catch (e) {
       console.error(e);
-      setError('Failed to load payouts.');
+      setError('Failed to load affiliates.');
     } finally {
+      setIsLoading(false);
       setIsLoadingPayouts(false);
     }
   };
+
+  const fetchPayouts = () => fetchOverview();
+  const fetchAffiliates = () => fetchOverview();
 
   const handleUpdateStatus = async (payoutId: string, status: 'approved' | 'rejected') => {
     setProcessingPayout(payoutId);
@@ -74,8 +73,7 @@ export default function AdminAffiliates() {
       
       setSuccess(`Payout ${status} successfully!`);
       setTimeout(() => setSuccess(''), 3000);
-      fetchPayouts();
-      fetchAffiliates(); // also refresh balances
+      await fetchOverview();
     } catch (err: any) {
       console.error(err);
       setError(err.message || 'Failed to update payout');
@@ -84,30 +82,19 @@ export default function AdminAffiliates() {
     }
   };
 
-  const fetchCommissionRate = async () => {
-    try {
-      if (!db) return;
-      const settingsDoc = await getDoc(doc(db, 'settings', 'commissions'));
-      if (settingsDoc.exists()) {
-        const data = settingsDoc.data();
-        if (typeof data.rate === 'number') {
-          setGlobalCommissionRate(data.rate * 100);
-        }
-      }
-    } catch (e) {
-      console.error('Error fetching commission rate:', e);
-    }
-  };
-
   const saveCommissionRate = async () => {
     setIsSavingCommission(true);
     try {
-      if (!db) return;
-      await setDoc(doc(db, 'settings', 'commissions'), {
-        rate: globalCommissionRate / 100,
-        updatedAt: serverTimestamp(),
-        updatedBy: db.app.options.projectId // Just a placeholder or use auth.currentUser.email
-      }, { merge: true });
+      const token = await auth.currentUser?.getIdToken();
+      const res = await fetch('/api/admin/commissions', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ rate: globalCommissionRate / 100 })
+      });
+      if (!res.ok) throw new Error('Failed to update commission rate');
       setSuccess('Commission rate updated successfully!');
       setTimeout(() => setSuccess(''), 3000);
     } catch (e) {
@@ -115,24 +102,6 @@ export default function AdminAffiliates() {
       setError('Failed to update commission rate.');
     } finally {
       setIsSavingCommission(false);
-    }
-  };
-
-  const fetchAffiliates = async () => {
-    setIsLoading(true);
-    try {
-      if (!db) return;
-      const snapshot = await getDocs(collection(db, 'affiliates'));
-      const data: any[] = [];
-      snapshot.forEach(doc => {
-        data.push({ id: doc.id, ...doc.data() });
-      });
-      setAffiliates(data);
-    } catch (e) {
-      console.error(e);
-      setError('Failed to load affiliates.');
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -152,7 +121,7 @@ export default function AdminAffiliates() {
     setIsCreating(true);
     setError('');
     try {
-      if (!db || !auth) throw new Error("Firebase not initialized");
+      if (!auth) throw new Error("Firebase not initialized");
       
       const token = await auth.currentUser?.getIdToken();
       if (!token) throw new Error("Unauthorized");
@@ -465,7 +434,7 @@ export default function AdminAffiliates() {
                   {payouts.map((payout) => (
                     <tr key={payout.id} className="border-b border-slate-100 dark:border-zinc-800/50 hover:bg-slate-50 dark:hover:bg-zinc-800/50 transition-colors text-sm">
                       <td className="py-4 px-4 whitespace-nowrap text-slate-600 dark:text-slate-400">
-                        {payout.createdAt ? new Date(payout.createdAt.toDate()).toLocaleDateString() : 'N/A'}
+                        {payout.createdAt ? new Date(payout.createdAt?.toDate ? payout.createdAt.toDate() : payout.createdAt).toLocaleDateString() : 'N/A'}
                       </td>
                       <td className="py-4 px-4 font-bold text-slate-900 dark:text-white">
                         {payout.affiliateId}

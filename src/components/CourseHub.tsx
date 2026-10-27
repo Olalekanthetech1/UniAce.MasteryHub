@@ -2,8 +2,6 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { BookOpen, Sparkles, Globe, Search, Users, Calendar, ArrowRight, Loader2, Edit2, Clock, GraduationCap, Rocket, BellRing } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { db } from '../firebase';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { useCourses } from '../context/CourseContext';
 import { CourseId, View, Course, UserProgress, Department, Semester } from '../types';
 import { useAuth } from '../context/AuthContext';
@@ -44,15 +42,20 @@ export default function CourseHub({ onSelectCourse, onProfileClick, onViewSelect
     if (!user || isRequesting) return;
     setIsRequesting(true);
     try {
-      await addDoc(collection(db, 'curriculum_requests'), {
-        userId: user.uid,
-        email: user.email,
-        department: profile?.department || '',
-        level: profile?.academic_level || '',
-        semester: activeSemester,
-        timestamp: serverTimestamp(),
-        status: 'pending'
+      const token = await user.getIdToken();
+      const res = await fetch('/api/curriculum-requests', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          department: profile?.department || '',
+          level: profile?.academic_level || '',
+          semester: activeSemester
+        })
       });
+      if (!res.ok) throw new Error('Failed to submit curriculum request');
       toast.success("We've recorded your request! We'll notify you when courses are added.", { duration: 5000, icon: '🚀' });
     } catch (err) {
       console.error(err);

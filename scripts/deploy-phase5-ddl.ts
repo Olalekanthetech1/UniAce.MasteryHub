@@ -66,14 +66,21 @@ export async function deployPhase5DDL() {
       uid VARCHAR(128) PRIMARY KEY,
       email VARCHAR(255),
       display_name VARCHAR(255),
-      role VARCHAR(32) NOT NULL DEFAULT 'student' CHECK (role IN ('student','admin')),
+      role VARCHAR(32) NOT NULL DEFAULT 'student' CHECK (role IN ('student','admin','tutor','moderator')),
       plan_type VARCHAR(32) NOT NULL DEFAULT 'free' CHECK (plan_type IN ('free','scholar')),
       ai_sparks INTEGER NOT NULL,
       learning_profile JSONB NOT NULL DEFAULT '{}',
       last_spark_reset TIMESTAMPTZ,
+      subscription_status VARCHAR(32) DEFAULT 'none',
+      subscription_expiry TIMESTAMPTZ,
+      subscription_start_date TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS subscription_status VARCHAR(32) DEFAULT 'none',
+      ADD COLUMN IF NOT EXISTS subscription_expiry TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS subscription_start_date TIMESTAMPTZ;
     CREATE INDEX IF NOT EXISTS idx_users_role_plan ON users (role, plan_type);
   `;
   await queryPostgres(createUsersSql);

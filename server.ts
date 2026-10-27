@@ -30,7 +30,7 @@ const currentDirname = typeof __dirname !== 'undefined' ? __dirname : process.cw
 import { initializeVectorStore, findRelevantContentSemantic, addVectorItem, removeVectorItem } from './server/vectorSearch';
 
 import { GeminiDirectProvider, MistralProvider, GroqProvider, CohereProvider, HuggingFaceProvider, OpenRouterFreeProvider, NvidiaProvider, CircuitBreaker, isClientAbortError, createStreamAbortError } from './server/providers';
-import { getCachedResponse, setCachedResponse } from './server/cache';
+import { getCachedResponse, setCachedResponse, purgeQuestionCache } from './server/cache';
 import { MailService } from './server/mailService';
 import { telemetry } from './server/telemetry';
 import { getLiveMemoryTelemetry, recordBackendSystemLog, getBufferedBackendSystemLogs, startMemoryMonitoringUtility } from './server/memoryMonitor';
@@ -80,6 +80,7 @@ import {
   getLessonOrderIndex,
   sortCourseSyllabus
 } from './src/shared/courseSchemas.js';
+import { VISUALIZATION_AND_DIAGRAM_DIRECTIVE } from './src/shared/prompts.js';
 import {
   validateLessonSyntax,
   buildDomainBriefPrompt,
@@ -162,6 +163,7 @@ import { progressRepository } from './server/repositories/progressRepository';
 import { JobRepository } from './server/repositories/jobRepository';
 import { jobStreamManager } from './server/services/jobStreamManager';
 import { getFeatureFlags, initRuntimeFlagsSync } from './server/config/features';
+import { getSystemConfigDoc, setSystemConfigDoc, getSystemSettingsDoc, setSystemSettingsDoc } from './server/systemConfigStore';
 
 // Initialize Neon PostgreSQL system_runtime_flags in-memory sync engine (5s background poll)
 initRuntimeFlagsSync().catch((err) => {
@@ -215,27 +217,18 @@ export function syncAllProvidersFromSettings(apiKeysData: any) {
   }
 }
 
-// Attach real-time snapshot listener on Firestore system_settings/api_keys
-const initApiKeysListener = () => {
-  const adminApp = getAdminApp();
-  if (!adminApp) {
-    setTimeout(initApiKeysListener, 2000);
-    return;
-  }
+// Synchronize API keys from Neon PostgreSQL system_config (settings_api_keys)
+const initApiKeysListener = async () => {
   try {
-    adminApp.firestore().collection('system_settings').doc('api_keys').onSnapshot(
-      (snap) => {
-        if (snap.exists) {
-          syncAllProvidersFromSettings(snap.data());
-        }
-      },
-      (err) => console.warn('[Sync] api_keys listener notice:', err.message)
-    );
+    const apiKeysData = await getSystemSettingsDoc('api_keys');
+    if (apiKeysData) {
+      syncAllProvidersFromSettings(apiKeysData);
+    }
   } catch (err: any) {
-    console.warn('[Sync] Could not attach api_keys snapshot listener:', err.message);
+    console.warn('[Sync] Could not load initial api_keys from Neon PostgreSQL:', err.message);
   }
 };
-initApiKeysListener();
+void initApiKeysListener();
 
 // --- Resilient Task Coordinator (Rate Limit Shield & Backoff Queue) ---
 class ResilientTaskCoordinator {
@@ -868,6 +861,10 @@ Academic & Pedagogical Standard:
 - Explain concepts with clarity: intuition and analogies first, followed by formal proofs or mathematical steps.
 - For mathematics, always use standard LaTeX syntax: inline formulas enclosed in $...$ and block display equations in $$...$$.
 - When solving a quantitative math, physics, chemistry, or computer science problem with a closed-form numerical or algebraic result, always state the final result inside $\\boxed{...}$ so students and academic verifiers can clearly identify the exact answer.
+- Visual Diagrams & Mathematical Plots:
+  1. For structural architectures, workflows, state machines, and concept trees, use \`\`\`mermaid. NEVER use Mermaid for Cartesian coordinate geometry, circles, tangents, or calculus curves.
+  2. For 2D function graphs, calculus curves, derivatives, and coordinate points, use \`\`\`function-plot with explicit equations (e.g. y = mx + b), implicit equations (e.g. x^2 + y^2 = R), and points (e.g. point(x, y)).
+  3. For exact geometric figures (such as a circle with its radius vector, perpendicular tangent line, and 90° orthogonality square; or optics, vectors, and physics diagrams), output a clean, self-contained SVG diagram inside \`\`\`svg with a responsive viewBox and clear labels.
 - End with a dynamic, relevant academic follow-up offer when appropriate.
 
 ${reasoningDirective}
@@ -1902,19 +1899,18 @@ function parsePlanDuration(durationStr: string, planId: string): { durationDays:
  */
 let commissionRateCache: { rate: number; expiry: number } | null = null;
 
-async function getDynamicCommissionRate(db: FirebaseFirestore.Firestore): Promise<number> {
+async function getDynamicCommissionRate(): Promise<number> {
   const now = Date.now();
   if (commissionRateCache && commissionRateCache.expiry > now) {
     return commissionRateCache.rate;
   }
   let rate = 0.30; // 30% default
   try {
-    const settingsDoc = await db.collection('settings').doc('commissions').get();
-    if (settingsDoc.exists) {
-      const data = settingsDoc.data();
-      if (typeof data?.rate === 'number' && data.rate > 0 && data.rate <= 1) {
+    const data = (await getSystemConfigDoc('commissions')) || (await getSystemSettingsDoc('commissions'));
+    if (data) {
+      if (typeof data.rate === 'number' && data.rate > 0 && data.rate <= 1) {
         rate = data.rate;
-      } else if (typeof data?.rate === 'number' && data.rate > 1) {
+      } else if (typeof data.rate === 'number' && data.rate > 1) {
         rate = data.rate / 100; // normalize percentage e.g. 30 -> 0.30
       }
     }
@@ -1931,10 +1927,7 @@ async function getDynamicCommissionRate(db: FirebaseFirestore.Firestore): Promis
  */
 async function processPaymentSuccess(uid: string, reference: string, amount: number, planType: string, metadata?: any) {
   const app = getAdminApp();
-  if (!app) throw new Error('Firebase Admin app not initialized');
-
-  const db = app.firestore();
-  const commissionRate = await getDynamicCommissionRate(db);
+  const commissionRate = await getDynamicCommissionRate();
 
   return executeTransactionalPaymentSuccess({
     app,
@@ -1989,34 +1982,37 @@ app.post('/api/track-click', clickTrackingLimiter, async (req, res) => {
       return res.status(400).json({ error: 'Missing or invalid refCode' });
     }
     const refCode = rawRefCode.trim().toUpperCase();
-    
-    // Server-side click tracking logic
-    const app = getAdminApp();
-    const db = app.firestore();
-    const ref = db.collection('affiliates').doc(refCode);
-    
-    // Attempt to link userId if it doesn't exist
-    const snap = await ref.get();
-    let updatePayload: any = {
-      clicks: admin.firestore.FieldValue.increment(1)
-    };
-    
-    if (!snap.exists || !snap.data()?.userId) {
-       // Search for the user who owns this referralCode
-       const userSnap = await db.collection('users').where('referralCode', '==', refCode).limit(1).get();
-       if (!userSnap.empty) {
-          updatePayload.userId = userSnap.docs[0].id;
-       }
+    const pool = getPostgresPool();
+    if (!pool) return res.json({ success: true });
+
+    const affRes = await pool.query(`SELECT code, user_id, data FROM affiliates WHERE code = $1`, [refCode]);
+    let ownerUid = affRes.rows[0]?.user_id || null;
+    if (!ownerUid) {
+      const uRes = await pool.query(
+        `SELECT uid FROM users WHERE UPPER(SUBSTRING(uid FROM 1 FOR 6)) = $1 LIMIT 1`,
+        [refCode]
+      );
+      if ((uRes.rowCount ?? 0) > 0) {
+        ownerUid = uRes.rows[0].uid;
+      }
     }
-    
-    await ref.set(updatePayload, { merge: true });
-    
+
+    const prevData = affRes.rows[0]?.data || {};
+    const nextClicks = Number(prevData.clicks || 0) + 1;
+    const nextData = { ...prevData, id: refCode, userId: ownerUid, clicks: nextClicks };
+
+    await pool.query(
+      `INSERT INTO affiliates (code, user_id, data, updated_at)
+       VALUES ($1, $2, $3::jsonb, NOW())
+       ON CONFLICT (code) DO UPDATE SET
+         user_id = COALESCE(affiliates.user_id, EXCLUDED.user_id),
+         data = EXCLUDED.data,
+         updated_at = NOW()`,
+      [refCode, ownerUid, JSON.stringify(nextData)]
+    );
+
     res.json({ success: true });
   } catch (error: any) {
-    if (error.code === 5 || error.code === 'NOT_FOUND') {
-       // Code not found, ignore silently for tracking
-       return res.json({ success: true });
-    }
     console.error('Error tracking click:', error);
     res.status(500).json({ error: 'Failed to track click' });
   }
@@ -2029,49 +2025,46 @@ app.post('/api/track-signup', clickTrackingLimiter, async (req, res) => {
       return res.status(400).json({ error: 'Missing or invalid refCode' });
     }
     const refCode = rawRefCode.trim().toUpperCase();
-    
-    // Server-side signup tracking logic
-    const app = getAdminApp();
-    const db = app.firestore();
-    const ref = db.collection('affiliates').doc(refCode);
-    
-    const snap = await ref.get();
-    let updatePayload: any = {
-      signups: admin.firestore.FieldValue.increment(1)
-    };
-    
-    // Attempt to link userId if it doesn't exist
-    let referringUserId = snap.data()?.userId;
-    if (!snap.exists || !referringUserId) {
-       const userSnap = await db.collection('users').where('referralCode', '==', refCode).limit(1).get();
-       if (!userSnap.empty) {
-          referringUserId = userSnap.docs[0].id;
-          updatePayload.userId = referringUserId;
-       }
-    }
-    
-    await ref.set(updatePayload, { merge: true });
-    
-    // Increment referral_count directly on the referring user's document
-    if (referringUserId) {
-       await db.collection('users').doc(referringUserId).update({
-          referral_count: admin.firestore.FieldValue.increment(1)
-       }).catch((err: any) => console.error("Could not update referral_count on user", err));
-    }
-    
-    // Also try to link the user to this affiliate if not already done
-    if (newUserId && typeof newUserId === 'string') {
-      try {
-          const userRef = db.collection('users').doc(newUserId);
-          const userSnap = await userRef.get();
-          if (userSnap.exists && !userSnap.data()?.referredBy) {
-            await userRef.update({ referredBy: refCode });
-          }
-      } catch(e) {
-          console.warn("Could not link referredBy to new user (might not be created yet)", e);
+    const pool = getPostgresPool();
+    if (!pool) return res.json({ success: true });
+
+    const affRes = await pool.query(`SELECT code, user_id, referral_count, data FROM affiliates WHERE code = $1`, [refCode]);
+    let referringUserId = affRes.rows[0]?.user_id || null;
+    if (!referringUserId) {
+      const uRes = await pool.query(
+        `SELECT uid FROM users WHERE UPPER(SUBSTRING(uid FROM 1 FOR 6)) = $1 LIMIT 1`,
+        [refCode]
+      );
+      if ((uRes.rowCount ?? 0) > 0) {
+        referringUserId = uRes.rows[0].uid;
       }
     }
-    
+
+    const prevData = affRes.rows[0]?.data || {};
+    const nextSignups = Number(prevData.signups ?? affRes.rows[0]?.referral_count ?? 0) + 1;
+    const nextData = { ...prevData, id: refCode, userId: referringUserId, signups: nextSignups };
+
+    await pool.query(
+      `INSERT INTO affiliates (code, user_id, referral_count, data, updated_at)
+       VALUES ($1, $2, 1, $3::jsonb, NOW())
+       ON CONFLICT (code) DO UPDATE SET
+         user_id = COALESCE(affiliates.user_id, EXCLUDED.user_id),
+         referral_count = COALESCE(affiliates.referral_count, 0) + 1,
+         data = EXCLUDED.data,
+         updated_at = NOW()`,
+      [refCode, referringUserId, JSON.stringify(nextData)]
+    );
+
+    if (newUserId && typeof newUserId === 'string') {
+      await pool.query(
+        `UPDATE users
+         SET learning_profile = COALESCE(learning_profile, '{}'::jsonb) || jsonb_build_object('referredBy', $2::text),
+             updated_at = NOW()
+         WHERE uid = $1`,
+        [newUserId, refCode]
+      ).catch(() => {});
+    }
+
     res.json({ success: true });
   } catch (error: any) {
     console.error('Error tracking signup:', error);
@@ -2164,7 +2157,7 @@ async function verifyAdmin(req: express.Request, res: express.Response, next: ex
 app.use('/api/admin', verifyAdmin);
 
 // Mount modular Admin and RAG routes
-setupAdminRoutes(app, verifyAuth, getAdminApp, isAdminEmail);
+setupAdminRoutes(app, verifyAuth, getAdminApp, isAdminEmail, syncAllProvidersFromSettings);
 setupMathRoutes(app, verifyAuth, getAdminApp, isAdminEmail);
 setupRagRoutes(app, verifyAuth);
 setupStudentRoutes(app, verifyAuth);
@@ -2281,7 +2274,7 @@ app.get('/api/chat/reactions', verifyAuth, async (req: any, res: any) => {
   }
 });
 
-// --- Helper: Get and Validate Sparks (Daily Reset) ---
+// --- Helper: Get and Validate Sparks (Daily Reset via Neon PostgreSQL primary) ---
 const getAndValidateSparks = async (uid: string, email: string | undefined): Promise<{ 
   sparks: number, 
   plan: string, 
@@ -2290,114 +2283,119 @@ const getAndValidateSparks = async (uid: string, email: string | undefined): Pro
   subscription_status?: string,
   subscription_start_date?: string
 }> => {
-  const app = getAdminApp();
-  if (!app) {
-    throw new Error('Database service unavailable');
-  }
-  
-  const db = app.firestore();
-  const userRef = db.collection('users').doc(uid);
-  const policyRef = db.collection('system_config').doc('evaluation_policy');
-  
-  try {
-    const result = await db.runTransaction(async (t) => {
-      const [doc, policySnap] = await Promise.all([
-        t.get(userRef),
-        t.get(policyRef)
-      ]);
-
-      const policyData = policySnap.exists ? policySnap.data() || {} : {};
+  const pool = getPostgresPool();
+  if (pool) {
+    try {
+      const policyData = (await getSystemConfigDoc('evaluation_policy')) || {};
       const configuredDailyFreeSparks: number | null =
         typeof policyData.dailyFreeSparks === 'number' && policyData.dailyFreeSparks >= 0
           ? policyData.dailyFreeSparks
           : null;
-      const bucketAccountingEnabled = Boolean(policyData.enableSparkBucketLedger);
 
       const now = new Date();
-      const todayStr = now.toISOString().split('T')[0]; // YYYY-MM-DD in UTC
+      const todayStr = now.toISOString().split('T')[0];
 
-      if (!doc.exists) {
+      const userRes = await pool.query(
+        `SELECT uid, email, display_name, role, plan_type, ai_sparks,
+                last_spark_reset, created_at, subscription_status,
+                subscription_expiry, subscription_start_date
+         FROM users
+         WHERE uid = $1`,
+        [uid]
+      );
+
+      if ((userRes.rowCount ?? 0) === 0) {
         const role = isAdminEmail(email) ? 'admin' : 'student';
         const initialFreeAllowance =
           typeof configuredDailyFreeSparks === 'number' && configuredDailyFreeSparks > 0
             ? configuredDailyFreeSparks
-            : 0;
-        const initialData: Record<string, any> = {
-          uid,
-          ai_sparks: initialFreeAllowance,
-          plan_type: 'free',
-          role,
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        };
-        if (configuredDailyFreeSparks !== null && configuredDailyFreeSparks > 0) {
-          initialData.last_spark_reset = todayStr;
+            : 50;
+        const displayName = email ? email.split('@')[0] : 'Student';
+
+        await pool.query(
+          `INSERT INTO users (
+             uid, email, display_name, role, plan_type, ai_sparks,
+             learning_profile, last_spark_reset, subscription_status, created_at, updated_at
+           )
+           VALUES ($1, $2, $3, $4, 'free', $5, '{}'::jsonb, NOW(), 'none', NOW(), NOW())
+           ON CONFLICT (uid) DO NOTHING`,
+          [uid, email || `${uid}@uniace.local`, displayName, role, initialFreeAllowance]
+        );
+        await pool.query(
+          `INSERT INTO user_sparks_wallets (uid, balance, plan_type, last_spark_reset, updated_at)
+           VALUES ($1, $2, 'free', NOW(), NOW())
+           ON CONFLICT (uid) DO UPDATE SET
+             balance = EXCLUDED.balance,
+             updated_at = NOW()`,
+          [uid, initialFreeAllowance]
+        );
+        await pool.query(
+          `INSERT INTO spark_ledger (ledger_id, user_id, delta, reason, ref_lock_id, created_at)
+           VALUES ($1, $2, $3, 'initial_seed', NULL, NOW())
+           ON CONFLICT (ledger_id) DO NOTHING`,
+          [`seed_${uid}`, uid, initialFreeAllowance]
+        );
+
+        if (email) {
+          MailService.sendWelcomeEmail(email, displayName, systemConfig.trialDays || 7).catch(err => {
+            console.error('Failed to send welcome email:', err);
+          });
         }
-        if (bucketAccountingEnabled) {
-          initialData.free_sparks = initialFreeAllowance;
-          initialData.paid_sparks = 0;
-          initialData.bucket_tracking_initialized = true;
-          initialData.bucketSource = 'tracked';
-        }
-        t.set(userRef, initialData, { merge: true });
 
         return {
-          isNewUser: true,
           sparks: role === 'admin' ? 999999 : initialFreeAllowance,
           plan: role === 'admin' ? 'scholar' : 'free',
           role
         };
       }
 
-      const userData = doc.data()!;
-      let sparks = Math.max(0, Number(userData.ai_sparks ?? 0));
-      let plan = userData.plan_type || 'free';
-      let role = userData.role || 'student';
-      const lastReset = userData.last_spark_reset;
-      let expiry = userData.subscription_expiry;
-      let status = userData.subscription_status || 'none';
-      let startDate = userData.subscription_start_date;
+      const row = userRes.rows[0];
+      let sparks = Math.max(0, Number(row.ai_sparks ?? 0));
+      let plan = row.plan_type || 'free';
+      let role = row.role || (isAdminEmail(email) ? 'admin' : 'student');
+      const lastResetStr = row.last_spark_reset
+        ? new Date(row.last_spark_reset).toISOString().split('T')[0]
+        : '';
+      let expiry = row.subscription_expiry ? new Date(row.subscription_expiry).toISOString() : undefined;
+      let status = row.subscription_status || 'none';
+      let startDate = row.subscription_start_date
+        ? new Date(row.subscription_start_date).toISOString()
+        : undefined;
 
-      const createdAt = new Date(userData.createdAt?.toDate ? userData.createdAt.toDate() : (userData.created_at || now));
-
-      // System-wide trial start date (March 19, 2026) to ensure all existing users get a trial
-      const TRIAL_SYSTEM_START_DATE = new Date('2026-03-19T00:00:00Z');
-      const trialStartDate = createdAt < TRIAL_SYSTEM_START_DATE ? TRIAL_SYSTEM_START_DATE : createdAt;
-
+      const createdAt = row.created_at ? new Date(row.created_at) : now;
+      const trialStartDate = !isNaN(createdAt.getTime()) ? createdAt : now;
       const isTrialActive = (now.getTime() - trialStartDate.getTime()) < (7 * 24 * 60 * 60 * 1000);
 
-      // Trial Logic: If trial is active, they are a Scholar
-      if (isTrialActive && plan === 'free' && role !== 'admin') {
+      if (isTrialActive && plan === 'free' && role !== 'admin' && status !== 'expired') {
         plan = 'scholar';
         status = 'active';
         startDate = trialStartDate.toISOString();
         expiry = new Date(trialStartDate.getTime() + (7 * 24 * 60 * 60 * 1000)).toISOString();
       }
 
-      const updatesToPersist: Record<string, any> = {};
-
-      // Check subscription expiration (for paid non-free plans when not on active trial)
-      if (!isTrialActive && plan !== 'free' && expiry) {
-        const expiryDate = new Date(expiry);
-        if (!isNaN(expiryDate.getTime()) && now > expiryDate) {
+      if (role !== 'admin' && plan !== 'free' && !isTrialActive) {
+        const expiryDate = expiry ? new Date(expiry) : null;
+        const isExpired = Boolean(
+          status === 'expired' ||
+          (expiryDate && !isNaN(expiryDate.getTime()) && now > expiryDate) ||
+          (!expiryDate && status !== 'active')
+        );
+        if (isExpired) {
           plan = 'free';
           status = 'expired';
-          updatesToPersist.plan_type = 'free';
-          updatesToPersist.subscription_status = 'expired';
+          await pool.query(
+            `UPDATE users SET plan_type = 'free', subscription_status = 'expired', updated_at = NOW() WHERE uid = $1`,
+            [uid]
+          );
+          await pool.query(
+            `UPDATE user_sparks_wallets SET plan_type = 'free', updated_at = NOW() WHERE uid = $1`,
+            [uid]
+          );
         }
-      }
-
-      // Auto-promote specific email only if role is not already explicitly set in Firestore
-      if (!userData.role && isAdminEmail(email)) {
-        role = 'admin';
-        updatesToPersist.role = 'admin';
       }
 
       if (role === 'admin' || plan !== 'free') {
-        if (Object.keys(updatesToPersist).length > 0) {
-          t.set(userRef, updatesToPersist, { merge: true });
-        }
         return {
-          isNewUser: false,
           sparks: 999999,
           plan,
           role,
@@ -2407,44 +2405,36 @@ const getAndValidateSparks = async (uid: string, email: string | undefined): Pro
         };
       }
 
-      // Daily reset logic: Only refill if configuredDailyFreeSparks is set (> 0) and lastReset !== todayStr.
-      // Respects enableSparkBucketLedger so legacy users without buckets are never rewritten when flag is off.
       if (
-        lastReset !== todayStr &&
+        lastResetStr !== todayStr &&
         configuredDailyFreeSparks !== null &&
-        configuredDailyFreeSparks > 0
+        configuredDailyFreeSparks > 0 &&
+        sparks < configuredDailyFreeSparks
       ) {
-        if (!bucketAccountingEnabled) {
-          sparks = Math.max(sparks, configuredDailyFreeSparks);
-          updatesToPersist.ai_sparks = sparks;
-          updatesToPersist.last_spark_reset = todayStr;
-        } else {
-          let freeSparks: number;
-          let paidSparks: number;
-          if (userData.bucket_tracking_initialized === true) {
-            freeSparks = Math.max(0, Number(userData.free_sparks ?? 0));
-            paidSparks = Math.max(0, Number(userData.paid_sparks ?? 0));
-          } else {
-            paidSparks = Math.max(0, Math.min(sparks, Number(userData.paid_sparks ?? 0)));
-            freeSparks = Math.max(0, sparks - paidSparks);
-            updatesToPersist.bucket_tracking_initialized = true;
-            updatesToPersist.bucketSource = 'derived';
-          }
-          freeSparks = Math.max(freeSparks, configuredDailyFreeSparks);
-          sparks = freeSparks + paidSparks;
-          updatesToPersist.free_sparks = freeSparks;
-          updatesToPersist.paid_sparks = paidSparks;
-          updatesToPersist.ai_sparks = sparks;
-          updatesToPersist.last_spark_reset = todayStr;
-        }
-      }
-
-      if (Object.keys(updatesToPersist).length > 0) {
-        t.set(userRef, updatesToPersist, { merge: true });
+        const refillDelta = configuredDailyFreeSparks - sparks;
+        sparks = configuredDailyFreeSparks;
+        await pool.query(
+          `INSERT INTO spark_ledger (ledger_id, user_id, delta, reason, ref_lock_id, created_at)
+           VALUES ($1, $2, $3, 'daily_free_refill', NULL, NOW())
+           ON CONFLICT (ledger_id) DO NOTHING`,
+          [`refill_${uid}_${todayStr}`, uid, refillDelta]
+        );
+        await pool.query(
+          `UPDATE users SET ai_sparks = $1, last_spark_reset = NOW(), updated_at = NOW() WHERE uid = $2`,
+          [sparks, uid]
+        );
+        await pool.query(
+          `INSERT INTO user_sparks_wallets (uid, balance, plan_type, last_spark_reset, updated_at)
+           VALUES ($1, $2, 'free', NOW(), NOW())
+           ON CONFLICT (uid) DO UPDATE SET
+             balance = EXCLUDED.balance,
+             last_spark_reset = NOW(),
+             updated_at = NOW()`,
+          [uid, sparks]
+        );
       }
 
       return {
-        isNewUser: false,
         sparks,
         plan,
         role,
@@ -2452,41 +2442,46 @@ const getAndValidateSparks = async (uid: string, email: string | undefined): Pro
         subscription_status: status,
         subscription_start_date: startDate
       };
-    });
-
-    if (result.isNewUser && email) {
-      MailService.sendWelcomeEmail(email, email.split('@')[0], systemConfig.trialDays || 7).catch(err => {
-        console.error('Failed to send welcome email:', err);
-      });
+    } catch (pgErr) {
+      console.warn(`Neon PostgreSQL quota read error for user ${uid}:`, pgErr);
+      const role = isAdminEmail(email) ? 'admin' : 'student';
+      return {
+        sparks: role === 'admin' ? 999999 : 0,
+        plan: role === 'admin' ? 'scholar' : 'free',
+        role
+      };
     }
-
-    const { isNewUser, ...quota } = result;
-    return quota;
-  } catch (error) {
-    console.warn(`Quota read error for user ${uid}:`, error);
-    const role = isAdminEmail(email) ? 'admin' : 'student';
-    return {
-      sparks: role === 'admin' ? 999999 : 0,
-      plan: role === 'admin' ? 'scholar' : 'free',
-      role
-    };
   }
+
+  const role = isAdminEmail(email) ? 'admin' : 'student';
+  return {
+    sparks: role === 'admin' ? 999999 : 0,
+    plan: role === 'admin' ? 'scholar' : 'free',
+    role
+  };
 };
 
 // --- API Routes ---
 
-// 0. User Quota & Authoritative Profile Endpoint
+// 0. User Quota & Authoritative Profile Endpoint (Neon PostgreSQL primary)
 app.get('/api/user/quota', verifyAuth, async (req, res) => {
   const user = (req as any).user;
   try {
     console.log(`Fetching quota for user: ${user.uid} (${user.email})`);
     const quota = await getAndValidateSparks(user.uid, user.email);
     let profileData: Record<string, any> | null = null;
-    const adminApp = getAdminApp();
-    if (adminApp) {
-      const snap = await adminApp.firestore().collection('users').doc(user.uid).get();
-      if (snap.exists) {
-        profileData = snap.data() || null;
+    const pool = getPostgresPool();
+    if (pool) {
+      const userRes = await pool.query(
+        `SELECT uid, email, display_name AS "displayName", role, plan_type, ai_sparks,
+                learning_profile AS "learningProfile", last_spark_reset,
+                subscription_status, subscription_expiry, subscription_start_date
+         FROM users
+         WHERE uid = $1`,
+        [user.uid]
+      );
+      if ((userRes.rowCount ?? 0) > 0) {
+        profileData = userRes.rows[0];
       }
     }
     res.json({ ...quota, profile: profileData });
@@ -3265,43 +3260,44 @@ function truncateHistory(history: any[], maxTokens: number = 12000): any[] {
   return truncated;
 }
 
-// 1. AI Chat with Sparks System
+// 1. AI Chat with Sparks System (Nudge via Neon PostgreSQL)
 app.get('/api/chat/nudge', verifyAuth, async (req, res) => {
   const uid = (req as any).user.uid;
   try {
-    const app = getAdminApp();
-    if (!app) {
+    const pool = getPostgresPool();
+    if (!pool) {
       return res.json({ message: "Hello! I'm UniAce AI. How can I help you study today?" });
     }
-    
-    const userRef = app.firestore().collection('users').doc(uid);
-    const doc = await userRef.get();
-    if (!doc.exists) return res.json({ message: "Hello! I'm UniAce AI. How can I help you study today?" });
-    
-    const data = doc.data() || {};
-    const studentName = data.displayName || data.name || "Student";
+
+    const userRes = await pool.query(
+      `SELECT display_name, learning_profile FROM users WHERE uid = $1`,
+      [uid]
+    );
+    if ((userRes.rowCount ?? 0) === 0) {
+      return res.json({ message: "Hello! I'm UniAce AI. How can I help you study today?" });
+    }
+
+    const row = userRes.rows[0];
+    const studentName = row.display_name || "Student";
+    const profile = (row.learning_profile && typeof row.learning_profile === 'object') ? row.learning_profile : {};
     const todayStr = new Date().toISOString().split('T')[0];
-    
-    // If we have a cached message for today, use it - UNLESS it contains a placeholder we're trying to fix
-    if (data.last_nudge_date === todayStr && data.last_nudge_message) {
-      const cachedMessage = data.last_nudge_message;
-      const hasPlaceholder = cachedMessage.includes("[Student's Name]") || 
-                            cachedMessage.includes("[Name]") || 
+
+    if (profile.last_nudge_date === todayStr && profile.last_nudge_message) {
+      const cachedMessage = String(profile.last_nudge_message);
+      const hasPlaceholder = cachedMessage.includes("[Student's Name]") ||
+                            cachedMessage.includes("[Name]") ||
                             cachedMessage.includes("[student name]");
-      
       if (!hasPlaceholder) {
         return res.json({ message: cachedMessage });
       }
-      // If it has a placeholder, we fall through to regenerate it
     }
-    
-    const profile = data.learningProfile || {};
+
     const prompt = `You are UniAce AI, a proactive academic tutor.
     The student just logged in.
     Student Name: ${studentName}
-    Their strengths: ${profile.strengths?.join(', ') || 'None recorded yet'}
-    Their weaknesses: ${profile.weaknesses?.join(', ') || 'None recorded yet'}
-    Streak: ${data.streak || 0} days.
+    Their strengths: ${Array.isArray(profile.strengths) ? profile.strengths.join(', ') : 'None recorded yet'}
+    Their weaknesses: ${Array.isArray(profile.weaknesses) ? profile.weaknesses.join(', ') : 'None recorded yet'}
+    Streak: ${profile.streak || 0} days.
     
     Write a short, engaging, and highly personalized 1-2 sentence welcome message. 
     If they have a weakness, gently suggest tackling it. If they have a streak, congratulate them.
@@ -3309,7 +3305,7 @@ app.get('/api/chat/nudge', verifyAuth, async (req, res) => {
     CRITICAL: Use the student's actual name (${studentName}) in the greeting. 
     NEVER use placeholders like "[Student's Name]" or "[Name]".
     Do NOT be overly verbose. Use emojis.`;
-    
+
     const providers = [
       globalMistralDirectBreaker,
       globalGroqBreaker,
@@ -3317,7 +3313,6 @@ app.get('/api/chat/nudge', verifyAuth, async (req, res) => {
     ].filter(Boolean) as CircuitBreaker[];
 
     let message = `Hello ${studentName}! I'm UniAce AI. Ready to study today? 🚀`;
-    let lastError;
 
     if (providers.length > 0) {
       for (const provider of providers) {
@@ -3328,21 +3323,25 @@ app.get('/api/chat/nudge', verifyAuth, async (req, res) => {
             break;
           }
         } catch (err) {
-          lastError = err;
           console.warn(`Nudge generation failed with provider, trying next...`, err);
         }
       }
     }
-    
+
     try {
-      await userRef.set({
+      const updatedProfile = {
+        ...profile,
         last_nudge_date: todayStr,
         last_nudge_message: message
-      }, { merge: true });
+      };
+      await pool.query(
+        `UPDATE users SET learning_profile = $1::jsonb, updated_at = NOW() WHERE uid = $2`,
+        [JSON.stringify(updatedProfile), uid]
+      );
     } catch (dbErr) {
-      console.warn("Could not save nudge cache to Firestore:", dbErr);
+      console.warn("Could not save nudge cache to Neon PostgreSQL:", dbErr);
     }
-    
+
     res.json({ message });
   } catch (e) {
     console.error("Failed to generate nudge:", e);
@@ -3637,14 +3636,12 @@ app.post('/api/chat', verifyAuth, async (req, res) => {
     const effectiveTaskType = classified.taskType;
     const effectiveComplexity = complexity || classified.complexity;
 
-    // Fetch dynamic task routing config for chat
+    // Fetch dynamic task routing config for chat from Neon PostgreSQL cache
     let routingConfig: any = { chat: 'groq' };
     try {
-      if (app) {
-        const routingDoc = await app.firestore().collection('system_config').doc('routing').get();
-        if (routingDoc.exists) {
-          routingConfig = routingDoc.data() || { chat: 'groq' };
-        }
+      const routingDoc = await getSystemConfigDoc('routing');
+      if (routingDoc) {
+        routingConfig = routingDoc;
       }
     } catch (err) {
       console.warn("Failed to fetch routing config for POST chat route:", err);
@@ -3919,22 +3916,15 @@ app.post('/api/tts', verifyAuth, async (req, res) => {
   }
 });
 
-// 1.7 AI Status Endpoint
+// 1.7 AI Status Endpoint (Neon PostgreSQL)
 app.get('/api/admin/ai-status', verifyAuth, async (req, res) => {
   try {
-    const uid = (req as any).user.uid;
-    const app = getAdminApp();
-    if (!app) return res.status(503).json({ error: 'Service unavailable: Firebase not initialized' });
-    const userDoc = await app.firestore().collection('users').doc(uid).get();
-    const userEmail = (req as any).user.email;
-    const isAdmin = userDoc.data()?.role === 'admin' || isAdminEmail(userEmail);
-    if (!isAdmin) {
+    const authInfo = await verifyAdminOrTutorRole(req);
+    if (!authInfo.isAdmin) {
       return res.status(403).json({ error: 'Unauthorized: Admin access required' });
     }
 
-    const keysDocRef = app.firestore().collection('system_settings').doc('api_keys');
-    const keysDoc = await keysDocRef.get();
-    const dbKeys = keysDoc.data() || {};
+    const dbKeys = (await getSystemSettingsDoc('api_keys')) || {};
     let globalNeedsUpdate = false;
     const now = Date.now();
     const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
@@ -3970,7 +3960,7 @@ app.get('/api/admin/ai-status', verifyAuth, async (req, res) => {
     }
 
     if (globalNeedsUpdate) {
-      await keysDocRef.set(dbKeys);
+      await setSystemSettingsDoc('api_keys', dbKeys, false);
     }
 
     const getProviderStatus = (provider: string, envKeyString: string | undefined) => {
@@ -4993,6 +4983,25 @@ app.post('/api/admin/delete-user', verifyAuth, async (req, res) => {
   }
 });
 
+// Admin API: Purge Question/Semantic Cache
+app.post('/api/admin/purge-cache', verifyAuth, async (req, res) => {
+  try {
+    const adminUid = (req as any).user.uid;
+    const app = getAdminApp();
+    if (!app) return res.status(503).json({ error: 'Database service unavailable' });
+    const adminDoc = await app.firestore().collection('users').doc(adminUid).get();
+    const userEmail = (req as any).user.email;
+    if (!isAdminEmail(userEmail) && (!adminDoc.exists || adminDoc.data()?.role !== 'admin')) {
+      return res.status(403).json({ error: 'Unauthorized: Admin access required' });
+    }
+
+    const purgedCount = await purgeQuestionCache();
+    return res.json({ success: true, purgedCount, message: `Successfully purged ${purgedCount} cached items.` });
+  } catch (error: any) {
+    return res.status(500).json({ error: 'Failed to purge cache', details: error.message });
+  }
+});
+
 // Admin API: Prune Orphaned Firestore Documents (Users deleted from Firebase Auth directly)
 app.post('/api/admin/prune-orphans', verifyAuth, async (req, res) => {
   try {
@@ -5181,6 +5190,8 @@ const latexInstruction = `
     
     3. ACCURACY & VERIFICATION:
        Ensure mathematical and scientific verification from first principles for all questions, formulas, derivations, and explanations.
+       
+    ${VISUALIZATION_AND_DIAGRAM_DIRECTIVE}
     `;
 
 const ACADEMIC_INTELLIGENCE_DIRECTIVE = `
@@ -5827,16 +5838,11 @@ interface CompleteProviderOptions<T> {
 }
 
 async function completeWithProviderJSON<T = any>(opts: CompleteProviderOptions<T>): Promise<T> {
-  const app = getAdminApp();
-  const db = app ? app.firestore() : null;
   let routingConfig: any = {};
-  if (db) {
-    try {
-      const routingDoc = await db.collection('system_config').doc('routing').get();
-      routingConfig = routingDoc.data() || {};
-    } catch (e) {
-      console.warn('Could not read routing config from Firestore:', e);
-    }
+  try {
+    routingConfig = (await getSystemConfigDoc('routing')) || {};
+  } catch (e) {
+    console.warn('Could not read routing config from Neon PostgreSQL:', e);
   }
 
   const providerMap: Record<string, any> = {
@@ -8119,15 +8125,12 @@ app.post('/api/formulas/search', verifyAuth, async (req, res) => {
     
     Ensure they are relevant to a standard university syllabus.`;
 
-    // Dynamic Task Routing for Formulas, defaulting to Cohere
-    const appAdmin = getAdminApp();
+    // Dynamic Task Routing for Formulas from Neon PostgreSQL
     let routingConfig: any = { formulas: 'cohere' };
     try {
-      if (appAdmin) {
-        const routingDoc = await appAdmin.firestore().collection('system_config').doc('routing').get();
-        if (routingDoc.exists) {
-          routingConfig = routingDoc.data() || { formulas: 'cohere' };
-        }
+      const routingDoc = await getSystemConfigDoc('routing');
+      if (routingDoc) {
+        routingConfig = routingDoc;
       }
     } catch (err) {
       console.warn("Failed to fetch routing config for formula search:", err);
@@ -8318,15 +8321,25 @@ app.get('/api/admin/rag-content', verifyAuth, async (req, res) => {
   }
 });
 
-// --- Past Papers Endpoints ---
+// --- Past Papers Endpoints (Neon PostgreSQL) ---
 app.get('/api/past-papers', async (req, res) => {
   try {
-    const app = getAdminApp();
-    if (!app) return res.status(503).json({ error: 'DB unavailable' });
-    const snapshot = await app.firestore().collection('past_papers').get();
-    const papers = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'DB unavailable' });
+    const result = await pool.query(
+      `SELECT id, course_code, course_title, year, semester, department, questions, data, created_at
+       FROM past_papers
+       ORDER BY created_at DESC`
+    );
+    const papers = result.rows.map((r) => ({
+      id: r.id,
+      courseCode: r.course_code || r.data?.courseCode || '',
+      title: r.course_title || r.data?.title || '',
+      year: r.year || r.data?.year || '',
+      semester: r.semester || r.data?.semester || '',
+      department: r.department || r.data?.department || '',
+      questions: Array.isArray(r.questions) ? r.questions : (r.data?.questions || []),
+      ...(r.data || {})
     }));
     res.json({ success: true, papers });
   } catch (error: any) {
@@ -8334,65 +8347,66 @@ app.get('/api/past-papers', async (req, res) => {
   }
 });
 
-// --- Question Bank Endpoints (Hybrid Approach) ---
+// --- Question Bank Endpoints (Neon PostgreSQL + Vector Store) ---
 
 app.post('/api/admin/questions/add', verifyAuth, async (req, res) => {
   const uid = (req as any).user.uid;
   const { courseCode, year, semester, title, questions } = req.body;
 
   try {
-    const app = getAdminApp();
-    const userDoc = await app.firestore().collection('users').doc(uid).get();
-    if (userDoc.data()?.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin access required' });
+    const authInfo = await verifyAdminOrTutorRole(req);
+    if (!authInfo.isAuthorized) {
+      return res.status(403).json({ error: 'Admin or Tutor access required' });
     }
+
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database unavailable' });
 
     const apiKey = await globalGeminiDirectProvider.getApiKey().catch(() => process.env.GEMINI_API_KEY || '');
     const genAI = new GoogleGenAI({ apiKey: apiKey! });
-    
-    const pastPapersRef = app.firestore().collection('past_papers');
-    const querySnapshot = await pastPapersRef
-      .where('courseCode', '==', courseCode)
-      .where('year', '==', year)
-      .where('semester', '==', semester)
-      .get();
 
-    let paperDocRef;
-    let existingQuestions: any[] = [];
+    const existingRes = await pool.query(
+      `SELECT id, questions, data FROM past_papers WHERE course_code = $1 AND year = $2 AND semester = $3 LIMIT 1`,
+      [courseCode, String(year || ''), String(semester || '')]
+    );
 
-    if (!querySnapshot.empty) {
-      paperDocRef = querySnapshot.docs[0].ref;
-      existingQuestions = querySnapshot.docs[0].data().questions || [];
-    } else {
-      paperDocRef = pastPapersRef.doc();
-    }
+    let paperId = existingRes.rows[0]?.id || `pp_${Date.now()}_${crypto.randomUUID().slice(0, 6)}`;
+    const existingQuestions: any[] = Array.isArray(existingRes.rows[0]?.questions)
+      ? existingRes.rows[0].questions
+      : (existingRes.rows[0]?.data?.questions || []);
 
-    const newQuestions = questions.map((q: any, idx: number) => ({
+    const newQuestions = (Array.isArray(questions) ? questions : []).map((q: any, idx: number) => ({
       ...q,
       id: q.id || `q${Date.now()}_${idx}`,
       type: 'multiple-choice'
     }));
 
     const updatedQuestions = [...existingQuestions, ...newQuestions];
-
-    const batch = app.firestore().batch();
-    
-    batch.set(paperDocRef, sanitizeForFirestore({
+    const paperPayload = {
+      id: paperId,
       title,
       year,
       semester,
       courseCode,
       questions: updatedQuestions,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: new Date().toISOString(),
       updatedBy: uid
-    }), { merge: true });
+    };
 
-    const kbRef = app.firestore().collection('knowledge_base');
+    await pool.query(
+      `INSERT INTO past_papers (id, course_code, course_title, year, semester, questions, data, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, NOW(), NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         course_title = EXCLUDED.course_title,
+         questions = EXCLUDED.questions,
+         data = EXCLUDED.data,
+         updated_at = NOW()`,
+      [paperId, courseCode, title, String(year || ''), String(semester || ''), JSON.stringify(updatedQuestions), JSON.stringify(paperPayload)]
+    );
+
     const newVectorItems: any[] = [];
-
     for (const q of newQuestions) {
-      const content = `Question: ${q.question}\nOptions: ${q.options.join(', ')}\nCorrect Answer: ${q.correctAnswer}\nExplanation: ${q.explanation}\nHint: ${q.hint || ''}`;
-      
+      const content = `Question: ${q.question}\nOptions: ${(q.options || []).join(', ')}\nCorrect Answer: ${q.correctAnswer}\nExplanation: ${q.explanation}\nHint: ${q.hint || ''}`;
       try {
         const embedRes = await resilientEmbedContent(genAI, {
           model: 'gemini-embedding-2-preview',
@@ -8400,18 +8414,13 @@ app.post('/api/admin/questions/add', verifyAuth, async (req, res) => {
         });
         const vector = embedRes.embeddings[0].values;
 
-        const kbDocRef = kbRef.doc(q.id);
-        batch.set(kbDocRef, sanitizeForFirestore({
-          content,
-          course_code: courseCode,
-          module_name: 'Past Questions',
-          topic_name: `${year} - ${semester}`,
-          embedding: admin.firestore.FieldValue.vector(vector),
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          questionId: q.id,
-          paperId: paperDocRef.id
-        }));
-        
+        await pool.query(
+          `INSERT INTO knowledge_base (id, course_code, module_name, topic_name, content, source, type, created_at, updated_at)
+           VALUES ($1, $2, 'Past Questions', $3, $4, 'Knowledge Base', 'question', NOW(), NOW())
+           ON CONFLICT (id) DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()`,
+          [q.id, courseCode, `${year} - ${semester}`, content]
+        ).catch(() => {});
+
         newVectorItems.push({
           id: q.id,
           content,
@@ -8420,15 +8429,12 @@ app.post('/api/admin/questions/add', verifyAuth, async (req, res) => {
           embedding: vector
         });
 
-        await new Promise(resolve => setTimeout(resolve, 600)); // Throttle
+        await new Promise(resolve => setTimeout(resolve, 300));
       } catch (embedError) {
         console.error('Error generating embedding for question:', q.id, embedError);
       }
     }
 
-    await batch.commit();
-    
-    // Update in-memory vector store
     newVectorItems.forEach(item => {
       addVectorItem(item.id, item.content, item.source, item.type, item.embedding);
     });
@@ -8445,64 +8451,47 @@ app.post('/api/admin/questions/update', verifyAuth, async (req, res) => {
   const { paperId, question } = req.body;
 
   try {
-    const app = getAdminApp();
-    const userDoc = await app.firestore().collection('users').doc(uid).get();
-    if (userDoc.data()?.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin access required' });
+    const authInfo = await verifyAdminOrTutorRole(req);
+    if (!authInfo.isAuthorized) {
+      return res.status(403).json({ error: 'Admin or Tutor access required' });
     }
 
-    const apiKey = await globalGeminiDirectProvider.getApiKey().catch(() => process.env.GEMINI_API_KEY || '');
-    const genAI = new GoogleGenAI({ apiKey: apiKey! });
-    
-    const paperRef = app.firestore().collection('past_papers').doc(paperId);
-    const paperDoc = await paperRef.get();
-    
-    if (!paperDoc.exists) {
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+
+    const paperRes = await pool.query(`SELECT id, course_code, year, semester, questions, data FROM past_papers WHERE id = $1`, [paperId]);
+    if ((paperRes.rowCount ?? 0) === 0) {
       return res.status(404).json({ error: 'Past paper not found' });
     }
 
-    const paperData = paperDoc.data()!;
-    const questions = paperData.questions || [];
+    const row = paperRes.rows[0];
+    const questions: any[] = Array.isArray(row.questions) ? [...row.questions] : [...(row.data?.questions || [])];
     const questionIndex = questions.findIndex((q: any) => q.id === question.id);
-
     if (questionIndex === -1) {
       return res.status(404).json({ error: 'Question not found' });
     }
 
     questions[questionIndex] = { ...questions[questionIndex], ...question };
+    const nextData = { ...(row.data || {}), questions, updatedAt: new Date().toISOString(), updatedBy: uid };
 
-    const batch = app.firestore().batch();
-    
-    batch.update(paperRef, sanitizeForFirestore({
-      questions,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedBy: uid
-    }));
+    await pool.query(
+      `UPDATE past_papers SET questions = $1::jsonb, data = $2::jsonb, updated_at = NOW() WHERE id = $3`,
+      [JSON.stringify(questions), JSON.stringify(nextData), paperId]
+    );
 
-    const content = `Question: ${question.question}\nOptions: ${question.options.join(', ')}\nCorrect Answer: ${question.correctAnswer}\nExplanation: ${question.explanation}\nHint: ${question.hint || ''}`;
-    
-    const embedRes = await resilientEmbedContent(genAI, {
-      model: 'gemini-embedding-2-preview',
-      contents: [content]
-    });
-    const vector = embedRes.embeddings[0].values;
-
-    const kbRef = app.firestore().collection('knowledge_base').doc(question.id);
-    batch.set(kbRef, sanitizeForFirestore({
-      content,
-      course_code: paperData.courseCode,
-      module_name: 'Past Questions',
-      topic_name: `${paperData.year} - ${paperData.semester}`,
-      embedding: admin.firestore.FieldValue.vector(vector),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      questionId: question.id,
-      paperId: paperId
-    }), { merge: true });
-
-    await batch.commit();
-    
-    // Update in-memory vector store
-    addVectorItem(question.id, content, 'Knowledge Base', 'question', vector);
+    const content = `Question: ${question.question}\nOptions: ${(question.options || []).join(', ')}\nCorrect Answer: ${question.correctAnswer}\nExplanation: ${question.explanation}\nHint: ${question.hint || ''}`;
+    try {
+      const apiKey = await globalGeminiDirectProvider.getApiKey().catch(() => process.env.GEMINI_API_KEY || '');
+      const genAI = new GoogleGenAI({ apiKey: apiKey! });
+      const embedRes = await resilientEmbedContent(genAI, {
+        model: 'gemini-embedding-2-preview',
+        contents: [content]
+      });
+      const vector = embedRes.embeddings[0].values;
+      addVectorItem(question.id, content, 'Knowledge Base', 'question', vector);
+    } catch (e) {
+      // Non-fatal embedding refresh
+    }
 
     res.json({ success: true, message: 'Question updated successfully.' });
   } catch (error: any) {
@@ -8516,37 +8505,30 @@ app.post('/api/admin/questions/delete', verifyAuth, async (req, res) => {
   const { paperId, questionId } = req.body;
 
   try {
-    const app = getAdminApp();
-    const userDoc = await app.firestore().collection('users').doc(uid).get();
-    if (userDoc.data()?.role !== 'admin') {
-      return res.status(403).json({ error: 'Admin access required' });
+    const authInfo = await verifyAdminOrTutorRole(req);
+    if (!authInfo.isAuthorized) {
+      return res.status(403).json({ error: 'Admin or Tutor access required' });
     }
-    
-    const paperRef = app.firestore().collection('past_papers').doc(paperId);
-    const paperDoc = await paperRef.get();
-    
-    if (!paperDoc.exists) {
+
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+
+    const paperRes = await pool.query(`SELECT id, questions, data FROM past_papers WHERE id = $1`, [paperId]);
+    if ((paperRes.rowCount ?? 0) === 0) {
       return res.status(404).json({ error: 'Past paper not found' });
     }
 
-    const paperData = paperDoc.data()!;
-    const questions = paperData.questions || [];
+    const row = paperRes.rows[0];
+    const questions: any[] = Array.isArray(row.questions) ? row.questions : (row.data?.questions || []);
     const updatedQuestions = questions.filter((q: any) => q.id !== questionId);
+    const nextData = { ...(row.data || {}), questions: updatedQuestions, updatedAt: new Date().toISOString(), updatedBy: uid };
 
-    const batch = app.firestore().batch();
-    
-    batch.update(paperRef, sanitizeForFirestore({
-      questions: updatedQuestions,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedBy: uid
-    }));
+    await pool.query(
+      `UPDATE past_papers SET questions = $1::jsonb, data = $2::jsonb, updated_at = NOW() WHERE id = $3`,
+      [JSON.stringify(updatedQuestions), JSON.stringify(nextData), paperId]
+    );
+    await pool.query(`DELETE FROM knowledge_base WHERE id = $1`, [questionId]).catch(() => {});
 
-    const kbRef = app.firestore().collection('knowledge_base').doc(questionId);
-    batch.delete(kbRef);
-
-    await batch.commit();
-    
-    // Update in-memory vector store
     removeVectorItem(questionId);
 
     res.json({ success: true, message: 'Question deleted successfully.' });
@@ -8626,10 +8608,9 @@ app.post('/api/verify-payment', verifyAuth, async (req: any, res) => {
         ? txMetadata.plan_type.trim()
         : '';
 
-    const app = getAdminApp();
-    if (app) {
-      const pricingDoc = await app.firestore().collection('system_config').doc('pricing').get();
-      const plans: any[] = Array.isArray(pricingDoc.data()?.plans) ? pricingDoc.data()!.plans : [];
+    const pricingDocData = await getSystemConfigDoc('pricing');
+    if (pricingDocData) {
+      const plans: any[] = Array.isArray(pricingDocData?.plans) ? pricingDocData.plans : [];
       if (!verifiedPlanType && plans.length > 0) {
         const matchedByAmount = plans.find((p: any) => Number(p.price) === verifiedAmountNgn);
         if (matchedByAmount?.id) {
@@ -8663,25 +8644,21 @@ app.post('/api/verify-payment', verifyAuth, async (req: any, res) => {
   }
 });
 
-// 3. Admin Spark Adjustment
+// 3. Admin Spark Adjustment (Neon PostgreSQL)
 app.post('/api/admin/adjust-sparks', verifyAuth, async (req, res) => {
   const { email, amount } = req.body;
   const adminUid = (req as any).user.uid;
+  const userEmail = (req as any).user.email;
   const app = getAdminApp();
+  const pool = getPostgresPool();
 
-  if (!app) {
-    return res.status(503).json({ error: 'Firebase Admin not initialized' });
+  if (!pool) {
+    return res.status(503).json({ error: 'Database service unavailable' });
   }
 
   try {
-    const adminDoc = await app.firestore().collection('users').doc(adminUid).get();
-    const userEmail = (req as any).user.email;
-
-    if (isAdminEmail(userEmail)) {
-      if (adminDoc.exists && adminDoc.data()?.role !== 'admin') {
-        await adminDoc.ref.update({ role: 'admin' });
-      }
-    } else if (!adminDoc.exists || adminDoc.data()?.role !== 'admin') {
+    const authInfo = await verifyAdminOrTutorRole(req);
+    if (!authInfo.isAdmin) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
@@ -8690,15 +8667,15 @@ app.post('/api/admin/adjust-sparks', verifyAuth, async (req, res) => {
       return res.status(400).json({ error: 'Valid non-zero spark amount is required' });
     }
 
-    const usersSnapshot = await app.firestore().collection('users').where('email', '==', email).get();
-    if (usersSnapshot.empty) {
+    const userRes = await pool.query('SELECT uid FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1', [String(email || '').trim()]);
+    if ((userRes.rowCount ?? 0) === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const targetUserDoc = usersSnapshot.docs[0];
+    const targetUid = userRes.rows[0].uid;
     const adjustResult = await executeBucketAwareSparkDelta({
       app,
-      uid: targetUserDoc.id,
+      uid: targetUid,
       delta: deltaNum,
       action: 'ADMIN_ADJUST',
       endpoint: 'admin',
@@ -8717,13 +8694,13 @@ app.post('/api/admin/adjust-sparks', verifyAuth, async (req, res) => {
   }
 });
 
-// 4. User Reward Endpoint (Proactive Quiz Reward)
+// 4. User Reward Endpoint (Proactive Quiz Reward - Neon PostgreSQL)
 app.post('/api/user/reward-sparks', verifyAuth, async (req, res) => {
   const { subTopicId, rewardType } = req.body;
   const uid = (req as any).user.uid;
   const app = getAdminApp();
 
-  if (!app || !uid) {
+  if (!uid) {
     return res.status(503).json({ error: 'Service unavailable' });
   }
 
@@ -8733,13 +8710,6 @@ app.post('/api/user/reward-sparks', verifyAuth, async (req, res) => {
 
   try {
     const todayKey = new Date().toISOString().split('T')[0];
-    const userRef = app.firestore().collection('users').doc(uid);
-    const rewardRef = userRef.collection('rewards').doc(`${subTopicId}_${todayKey}`);
-    const rewardSnap = await rewardRef.get();
-    if (rewardSnap.exists) {
-      return res.status(400).json({ error: 'Reward already claimed for this topic today' });
-    }
-
     const rewardAmount = 2;
     const rewardRes = await executeBucketAwareSparkDelta({
       app,
@@ -8755,13 +8725,6 @@ app.post('/api/user/reward-sparks', verifyAuth, async (req, res) => {
       return res.status(400).json({ error: 'Reward already claimed for this topic today' });
     }
 
-    await rewardRef.set({
-      type: rewardType,
-      subTopicId,
-      amount: rewardAmount,
-      timestamp: admin.firestore.FieldValue.serverTimestamp()
-    });
-
     res.json({ success: true, newBalance: rewardRes.newBalance });
   } catch (error: any) {
     console.error('Reward Error:', error.message);
@@ -8769,13 +8732,13 @@ app.post('/api/user/reward-sparks', verifyAuth, async (req, res) => {
   }
 });
 
-// 4b. Badge Reward Endpoint
+// 4b. Badge Reward Endpoint (Neon PostgreSQL)
 app.post('/api/user/reward-badge', verifyAuth, async (req, res) => {
   const { amount, badgeId } = req.body || {};
   const uid = (req as any).user.uid;
   const app = getAdminApp();
 
-  if (!app || !uid) {
+  if (!uid) {
     return res.status(503).json({ error: 'Service unavailable' });
   }
 
@@ -8801,17 +8764,17 @@ app.post('/api/user/reward-badge', verifyAuth, async (req, res) => {
   }
 });
 
-// 4c. Deduct Sparks for Hint
+// 4c. Deduct Sparks for Hint (Neon PostgreSQL)
 app.post('/api/user/deduct-sparks-hint', verifyAuth, async (req, res) => {
   const uid = (req as any).user.uid;
   const app = getAdminApp();
 
-  if (!app || !uid) {
+  if (!uid) {
     return res.status(503).json({ error: 'Service unavailable' });
   }
 
   try {
-    const { courseId, moduleId, questionId, questionText, idempotency_token, idempotencyToken } = req.body || {};
+    const { courseId, questionId, idempotency_token, idempotencyToken } = req.body || {};
     const result = await executeBucketAwareSparkDelta({
       app,
       uid,
@@ -8825,25 +8788,6 @@ app.post('/api/user/deduct-sparks-hint', verifyAuth, async (req, res) => {
     });
 
     const sparksDeducted = Math.abs(result.appliedDelta);
-    if (!result.alreadyProcessed) {
-      const logRef = app.firestore().collection('spark_audit_logs').doc();
-      await logRef.set({
-        id: logRef.id,
-        userId: uid,
-        userEmail: (req as any).user.email || 'unknown@uniace.edu',
-        action: '50/50_hint',
-        sparksDeducted,
-        timestamp: new Date().toISOString(),
-        metadata: {
-          courseId: courseId || null,
-          moduleId: moduleId || null,
-          questionId: questionId || null,
-          questionText: questionText || null,
-          idempotency_token: result.idempotencyToken
-        }
-      });
-    }
-
     res.json({
       success: true,
       newBalance: result.newBalance,
@@ -8905,138 +8849,52 @@ app.get('/api/sparks/ledger', verifyAuth, async (req, res) => {
   }
 });
 
-const lastLeaderboardSyncedFingerprintByUid = new Map<string, string>();
-
-// Helper to sync sanitized public leaderboard entry only when XP, level, streak, or displayName changes
-async function syncPublicLeaderboard(firestore: admin.firestore.Firestore, uid: string) {
-  try {
-    const userDoc = await firestore.collection('users').doc(uid).get();
-    if (!userDoc.exists) return;
-    const data = userDoc.data() || {};
-    const xp = typeof data.xp === 'number' ? data.xp : 0;
-    const level = typeof data.level === 'number' ? data.level : 1;
-    const streak = typeof data.streak === 'number' ? data.streak : 0;
-    const displayName = data.displayName || 'Scholar';
-    const photoURL = data.photoURL || '';
-    const fingerprint = `${xp}:${level}:${streak}:${displayName}:${photoURL}`;
-
-    if (lastLeaderboardSyncedFingerprintByUid.get(uid) === fingerprint) {
-      dbTelemetry.recordSuppressedWrite('public_leaderboard', 'unchanged_user_leaderboard_sync', 1);
-      return;
-    }
-
-    await firestore.collection('public_leaderboard').doc(uid).set({
-      userId: uid,
-      displayName,
-      photoURL,
-      xp,
-      level,
-      streak,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
-    lastLeaderboardSyncedFingerprintByUid.set(uid, fingerprint);
-  } catch (err) {
-    console.error('Failed to sync public leaderboard for user:', uid, err);
-  }
+// Helper to sync public leaderboard entry (Neon PostgreSQL handles leaderboard dynamically; no Firestore write needed)
+async function syncPublicLeaderboard(_firestore: any, _uid: string) {
+  dbTelemetry.recordSuppressedWrite('public_leaderboard', 'neon_dynamic_leaderboard_query', 1);
 }
 
-// Background batch sweep to keep top public leaderboard rankings fresh (writes only changed entries)
-async function sweepAndSyncPublicLeaderboard(firestore: admin.firestore.Firestore) {
-  try {
-    const usersSnap = await firestore.collection('users').orderBy('xp', 'desc').limit(50).get();
-    let changedCount = 0;
-    if (!usersSnap.empty) {
-      const batch = firestore.batch();
-      usersSnap.docs.forEach((doc, idx) => {
-        const u = doc.data() || {};
-        const xp = typeof u.xp === 'number' ? u.xp : 0;
-        const level = typeof u.level === 'number' ? u.level : 1;
-        const streak = typeof u.streak === 'number' ? u.streak : 0;
-        const displayName = u.displayName || 'Scholar';
-        const photoURL = u.photoURL || '';
-        const rank = idx + 1;
-        const fingerprint = `${xp}:${level}:${streak}:${displayName}:${photoURL}:${rank}`;
-
-        if (lastLeaderboardSyncedFingerprintByUid.get(doc.id) === fingerprint) {
-          dbTelemetry.recordSuppressedWrite('public_leaderboard', 'unchanged_leaderboard_sweep_doc', 1);
-          return;
-        }
-
-        const ref = firestore.collection('public_leaderboard').doc(doc.id);
-        batch.set(ref, {
-          userId: doc.id,
-          displayName,
-          photoURL,
-          xp,
-          level,
-          streak,
-          rank,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp()
-        }, { merge: true });
-        lastLeaderboardSyncedFingerprintByUid.set(doc.id, fingerprint);
-        changedCount += 1;
-      });
-      if (changedCount > 0) {
-        await batch.commit();
-        console.log(`[PublicLeaderboard] Synchronized ${changedCount} changed scholar(s) to /public_leaderboard.`);
-      }
-    }
-    dbTelemetry.recordBackgroundTaskRun('sweepAndSyncPublicLeaderboard', changedCount);
-  } catch (err) {
-    console.error('[PublicLeaderboard] Error during periodic sync:', err);
-  }
+// Background batch sweep for public leaderboard (Neon PostgreSQL handles leaderboard dynamically)
+async function sweepAndSyncPublicLeaderboard(_firestore: any) {
+  dbTelemetry.recordBackgroundTaskRun('sweepAndSyncPublicLeaderboard', 0);
 }
 
-// Background absence study reminder dispatcher: notifies users who haven't logged in for > 24 hours
-async function checkAndSendAbsenceStudyReminders(firestore: admin.firestore.Firestore) {
+// Background absence study reminder dispatcher (Neon PostgreSQL)
+async function checkAndSendAbsenceStudyReminders(_firestore: any) {
   try {
+    const pool = getPostgresPool();
+    if (!pool) return;
+
+    const absentRes = await pool.query(
+      `SELECT uid, display_name, learning_profile
+       FROM users
+       WHERE updated_at < NOW() - INTERVAL '24 hours'
+       LIMIT 30`
+    );
+
     const now = Date.now();
-    const twentyFourHoursAgo = new Date(now - 24 * 60 * 60 * 1000);
-    
-    // Find users who have not made requests in > 24h
-    const usersSnap = await firestore.collection('users')
-      .where('last_request_at', '<', twentyFourHoursAgo)
-      .limit(30)
-      .get();
+    for (const row of absentRes.rows) {
+      const lp = row.learning_profile || {};
+      const lastReminder = lp.last_study_reminder_at ? new Date(lp.last_study_reminder_at) : null;
+      if (!lastReminder || isNaN(lastReminder.getTime()) || (now - lastReminder.getTime() > 24 * 60 * 60 * 1000)) {
+        const notifId = `remind_${row.uid}_${Date.now()}`;
+        await pool.query(
+          `INSERT INTO user_notifications (id, uid, title, message, type, read, created_at)
+           VALUES ($1, $2, $3, $4, 'info', false, NOW())
+           ON CONFLICT (id) DO NOTHING`,
+          [
+            notifId,
+            row.uid,
+            'Time to study! 🎓',
+            `Hey ${row.display_name || 'there'}! It's been over 24 hours since your last session. Keep your streak alive and stay on track with UniAce!`
+          ]
+        );
 
-    for (const userDoc of usersSnap.docs) {
-      const u = userDoc.data() || {};
-      const lastReminder = u.last_study_reminder_at?.toDate?.() || (u.last_study_reminder_at ? new Date(u.last_study_reminder_at) : null);
-      
-      // Throttle reminders so each absent user receives at most one reminder every 24 hours
-      if (!lastReminder || (now - lastReminder.getTime() > 24 * 60 * 60 * 1000)) {
-        await firestore.collection('notifications').add({
-          userId: userDoc.id,
-          title: 'Time to study! 🎓',
-          message: `Hey ${u.displayName || 'there'}! It's been over 24 hours since your last session. Keep your streak alive and stay on track with UniAce!`,
-          type: 'info',
-          read: false,
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-
-        // If user registered an FCM push token, send push notification while they are away
-        if (u.fcmToken && typeof u.fcmToken === 'string') {
-          try {
-            await admin.messaging().send({
-              token: u.fcmToken,
-              notification: {
-                title: 'Time to study! 🎓',
-                body: "It's been over 24 hours since your last session. Keep your streak alive with UniAce!"
-              },
-              data: {
-                url: '/'
-              }
-            });
-          } catch (fcmErr: any) {
-            if (fcmErr.code === 'messaging/registration-token-not-registered') {
-              await userDoc.ref.update({ fcmToken: admin.firestore.FieldValue.delete() }).catch(() => {});
-            }
-          }
-        }
-
-        await userDoc.ref.set({
-          last_study_reminder_at: admin.firestore.FieldValue.serverTimestamp()
-        }, { merge: true });
+        const nextLp = { ...lp, last_study_reminder_at: new Date(now).toISOString() };
+        await pool.query(
+          `UPDATE users SET learning_profile = $2::jsonb WHERE uid = $1`,
+          [row.uid, JSON.stringify(nextLp)]
+        );
       }
     }
   } catch (err) {
@@ -9044,127 +8902,102 @@ async function checkAndSendAbsenceStudyReminders(firestore: admin.firestore.Fire
   }
 }
 
-// Public Leaderboard Endpoint (Sanitized, zero PII)
+// Public Leaderboard Endpoint (Sanitized, zero PII - Neon PostgreSQL)
 app.get('/api/leaderboard', async (req, res) => {
-  const app = getAdminApp();
-  if (!app) {
+  const pool = getPostgresPool();
+  if (!pool) {
     return res.status(503).json({ error: 'Service unavailable' });
   }
 
   try {
-    const db = app.firestore();
-    let snapshot = await db.collection('public_leaderboard').orderBy('xp', 'desc').limit(10).get();
+    const result = await pool.query(
+      `SELECT u.uid, u.display_name, u.learning_profile,
+              COALESCE(SUM(p.completed_lessons_count), 0)::int as completed_lessons,
+              COALESCE(SUM(p.total_study_seconds), 0)::int as total_study_seconds
+       FROM users u
+       LEFT JOIN user_course_progress p ON u.uid = p.uid
+       GROUP BY u.uid, u.display_name, u.learning_profile
+       LIMIT 25`
+    );
 
-    // Auto-seed public_leaderboard from users if initially empty
-    if (snapshot.empty) {
-      const usersSnap = await db.collection('users').orderBy('xp', 'desc').limit(10).get();
-      if (!usersSnap.empty) {
-        const batch = db.batch();
-        usersSnap.docs.forEach((doc) => {
-          const u = doc.data();
-          const ref = db.collection('public_leaderboard').doc(doc.id);
-          batch.set(ref, {
-            userId: doc.id,
-            displayName: u.displayName || 'Scholar',
-            photoURL: u.photoURL || '',
-            xp: u.xp || 0,
-            level: u.level || 1,
-            streak: u.streak || 0,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp()
-          }, { merge: true });
-        });
-        await batch.commit();
-        snapshot = await db.collection('public_leaderboard').orderBy('xp', 'desc').limit(10).get();
-      }
-    }
+    const leaders = result.rows
+      .map((r: any) => {
+        const lp = r.learning_profile || {};
+        const computedXp = Number(r.completed_lessons || 0) * 50 + Math.floor(Number(r.total_study_seconds || 0) / 60);
+        const xp = Math.max(Number(lp.xp || 0), computedXp);
+        return {
+          uid: r.uid,
+          displayName: r.display_name || 'Scholar',
+          photoURL: lp.photoURL || '',
+          xp,
+          level: Math.max(Number(lp.level || 1), Math.floor(Math.sqrt(xp / 100)) + 1),
+          streak: Number(lp.streak || 1)
+        };
+      })
+      .sort((a, b) => b.xp - a.xp)
+      .slice(0, 10)
+      .map((item, idx) => ({ ...item, rank: idx + 1 }));
 
-    const leaders = snapshot.docs.map((doc, idx) => {
-      const data = doc.data();
-      return {
-        uid: doc.id,
-        displayName: data.displayName || 'Scholar',
-        photoURL: data.photoURL || '',
-        xp: data.xp || 0,
-        level: data.level || 1,
-        streak: data.streak || 0,
-        rank: idx + 1
-      };
-    });
-
-    res.json({ leaders });
+    res.json({ leaders, leaderboard: leaders });
   } catch (error: any) {
     console.error('Error fetching public leaderboard:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// 5. XP Reward Endpoint
+// 5. XP Reward Endpoint (Neon PostgreSQL)
 app.post('/api/user/reward-xp', verifyAuth, async (req, res) => {
   const { amount } = req.body;
   const uid = (req as any).user.uid;
-  const app = getAdminApp();
+  const pool = getPostgresPool();
 
-  if (!app || !uid) {
+  if (!pool || !uid) {
     return res.status(503).json({ error: 'Service unavailable' });
   }
 
-  const numAmount = parseInt(amount);
+  const numAmount = parseInt(amount, 10);
   if (isNaN(numAmount) || numAmount <= 0 || numAmount > 1000) {
     return res.status(400).json({ error: 'Invalid XP amount' });
   }
 
   try {
-    const userRef = app.firestore().collection('users').doc(uid);
-    await userRef.update({
-      xp: admin.firestore.FieldValue.increment(numAmount)
-    });
+    const uRes = await pool.query(`SELECT learning_profile FROM users WHERE uid = $1`, [uid]);
+    const lp = uRes.rows[0]?.learning_profile || {};
+    const nextXp = Number(lp.xp || 0) + numAmount;
+    const nextLp = { ...lp, xp: nextXp };
+    await pool.query(`UPDATE users SET learning_profile = $2::jsonb, updated_at = NOW() WHERE uid = $1`, [uid, JSON.stringify(nextLp)]);
 
-    // Synchronize sanitized public leaderboard entry asynchronously
-    syncPublicLeaderboard(app.firestore(), uid).catch((err) =>
-      console.error('Async leaderboard sync error:', err)
-    );
-
-    res.json({ success: true });
+    res.json({ success: true, xp: nextXp });
   } catch (error: any) {
     console.error('Error rewarding XP:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// 6. Update Mastery Endpoint
+// 6. Update Mastery Endpoint (Neon PostgreSQL)
 app.post('/api/user/update-mastery', verifyAuth, async (req, res) => {
   const { topicId, score } = req.body;
   const uid = (req as any).user.uid;
-  const app = getAdminApp();
+  const pool = getPostgresPool();
 
-  if (!app || !uid) {
+  if (!pool || !uid) {
     return res.status(503).json({ error: 'Service unavailable' });
   }
 
-  const numScore = parseInt(score);
+  const numScore = parseInt(score, 10);
   if (isNaN(numScore) || numScore < 0 || numScore > 100) {
     return res.status(400).json({ error: 'Invalid mastery score' });
   }
 
   try {
-    const userRef = app.firestore().collection('users').doc(uid);
-    await app.firestore().runTransaction(async (t) => {
-      const userDoc = await t.get(userRef);
-      if (!userDoc.exists) throw new Error('User not found');
-      
-      const currentMasteryMap = userDoc.data()?.mastery || {};
-      const currentScore = currentMasteryMap[topicId] || 0;
-      const newScore = Math.max(currentScore, numScore);
+    const uRes = await pool.query(`SELECT learning_profile FROM users WHERE uid = $1`, [uid]);
+    const lp = uRes.rows[0]?.learning_profile || {};
+    const mastery = { ...(lp.mastery || {}) };
+    mastery[topicId] = Math.max(Number(mastery[topicId] || 0), numScore);
+    const topicLastStudied = { ...(lp.topicLastStudied || {}), [topicId]: new Date().toISOString() };
+    const nextLp = { ...lp, mastery, topicLastStudied, lastStudyDate: new Date().toISOString() };
 
-      const updateData: any = {
-        [`mastery.${topicId}`]: newScore,
-        [`topicLastStudied.${topicId}`]: new Date().toISOString(),
-        lastStudyDate: new Date().toISOString()
-      };
-
-      t.update(userRef, updateData);
-    });
-
+    await pool.query(`UPDATE users SET learning_profile = $2::jsonb, updated_at = NOW() WHERE uid = $1`, [uid, JSON.stringify(nextLp)]);
     res.json({ success: true });
   } catch (error: any) {
     console.error('Error updating mastery:', error);
@@ -9172,21 +9005,23 @@ app.post('/api/user/update-mastery', verifyAuth, async (req, res) => {
   }
 });
 
-// 7. Course Enrollment Endpoint
+// 7. Course Enrollment Endpoint (Neon PostgreSQL)
 app.post('/api/user/enroll-course', verifyAuth, async (req, res) => {
   const { courseId } = req.body;
   const uid = (req as any).user.uid;
-  const app = getAdminApp();
+  const pool = getPostgresPool();
 
-  if (!app || !uid || !courseId) {
+  if (!pool || !uid || !courseId) {
     return res.status(400).json({ error: 'Invalid request' });
   }
 
   try {
-    const userRef = app.firestore().collection('users').doc(uid);
-    await userRef.update({
-      enrolledCourses: admin.firestore.FieldValue.arrayUnion(courseId)
-    });
+    await pool.query(
+      `INSERT INTO user_course_progress (id, uid, course_id, total_study_seconds, completed_lessons_count, completed_modules_count, version, updated_at)
+       VALUES ($1, $2, $3, 0, 0, 0, 1, NOW())
+       ON CONFLICT (id) DO NOTHING`,
+      [`${uid}_${courseId}`, uid, courseId]
+    );
     res.json({ success: true });
   } catch (error: any) {
     console.error('Error enrolling course:', error);
@@ -9194,11 +9029,10 @@ app.post('/api/user/enroll-course', verifyAuth, async (req, res) => {
   }
 });
 
-// 8. Course Unenrollment Endpoint
+// 8. Course Unenrollment Endpoint (Neon PostgreSQL)
 app.post('/api/user/unenroll-course', verifyAuth, async (req, res) => {
   const { courseId } = req.body;
   const uid = (req as any).user.uid;
-  const app = getAdminApp();
 
   if (!uid || !courseId) {
     return res.status(400).json({ error: 'Invalid request' });
@@ -9209,14 +9043,6 @@ app.post('/api/user/unenroll-course', verifyAuth, async (req, res) => {
     if (pool) {
       await pool.query('DELETE FROM user_course_progress WHERE uid = $1 AND course_id = $2', [uid, courseId]);
     }
-
-    if (app) {
-      const userRef = app.firestore().collection('users').doc(uid);
-      await userRef.update({
-        enrolledCourses: admin.firestore.FieldValue.arrayRemove(courseId)
-      }).catch(() => {});
-    }
-
     res.json({ success: true });
   } catch (error: any) {
     console.error('Error unenrolling course:', error);
@@ -9224,38 +9050,29 @@ app.post('/api/user/unenroll-course', verifyAuth, async (req, res) => {
   }
 });
 
-// 9. Record Study Time Endpoint
+// 9. Record Study Time Endpoint (Neon PostgreSQL)
 app.post('/api/user/record-study-time', verifyAuth, async (req, res) => {
   const { topicId, seconds } = req.body;
   const uid = (req as any).user.uid;
-  const app = getAdminApp();
+  const pool = getPostgresPool();
 
-  if (!app || !uid || !topicId) {
+  if (!pool || !uid || !topicId) {
     return res.status(400).json({ error: 'Invalid request' });
   }
 
-  const numSeconds = parseInt(seconds);
+  const numSeconds = parseInt(seconds, 10);
   if (isNaN(numSeconds) || numSeconds <= 0 || numSeconds > 3600) {
     return res.status(400).json({ error: 'Invalid duration' });
   }
 
   try {
-    const userRef = app.firestore().collection('users').doc(uid);
-    await app.firestore().runTransaction(async (t) => {
-      const userDoc = await t.get(userRef);
-      if (!userDoc.exists) throw new Error('User not found');
-      
-      const currentStudyTimeMap = userDoc.data()?.studyTime || {};
-      const currentSeconds = currentStudyTimeMap[topicId] || 0;
+    const uRes = await pool.query(`SELECT learning_profile FROM users WHERE uid = $1`, [uid]);
+    const lp = uRes.rows[0]?.learning_profile || {};
+    const studyTime = { ...(lp.studyTime || {}) };
+    studyTime[topicId] = Number(studyTime[topicId] || 0) + numSeconds;
+    const nextLp = { ...lp, studyTime, lastStudyDate: new Date().toISOString() };
 
-      const updateData: any = {
-        [`studyTime.${topicId}`]: currentSeconds + numSeconds,
-        lastStudyDate: new Date().toISOString()
-      };
-
-      t.update(userRef, updateData);
-    });
-
+    await pool.query(`UPDATE users SET learning_profile = $2::jsonb, updated_at = NOW() WHERE uid = $1`, [uid, JSON.stringify(nextLp)]);
     res.json({ success: true });
   } catch (error: any) {
     console.error('Error recording study time:', error);
@@ -9263,25 +9080,26 @@ app.post('/api/user/record-study-time', verifyAuth, async (req, res) => {
   }
 });
 
-// 10. Reset Learning Profile Endpoint (Clear stale profile/memory)
+// 10. Reset Learning Profile Endpoint (Neon PostgreSQL)
 app.post('/api/user/learning-profile/reset', verifyAuth, async (req, res) => {
   const uid = (req as any).user?.uid;
-  const app = getAdminApp();
+  const pool = getPostgresPool();
 
-  if (!app || !uid) {
+  if (!pool || !uid) {
     return res.status(503).json({ error: 'Service unavailable' });
   }
 
   try {
-    const userRef = app.firestore().collection('users').doc(uid);
-    await userRef.set({
-      learningProfile: {
-        strengths: [],
-        weaknesses: [],
-        lastUpdated: new Date().toISOString(),
-        fastMode: false
-      }
-    }, { merge: true });
+    const resetProfile = {
+      strengths: [],
+      weaknesses: [],
+      lastUpdated: new Date().toISOString(),
+      fastMode: false
+    };
+    await pool.query(
+      `UPDATE users SET learning_profile = $2::jsonb, updated_at = NOW() WHERE uid = $1`,
+      [uid, JSON.stringify(resetProfile)]
+    );
 
     res.json({ success: true, message: 'Learning profile reset successfully' });
   } catch (error: any) {
@@ -9711,8 +9529,15 @@ app.use('/api/academic', academicRouter);
 app.use('/api/admin/academic', academicRouter);
 
 // --- Vite Middleware (Dev) or Static Serving (Prod) ---
-async function analyzeAndUpdateLearningProfile(userMessage: string, aiResponse: string, userRef: admin.firestore.DocumentReference | null) {
-  if (!userRef || !process.env.GEMINI_API_KEY) return;
+async function analyzeAndUpdateLearningProfile(
+  userMessage: string,
+  aiResponse: string,
+  userRefOrUid: admin.firestore.DocumentReference | string | null
+) {
+  const uid = typeof userRefOrUid === 'string' ? userRefOrUid : userRefOrUid?.id;
+  if (!uid || !process.env.GEMINI_API_KEY) return;
+  const pool = getPostgresPool();
+  if (!pool) return;
   try {
     const trimmedMsg = (userMessage || '').trim();
     // Do NOT analyze short conversational inputs, acknowledgments, or brief greetings
@@ -9725,8 +9550,8 @@ async function analyzeAndUpdateLearningProfile(userMessage: string, aiResponse: 
       return;
     }
 
-    const doc = await userRef.get();
-    const currentProfile = doc.data()?.learningProfile || { strengths: [], weaknesses: [] };
+    const userRes = await pool.query(`SELECT learning_profile FROM users WHERE uid = $1`, [uid]);
+    const currentProfile = userRes.rows[0]?.learning_profile || { strengths: [], weaknesses: [] };
 
     const prompt = `Analyze the following academic coursework interaction between a university student and an AI tutor.
     <student_input>
@@ -9752,25 +9577,14 @@ async function analyzeAndUpdateLearningProfile(userMessage: string, aiResponse: 
       "weaknesses": ["...", "..."]
     }`;
 
-    const openRouterFreeProvider = globalOpenRouterFreeProvider;
-    const mistralProvider = globalMistralDirectProvider;
-    const groqProvider = globalGroqProvider;
-    const cohereProvider = globalCohereProvider;
-    const huggingFaceProvider = globalHuggingFaceProvider;
-    
-    const openRouterFreeBreaker = globalOpenRouterFreeBreaker;
-    const mistralBreaker = globalMistralDirectBreaker;
-    const groqBreaker = globalGroqBreaker;
-    const cohereBreaker = globalCohereBreaker;
-    const huggingFaceBreaker = globalHuggingFaceBreaker;
-
-    const providers = [];
-    if (mistralBreaker) providers.push(mistralBreaker);
-    if (globalGeminiDirectBreaker) providers.push(globalGeminiDirectBreaker);
-    if (openRouterFreeBreaker) providers.push(openRouterFreeBreaker);
-    if (groqBreaker) providers.push(groqBreaker);
-    if (cohereBreaker) providers.push(cohereBreaker);
-    if (huggingFaceBreaker) providers.push(huggingFaceBreaker);
+    const providers = [
+      globalMistralDirectBreaker,
+      globalGeminiDirectBreaker,
+      globalOpenRouterFreeBreaker,
+      globalGroqBreaker,
+      globalCohereBreaker,
+      globalHuggingFaceBreaker
+    ].filter(Boolean);
 
     if (providers.length === 0) return;
 
@@ -9805,15 +9619,18 @@ async function analyzeAndUpdateLearningProfile(userMessage: string, aiResponse: 
       .filter((w: string) => typeof w === 'string' && w.trim().length > 2 && !invalidPattern.test(w))
       .slice(0, 4);
 
-    await userRef.set({
-      learningProfile: {
-        ...currentProfile,
-        strengths: sanitizedStrengths,
-        weaknesses: sanitizedWeaknesses,
-        lastUpdated: new Date().toISOString()
-      }
-    }, { merge: true });
-    console.log('Updated learning profile for user:', userRef.id);
+    const updatedProfile = {
+      ...currentProfile,
+      strengths: sanitizedStrengths,
+      weaknesses: sanitizedWeaknesses,
+      lastUpdated: new Date().toISOString()
+    };
+
+    await pool.query(
+      `UPDATE users SET learning_profile = $1::jsonb, updated_at = NOW() WHERE uid = $2`,
+      [JSON.stringify(updatedProfile), uid]
+    );
+    console.log('Updated learning profile in Neon PostgreSQL for user:', uid);
   } catch (e) {
     console.error("Failed to update learning profile:", e);
   }
@@ -11040,14 +10857,12 @@ async function startServer() {
         const cohereBreaker = globalCohereBreaker;
         const huggingFaceBreaker = globalHuggingFaceBreaker;
 
-        // Fetch dynamic task routing config for chat
+        // Fetch dynamic task routing config for chat from Neon PostgreSQL cache
         let routingConfig: any = { chat: 'groq' };
         try {
-          if (app) {
-            const routingDoc = await app.firestore().collection('system_config').doc('routing').get();
-            if (routingDoc.exists) {
-              routingConfig = routingDoc.data() || { chat: 'groq' };
-            }
+          const routingDoc = await getSystemConfigDoc('routing');
+          if (routingDoc) {
+            routingConfig = routingDoc;
           }
         } catch (err) {
           console.warn("Failed to fetch routing config for WebSocket chat:", err);
@@ -11345,16 +11160,10 @@ async function startServer() {
         if (payload.setup && !sessionPromise) {
           let voiceModel = "gemini-2.0-flash-exp";
           try {
-            const appAdmin = getAdminApp();
-            if (appAdmin) {
-              const routingDoc = await appAdmin.firestore().collection('system_config').doc('routing').get();
-              if (routingDoc.exists) {
-                const config = routingDoc.data();
-                if (config && config.voice_tutor_model) {
-                  voiceModel = config.voice_tutor_model;
-                  console.log(`[VoiceTutor] Dynamically routing to configured model: ${voiceModel}`);
-                }
-              }
+            const config = await getSystemConfigDoc('routing');
+            if (config && config.voice_tutor_model) {
+              voiceModel = config.voice_tutor_model;
+              console.log(`[VoiceTutor] Dynamically routing to configured model: ${voiceModel}`);
             }
           } catch (routingErr) {
             console.error("Error fetching dynamic voice model config, falling back to default:", routingErr);

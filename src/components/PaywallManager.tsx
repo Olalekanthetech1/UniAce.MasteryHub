@@ -19,15 +19,21 @@ export default function PaywallManager({ onUpgrade }: PaywallManagerProps) {
   useEffect(() => {
     if (!profile) return;
 
-    // Do not show paywall/trial warnings for admins, moderators, tutors, or paid users
-    const isActuallyPremium = profile.plan_type !== 'free' || ['tutor', 'moderator', 'admin'].includes(profile.role);
-    if (isActuallyPremium) {
+    const isStaff = ['tutor', 'moderator', 'admin'].includes(profile.role?.toLowerCase() || '');
+    if (isStaff) {
       setShowSoftWarning(false);
       setShowHardStop(false);
       return;
     }
 
-    // Scenario A: Soft Warning (Trial ending soon or low sparks)
+    // Active paid subscribers (valid subscription_expiry) do not see paywalls
+    if (isPremium && !isTrialActive) {
+      setShowSoftWarning(false);
+      setShowHardStop(false);
+      return;
+    }
+
+    // Scenario A: Soft Warning (Trial ending soon or low sparks on free tier)
     const isTrialEndingSoon = isTrialActive && daysRemaining <= 1;
     const isSparksLow = !isPremium && profile.ai_sparks > 0 && profile.ai_sparks < 50;
 
@@ -37,11 +43,15 @@ export default function PaywallManager({ onUpgrade }: PaywallManagerProps) {
       setShowSoftWarning(false);
     }
 
-    // Scenario C: Time Hard Stop (Expired Trial)
-    const isTrialExpired = !isTrialActive && profile.plan_type === 'free' && profile.created_at;
-    // We only show hard stop if they haven't upgraded yet and trial is over
-    if (isTrialExpired && !isPremium) {
+    // Scenario C: Time Hard Stop (Trial Expired, Subscription Expired, or Out of Sparks)
+    const isTrialExpired = !isTrialActive && profile.plan_type === 'free';
+    const isSubscriptionExpired = profile.plan_type !== 'free' && !isPremium;
+    const isOutOfSparks = !isPremium && (profile.ai_sparks ?? 0) <= 0;
+
+    if ((isTrialExpired || isSubscriptionExpired || isOutOfSparks) && !isPremium) {
       setShowHardStop(true);
+    } else {
+      setShowHardStop(false);
     }
   }, [profile, isTrialActive, daysRemaining, hoursRemaining, isPremium, isDismissed]);
 

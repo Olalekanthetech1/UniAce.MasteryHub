@@ -313,18 +313,54 @@ export function isLatexBalanced(text: string): boolean {
 }
 
 /**
- * Loads `system_config/evaluation_policy` from Firestore, initializing the document
- * if it does not yet exist so all thresholds live in audited Firestore config.
+ * Helper to read a JSONB map or document from Neon `system_config`.
+ */
+async function readNeonSystemConfig<T = any>(key: string): Promise<T | null> {
+  const pool = getPostgresPool();
+  if (!pool) return null;
+  const res = await pool.query(`SELECT data FROM system_config WHERE key = $1 LIMIT 1`, [key]);
+  if (res.rows.length > 0 && res.rows[0].data) {
+    return res.rows[0].data as T;
+  }
+  return null;
+}
+
+async function writeNeonSystemConfig(key: string, data: any): Promise<void> {
+  const pool = getPostgresPool();
+  if (!pool) throw new Error('Neon PostgreSQL pool is not initialized.');
+  await pool.query(
+    `INSERT INTO system_config (key, data, updated_at)
+     VALUES ($1, $2::jsonb, NOW())
+     ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+    [key, JSON.stringify(data)]
+  );
+}
+
+export async function getGoldenSetBenchmarksMap(): Promise<Record<string, GoldenSetBenchmarkItem>> {
+  const map = await readNeonSystemConfig<Record<string, GoldenSetBenchmarkItem>>('golden_set_benchmarks_map');
+  return map && typeof map === 'object' ? map : {};
+}
+
+export async function getGoldenSetRunsMap(): Promise<Record<string, GoldenSetEvaluationRun>> {
+  const map = await readNeonSystemConfig<Record<string, GoldenSetEvaluationRun>>('golden_set_runs_map');
+  return map && typeof map === 'object' ? map : {};
+}
+
+export async function getAnswerReportsMap(): Promise<Record<string, AnswerReportDoc>> {
+  const map = await readNeonSystemConfig<Record<string, AnswerReportDoc>>('answer_reports_map');
+  return map && typeof map === 'object' ? map : {};
+}
+
+/**
+ * Loads `system_config/evaluation_policy` from Neon PostgreSQL, initializing the document
+ * if it does not yet exist so all thresholds live in audited Neon config.
  */
 export async function getEvaluationPolicy(
-  app: admin.app.App
+  _app?: admin.app.App | null
 ): Promise<EvaluationPolicyConfig> {
-  const db = app.firestore();
-  const ref = db.collection('system_config').doc('evaluation_policy');
-  const snap = await ref.get();
+  const data = await readNeonSystemConfig<any>('evaluation_policy');
 
-  if (snap.exists) {
-    const data = snap.data() || {};
+  if (data) {
     return {
       accuracyGatePointPercent: typeof data.accuracyGatePointPercent === 'number' ? data.accuracyGatePointPercent : 90,
       accuracyGateCiLowPercent: typeof data.accuracyGateCiLowPercent === 'number' ? data.accuracyGateCiLowPercent : 85,
@@ -366,15 +402,19 @@ export async function getEvaluationPolicy(
     auditReason: 'Initial evaluation policy bootstrap (tiers and thresholds unconfigured until explicitly set by admin)'
   };
 
-  await ref.set(initialPolicy, { merge: true });
+  try {
+    await writeNeonSystemConfig('evaluation_policy', initialPolicy);
+  } catch (err: any) {
+    console.warn('[GoldenSetEngine] Failed to bootstrap evaluation_policy in Neon:', err?.message);
+  }
   return initialPolicy;
 }
 
 /**
- * Updates `system_config/evaluation_policy` with an immutable audit entry in `system_logs` and `system_config_audit`.
+ * Updates `system_config/evaluation_policy` in Neon PostgreSQL with an immutable audit entry in `system_logs`.
  */
 export async function updateEvaluationPolicy(params: {
-  app: admin.app.App;
+  app?: admin.app.App | null;
   updates: Partial<EvaluationPolicyConfig>;
   adminUid: string;
   adminEmail: string;
@@ -385,8 +425,6 @@ export async function updateEvaluationPolicy(params: {
     throw new Error('An audit reason (at least 5 characters) is required to modify evaluation policy.');
   }
 
-  const db = app.firestore();
-  const ref = db.collection('system_config').doc('evaluation_policy');
   const current = await getEvaluationPolicy(app);
   const nowIso = new Date().toISOString();
 
@@ -398,72 +436,52 @@ export async function updateEvaluationPolicy(params: {
     auditReason: reason.trim()
   };
 
-  await ref.set(merged, { merge: true });
-  try {
-    const pool = getPostgresPool();
-    if (pool) {
-      await pool.query(
-        `INSERT INTO system_config (key, data, updated_at)
-         VALUES ('evaluation_policy', $1, NOW())
-         ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
-        [JSON.stringify(merged)]
-      );
-    }
-  } catch (err: any) {
-    console.warn('[GoldenSetEngine] Failed to sync evaluation_policy to Neon:', err?.message);
-  }
+  await writeNeonSystemConfig('evaluation_policy', merged);
 
-  await Promise.all([
-    db.collection('system_logs').add({
-      level: 'info',
-      category: 'system',
-      message: `[Evaluation Policy Audit] Policy updated by ${adminEmail || adminUid}: ${reason.trim()}`,
-      metadata: {
-        previousPolicy: current,
-        updatedFields: updates,
-        reason: reason.trim()
-      },
-      userId: adminUid,
-      userEmail: adminEmail,
-      timestamp: nowIso
-    }),
-    db.collection('system_config_audit').add({
-      configType: 'evaluation_policy',
-      action: 'POLICY_UPDATE',
-      actorUid: adminUid,
-      actorEmail: adminEmail || 'unknown@uniace.edu',
-      reason: reason.trim(),
-      previousState: current,
-      newState: merged,
-      changedFields: updates,
-      createdAtIso: nowIso,
-      timestamp: admin.firestore.FieldValue.serverTimestamp()
-    })
-  ]);
+  const pool = getPostgresPool();
+  if (pool) {
+    const logId = `pol_${Date.now()}_${crypto.randomUUID().slice(0, 6)}`;
+    await pool.query(
+      `INSERT INTO system_logs (id, level, category, message, metadata, user_id, user_email, created_at)
+       VALUES ($1, 'info', 'system', $2, $3::jsonb, $4, $5, NOW())`,
+      [
+        logId,
+        `[Evaluation Policy Audit] Policy updated by ${adminEmail || adminUid}: ${reason.trim()}`,
+        JSON.stringify({
+          configType: 'evaluation_policy',
+          action: 'POLICY_UPDATE',
+          previousPolicy: current,
+          updatedFields: updates,
+          newState: merged,
+          reason: reason.trim()
+        }),
+        adminUid,
+        adminEmail || 'unknown@uniace.edu'
+      ]
+    );
+  }
 
   return merged;
 }
 
 /**
- * Loads `system_config/token_pricing` with `sourceUrl`, `lastVerifiedAt`, and staleness evaluation.
+ * Loads `system_config/token_pricing` from Neon PostgreSQL with `sourceUrl`, `lastVerifiedAt`, and staleness evaluation.
  * Never injects hardcoded default rates or FX conversions (ZeroMock policy).
  */
 export async function getTokenPricingConfig(
-  app: admin.app.App
+  app?: admin.app.App | null
 ): Promise<{
   config: TokenPricingConfigDoc;
   staleProviders: string[];
   pricingStaleAfterDays: number;
 }> {
-  const db = app.firestore();
-  const [pricingSnap, policy] = await Promise.all([
-    db.collection('system_config').doc('token_pricing').get(),
+  const [data, policy] = await Promise.all([
+    readNeonSystemConfig<any>('token_pricing'),
     getEvaluationPolicy(app)
   ]);
 
   let config: TokenPricingConfigDoc;
-  if (pricingSnap.exists) {
-    const data = pricingSnap.data() || {};
+  if (data) {
     config = {
       impliedRevenuePerSparkUsd:
         typeof data.impliedRevenuePerSparkUsd === 'number' && data.impliedRevenuePerSparkUsd > 0
@@ -524,10 +542,10 @@ export async function getTokenPricingConfig(
 }
 
 /**
- * Updates `system_config/token_pricing` with official vendor `sourceUrl`, `lastVerifiedAt`, and optional FX config.
+ * Updates `system_config/token_pricing` in Neon PostgreSQL with official vendor `sourceUrl`, `lastVerifiedAt`, and optional FX config.
  */
 export async function updateTokenPricingConfig(params: {
-  app: admin.app.App;
+  app?: admin.app.App | null;
   impliedRevenuePerSparkUsd?: number | null;
   ngnPerUsdRate?: number | null;
   fxSourceUrl?: string | null;
@@ -541,8 +559,6 @@ export async function updateTokenPricingConfig(params: {
     throw new Error('An audit reason is required to update token pricing rates.');
   }
 
-  const db = app.firestore();
-  const ref = db.collection('system_config').doc('token_pricing');
   const existing = (await getTokenPricingConfig(app)).config;
   const nowIso = new Date().toISOString();
 
@@ -606,43 +622,29 @@ export async function updateTokenPricingConfig(params: {
     updatedBy: adminEmail || adminUid
   };
 
-  await ref.set(updatedDoc, { merge: true });
-  try {
-    const pool = getPostgresPool();
-    if (pool) {
-      await pool.query(
-        `INSERT INTO system_config (key, data, updated_at)
-         VALUES ('token_pricing', $1, NOW())
-         ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
-        [JSON.stringify(updatedDoc)]
-      );
-    }
-  } catch (err: any) {
-    console.warn('[GoldenSetEngine] Failed to sync token_pricing to Neon:', err?.message);
-  }
+  await writeNeonSystemConfig('token_pricing', updatedDoc);
 
-  await Promise.all([
-    db.collection('system_logs').add({
-      level: 'info',
-      category: 'system',
-      message: `[Token Pricing Audit] Token pricing rates verified/updated by ${adminEmail || adminUid}: ${reason.trim()}`,
-      metadata: { updatedDoc, reason: reason.trim() },
-      userId: adminUid,
-      userEmail: adminEmail,
-      timestamp: nowIso
-    }),
-    db.collection('system_config_audit').add({
-      configType: 'token_pricing',
-      action: 'TOKEN_PRICING_UPDATE',
-      actorUid: adminUid,
-      actorEmail: adminEmail || 'unknown@uniace.edu',
-      reason: reason.trim(),
-      previousState: existing,
-      newState: updatedDoc,
-      createdAtIso: nowIso,
-      timestamp: admin.firestore.FieldValue.serverTimestamp()
-    })
-  ]);
+  const pool = getPostgresPool();
+  if (pool) {
+    const logId = `prc_${Date.now()}_${crypto.randomUUID().slice(0, 6)}`;
+    await pool.query(
+      `INSERT INTO system_logs (id, level, category, message, metadata, user_id, user_email, created_at)
+       VALUES ($1, 'info', 'system', $2, $3::jsonb, $4, $5, NOW())`,
+      [
+        logId,
+        `[Token Pricing Audit] Token pricing rates verified/updated by ${adminEmail || adminUid}: ${reason.trim()}`,
+        JSON.stringify({
+          configType: 'token_pricing',
+          action: 'TOKEN_PRICING_UPDATE',
+          previousState: existing,
+          newState: updatedDoc,
+          reason: reason.trim()
+        }),
+        adminUid,
+        adminEmail || 'unknown@uniace.edu'
+      ]
+    );
+  }
 
   return updatedDoc;
 }
@@ -1135,7 +1137,7 @@ Respond strictly in JSON format:
  * and First-Reporter topic detection.
  */
 export async function submitStudentWrongAnswerReport(params: {
-  app: admin.app.App;
+  app?: admin.app.App | null;
   uid: string;
   userEmail: string | null;
   userDisplayName: string;
@@ -1172,33 +1174,24 @@ export async function submitStudentWrongAnswerReport(params: {
     sparksCharged = 0
   } = params;
 
-  const db = app.firestore();
   const policy = await getEvaluationPolicy(app);
+  const reportsMap = await getAnswerReportsMap();
 
-  // Check duplicate report for the same messageId by this student
   const safeMsgId = String(messageId || '').replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 80);
   if (!safeMsgId) {
     throw new Error('A valid messageId is required to report an answer.');
   }
 
   const deterministicReportId = `${uid}_${safeMsgId}`;
-  const reportRef = db.collection('answer_reports').doc(deterministicReportId);
-  const existingSnap = await reportRef.get();
-  if (existingSnap.exists) {
+  if (reportsMap[deterministicReportId]) {
     throw new Error('You have already submitted a report for this response. It is in the SME review queue.');
   }
 
-  // Enforce per-user 24-hour cap from `system_config/evaluation_policy`
   const twentyFourHoursAgoIso = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const userReportsSnap = await db
-    .collection('answer_reports')
-    .where('uid', '==', uid)
-    .get();
-
-  const recentUserReports = userReportsSnap.docs.filter((d) => {
-    const created = d.data()?.createdAt || '';
-    return created >= twentyFourHoursAgoIso;
-  });
+  const allReports = Object.values(reportsMap);
+  const recentUserReports = allReports.filter(
+    (r) => r.uid === uid && (r.createdAt || '') >= twentyFourHoursAgoIso
+  );
 
   if (recentUserReports.length >= policy.dailyReportCapPerUser) {
     const err = new Error(
@@ -1208,7 +1201,6 @@ export async function submitStudentWrongAnswerReport(params: {
     throw err;
   }
 
-  // Scrub PII and adversarial directives from prompt, response, and student correction
   const cleanPrompt = inspectAndScrubUntrustedText(redactPII(promptText || ''), 'user_prompt').sanitizedText;
   const cleanResponse = redactPII(modelResponseText || '');
   const cleanCorrection = inspectAndScrubUntrustedText(
@@ -1216,7 +1208,6 @@ export async function submitStudentWrongAnswerReport(params: {
     'user_prompt'
   ).sanitizedText;
 
-  // Normalize prompt question to compute `questionTopicHash` for First-Reporter determination
   const normalizedQuestionKey = cleanPrompt
     .toLowerCase()
     .replace(/[^a-z0-9]/g, '')
@@ -1226,13 +1217,9 @@ export async function submitStudentWrongAnswerReport(params: {
     .update(normalizedQuestionKey || safeMsgId)
     .digest('hex');
 
-  // Check if any report with the same `questionTopicHash` has already been verified or submitted earlier
-  const topicSnap = await db
-    .collection('answer_reports')
-    .where('questionTopicHash', '==', questionTopicHash)
-    .get();
-
-  const hasPriorReportOnTopic = topicSnap.docs.some((d) => d.id !== deterministicReportId);
+  const hasPriorReportOnTopic = allReports.some(
+    (r) => r.questionTopicHash === questionTopicHash && r.id !== deterministicReportId
+  );
   const attribution = formatUpstreamAttribution(providerUsed, upstreamModel);
   const nowIso = new Date().toISOString();
 
@@ -1268,7 +1255,8 @@ export async function submitStudentWrongAnswerReport(params: {
     reviewedAt: null
   };
 
-  await reportRef.set(reportDoc);
+  reportsMap[deterministicReportId] = reportDoc;
+  await writeNeonSystemConfig('answer_reports_map', reportsMap);
 
   return {
     report: reportDoc,
@@ -1277,15 +1265,8 @@ export async function submitStudentWrongAnswerReport(params: {
   };
 }
 
-/**
- * Manual SME Triage action (`approve` or `dismiss`) for a student wrong-answer report.
- * On `approve`:
- * - Executes atomic post-`SETTLE` `QUALITY_BOUNTY` refund (+ bonus if first reporter on topic).
- * - Sends an in-app notification to the student with reviewer notes and Spark restitution.
- * - Optionally promotes the SME-verified Q&A into `golden_set_benchmarks` with SME provenance.
- */
 export async function triageWrongAnswerReport(params: {
-  app: admin.app.App;
+  app?: admin.app.App | null;
   reportId: string;
   decision: 'approve' | 'dismiss';
   reviewerUid: string;
@@ -1333,20 +1314,19 @@ export async function triageWrongAnswerReport(params: {
     throw new Error('Please provide a brief SME explanation (at least 4 characters) for the student notification.');
   }
 
-  const db = app.firestore();
-  const reportRef = db.collection('answer_reports').doc(reportId);
-  const reportSnap = await reportRef.get();
-  if (!reportSnap.exists) {
+  const reportsMap = await getAnswerReportsMap();
+  const report = reportsMap[reportId];
+  if (!report) {
     throw new Error('Report not found.');
   }
 
-  const report = reportSnap.data() as AnswerReportDoc;
   if (report.status !== 'pending_review') {
     throw new Error(`Report has already been reviewed (status: ${report.status}).`);
   }
 
   const policy = await getEvaluationPolicy(app);
   const nowIso = new Date().toISOString();
+  const pool = getPostgresPool();
 
   if (decision === 'dismiss') {
     const updatedReport: AnswerReportDoc = {
@@ -1358,28 +1338,29 @@ export async function triageWrongAnswerReport(params: {
       reviewerNotes: reviewerNotes.trim(),
       reviewedAt: nowIso
     };
-    await reportRef.set(updatedReport, { merge: true });
+    reportsMap[reportId] = updatedReport;
+    await writeNeonSystemConfig('answer_reports_map', reportsMap);
 
-    await db.collection('notifications').add({
-      userId: report.uid,
-      title: 'Answer Report Reviewed by Academic SME',
-      message: `Your report on ${report.courseId || 'AI Tutor'} was reviewed: "${reviewerNotes.trim()}". Thank you for helping keep UniAce rigorous!`,
-      type: 'info',
-      read: false,
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
-    });
+    if (pool) {
+      await pool.query(
+        `INSERT INTO notifications (id, user_id, title, message, type, read, created_at)
+         VALUES ($1, $2, $3, $4, 'info', false, NOW())`,
+        [
+          `notif_${Date.now()}_${crypto.randomUUID().slice(0, 6)}`,
+          report.uid,
+          'Answer Report Reviewed by Academic SME',
+          `Your report on ${report.courseId || 'AI Tutor'} was reviewed: "${reviewerNotes.trim()}". Thank you for helping keep UniAce rigorous!`
+        ]
+      );
+    }
 
     return { report: updatedReport, bountyResult: null, promotedItem: null };
   }
 
-  // Re-verify whether any other report with the same `questionTopicHash` was already approved before this one
-  const priorVerifiedSnap = await db
-    .collection('answer_reports')
-    .where('questionTopicHash', '==', report.questionTopicHash)
-    .where('status', '==', 'verified_promoted')
-    .get();
-
-  const isFirstVerifiedForTopic = priorVerifiedSnap.empty && report.isFirstReporterForTopic;
+  const isFirstVerifiedForTopic =
+    !Object.values(reportsMap).some(
+      (r) => r.questionTopicHash === report.questionTopicHash && r.status === 'verified_promoted'
+    ) && report.isFirstReporterForTopic;
 
   const bountyResult = await executeQualityBountyRefund({
     app,
@@ -1438,7 +1419,9 @@ export async function triageWrongAnswerReport(params: {
       updatedAt: nowIso
     };
 
-    await db.collection('golden_set_benchmarks').doc(itemId).set(promotedItem);
+    const benchmarksMap = await getGoldenSetBenchmarksMap();
+    benchmarksMap[itemId] = promotedItem;
+    await writeNeonSystemConfig('golden_set_benchmarks_map', benchmarksMap);
   }
 
   const updatedReport: AnswerReportDoc = {
@@ -1456,20 +1439,25 @@ export async function triageWrongAnswerReport(params: {
     reviewedAt: nowIso
   };
 
-  await reportRef.set(updatedReport, { merge: true });
+  reportsMap[reportId] = updatedReport;
+  await writeNeonSystemConfig('answer_reports_map', reportsMap);
 
   const bonusNote = bountyResult.bonusSparksAwarded > 0
     ? `${bountyResult.queryRefundSparks} query refund + ${bountyResult.bonusSparksAwarded} First-Reporter Quality Bounty`
     : `${bountyResult.queryRefundSparks} query refund (duplicate topic report)`;
 
-  await db.collection('notifications').add({
-    userId: report.uid,
-    title: `Report Verified: +${bountyResult.creditedSparks} Sparks Credited`,
-    message: `Academic SME (${reviewerName}) verified your report on ${report.courseId || 'AI Tutor'}: "${reviewerNotes.trim()}". Credited +${bountyResult.creditedSparks} Sparks (${bonusNote}).`,
-    type: 'success',
-    read: false,
-    createdAt: admin.firestore.FieldValue.serverTimestamp()
-  });
+  if (pool) {
+    await pool.query(
+      `INSERT INTO notifications (id, user_id, title, message, type, read, created_at)
+       VALUES ($1, $2, $3, $4, 'success', false, NOW())`,
+      [
+        `notif_${Date.now()}_${crypto.randomUUID().slice(0, 6)}`,
+        report.uid,
+        `Report Verified: +${bountyResult.creditedSparks} Sparks Credited`,
+        `Academic SME (${reviewerName}) verified your report on ${report.courseId || 'AI Tutor'}: "${reviewerNotes.trim()}". Credited +${bountyResult.creditedSparks} Sparks (${bonusNote}).`
+      ]
+    );
+  }
 
   return {
     report: updatedReport,
@@ -1478,17 +1466,14 @@ export async function triageWrongAnswerReport(params: {
   };
 }
 
-/**
- * Creates or signs off on a Golden Set benchmark item with mandatory SME signature and citation.
- */
 export async function upsertSmeVerifiedBenchmarkItem(params: {
-  app: admin.app.App;
+  app?: admin.app.App | null;
   item: Partial<GoldenSetBenchmarkItem>;
   smeUid: string;
   smeName: string;
   smeRole: string;
 }): Promise<GoldenSetBenchmarkItem> {
-  const { app, item, smeUid, smeName, smeRole } = params;
+  const { item, smeUid, smeName, smeRole } = params;
   if (!item.question || !item.question.trim()) {
     throw new Error('Question text is required.');
   }
@@ -1505,7 +1490,6 @@ export async function upsertSmeVerifiedBenchmarkItem(params: {
     throw new Error('Ground-truth LaTeX proof has unbalanced $ or $$ math delimiters.');
   }
 
-  const db = app.firestore();
   const domain: AcademicDomain = item.domain || 'Mathematics';
   const prefix = domain === 'Mathematics'
     ? 'MATH'
@@ -1547,16 +1531,14 @@ export async function upsertSmeVerifiedBenchmarkItem(params: {
     updatedAt: nowIso
   };
 
-  await db.collection('golden_set_benchmarks').doc(id).set(docData, { merge: true });
+  const benchmarksMap = await getGoldenSetBenchmarksMap();
+  benchmarksMap[id] = docData;
+  await writeNeonSystemConfig('golden_set_benchmarks_map', benchmarksMap);
   return docData;
 }
 
-/**
- * Starts a Cloud-Run-safe resumable Golden Set evaluation run.
- * Includes ONLY `verificationState === 'human_verified'` items and NEVER pads to 150.
- */
 export async function startGoldenSetEvaluationRun(params: {
-  app: admin.app.App;
+  app?: admin.app.App | null;
   suiteType: BenchmarkSuiteType;
   domainFilter: AcademicDomain | 'ALL';
   targetProvider: string | 'production_routed';
@@ -1564,17 +1546,11 @@ export async function startGoldenSetEvaluationRun(params: {
   triggeredByEmail: string;
 }): Promise<GoldenSetEvaluationRun> {
   const { app, suiteType, domainFilter, targetProvider, triggeredByUid, triggeredByEmail } = params;
-  const db = app.firestore();
   const policy = await getEvaluationPolicy(app);
 
-  const snap = await db
-    .collection('golden_set_benchmarks')
-    .where('suiteType', '==', suiteType)
-    .get();
-
-  const verifiedItems = snap.docs
-    .map((d) => d.data() as GoldenSetBenchmarkItem)
-    .filter((item) => item.verificationState === 'human_verified' && Boolean(item.verifiedByUid));
+  const benchmarksMap = await getGoldenSetBenchmarksMap();
+  const verifiedItems = Object.values(benchmarksMap)
+    .filter((item) => item.suiteType === suiteType && item.verificationState === 'human_verified' && Boolean(item.verifiedByUid));
 
   const filteredItems = domainFilter === 'ALL'
     ? verifiedItems
@@ -1633,16 +1609,14 @@ export async function startGoldenSetEvaluationRun(params: {
     results: []
   };
 
-  await db.collection('golden_set_runs').doc(runId).set(runDoc);
+  const runsMap = await getGoldenSetRunsMap();
+  runsMap[runId] = runDoc;
+  await writeNeonSystemConfig('golden_set_runs_map', runsMap);
   return runDoc;
 }
 
-/**
- * Executes a resumable batch step (`batchSize` = 1..4 items) for an active Golden Set evaluation run
- * through the REAL production tutor pipeline.
- */
 export async function stepGoldenSetEvaluationRun(params: {
-  app: admin.app.App;
+  app?: admin.app.App | null;
   runId: string;
   batchSize?: number;
   providerMap: Record<string, ModelProvider | null | undefined>;
@@ -1659,19 +1633,18 @@ export async function stepGoldenSetEvaluationRun(params: {
   }>;
 }): Promise<GoldenSetEvaluationRun> {
   const { app, runId, batchSize = 3, providerMap, runThroughProductionTutorPipeline } = params;
-  const db = app.firestore();
-  const runRef = db.collection('golden_set_runs').doc(runId);
-  const runSnap = await runRef.get();
-  if (!runSnap.exists) {
+  const runsMap = await getGoldenSetRunsMap();
+  const run = runsMap[runId];
+  if (!run) {
     throw new Error(`Evaluation run '${runId}' not found.`);
   }
 
-  const run = runSnap.data() as GoldenSetEvaluationRun;
   if (run.status === 'completed' || run.status === 'failed' || run.status === 'paused') {
     return run;
   }
 
   const policy = await getEvaluationPolicy(app);
+  const benchmarksMap = await getGoldenSetBenchmarksMap();
   const startIdx = run.nextIndex || 0;
   const endIdx = Math.min(startIdx + Math.max(1, Math.min(batchSize, 5)), run.questionIdsQueue.length);
   const sliceIds = run.questionIdsQueue.slice(startIdx, endIdx);
@@ -1679,9 +1652,8 @@ export async function stepGoldenSetEvaluationRun(params: {
   const newResults: QuestionEvalResult[] = [...(run.results || [])];
 
   for (const qId of sliceIds) {
-    const qSnap = await db.collection('golden_set_benchmarks').doc(qId).get();
-    if (!qSnap.exists) continue;
-    const item = qSnap.data() as GoldenSetBenchmarkItem;
+    const item = benchmarksMap[qId];
+    if (!item) continue;
 
     if (item.verificationState !== 'human_verified' || !item.verifiedByUid) {
       newResults.push({
@@ -1817,7 +1789,6 @@ export async function stepGoldenSetEvaluationRun(params: {
     }
   }
 
-  // Recompute aggregate metrics and Wilson 95% CIs
   let passed = 0;
   let failed = 0;
   let ungraded = 0;
@@ -1920,17 +1891,32 @@ export async function stepGoldenSetEvaluationRun(params: {
     results: newResults
   };
 
-  await runRef.set(updatedRun);
+  runsMap[runId] = updatedRun;
+  await writeNeonSystemConfig('golden_set_runs_map', runsMap);
   return updatedRun;
 }
 
-/**
- * Derives `verifiedTier1Providers` and optimal `domainProviderRouting` strictly from the
- * `dev_routing` split of a completed evaluation run (never touching `locked_holdout` to avoid selection bias),
- * and saves to `system_config/evaluation_policy` with an immutable audit entry.
- */
+export async function updateGoldenSetRunStatusInNeon(
+  runId: string,
+  status: 'paused' | 'running' | 'completed'
+): Promise<GoldenSetEvaluationRun> {
+  const runsMap = await getGoldenSetRunsMap();
+  const run = runsMap[runId];
+  if (!run) {
+    throw new Error(`Evaluation run '${runId}' not found.`);
+  }
+  const updated: GoldenSetEvaluationRun = {
+    ...run,
+    status,
+    updatedAt: new Date().toISOString()
+  };
+  runsMap[runId] = updated;
+  await writeNeonSystemConfig('golden_set_runs_map', runsMap);
+  return updated;
+}
+
 export async function syncDevSplitRoutingAndTiers(params: {
-  app: admin.app.App;
+  app?: admin.app.App | null;
   runId: string;
   adminUid: string;
   adminEmail: string;
@@ -1940,16 +1926,14 @@ export async function syncDevSplitRoutingAndTiers(params: {
   domainProviderRouting: Partial<Record<AcademicDomain, string>>;
 }> {
   const { app, runId, adminUid, adminEmail } = params;
-  const db = app.firestore();
-  const runSnap = await db.collection('golden_set_runs').doc(runId).get();
-  if (!runSnap.exists) {
+  const runsMap = await getGoldenSetRunsMap();
+  const run = runsMap[runId];
+  if (!run) {
     throw new Error(`Evaluation run '${runId}' not found.`);
   }
 
-  const run = runSnap.data() as GoldenSetEvaluationRun;
   const policy = await getEvaluationPolicy(app);
 
-  // Filter strictly to `dev_routing` results so `locked_holdout` remains 100% unbiased
   const devResults = (run.results || []).filter((r) => r.split === 'dev_routing');
   if (devResults.length === 0) {
     throw new Error('This evaluation run contains zero dev_routing split items to derive routing or tiers.');
@@ -2020,28 +2004,15 @@ export async function syncDevSplitRoutingAndTiers(params: {
     reason: `Synced empirical Tier-1 providers (${derivedTier1Providers.join(', ') || 'none'}) and domain routing from dev_routing split of run ${runId}`
   });
 
-  // Also sync domain routing preferences to system_config/routing (Firestore & Neon)
+  const existingRouting = (await readNeonSystemConfig<any>('routing')) || {};
   const routingData = {
+    ...existingRouting,
     domainProviderRouting,
     verifiedTier1Providers: derivedTier1Providers,
     updatedFromGoldenSetRunId: runId,
     updatedAt: new Date().toISOString()
   };
-  await db.collection('system_config').doc('routing').set(routingData, { merge: true });
-  try {
-    const pool = getPostgresPool();
-    if (pool) {
-      await pool.query(
-        `INSERT INTO system_config (key, data, updated_at)
-         VALUES ('routing', $1, NOW())
-         ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
-        [JSON.stringify(routingData)]
-      );
-    }
-  } catch (err: any) {
-    console.warn('[GoldenSetEngine] Failed to sync routing to Neon:', err?.message);
-  }
-
+  await writeNeonSystemConfig('routing', routingData);
 
   return {
     policy: updatedPolicy,

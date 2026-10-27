@@ -17,8 +17,20 @@ import { runProgressDeltaCatchUp, runProgressParityAudit } from '../services/pro
 import { runSparksParityAudit } from '../services/sparksParityService';
 import { clearBootstrapCache } from './student';
 import { catalogCache } from '../cache/catalogCache';
+import {
+  getSystemConfigDoc,
+  setSystemConfigDoc,
+  getSystemSettingsDoc,
+  setSystemSettingsDoc
+} from '../systemConfigStore';
 
-export function setupAdminRoutes(app: express.Express, verifyAuth: any, getAdminApp: any, isAdminEmail: any) {
+export function setupAdminRoutes(
+  app: express.Express,
+  verifyAuth: any,
+  getAdminApp: any,
+  isAdminEmail: any,
+  syncAllProvidersFromSettings?: (apiKeysData: any) => void
+) {
   async function checkIsAdmin(uid: string, email?: string): Promise<boolean> {
     if (email && (email.toLowerCase() === 'olalekan4565@gmail.com' || isAdminEmail(email))) return true;
     try {
@@ -223,8 +235,8 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
       let textSample = '';
       let errorMsg = '';
 
-      const apiKeysDoc = await adminApp.firestore().collection('system_settings').doc('api_keys').get();
-      const apiKeysData = apiKeysDoc.data() || {};
+      const apiKeysRes = await queryPostgres<{ data: any }>(`SELECT data FROM system_settings WHERE key = 'api_keys' LIMIT 1`);
+      const apiKeysData = apiKeysRes.rows[0]?.data || {};
       const getConfiguredKey = (prov: string, envKey?: string) => {
         const list = apiKeysData[prov]?.keys?.map((k: any) => k.key).filter(Boolean);
         return (list && list[0]) || envKey || '';
@@ -460,15 +472,13 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
   // 5. System Config Endpoints (GET & POST)
   app.get('/api/admin/config', verifyAuth, async (req, res) => {
     const user = (req as any).user;
-    const adminApp = getAdminApp();
-    if (!adminApp) return res.status(503).json({ error: 'Firebase not initialized' });
 
     try {
       const isAdmin = await checkIsAdmin(user.uid, user.email);
       if (!isAdmin) return res.status(403).json({ error: 'Forbidden: Admin access required' });
 
-      const configDoc = await adminApp.firestore().collection('system_config').doc('general').get();
-      res.json(configDoc.exists ? configDoc.data() : {});
+      const configRes = await queryPostgres<{ data: any }>(`SELECT data FROM system_config WHERE key = 'general' LIMIT 1`);
+      res.json(configRes.rows[0]?.data || {});
     } catch (error: any) {
       console.error('Fetch System Config Error:', error);
       res.status(500).json({ error: error.message || 'Failed to fetch system config' });
@@ -477,19 +487,26 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
 
   app.post('/api/admin/config', verifyAuth, async (req, res) => {
     const user = (req as any).user;
-    const adminApp = getAdminApp();
-    if (!adminApp) return res.status(503).json({ error: 'Firebase not initialized' });
 
     try {
       const isAdmin = await checkIsAdmin(user.uid, user.email);
       if (!isAdmin) return res.status(403).json({ error: 'Forbidden: Admin access required' });
 
-      const updates = req.body;
-      await adminApp.firestore().collection('system_config').doc('general').set({
+      const updates = req.body || {};
+      const existingRes = await queryPostgres<{ data: any }>(`SELECT data FROM system_config WHERE key = 'general' LIMIT 1`);
+      const existingData = existingRes.rows[0]?.data || {};
+      const merged = {
+        ...existingData,
         ...updates,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: new Date().toISOString(),
         updatedBy: user.email || user.uid
-      }, { merge: true });
+      };
+      await queryPostgres(
+        `INSERT INTO system_config (key, data, updated_at)
+         VALUES ('general', $1::jsonb, NOW())
+         ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        [JSON.stringify(merged)]
+      );
 
       await recordBackendSystemLog(
         'info',
@@ -749,18 +766,15 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
       }
 
       if (scope === 'catalog') {
-        // Query courses count from both Postgres and Firestore
-        const db = adminApp.firestore();
-        const fsSnap = await db.collection('courses').get();
         const pgRes = await queryPostgres<{ count: string }>('SELECT count(*) FROM courses;');
         const pgCount = Number(pgRes.rows[0]?.count || 0);
-        const fsCount = fsSnap.size;
-        const parityOk = pgCount >= fsCount;
+        const fsCount = 0; // Legacy Firestore courses retired; Neon PostgreSQL is sole source of truth
+        const parityOk = pgCount > 0;
 
         await recordBackendSystemLog(
           parityOk ? 'success' : 'warning',
           'admin',
-          `Admin executed Catalog Parity Audit (Postgres: ${pgCount}, Firestore: ${fsCount})`,
+          `Admin executed Catalog Parity Audit (Neon Postgres: ${pgCount} courses)`,
           { scope, parityOk, pgCount, fsCount },
           { uid: user.uid, email: user.email }
         );
@@ -1347,8 +1361,240 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
       res.status(500).json({ error: 'Failed to save formulas', details: err.message });
     }
   });
+
+  // Admin API Keys & Discovered Models (Neon PostgreSQL system_config)
+  app.get('/api/admin/settings/api-keys', verifyAuth, async (req: any, res: any) => {
+    try {
+      const isAdmin = await checkIsAdmin(req.user.uid, req.user.email);
+      if (!isAdmin) return res.status(403).json({ error: 'Admin access required' });
+      const data = (await getSystemSettingsDoc('api_keys')) || {};
+      return res.json({ data });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to load API keys' });
+    }
+  });
+
+  app.put('/api/admin/settings/api-keys', verifyAuth, async (req: any, res: any) => {
+    try {
+      const isAdmin = await checkIsAdmin(req.user.uid, req.user.email);
+      if (!isAdmin) return res.status(403).json({ error: 'Admin access required' });
+      const updates = req.body && typeof req.body === 'object' ? req.body : {};
+      const current = (await getSystemSettingsDoc('api_keys')) || {};
+      const merged = { ...current, ...updates };
+      await setSystemSettingsDoc('api_keys', merged, false);
+      if (syncAllProvidersFromSettings) {
+        syncAllProvidersFromSettings(merged);
+      }
+      return res.json({ success: true, data: merged });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to save API keys' });
+    }
+  });
+
+  app.get('/api/admin/settings/discovered-models', verifyAuth, async (req: any, res: any) => {
+    try {
+      const isAdmin = await checkIsAdmin(req.user.uid, req.user.email);
+      if (!isAdmin) return res.status(403).json({ error: 'Admin access required' });
+      const data = (await getSystemSettingsDoc('discovered_models')) || {};
+      return res.json({ data });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to load discovered models' });
+    }
+  });
+
+  // Past Papers & Routing Config for Question Bank (Neon PostgreSQL)
+  app.get('/api/admin/past-papers', verifyAuth, async (req: any, res: any) => {
+    try {
+      const pool = getPostgresPool();
+      if (!pool) return res.json({ papers: [] });
+      const result = await pool.query(
+        `SELECT id, course_code, course_title, year, semester, department, questions, data, created_at
+         FROM past_papers
+         ORDER BY created_at DESC`
+      );
+      const papers = result.rows.map((r) => ({
+        id: r.id,
+        courseCode: r.course_code || r.data?.courseCode || '',
+        title: r.course_title || r.data?.title || '',
+        year: r.year || r.data?.year || '',
+        semester: r.semester || r.data?.semester || '',
+        department: r.department || r.data?.department || '',
+        questions: Array.isArray(r.questions) ? r.questions : (r.data?.questions || []),
+        ...(r.data || {})
+      }));
+      return res.json({ papers });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to fetch past papers' });
+    }
+  });
+
+  app.get('/api/admin/routing-config', verifyAuth, async (req: any, res: any) => {
+    try {
+      const config = (await getSystemConfigDoc('routing')) || {};
+      return res.json({ config });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to fetch routing config' });
+    }
+  });
+
+  // Admin Affiliates Overview & Commission Settings (Neon PostgreSQL)
+  app.get('/api/admin/affiliates-overview', verifyAuth, async (req: any, res: any) => {
+    try {
+      const isAdmin = await checkIsAdmin(req.user.uid, req.user.email);
+      if (!isAdmin) return res.status(403).json({ error: 'Admin access required' });
+      const pool = getPostgresPool();
+      const commissionsDoc = (await getSystemConfigDoc('commissions')) || (await getSystemSettingsDoc('commissions')) || { rate: 0.3 };
+      const commissionRate = typeof commissionsDoc.rate === 'number' ? commissionsDoc.rate : 0.3;
+
+      if (!pool) {
+        return res.json({ affiliates: [], payouts: [], commissionRate });
+      }
+
+      const [affRes, payRes] = await Promise.all([
+        pool.query(`SELECT code, user_id, email, display_name, total_earned, pending_payout, referral_count, bank_details, status, data, created_at FROM affiliates ORDER BY created_at DESC`),
+        pool.query(`SELECT id, user_id, affiliate_code, amount, status, bank_details, data, created_at FROM payout_requests ORDER BY created_at DESC`)
+      ]);
+
+      const affiliates = affRes.rows.map((r) => ({
+        ...(r.data || {}),
+        id: r.code,
+        userId: r.user_id,
+        name: r.display_name || r.data?.name || r.code,
+        userEmail: r.email || r.data?.userEmail || '',
+        totalEarned: Number(r.total_earned ?? r.data?.totalEarned ?? 0),
+        pendingBalance: Number(r.pending_payout ?? r.data?.pendingBalance ?? 0),
+        signups: Number(r.data?.signups ?? r.referral_count ?? 0),
+        clicks: Number(r.data?.clicks ?? 0),
+        paidConversions: Number(r.data?.paidConversions ?? r.referral_count ?? 0)
+      }));
+
+      const payouts = payRes.rows.map((r) => ({
+        ...(r.data || {}),
+        id: r.id,
+        userId: r.user_id,
+        affiliateCode: r.affiliate_code || r.data?.affiliateCode || '',
+        amount: Number(r.amount ?? 0),
+        status: r.status || 'pending',
+        payoutDetails: r.bank_details || r.data?.payoutDetails || {},
+        createdAt: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString()
+      }));
+
+      return res.json({ affiliates, payouts, commissionRate });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to fetch affiliates overview' });
+    }
+  });
+
+  app.put('/api/admin/commissions', verifyAuth, async (req: any, res: any) => {
+    try {
+      const isAdmin = await checkIsAdmin(req.user.uid, req.user.email);
+      if (!isAdmin) return res.status(403).json({ error: 'Admin access required' });
+      const rate = Number(req.body?.rate);
+      if (!Number.isFinite(rate) || rate < 0 || rate > 1) {
+        return res.status(400).json({ error: 'Invalid commission rate (must be between 0 and 1)' });
+      }
+      await setSystemConfigDoc('commissions', {
+        rate,
+        updatedAt: new Date().toISOString(),
+        updatedBy: req.user.email
+      });
+      return res.json({ success: true, rate });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to save commission rate' });
+    }
+  });
+
+  // Admin Support Overview, Ticket Status, and Broadcast (Neon PostgreSQL)
+  app.get('/api/admin/support/overview', verifyAuth, async (req: any, res: any) => {
+    try {
+      const isAdmin = await checkIsAdmin(req.user.uid, req.user.email);
+      if (!isAdmin) return res.status(403).json({ error: 'Admin access required' });
+      const pool = getPostgresPool();
+      if (!pool) return res.json({ tickets: [], chats: [] });
+
+      const [tRes, cRes] = await Promise.all([
+        pool.query(`SELECT id, user_id, user_email, user_name, subject, message, status, created_at FROM support_tickets ORDER BY created_at DESC LIMIT 100`),
+        pool.query(`SELECT id, user_id, user_name, status, last_message, messages, updated_at FROM support_chats ORDER BY updated_at DESC LIMIT 100`)
+      ]);
+
+      const tickets = tRes.rows.map((r) => ({
+        id: r.id,
+        userId: r.user_id,
+        name: r.user_name || 'Student',
+        email: r.user_email || '',
+        subject: r.subject || '',
+        message: r.message || '',
+        status: r.status || 'open',
+        createdAt: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString()
+      }));
+
+      const chats = cRes.rows.map((r) => ({
+        id: r.id,
+        userId: r.user_id,
+        userName: r.user_name || 'Student',
+        status: r.status || 'active',
+        lastMessage: r.last_message || '',
+        messages: Array.isArray(r.messages) ? r.messages : [],
+        updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : new Date().toISOString()
+      }));
+
+      return res.json({ tickets, chats });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to load support overview' });
+    }
+  });
+
+  app.patch('/api/admin/support/tickets/:ticketId', verifyAuth, async (req: any, res: any) => {
+    try {
+      const isAdmin = await checkIsAdmin(req.user.uid, req.user.email);
+      if (!isAdmin) return res.status(403).json({ error: 'Admin access required' });
+      const pool = getPostgresPool();
+      if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+      const status = req.body?.status || 'resolved';
+      await pool.query(
+        `UPDATE support_tickets SET status = $1, updated_at = NOW() WHERE id = $2`,
+        [status, req.params.ticketId]
+      );
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to update ticket' });
+    }
+  });
+
+  app.post('/api/admin/support/broadcast', verifyAuth, async (req: any, res: any) => {
+    try {
+      const isAdmin = await checkIsAdmin(req.user.uid, req.user.email);
+      if (!isAdmin) return res.status(403).json({ error: 'Admin access required' });
+      const pool = getPostgresPool();
+      if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+
+      const title = String(req.body?.title || '').trim();
+      const message = String(req.body?.message || '').trim();
+      const ctaUrl = req.body?.ctaUrl ? String(req.body.ctaUrl).trim() : null;
+      const type = String(req.body?.type || 'info');
+      const severity = type === 'error' ? 'urgent' : type === 'warning' ? 'warning' : 'info';
+      const annId = `ann_${Date.now()}_${crypto.randomUUID().slice(0, 6)}`;
+
+      await pool.query(
+        `INSERT INTO announcements (id, title, message, severity, audience, cta_label, cta_url, active, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'all', $5, $6, true, NOW(), NOW())`,
+        [annId, title, message, severity, ctaUrl ? 'Join WhatsApp' : null, ctaUrl]
+      );
+
+      const usersRes = await pool.query(`SELECT uid FROM users`);
+      for (const u of usersRes.rows) {
+        const nId = `notif_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
+        await pool.query(
+          `INSERT INTO user_notifications (id, uid, title, message, type, read, created_at)
+           VALUES ($1, $2, $3, $4, $5, false, NOW())
+           ON CONFLICT (id) DO NOTHING`,
+          [nId, u.uid, title, message, type]
+        );
+      }
+
+      return res.json({ success: true, announcementId: annId, recipients: usersRes.rowCount ?? 0 });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to publish broadcast' });
+    }
+  });
 }
-
-
-
-

@@ -1,4 +1,5 @@
 import express from 'express';
+import crypto from 'crypto';
 import { getPostgresPool } from '../postgresPool';
 import { logger } from '../logger';
 
@@ -45,12 +46,35 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
       // 1. Check in-memory cache: if valid, overlay fresh live sparks AND live progress so state is NEVER stale
       const cached = bootstrapCache.get(uid);
       if (cached && (Date.now() - cached.cachedAt < BOOTSTRAP_TTL_MS)) {
-        // Overlay latest sparks directly from users table (<1ms)
-        const liveSparksRes = await pool.query('SELECT ai_sparks, plan_type, role FROM users WHERE uid = $1', [uid]);
+        // Overlay latest sparks and subscription state directly from users table (<1ms)
+        const liveSparksRes = await pool.query(
+          'SELECT ai_sparks, plan_type, role, subscription_status, subscription_expiry, subscription_start_date, created_at FROM users WHERE uid = $1',
+          [uid]
+        );
         if (liveSparksRes.rows.length > 0) {
           const u = liveSparksRes.rows[0];
+          let livePlan = u.plan_type || 'free';
+          let liveStatus = u.subscription_status || 'none';
+          const liveExpiry = u.subscription_expiry ? new Date(u.subscription_expiry) : null;
+          if (u.role !== 'admin' && livePlan !== 'free') {
+            if (liveStatus === 'expired' || (liveExpiry && !isNaN(liveExpiry.getTime()) && Date.now() > liveExpiry.getTime()) || !liveExpiry) {
+              livePlan = 'free';
+              liveStatus = 'expired';
+              await pool.query(
+                "UPDATE users SET plan_type = 'free', subscription_status = 'expired', updated_at = NOW() WHERE uid = $1",
+                [uid]
+              ).catch(() => {});
+            }
+          }
           cached.data.quota.ai_sparks = u.ai_sparks ?? 0;
+          cached.data.quota.plan_type = livePlan;
+          cached.data.quota.subscription_status = liveStatus;
+          cached.data.quota.subscription_expiry = liveExpiry ? liveExpiry.toISOString() : undefined;
           cached.data.profile.ai_sparks = u.ai_sparks ?? 0;
+          cached.data.profile.plan_type = livePlan;
+          cached.data.profile.subscription_status = liveStatus;
+          cached.data.profile.subscription_expiry = liveExpiry ? liveExpiry.toISOString() : undefined;
+          if (u.created_at) cached.data.profile.created_at = new Date(u.created_at).toISOString();
         }
 
         // Overlay latest progress directly from user_course_progress (<1ms)
@@ -74,12 +98,35 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
       const userRes = await pool.query('SELECT * FROM users WHERE uid = $1', [uid]);
       if (userRes.rows.length > 0) {
         const u = userRes.rows[0];
+        let effectivePlan = u.plan_type || 'free';
+        let effectiveStatus = u.subscription_status || 'none';
+        const expDate = u.subscription_expiry ? new Date(u.subscription_expiry) : null;
+
+        if (u.role !== 'admin' && effectivePlan !== 'free') {
+          if (effectiveStatus === 'expired' || (expDate && !isNaN(expDate.getTime()) && Date.now() > expDate.getTime()) || !expDate) {
+            effectivePlan = 'free';
+            effectiveStatus = 'expired';
+            await pool.query(
+              "UPDATE users SET plan_type = 'free', subscription_status = 'expired', updated_at = NOW() WHERE uid = $1",
+              [uid]
+            ).catch(() => {});
+            await pool.query(
+              "UPDATE user_sparks_wallets SET plan_type = 'free', updated_at = NOW() WHERE uid = $1",
+              [uid]
+            ).catch(() => {});
+          }
+        }
+
         profile = {
           uid: u.uid,
           email: u.email,
           displayName: u.display_name,
           role: u.role || 'student',
-          plan_type: u.plan_type || 'free',
+          plan_type: effectivePlan,
+          subscription_status: effectiveStatus,
+          subscription_expiry: expDate && !isNaN(expDate.getTime()) ? expDate.toISOString() : undefined,
+          subscription_start_date: u.subscription_start_date ? new Date(u.subscription_start_date).toISOString() : undefined,
+          created_at: u.created_at ? new Date(u.created_at).toISOString() : undefined,
           ai_sparks: u.ai_sparks ?? 0,
           learningProfile: u.learning_profile || {},
           sessionId: u.session_id || null,
@@ -87,6 +134,7 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
           updatedAt: u.updated_at
         };
       } else {
+        const nowIso = new Date().toISOString();
         // Initialize new user in PostgreSQL directly from Firebase Auth token identity (zero Firestore read)
         profile = {
           uid,
@@ -94,11 +142,13 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
           displayName: user.name || 'Scholar',
           role: 'student',
           plan_type: 'free',
+          subscription_status: 'none',
+          created_at: nowIso,
           ai_sparks: 100,
           learningProfile: {},
           sessionId: null,
           sessionVersion: 1,
-          updatedAt: new Date().toISOString()
+          updatedAt: nowIso
         };
         await pool.query(
           'INSERT INTO users (uid, email, display_name, role, plan_type, ai_sparks, learning_profile, created_at, updated_at) ' +
@@ -162,7 +212,10 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
         quota: {
           ai_sparks: profile?.ai_sparks ?? 100,
           plan_type: profile?.plan_type || 'free',
-          role: profile?.role || 'student'
+          role: profile?.role || 'student',
+          subscription_status: profile?.subscription_status || 'none',
+          subscription_expiry: profile?.subscription_expiry,
+          subscription_start_date: profile?.subscription_start_date
         },
         progress: progressByCourse,
         unreadNotificationsCount,
@@ -396,4 +449,371 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
       return res.status(500).json({ error: 'Failed to record SRS review' });
     }
   });
+
+  /**
+   * GET /api/user/payments
+   * User payment history from Neon PostgreSQL payments table
+   */
+  app.get('/api/user/payments', verifyAuth, async (req, res) => {
+    try {
+      const uid = (req as any).user?.uid;
+      const pool = getPostgresPool();
+      if (!pool || !uid) {
+        return res.json({ payments: [] });
+      }
+      const result = await pool.query(
+        `SELECT reference, amount_ngn, plan_type, status, sparks_added, created_at
+         FROM payments
+         WHERE uid = $1
+         ORDER BY created_at DESC
+         LIMIT 10`,
+        [uid]
+      );
+      const payments = result.rows.map((r) => ({
+        id: r.reference,
+        reference: r.reference,
+        amount: Number(r.amount_ngn ?? 0),
+        plan_type: r.plan_type || 'scholar',
+        status: r.status || 'success',
+        sparks_added: Number(r.sparks_added ?? 0),
+        createdAt: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString()
+      }));
+      return res.json({ payments });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to fetch payments' });
+    }
+  });
+
+  /**
+   * POST /api/curriculum-requests
+   * Student course curriculum request submission into Neon PostgreSQL
+   */
+  app.post('/api/curriculum-requests', verifyAuth, async (req, res) => {
+    try {
+      const user = (req as any).user;
+      const pool = getPostgresPool();
+      if (!pool) {
+        return res.status(503).json({ error: 'Database unavailable' });
+      }
+      const id = `creq_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
+      const { department = '', level = '', semester = '', courseCode = '', courseTitle = '' } = req.body || {};
+      const payload = {
+        id,
+        userId: user.uid,
+        email: user.email || '',
+        department,
+        level,
+        semester,
+        courseCode,
+        courseTitle,
+        status: 'pending',
+        createdAt: new Date().toISOString()
+      };
+      await pool.query(
+        `INSERT INTO curriculum_requests (id, user_id, user_email, course_code, course_title, department, level, status, data, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8::jsonb, NOW())`,
+        [id, user.uid, user.email || null, courseCode, courseTitle, department, level, JSON.stringify(payload)]
+      );
+      return res.json({ success: true, request: payload });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to submit curriculum request' });
+    }
+  });
+
+  /**
+   * GET /api/affiliate/me
+   * Tutor/Affiliate personal metrics & payout history from Neon PostgreSQL
+   */
+  app.get('/api/affiliate/me', verifyAuth, async (req, res) => {
+    try {
+      const user = (req as any).user;
+      const pool = getPostgresPool();
+      const defaultCode = String(user.uid || '').substring(0, 6).toUpperCase();
+      if (!pool) {
+        return res.json({
+          affiliate: { id: defaultCode, signups: 0, clicks: 0, paidConversions: 0, totalEarned: 0, pendingBalance: 0 },
+          payouts: []
+        });
+      }
+
+      const affRes = await pool.query(
+        `SELECT code, user_id, email, display_name, total_earned, pending_payout, referral_count, bank_details, status, data
+         FROM affiliates
+         WHERE user_id = $1 OR code = $2
+         LIMIT 1`,
+        [user.uid, defaultCode]
+      );
+
+      let affiliate: any;
+      if ((affRes.rowCount ?? 0) > 0) {
+        const row = affRes.rows[0];
+        const rawData = row.data || {};
+        affiliate = {
+          ...rawData,
+          id: row.code,
+          userId: row.user_id,
+          name: row.display_name || rawData.name || 'Partner',
+          email: row.email || rawData.email || user.email,
+          totalEarned: Number(row.total_earned ?? rawData.totalEarned ?? 0),
+          pendingBalance: Number(row.pending_payout ?? rawData.pendingBalance ?? 0),
+          signups: Number(rawData.signups ?? row.referral_count ?? 0),
+          clicks: Number(rawData.clicks ?? 0),
+          paidConversions: Number(rawData.paidConversions ?? row.referral_count ?? 0),
+          payoutDetails: row.bank_details && Object.keys(row.bank_details).length > 0
+            ? row.bank_details
+            : rawData.payoutDetails || null
+        };
+      } else {
+        affiliate = {
+          id: defaultCode,
+          signups: 0,
+          clicks: 0,
+          paidConversions: 0,
+          totalEarned: 0,
+          pendingBalance: 0
+        };
+      }
+
+      const payoutsRes = await pool.query(
+        `SELECT id, amount, status, bank_details, data, created_at
+         FROM payout_requests
+         WHERE user_id = $1
+         ORDER BY created_at DESC`,
+        [user.uid]
+      );
+
+      const payouts = payoutsRes.rows.map((r) => ({
+        ...(r.data || {}),
+        id: r.id,
+        amount: Number(r.amount ?? 0),
+        status: r.status || 'pending',
+        bankDetails: r.bank_details || r.data?.bankDetails || {},
+        createdAt: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString()
+      }));
+
+      return res.json({ affiliate, payouts });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to load affiliate data' });
+    }
+  });
+
+  /**
+   * GET /api/support/chats/:chatId/messages
+   * Fetch live support chat messages from Neon PostgreSQL
+   */
+  app.get('/api/support/chats/:chatId/messages', verifyAuth, async (req, res) => {
+    try {
+      const pool = getPostgresPool();
+      if (!pool) return res.json({ messages: [] });
+      const chatRes = await pool.query(
+        `SELECT messages FROM support_chats WHERE id = $1`,
+        [req.params.chatId]
+      );
+      const messages = Array.isArray(chatRes.rows[0]?.messages) ? chatRes.rows[0].messages : [];
+      return res.json({ messages });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to load chat messages' });
+    }
+  });
+
+  /**
+   * POST /api/support/chats/:chatId/messages
+   * Append a support chat message in Neon PostgreSQL
+   */
+  app.post('/api/support/chats/:chatId/messages', verifyAuth, async (req, res) => {
+    try {
+      const user = (req as any).user;
+      const pool = getPostgresPool();
+      if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+      const chatId = req.params.chatId;
+      const text = String(req.body?.text || '').trim();
+      const senderName = String(req.body?.senderName || user.name || user.email || 'Student');
+      const userName = String(req.body?.userName || senderName);
+      if (!text) return res.status(400).json({ error: 'Message text required' });
+
+      const newMsg = {
+        id: `msg_${Date.now()}_${crypto.randomUUID().slice(0, 6)}`,
+        senderId: user.uid,
+        senderName,
+        text,
+        timestamp: new Date().toISOString()
+      };
+
+      const existing = await pool.query(`SELECT messages FROM support_chats WHERE id = $1`, [chatId]);
+      const currentMessages = Array.isArray(existing.rows[0]?.messages) ? existing.rows[0].messages : [];
+      const updatedMessages = [...currentMessages, newMsg];
+
+      await pool.query(
+        `INSERT INTO support_chats (id, user_id, user_name, user_email, status, last_message, messages, updated_at)
+         VALUES ($1, $2, $3, $4, 'active', $5, $6::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET
+           last_message = EXCLUDED.last_message,
+           messages = EXCLUDED.messages,
+           status = 'active',
+           updated_at = NOW()`,
+        [chatId, user.uid, userName, user.email || null, text, JSON.stringify(updatedMessages)]
+      );
+
+      return res.json({ success: true, message: newMsg, messages: updatedMessages });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to send message' });
+    }
+  });
+
+  /**
+   * POST /api/support/tickets
+   * Create a support ticket in Neon PostgreSQL
+   */
+  app.post('/api/support/tickets', verifyAuth, async (req, res) => {
+    try {
+      const user = (req as any).user;
+      const pool = getPostgresPool();
+      if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+      const { name = '', email = '', subject = '', message = '' } = req.body || {};
+      const id = `tkt_${Date.now()}_${crypto.randomUUID().slice(0, 6)}`;
+      const createdAt = new Date().toISOString();
+      const payload = {
+        id,
+        userId: user.uid,
+        name: name || user.name || 'Student',
+        email: email || user.email || '',
+        subject,
+        message,
+        status: 'open',
+        createdAt
+      };
+      await pool.query(
+        `INSERT INTO support_tickets (id, user_id, user_email, user_name, subject, message, status, data, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'open', $7::jsonb, NOW(), NOW())`,
+        [id, user.uid, payload.email, payload.name, subject, message, JSON.stringify(payload)]
+      );
+      return res.json({ success: true, ticket: payload });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to submit support ticket' });
+    }
+  });
+
+  /**
+   * Arena Matchmaking & Battles (Neon PostgreSQL arena_battles table)
+   */
+  app.post('/api/arena/matchmake', verifyAuth, async (req, res) => {
+    try {
+      const user = (req as any).user;
+      const pool = getPostgresPool();
+      if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+
+      const { topicId, player, questions = [] } = req.body || {};
+      if (!topicId || !player) {
+        return res.status(400).json({ error: 'topicId and player required' });
+      }
+
+      const waitingRes = await pool.query(
+        `SELECT id, data FROM arena_battles
+         WHERE status = 'waiting' AND topic = $1
+         ORDER BY created_at ASC
+         LIMIT 5`,
+        [topicId]
+      );
+
+      const validRow = waitingRes.rows.find((r) => r.data?.player1?.uid && r.data.player1.uid !== user.uid);
+      if (validRow) {
+        const updatedBattle = {
+          ...validRow.data,
+          id: validRow.id,
+          player2: player,
+          status: 'active'
+        };
+        await pool.query(
+          `UPDATE arena_battles
+           SET status = 'active', data = $1::jsonb, updated_at = NOW()
+           WHERE id = $2`,
+          [JSON.stringify(updatedBattle), validRow.id]
+        );
+        return res.json({ joined: true, battleId: validRow.id, battle: updatedBattle });
+      }
+
+      const battleId = `battle_${Date.now()}_${crypto.randomUUID().slice(0, 6)}`;
+      const newBattle = {
+        id: battleId,
+        status: 'waiting',
+        player1: player,
+        player2: null,
+        questions,
+        winner: null,
+        createdAt: new Date().toISOString(),
+        topicId
+      };
+
+      await pool.query(
+        `INSERT INTO arena_battles (id, topic, status, questions, data, created_at, updated_at)
+         VALUES ($1, $2, 'waiting', $3::jsonb, $4::jsonb, NOW(), NOW())`,
+        [battleId, topicId, JSON.stringify(questions), JSON.stringify(newBattle)]
+      );
+
+      return res.json({ joined: false, battleId, battle: newBattle });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to matchmake battle' });
+    }
+  });
+
+  app.get('/api/arena/battles/:battleId', verifyAuth, async (req, res) => {
+    try {
+      const pool = getPostgresPool();
+      if (!pool) return res.status(404).json({ error: 'Battle not found' });
+      const result = await pool.query(`SELECT id, data FROM arena_battles WHERE id = $1`, [req.params.battleId]);
+      if ((result.rowCount ?? 0) === 0) {
+        return res.status(404).json({ error: 'Battle not found' });
+      }
+      return res.json({ battle: { ...result.rows[0].data, id: result.rows[0].id } });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to load battle' });
+    }
+  });
+
+  app.patch('/api/arena/battles/:battleId', verifyAuth, async (req, res) => {
+    try {
+      const pool = getPostgresPool();
+      if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+      const battleId = req.params.battleId;
+      const existing = await pool.query(`SELECT data FROM arena_battles WHERE id = $1`, [battleId]);
+      if ((existing.rowCount ?? 0) === 0) {
+        return res.status(404).json({ error: 'Battle not found' });
+      }
+
+      const data = { ...(existing.rows[0].data || {}) };
+      const updates = req.body || {};
+      for (const [k, v] of Object.entries(updates)) {
+        if (k.includes('.')) {
+          const [parentKey, childKey] = k.split('.');
+          data[parentKey] = { ...(data[parentKey] || {}), [childKey]: v };
+        } else {
+          data[k] = v;
+        }
+      }
+
+      await pool.query(
+        `UPDATE arena_battles
+         SET status = $1, winner_id = $2, data = $3::jsonb, updated_at = NOW()
+         WHERE id = $4`,
+        [data.status || 'active', data.winner || null, JSON.stringify(data), battleId]
+      );
+
+      return res.json({ success: true, battle: data });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to update battle' });
+    }
+  });
+
+  app.delete('/api/arena/battles/:battleId', verifyAuth, async (req, res) => {
+    try {
+      const pool = getPostgresPool();
+      if (pool) {
+        await pool.query(`DELETE FROM arena_battles WHERE id = $1`, [req.params.battleId]);
+      }
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to delete battle' });
+    }
+  });
 }
+
