@@ -569,6 +569,80 @@ MATH & EQUATIONS (CRITICAL):
     }
   },
 
+  /**
+   * Helper function for the quiz generation service that uses AI to dynamically
+   * generate plausible but incorrect 'distractor' answers for multiple-choice questions,
+   * ensuring they are contextually relevant to the specific subtopic content to increase rigor.
+   */
+  generatePlausibleDistractors: async (params: {
+    question: string;
+    correctAnswer: string;
+    subtopicTitle?: string;
+    subtopicContent: string;
+    count?: number;
+    subject?: string;
+    rollingMasteryScore?: number;
+  }): Promise<string[]> => {
+    const {
+      question,
+      correctAnswer,
+      subtopicTitle = '',
+      subtopicContent,
+      count = 3,
+      subject = 'University Assessment',
+      rollingMasteryScore = 50
+    } = params;
+
+    const distractorPrompt = `INSTRUCTIONS:
+You are an expert university examiner and psychometrician.
+Generate exactly ${count} highly PLAUSIBLE BUT INCORRECT "distractor" answer options for a multiple-choice question.
+
+QUESTION:
+"${question}"
+
+CORRECT ANSWER:
+"${correctAnswer}"
+
+SUBTOPIC CONTEXT:
+Topic: "${subtopicTitle}"
+Subject / Domain: "${subject}"
+Student Rolling Mastery: ${rollingMasteryScore}%
+Content Material:
+${(subtopicContent || '').slice(0, 4500)}
+
+DISTRACTOR RIGOR REQUIREMENTS:
+1. Contextually Grounded: Every distractor MUST be strictly derived from the provided subtopic content. Do NOT introduce unrelated terms.
+2. Common Misconceptions: Model real university student errors:
+   - For mathematical/physics questions: sign inversion ($+ \\leftrightarrow -$), reciprocal fraction errors, forgotten integration constants, or flipped matrix indices.
+   - For engineering/scientific topics: adjacent thermodynamic phases, conflated kinetic mechanisms, or inverted cause-and-effect relationships.
+   - For humanities/social science: plausible alternative historical interpretations or conflated frameworks.
+3. High Plausibility: Distractors must have similar length, tone, grammatical structure, and technical depth as the correct answer. NEVER provide silly or obviously false choices.
+4. Rigor Level: ${rollingMasteryScore >= 75 ? 'HIGH MASTERY: Generate sophisticated, subtle distractors that penalize superficial memorization and test deep mechanics.' : 'Standard university exam caliber.'}
+
+Return your response strictly as a JSON object matching:
+{
+  "distractors": [
+    "string (Plausible distractor 1)",
+    "string (Plausible distractor 2)",
+    "string (Plausible distractor 3)"
+  ]
+}`;
+
+    try {
+      const response = await callAI(distractorPrompt, undefined, 'json', 900, 'standard', 'quiz');
+      const raw = extractJSON(response.text || '{}');
+      const distractors = Array.isArray(raw?.distractors) ? raw.distractors : [];
+      const validDistractors = distractors
+        .map((d: any) => String(d || '').trim())
+        .filter((d: string) => d.length > 0 && d.toLowerCase() !== correctAnswer.trim().toLowerCase());
+
+      return validDistractors.slice(0, count);
+    } catch (err) {
+      console.warn('[AIService] Distractor generation fallback notice:', err);
+      return [];
+    }
+  },
+
   generateQuiz: async (
     module: Module, 
     subTopic: SubTopic | undefined, 
@@ -578,18 +652,32 @@ MATH & EQUATIONS (CRITICAL):
     userSkillLevel: number = 3,
     level?: string,
     department?: string,
-    studentName?: string
+    studentName?: string,
+    rollingMasteryScore?: number
   ): Promise<QuizQuestion[]> => {
+    const isHighMastery = typeof rollingMasteryScore === 'number' && rollingMasteryScore >= 75;
+    const isFoundationMastery = typeof rollingMasteryScore === 'number' && rollingMasteryScore < 50;
+
     const prompt = `INSTRUCTIONS:
 Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the entire module'}.
     Student Name: ${studentName || 'Student'}
     Student Level: ${level || 'University Level'}
     Department: ${department || 'General Academic'}
+    ${typeof rollingMasteryScore === 'number' ? `Student Rolling Mastery Score: ${rollingMasteryScore}%` : ''}
     
     ${adaptive 
       ? `Generate exactly 15 questions, 3 for each difficulty level from 1 (very easy) to 5 (very hard). Ensure the difficulty field is set correctly. The user's current estimated skill level is ${userSkillLevel} out of 5.` 
       : `Number of questions: ${numQuestions}.`}
     Question type: ${questionType}.
+
+    DYNAMIC ROLLING MASTERY COMPLEXITY CALIBRATION:
+    ${isHighMastery
+      ? `★ HIGH ROLLING MASTERY DETECTED (${rollingMasteryScore}%): The student has already mastered basic terminology and elementary definitions.
+         DO NOT generate simple recall or definitional questions.
+         You MUST generate advanced conceptual synthesis questions (Bloom Levels 5-6: Evaluating, Multi-step Derivations, Edge-case Dynamics, Proofs) requiring deep critical thinking and domain mechanics.`
+      : isFoundationMastery
+      ? `★ FOUNDATIONAL PROFICIENCY MODE (${rollingMasteryScore}%): Focus on clear core conceptual models, step-by-step principles, and clear analogies grounded in the subtopic material.`
+      : `★ CALIBRATED COMPLEXITY: Standard rigorous university exam standard.`}
 
     CRITICAL LECTURER QUESTION LOGIC & SET STANDARDS:
     For BOTH question types ('multiple-choice' and 'fill-in-the-blank' (which is used as "Written Essay/Description")), you MUST structure questions with premium academic logic exactly like a university lecturer's formal exam sheet:
@@ -641,7 +729,7 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
          Module Content: ${module.subTopics.map(st => `--- Subtopic: ${st.title} ---\n${st.content ? st.content.substring(0, 3000) : ''}`).join('\n\n')}`
     }`;
 
-    const response = await callAI(prompt, undefined, 'json', 2500, 'high', 'quiz');
+    const response = await callAI(prompt, undefined, 'json', 2500, isHighMastery ? 'high' : 'standard', 'quiz');
     try {
       const rawData = extractJSON(response.text || "[]");
       let dataToValidate: any = rawData;

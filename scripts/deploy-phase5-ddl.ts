@@ -153,11 +153,11 @@ export async function deployPhase5DDL() {
   // 8. Idempotent refund ledger: spark_ledger
   const createLedgerSql = `
     CREATE TABLE IF NOT EXISTS spark_ledger (
-      ledger_id VARCHAR(64) PRIMARY KEY,
+      ledger_id VARCHAR(255) PRIMARY KEY,
       user_id VARCHAR(128) NOT NULL,
       delta INTEGER NOT NULL,
       reason TEXT,
-      ref_lock_id VARCHAR(64),
+      ref_lock_id VARCHAR(255),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `;

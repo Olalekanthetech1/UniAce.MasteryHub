@@ -1,4 +1,4 @@
-import { PastPaper } from '../components/PastQuestions';
+import { PastPaper } from '../components/SkillPracticeHub';
 import { QuizQuestion } from '../types';
 
 export function findRelevantQuestions(query: string, pastPapers: PastPaper[], limit: number = 3): QuizQuestion[] {

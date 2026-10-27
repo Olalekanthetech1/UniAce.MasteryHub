@@ -199,15 +199,41 @@ export async function executeIdempotentProgressBatchSync(
         };
         const displayName = cleanUpdates.displayName || row.display_name || 'Student';
         const email = cleanUpdates.email || row.email || null;
+        const safeRole = ['student', 'admin', 'tutor', 'moderator'].includes(existingUser.role)
+          ? existingUser.role
+          : 'student';
+        const safePlanType = existingUser.plan_type === 'scholar' ? 'scholar' : 'free';
+        const safeAiSparks =
+          typeof existingUser.ai_sparks === 'number' && Number.isFinite(existingUser.ai_sparks)
+            ? Math.max(0, Math.round(existingUser.ai_sparks))
+            : 50;
+
         await client.query(
-          `INSERT INTO users (uid, email, display_name, learning_profile, updated_at)
-           VALUES ($1, $2, $3, $4::jsonb, NOW())
+          `INSERT INTO users (uid, email, display_name, role, plan_type, ai_sparks, learning_profile, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, NOW())
            ON CONFLICT (uid) DO UPDATE SET
+             email = COALESCE($2, users.email),
              display_name = COALESCE($3, users.display_name),
-             learning_profile = $4::jsonb,
+             learning_profile = $7::jsonb,
              updated_at = NOW()`,
-          [uid, email, displayName, JSON.stringify(mergedProfile)]
+          [uid, email, displayName, safeRole, safePlanType, safeAiSparks, JSON.stringify(mergedProfile)]
         );
+
+        if (userRes.rows.length === 0) {
+          await client.query(
+            `INSERT INTO user_sparks_wallets (uid, balance, plan_type, last_spark_reset, updated_at)
+             VALUES ($1, $2, $3, NOW(), NOW())
+             ON CONFLICT (uid) DO NOTHING`,
+            [uid, safeAiSparks, safePlanType]
+          );
+          await client.query(
+            `INSERT INTO spark_ledger (ledger_id, user_id, delta, reason, ref_lock_id, created_at)
+             VALUES ($1, $2, $3, 'initial_seed', NULL, NOW())
+             ON CONFLICT (ledger_id) DO NOTHING`,
+            [`seed_${uid}`, uid, safeAiSparks]
+          );
+        }
+
         await client.query('COMMIT');
         return {
           success: true,

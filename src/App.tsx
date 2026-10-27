@@ -24,7 +24,7 @@ import StudyNotificationScheduler from './components/StudyNotificationScheduler'
 // Direct imports for instant, zero-latency navigation across all tabs
 import QuizHub from './components/QuizHub';
 import FlashcardHub from './components/FlashcardHub';
-import PastQuestions from './components/PastQuestions';
+import SkillPracticeHub from './components/SkillPracticeHub';
 import MasteryCenter from './components/MasteryCenter';
 import FormulaReference from './components/FormulaReference';
 import Notebook from './components/Notebook';
@@ -486,7 +486,7 @@ function AppContent() {
       </AnimatePresence>
 
       {/* Main Content Area */}
-      <div className={`flex-1 flex flex-col h-full overflow-y-auto relative ${activeView === 'ai-tutor' ? '' : 'pb-16 lg:pb-0'}`}>
+      <div className={`flex-1 min-w-0 w-full max-w-full overflow-x-hidden flex flex-col h-full overflow-y-auto relative ${activeView === 'ai-tutor' ? '' : 'pb-16 lg:pb-0'}`}>
         {/* Toggle Button for Sidebar (Visible when sidebar is closed on Desktop) */}
         {!isSidebarOpen && activeView !== 'study' && (
           <div className="hidden lg:block absolute top-4 left-4 z-40">
@@ -665,11 +665,12 @@ function AppContent() {
         )}
 
         {activeView === 'past-questions' && (
-          <PastQuestions 
+          <SkillPracticeHub 
             activeCourseId={activeCourseId} 
-            onSelectCourse={handleCourseSelect}
+            onSelectCourse={(cId) => setActiveCourseId(cId)}
             activeSemester={activeSemester}
             enrolledCourses={progress.enrolledCourses || []}
+            onComplete={addXp}
           />
         )}
 

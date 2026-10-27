@@ -31,8 +31,6 @@ export default function Flashcards({ module, subTopic, isGlobalReview, onClose }
       setErrorMsg(null);
       
       try {
-        let fetchedCards: Flashcard[] = [];
-        
         if (module) {
           setLoadingText("Generating flashcards...");
           const generatedCards = await AIService.generateFlashcards(
@@ -68,7 +66,45 @@ export default function Flashcards({ module, subTopic, isGlobalReview, onClose }
           
           setCards(cardsToSave);
         } else {
-          setSessionComplete(true);
+          setLoadingText("Loading due Spaced Repetition cards...");
+          const token = await user.getIdToken();
+          const res = await fetch('/api/user/srs', {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          if (!res.ok) {
+            throw new Error('Failed to load your Spaced Repetition deck.');
+          }
+          const json = await res.json();
+          const rawCards = Array.isArray(json.cards) ? json.cards : [];
+          const now = Date.now();
+          const dueSrsCards = rawCards
+            .filter((c: any) => {
+              const isDue = !c.next_review_at || new Date(c.next_review_at).getTime() <= now;
+              const cd = c.card_data || {};
+              return isDue && (cd.front || cd.topicTitle || c.card_id);
+            })
+            .map((c: any) => {
+              const cd = c.card_data || {};
+              return {
+                id: c.card_id,
+                courseId: c.course_id || 'general',
+                moduleId: c.course_id || 'general',
+                front: cd.front || `Review Concept: ${cd.topicTitle || c.card_id}`,
+                back: cd.back || cd.explanation || `Course: ${c.course_id || 'General'} — Review core definitions and derivations.`,
+                userId: user.uid,
+                interval: Number(c.box || 1),
+                repetition: Number(c.review_count || 0),
+                efactor: Number(c.ease_factor || 2.5),
+                nextReviewDate: c.next_review_at || new Date().toISOString(),
+                topicTitle: cd.topicTitle || c.course_id || 'Spaced Repetition'
+              } as Flashcard & { courseId?: string; topicTitle?: string };
+            });
+
+          if (dueSrsCards.length === 0) {
+            setSessionComplete(true);
+          } else {
+            setCards(dueSrsCards);
+          }
         }
       } catch (error: any) {
         console.error("Failed to load flashcards:", error);
@@ -98,7 +134,7 @@ export default function Flashcards({ module, subTopic, isGlobalReview, onClose }
       } else if (nextRepetition === 1) {
         nextInterval = 6;
       } else {
-        nextInterval = Math.round((currentCard.interval || 0) * nextEfactor);
+        nextInterval = Math.round((currentCard.interval || 1) * nextEfactor);
       }
       nextRepetition += 1;
     } else {
@@ -122,7 +158,13 @@ export default function Flashcards({ module, subTopic, isGlobalReview, onClose }
           body: JSON.stringify({
             cardId: currentCard.id,
             courseId: (currentCard as any).courseId || module?.id || 'general',
-            rating
+            rating,
+            box: Math.max(1, nextRepetition),
+            nextReviewAt: nextReviewDate.toISOString(),
+            easeFactor: Number(nextEfactor.toFixed(2)),
+            front: currentCard.front,
+            back: currentCard.back,
+            topicTitle: (currentCard as any).topicTitle || subTopic?.title || module?.title || 'Flashcard Review'
           })
         }).catch(err => console.warn('Failed to save SRS card rating:', err));
       } catch (err) {

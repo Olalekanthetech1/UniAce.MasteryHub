@@ -8,6 +8,7 @@ import { useFeatureSwitches } from '../hooks/useFeatureSwitches';
 import { storage } from '../firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { motion, AnimatePresence } from 'motion/react';
+import { safeFetchJson } from '../utils/safeFetch';
 
 interface PaymentRecord {
   id: string;
@@ -73,15 +74,14 @@ export default function UserProfile({ onBack, onNavigate }: UserProfileProps) {
       setIsLoadingPayments(true);
       try {
         const token = await user.getIdToken();
-        const res = await fetch('/api/user/payments', {
+        const result = await safeFetchJson<{ payments?: PaymentRecord[] }>('/api/user/payments', {
           headers: { Authorization: `Bearer ${token}` }
         });
-        if (res.ok) {
-          const data = await res.json();
-          setPayments(Array.isArray(data.payments) ? data.payments : []);
+        if (result.ok && result.data) {
+          setPayments(Array.isArray(result.data.payments) ? result.data.payments : []);
         }
       } catch (error: any) {
-        console.error("Error fetching payments:", error);
+        console.warn("Could not fetch payments:", error);
       } finally {
         setIsLoadingPayments(false);
       }
@@ -340,7 +340,7 @@ export default function UserProfile({ onBack, onNavigate }: UserProfileProps) {
               <div>
                 <label className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-1 block">Department</label>
                 <select
-                  value={department}
+                  value={department || ''}
                   onChange={(e) => setDepartment(e.target.value as Department)}
                   className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
                 >
@@ -355,7 +355,7 @@ export default function UserProfile({ onBack, onNavigate }: UserProfileProps) {
                 <div>
                   <label className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-1 block">Level</label>
                   <select
-                    value={academicLevel}
+                    value={academicLevel || ''}
                     onChange={(e) => setAcademicLevel(e.target.value as Level)}
                     className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
                   >
@@ -369,7 +369,7 @@ export default function UserProfile({ onBack, onNavigate }: UserProfileProps) {
                 <div>
                   <label className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-1 block">Semester</label>
                   <select
-                    value={semester}
+                    value={semester || ''}
                     onChange={(e) => setSemester(e.target.value as Semester)}
                     className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
                   >
@@ -636,7 +636,7 @@ export default function UserProfile({ onBack, onNavigate }: UserProfileProps) {
               { label: 'Formulas', icon: HelpCircle, color: 'bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400', view: 'formulas' },
               { label: 'Quizzes', icon: Star, color: 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400', view: 'quizzes' },
               { label: 'Flashcards', icon: Zap, color: 'bg-pink-100 dark:bg-pink-900/30 text-pink-600 dark:text-pink-400', view: 'flashcards' },
-              { label: 'Past Qs', icon: FileText, color: 'bg-cyan-100 dark:bg-cyan-900/30 text-cyan-600 dark:text-cyan-400', view: 'past-questions' },
+              { label: 'Skill & CBT', icon: FileText, color: 'bg-cyan-100 dark:bg-cyan-900/30 text-cyan-600 dark:text-cyan-400', view: 'past-questions' },
               { label: 'Notebook', icon: BookOpen, color: 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400', view: 'notebook' },
               ...(isAdmin ? [{ label: 'Admin Dashboard', icon: Settings, color: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400', view: 'admin-dashboard' }] : []),
               ...(!isAdmin && isTutor && switches.tutor_dashboard ? [{ label: 'Tutor Dashboard', icon: Settings, color: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400', view: 'tutor-dashboard' }] : []),

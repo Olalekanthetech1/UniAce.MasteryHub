@@ -63,21 +63,23 @@ export class SparkRepository {
   static async ensureUserRowAndSeed(client: any, uid: string, defaultPlan: 'free' | 'scholar' | 'admin' = 'free'): Promise<void> {
     // 1. Ensure user_sparks_wallets exists if fresh
     const initialBalance = defaultPlan === 'admin' ? 10000 : defaultPlan === 'scholar' ? 500 : 50;
+    const walletPlan = defaultPlan === 'scholar' || defaultPlan === 'admin' ? 'scholar' : 'free';
+    const userRole = defaultPlan === 'admin' ? 'admin' : 'student';
     await client.query(
       `INSERT INTO user_sparks_wallets (uid, balance, plan_type, last_spark_reset, updated_at)
        VALUES ($1, $2, $3, NOW(), NOW())
        ON CONFLICT (uid) DO NOTHING;`,
-      [uid, initialBalance, defaultPlan]
+      [uid, initialBalance, walletPlan]
     );
 
     // 2. First-touch ensure-row SQL statement from Step 3.1
     const ensureSql = `
       WITH w AS (
-        SELECT uid, balance FROM user_sparks_wallets WHERE uid = $1 FOR UPDATE
+        SELECT uid, COALESCE(balance, $4) AS balance FROM user_sparks_wallets WHERE uid = $1 FOR UPDATE
       ),
       seed AS (
         INSERT INTO users (uid, ai_sparks, role, plan_type, updated_at)
-        SELECT uid, balance, 'student', $2, 'epoch'::timestamptz FROM w
+        SELECT uid, balance, $2, $3, 'epoch'::timestamptz FROM w
         ON CONFLICT (uid) DO NOTHING
         RETURNING uid, ai_sparks
       )
@@ -88,7 +90,7 @@ export class SparkRepository {
       FROM seed s
       WHERE (s.ai_sparks - COALESCE((SELECT SUM(delta)::int FROM spark_ledger WHERE user_id = s.uid), 0)) != 0;
     `;
-    await client.query(ensureSql, [uid, defaultPlan]);
+    await client.query(ensureSql, [uid, userRole, walletPlan, initialBalance]);
   }
 
   /**

@@ -766,7 +766,7 @@ export default function Dashboard({ onModuleSelect, onSubTopicSelect, onViewSele
             </div>
           </motion.button>
 
-          {/* Past Questions */}
+          {/* Skill & CBT Practice Hub */}
           <motion.button
             onClick={() => onViewSelect('past-questions')}
             className="group bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 p-8 rounded-[2.5rem] text-left hover:border-slate-900 dark:hover:border-white transition-all duration-500 flex flex-col justify-between min-h-[280px] shadow-sm"
@@ -776,12 +776,12 @@ export default function Dashboard({ onModuleSelect, onSubTopicSelect, onViewSele
                 <FileText size={24} />
               </div>
               <div className="space-y-2">
-                <h3 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white leading-tight">Past Questions</h3>
-                <p className="text-slate-500 dark:text-zinc-400 text-xs sm:text-sm">Access a collection of previous exam questions.</p>
+                <h3 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white leading-tight">Skill & CBT Hub</h3>
+                <p className="text-slate-500 dark:text-zinc-400 text-xs sm:text-sm">Interactive concept carousels, pair matching, smart MCQs, and timed syllabus CBT mock exams.</p>
               </div>
             </div>
             <div className="flex items-center gap-2 font-bold text-slate-900 dark:text-white text-sm">
-              <span>View Repository</span>
+              <span>Launch Practice Hub</span>
               <ArrowRight size={16} className="group-hover:translate-x-2 transition-transform" />
             </div>
           </motion.button>

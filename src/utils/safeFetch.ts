@@ -13,46 +13,63 @@ export interface SafeFetchResult<T = any> {
 
 export async function safeFetchJson<T = any>(
   input: RequestInfo | URL,
-  init?: RequestInit
+  init?: RequestInit,
+  retries: number = 2
 ): Promise<SafeFetchResult<T>> {
-  try {
-    const res = await fetch(input, init);
-    const contentType = res.headers.get('content-type') || '';
-    const isJson = contentType.toLowerCase().includes('application/json');
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(input, init);
+      const contentType = res.headers.get('content-type') || '';
+      const isJson = contentType.toLowerCase().includes('application/json');
 
-    if (!isJson) {
-      // Server returned HTML (e.g. Render warming up, cold start, or SPA fallback)
+      if (!isJson) {
+        if (attempt < retries) {
+          await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
+          continue;
+        }
+        return {
+          ok: false,
+          status: res.status,
+          data: null,
+          error: 'Server warming up or returned non-JSON response',
+          isHtmlFallback: true
+        };
+      }
+
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => null);
+        return {
+          ok: false,
+          status: res.status,
+          data: null,
+          error: errBody?.error || errBody?.message || `HTTP ${res.status}`
+        };
+      }
+
+      const data = await res.json();
+      return {
+        ok: true,
+        status: res.status,
+        data
+      };
+    } catch (err: any) {
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
+        continue;
+      }
       return {
         ok: false,
-        status: res.status,
+        status: 0,
         data: null,
-        error: 'Server warming up or returned non-JSON response',
-        isHtmlFallback: true
+        error: err?.message || 'Network error'
       };
     }
-
-    if (!res.ok) {
-      const errBody = await res.json().catch(() => null);
-      return {
-        ok: false,
-        status: res.status,
-        data: null,
-        error: errBody?.error || errBody?.message || `HTTP ${res.status}`
-      };
-    }
-
-    const data = await res.json();
-    return {
-      ok: true,
-      status: res.status,
-      data
-    };
-  } catch (err: any) {
-    return {
-      ok: false,
-      status: 0,
-      data: null,
-      error: err?.message || 'Network error'
-    };
   }
+
+  return {
+    ok: false,
+    status: 0,
+    data: null,
+    error: 'Request failed'
+  };
 }

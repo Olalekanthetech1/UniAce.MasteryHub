@@ -150,6 +150,7 @@ export default function QuizGenerator({
         throw new Error("No lesson content found. Please read or generate the lessons first before taking a quiz.");
       }
 
+      const rollingMastery = typeof userSkillLevel === 'number' ? Math.round((userSkillLevel / 5) * 100) : 50;
       const data = await AIService.generateQuiz(
         moduleForQuiz, 
         subTopicForQuiz, 
@@ -159,7 +160,8 @@ export default function QuizGenerator({
         userSkillLevel,
         profile?.academic_level,
         profile?.department,
-        profile?.displayName
+        profile?.displayName,
+        rollingMastery
       );
       
       if (!data || data.length === 0) {
@@ -406,7 +408,11 @@ export default function QuizGenerator({
                 body: JSON.stringify({
                   cardId: c.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'c_' + Date.now()),
                   courseId: courseId || module.id,
-                  rating: 1
+                  rating: 1,
+                  front: c.front,
+                  back: c.back,
+                  topicTitle: subTopic?.title || module.title,
+                  source: 'quiz_remedial'
                 })
               }).catch(err => console.warn('Failed to save remedial flashcard:', err));
             });

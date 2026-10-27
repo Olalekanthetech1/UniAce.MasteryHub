@@ -33,12 +33,12 @@ export async function deploySparksEscrowDDL() {
   // 2. Table: spark_escrow_locks
   const createEscrowSql = `
     CREATE TABLE IF NOT EXISTS spark_escrow_locks (
-      escrow_id VARCHAR(64) PRIMARY KEY,
+      escrow_id VARCHAR(255) PRIMARY KEY,
       uid VARCHAR(128) NOT NULL REFERENCES user_sparks_wallets(uid) ON DELETE CASCADE,
       amount_locked INTEGER NOT NULL CHECK (amount_locked > 0),
       status VARCHAR(32) NOT NULL DEFAULT 'locked' CHECK (status IN ('locked', 'settled', 'refunded', 'expired')),
-      model_id VARCHAR(64) NOT NULL,
-      task_type VARCHAR(64) NOT NULL,
+      model_id VARCHAR(255) NOT NULL,
+      task_type VARCHAR(255) NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       settled_at TIMESTAMPTZ
     );
@@ -51,13 +51,13 @@ export async function deploySparksEscrowDDL() {
   const createLedgerSql = `
     CREATE TABLE IF NOT EXISTS spark_transactions_ledger (
       seq BIGSERIAL,
-      transaction_id VARCHAR(64) PRIMARY KEY,
+      transaction_id VARCHAR(255) PRIMARY KEY,
       uid VARCHAR(128) NOT NULL REFERENCES user_sparks_wallets(uid) ON DELETE CASCADE,
       delta INTEGER NOT NULL,
       balance_after INTEGER NOT NULL CHECK (balance_after >= 0),
       type VARCHAR(32) NOT NULL CHECK (type IN ('pre_auth_lock', 'settlement_refund', 'settlement_charge', 'monthly_refill', 'bonus_grant', 'admin_adjustment')),
       reason TEXT,
-      escrow_id VARCHAR(64) REFERENCES spark_escrow_locks(escrow_id),
+      escrow_id VARCHAR(255) REFERENCES spark_escrow_locks(escrow_id),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS idx_spark_ledger_uid_created ON spark_transactions_ledger (uid, created_at DESC);

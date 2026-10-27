@@ -323,7 +323,7 @@ export default function Sidebar({
                   }`}
                 >
                   <FileText size={18} />
-                  <span className="text-[10px] font-medium">Past Q</span>
+                  <span className="text-[10px] font-medium">Skill & CBT</span>
                 </button>
 
                 <button

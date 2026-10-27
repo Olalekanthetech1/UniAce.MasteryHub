@@ -9,6 +9,7 @@ interface BottomNavProps {
 
 export default function BottomNav({ activeView, onViewSelect }: BottomNavProps) {
   if (activeView === 'ai-tutor') return null;
+  if (typeof document !== 'undefined' && document.body.dataset.skillSessionActive === 'true') return null;
 
   return (
     <div className="lg:hidden fixed bottom-0 left-0 right-0 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 pb-safe z-50">

@@ -405,7 +405,7 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
 
   /**
    * GET /api/user/srs
-   * Spaced repetition cards for the user from Neon
+   * Spaced repetition cards for the user from Neon PostgreSQL
    */
   app.get('/api/user/srs', verifyAuth, async (req, res) => {
     const user = (req as any).user;
@@ -413,40 +413,199 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
     if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
 
     try {
-      const result = await pool.query(
-        'SELECT card_id, course_id, box, next_review_at, review_count, ease_factor FROM user_spaced_repetition WHERE uid = $1 ORDER BY next_review_at ASC',
-        [user.uid]
-      );
+      const courseId = typeof req.query.courseId === 'string' ? req.query.courseId.trim() : '';
+      const params: any[] = [user.uid];
+      let sql =
+        'SELECT id, card_id, course_id, box, next_review_at, review_count, ease_factor, COALESCE(card_data, \'{}\'::jsonb) AS card_data, updated_at ' +
+        'FROM user_spaced_repetition WHERE uid = $1';
+      if (courseId) {
+        params.push(courseId);
+        sql += ' AND course_id = $2';
+      }
+      sql += ' ORDER BY next_review_at ASC';
 
+      const result = await pool.query(sql, params);
       return res.json({ cards: result.rows });
     } catch (err: any) {
-      return res.status(500).json({ error: 'Failed to fetch SRS records' });
+      return res.status(500).json({ error: 'Failed to fetch SRS records', details: err.message });
     }
   });
 
   /**
-   * POST /api/user/srs/record
+   * Shared handler for POST /api/user/srs and POST /api/user/srs/record
+   * Computes SM-2 interval/easeFactor dynamically if rating (0..5) is provided, and persists card_data JSONB.
    */
-  app.post('/api/user/srs/record', verifyAuth, async (req, res) => {
+  const handleRecordSrsReview = async (req: express.Request, res: express.Response) => {
     const user = (req as any).user;
-    const { cardId, courseId, box, nextReviewAt, easeFactor } = req.body;
+    const {
+      cardId,
+      courseId,
+      box,
+      rating,
+      nextReviewAt,
+      easeFactor,
+      cardData,
+      front,
+      back,
+      topicTitle,
+      explanation,
+      source
+    } = req.body || {};
+
+    if (!cardId) {
+      return res.status(400).json({ error: 'cardId is required' });
+    }
+
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
 
     try {
-      const id = `${user.uid}_${cardId}`;
-      await pool.query(
-        'INSERT INTO user_spaced_repetition (id, uid, card_id, course_id, box, next_review_at, review_count, ease_factor, updated_at) ' +
-        'VALUES ($1, $2, $3, $4, $5, $6, 1, $7, NOW()) ' +
-        'ON CONFLICT (id) DO UPDATE SET ' +
-        'box = EXCLUDED.box, next_review_at = EXCLUDED.next_review_at, ' +
-        'review_count = user_spaced_repetition.review_count + 1, ease_factor = EXCLUDED.ease_factor, updated_at = NOW()',
-        [id, user.uid, cardId, courseId, box || 1, nextReviewAt || new Date(), easeFactor || 2.5]
+      const cleanCardId = String(cardId).trim();
+      const id = cleanCardId.startsWith(`${user.uid}_`) ? cleanCardId : `${user.uid}_${cleanCardId}`;
+
+      // Fetch existing card state if rating-based SM-2 calculation is needed
+      const existingRes = await pool.query(
+        'SELECT box, review_count, ease_factor, card_data FROM user_spaced_repetition WHERE id = $1 LIMIT 1',
+        [id]
+      );
+      const existing = existingRes.rows[0] || null;
+
+      let computedBox = typeof box === 'number' ? box : (existing?.box ?? 1);
+      let computedEase = typeof easeFactor === 'number' ? easeFactor : Number(existing?.ease_factor ?? 2.5);
+      let computedNextReview: Date = nextReviewAt ? new Date(nextReviewAt) : new Date();
+
+      if (typeof rating === 'number' && !nextReviewAt) {
+        const q = Math.max(0, Math.min(5, rating));
+        const prevReps = Number(existing?.review_count ?? 0);
+        let intervalDays = 1;
+        if (q >= 3) {
+          if (prevReps === 0) intervalDays = 1;
+          else if (prevReps === 1) intervalDays = 4;
+          else intervalDays = Math.max(1, Math.round(prevReps * computedEase));
+          computedBox = Math.min(5, computedBox + 1);
+        } else {
+          intervalDays = 1;
+          computedBox = 1;
+        }
+        computedEase = Math.max(1.3, computedEase + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)));
+        computedNextReview = new Date(Date.now() + intervalDays * 24 * 60 * 60 * 1000);
+      }
+
+      const mergedCardData = {
+        ...(existing?.card_data && typeof existing.card_data === 'object' ? existing.card_data : {}),
+        ...(cardData && typeof cardData === 'object' ? cardData : {}),
+        ...(front ? { front } : {}),
+        ...(back ? { back } : {}),
+        ...(topicTitle ? { topicTitle } : {}),
+        ...(explanation ? { explanation } : {}),
+        ...(source ? { source } : {})
+      };
+
+      const upserted = await pool.query(
+        `INSERT INTO user_spaced_repetition (id, uid, card_id, course_id, box, next_review_at, review_count, ease_factor, card_data, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8::jsonb, NOW(), NOW())
+         ON CONFLICT (id) DO UPDATE SET
+           course_id = COALESCE(EXCLUDED.course_id, user_spaced_repetition.course_id),
+           box = EXCLUDED.box,
+           next_review_at = EXCLUDED.next_review_at,
+           review_count = user_spaced_repetition.review_count + 1,
+           ease_factor = EXCLUDED.ease_factor,
+           card_data = COALESCE(user_spaced_repetition.card_data, '{}'::jsonb) || EXCLUDED.card_data,
+           updated_at = NOW()
+         RETURNING id, card_id, course_id, box, next_review_at, review_count, ease_factor, card_data, updated_at`,
+        [
+          id,
+          user.uid,
+          cleanCardId,
+          courseId || existing?.course_id || 'general',
+          computedBox,
+          computedNextReview,
+          Number(computedEase.toFixed(2)),
+          JSON.stringify(mergedCardData)
+        ]
       );
 
-      return res.json({ success: true });
+      return res.json({ success: true, card: upserted.rows[0] });
     } catch (err: any) {
-      return res.status(500).json({ error: 'Failed to record SRS review' });
+      return res.status(500).json({ error: 'Failed to record SRS review', details: err.message });
+    }
+  };
+
+  app.post('/api/user/srs', verifyAuth, handleRecordSrsReview);
+  app.post('/api/user/srs/record', verifyAuth, handleRecordSrsReview);
+
+  /**
+   * POST /api/user/srs/batch-schedule
+   * Automatically schedules missed CBT exam or practice questions into the student's Spaced Repetition deck in Neon PostgreSQL.
+   */
+  app.post('/api/user/srs/batch-schedule', verifyAuth, async (req, res) => {
+    const user = (req as any).user;
+    const { courseId, paperId, paperTitle, missedQuestions } = req.body || {};
+
+    if (!Array.isArray(missedQuestions) || missedQuestions.length === 0) {
+      return res.json({ success: true, scheduledCount: 0, scheduledCards: [] });
+    }
+
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const scheduledCards: any[] = [];
+      const effectiveCourseId = String(courseId || 'general').trim();
+
+      for (const q of missedQuestions) {
+        if (!q || !q.question) continue;
+        const rawQuestionId = String(q.id || crypto.createHash('md5').update(String(q.question)).digest('hex').slice(0, 10))
+          .replace(/[^a-zA-Z0-9_-]/g, '_');
+        const cardId = `exam_${effectiveCourseId}_${rawQuestionId}`;
+        const rowId = `${user.uid}_${cardId}`;
+        const topicLabel = q.topic || paperTitle || `${effectiveCourseId} Past Examination`;
+
+        const cardDataPayload = {
+          front: String(q.question),
+          back: `**Correct Answer:** ${q.correctAnswer}\n\n${q.explanation ? `**Explanation:**\n${q.explanation}` : ''}`.trim(),
+          correctAnswer: String(q.correctAnswer || ''),
+          lastMissedAnswer: q.userAnswer ? String(q.userAnswer) : 'Unanswered',
+          explanation: String(q.explanation || ''),
+          topicTitle: topicLabel,
+          paperId: paperId || null,
+          paperTitle: paperTitle || null,
+          source: 'cbt_exam',
+          scheduledAt: new Date().toISOString()
+        };
+
+        const upsertRes = await client.query(
+          `INSERT INTO user_spaced_repetition (id, uid, card_id, course_id, box, next_review_at, review_count, ease_factor, card_data, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, 1, NOW(), 0, 2.5, $5::jsonb, NOW(), NOW())
+           ON CONFLICT (id) DO UPDATE SET
+             box = 1,
+             next_review_at = NOW(),
+             ease_factor = GREATEST(1.3, user_spaced_repetition.ease_factor - 0.2),
+             card_data = COALESCE(user_spaced_repetition.card_data, '{}'::jsonb) || EXCLUDED.card_data,
+             updated_at = NOW()
+           RETURNING id, card_id, course_id, box, next_review_at, review_count, ease_factor, card_data`,
+          [rowId, user.uid, cardId, effectiveCourseId, JSON.stringify(cardDataPayload)]
+        );
+
+        if (upsertRes.rows[0]) {
+          scheduledCards.push(upsertRes.rows[0]);
+        }
+      }
+
+      await client.query('COMMIT');
+      return res.json({
+        success: true,
+        scheduledCount: scheduledCards.length,
+        scheduledCards
+      });
+    } catch (err: any) {
+      await client.query('ROLLBACK').catch(() => {});
+      logger.error({ uid: user.uid, err: err.message }, '[StudentRoutes] Failed to batch-schedule missed exam questions into SRS');
+      return res.status(500).json({ error: 'Failed to schedule missed questions into Spaced Repetition', details: err.message });
+    } finally {
+      client.release();
     }
   });
 
