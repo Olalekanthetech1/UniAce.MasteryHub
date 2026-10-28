@@ -75,7 +75,25 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   const fetchArchivedCourses = async () => {
     setIsLoadingArchived(true);
     try {
-      setArchivedCourses({});
+      const idToken = await auth.currentUser?.getIdToken();
+      if (!idToken) {
+        setArchivedCourses({});
+        return;
+      }
+      const res = await fetch('/api/admin/courses/archived', {
+        headers: { 'Authorization': `Bearer ${idToken}` }
+      });
+      if (!res.ok) throw new Error('Failed to fetch archived courses');
+      const data = await res.json();
+      const archivedMap: Record<string, Course> = {};
+      if (Array.isArray(data?.courses)) {
+        data.courses.forEach((c: any) => {
+          if (c && c.id) {
+            archivedMap[c.id] = c as Course;
+          }
+        });
+      }
+      setArchivedCourses(archivedMap);
     } catch (error) {
       console.error("Error fetching archived courses:", error);
     } finally {
@@ -844,7 +862,9 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
         if (data.stats) {
           setSystemStats(prev => ({
             ...prev,
-            totalQuestionsAsked: data.stats.totalQuestions || prev.totalQuestionsAsked,
+            totalSparksConsumed: data.stats.totalSparksConsumed !== undefined ? Number(data.stats.totalSparksConsumed) : prev.totalSparksConsumed,
+            totalQuestionsAsked: data.stats.totalQuestions !== undefined ? Number(data.stats.totalQuestions) : prev.totalQuestionsAsked,
+            averageMastery: data.stats.averageMastery !== undefined ? Number(data.stats.averageMastery) : prev.averageMastery,
             popularCourse: data.stats.popularCourse || prev.popularCourse
           }));
         }
@@ -1354,14 +1374,21 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
 
   const fetchSystemStats = async () => {
     try {
-      const firstCourse = Object.values(courses)[0];
-      const popularCourseName = firstCourse ? (firstCourse.title || firstCourse.id || 'GST 111') : 'GST 111';
-      setSystemStats({
-        totalSparksConsumed: 12500,
-        totalQuestionsAsked: 1250,
-        averageMastery: 85,
-        popularCourse: popularCourseName
+      const idToken = await auth.currentUser?.getIdToken();
+      if (!idToken) return;
+      const res = await fetch('/api/admin/ai-status', {
+        headers: { 'Authorization': `Bearer ${idToken}` }
       });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data?.stats) {
+        setSystemStats({
+          totalSparksConsumed: Number(data.stats.totalSparksConsumed ?? 0),
+          totalQuestionsAsked: Number(data.stats.totalQuestions ?? 0),
+          averageMastery: Number(data.stats.averageMastery ?? 0),
+          popularCourse: data.stats.popularCourse || 'N/A'
+        });
+      }
     } catch (error) {
       console.error("Error fetching system stats:", error);
     }
@@ -2081,18 +2108,69 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
 
 
   const handleRestoreCourse = async (courseId: string) => {
-    showToast("Direct Firestore course writes are paused during Postgres catalog migration. Use Postgres administrative API.", "info");
-    return;
+    try {
+      const idToken = await auth.currentUser?.getIdToken();
+      if (!idToken) throw new Error('Authentication required');
+      const res = await fetch(`/api/admin/courses/${encodeURIComponent(courseId)}/restore`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`
+        }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to restore course');
+      showToast(`Course ${courseId} restored to active catalog.`, 'success');
+      await refreshCourses();
+      await fetchArchivedCourses();
+    } catch (error: any) {
+      console.error('Error restoring course:', error);
+      showToast(error.message || 'Failed to restore course', 'error');
+    }
   };
 
   const handleDeleteCourse = async (courseId: string) => {
-    showToast("Direct Firestore course writes are paused during Postgres catalog migration. Use Postgres administrative API.", "info");
-    return;
+    try {
+      const idToken = await auth.currentUser?.getIdToken();
+      if (!idToken) throw new Error('Authentication required');
+      const res = await fetch(`/api/admin/courses/${encodeURIComponent(courseId)}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${idToken}`
+        }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to archive course');
+      showToast(`Course ${courseId} archived.`, 'success');
+      await refreshCourses();
+      if (showArchived) {
+        await fetchArchivedCourses();
+      }
+    } catch (error: any) {
+      console.error('Error archiving course:', error);
+      showToast(error.message || 'Failed to archive course', 'error');
+    }
   };
 
   const handlePermanentDeleteCourse = async (courseId: string) => {
-    showToast("Direct Firestore course writes are paused during Postgres catalog migration. Use Postgres administrative API.", "info");
-    return;
+    try {
+      const idToken = await auth.currentUser?.getIdToken();
+      if (!idToken) throw new Error('Authentication required');
+      const res = await fetch(`/api/admin/courses/${encodeURIComponent(courseId)}/permanent`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${idToken}`
+        }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to permanently delete course');
+      showToast(`Course ${courseId} permanently deleted.`, 'success');
+      await fetchArchivedCourses();
+      await refreshCourses();
+    } catch (error: any) {
+      console.error('Error permanently deleting course:', error);
+      showToast(error.message || 'Failed to permanently delete course', 'error');
+    }
   };
 
   const handleEditCourse = (course: Course) => {
@@ -2141,13 +2219,13 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
     setStatusMessage('Initializing upload...');
 
     try {
-      // 1. Prepare for Gemini
-      setStatusMessage('Processing PDF with Gemini 3.0 Flash Preview...');
+      // 1. Prepare for AI Vision Pipeline
+      setStatusMessage('Preparing PDF for AI Vision extraction...');
       const pdfPart = await fileToGenerativePart(selectedFile);
       setUploadProgress(40);
 
-      // 2. Call Gemini API
-      setStatusMessage(`Analyzing with Gemini 3.0 Flash Preview...`);
+      // 2. Call AI Vision Extraction API
+      setStatusMessage('Analyzing document structure and syllabus...');
 
       const prompt = `
         You are an expert curriculum designer and university professor.
@@ -2258,12 +2336,32 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
     setIsUploading(true);
     setStatusMessage('Saving course to database...');
     try {
-      showToast("Direct Firestore course writes are paused during Postgres catalog migration. Use Postgres migration API.", "info");
-      setStatusMessage("Direct Firestore course writes are paused during Postgres catalog migration.");
-      setIsUploading(false);
-      return;
+      const idToken = await auth.currentUser?.getIdToken();
+      if (!idToken) throw new Error('Authentication required');
 
-      LogService.log('success', 'admin', `Published new course: ${finalCourseData.title} (${finalCourseData.id})`);
+      const saveRes = await fetch('/api/admin/courses', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`
+        },
+        body: JSON.stringify({
+          id: sanitizedId,
+          code: sanitizedId,
+          title: finalCourseData.title,
+          description: finalCourseData.description || '',
+          level: finalCourseData.level || quickLevel,
+          department: finalCourseData.department || quickDepartment,
+          semester: finalCourseData.semester || quickSemester,
+          syllabus: finalCourseData.syllabus || []
+        })
+      });
+      const saveData = await saveRes.json().catch(() => ({}));
+      if (!saveRes.ok) {
+        throw new Error(saveData.error || 'Failed to save course to PostgreSQL catalog');
+      }
+
+      LogService.log('success', 'admin', `Published new course: ${finalCourseData.title} (${sanitizedId})`);
 
       // Phase 2: Automatic Ingestion
       await ingestCourseToKB(finalCourseData);

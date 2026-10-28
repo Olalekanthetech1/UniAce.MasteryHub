@@ -68,9 +68,22 @@ export function setupAdminRoutes(
         return res.status(400).json({ error: 'subTopicTitle is required' });
       }
 
-      const apiKey = process.env.GEMINI_API_KEY;
+      const apiKeysData = (await getSystemSettingsDoc('api_keys')) || {};
+      const geminiKeys = Array.isArray(apiKeysData.gemini_direct?.keys)
+        ? apiKeysData.gemini_direct.keys.map((k: any) => k?.key).filter(Boolean)
+        : [];
+      const apiKey = geminiKeys[0] || process.env.GEMINI_API_KEY;
       if (!apiKey) {
-        return res.status(503).json({ error: 'GEMINI_API_KEY is not configured on the server' });
+        return res.status(503).json({ error: 'Gemini API key is not configured on the server' });
+      }
+
+      let activeModel = String(apiKeysData.gemini_direct?.model || process.env.GEMINI_MODEL || '').trim();
+      if (!activeModel) {
+        const { models } = await fetchProviderModels('gemini_direct', apiKey, false);
+        activeModel = String(models[0]?.id || '').trim();
+      }
+      if (!activeModel) {
+        return res.status(503).json({ error: 'No active Gemini model configured or discovered' });
       }
 
       const ai = new GoogleGenAI({ apiKey });
@@ -94,7 +107,7 @@ Explicitly list what confuses students and provide clear contrasting examples.
 Include 3 multiple-choice conceptual questions with step-by-step verified explanations.`;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: activeModel,
         contents: prompt,
       });
 
@@ -235,11 +248,24 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
       let textSample = '';
       let errorMsg = '';
 
-      const apiKeysRes = await queryPostgres<{ data: any }>(`SELECT data FROM system_settings WHERE key = 'api_keys' LIMIT 1`);
-      const apiKeysData = apiKeysRes.rows[0]?.data || {};
+      const apiKeysData = (await getSystemSettingsDoc('api_keys')) || {};
       const getConfiguredKey = (prov: string, envKey?: string) => {
-        const list = apiKeysData[prov]?.keys?.map((k: any) => k.key).filter(Boolean);
+        const entry = apiKeysData[prov] || apiKeysData[prov.replace('_direct', '')] || apiKeysData[prov.replace('_free', '')];
+        const list = entry?.keys?.map((k: any) => k.key).filter(Boolean);
         return (list && list[0]) || envKey || '';
+      };
+
+      const resolveBenchmarkModel = async (prov: string, apiKey: string, envModel?: string): Promise<string> => {
+        if (customModel && String(customModel).trim()) return String(customModel).trim();
+        const entry = apiKeysData[prov] || apiKeysData[prov.replace('_direct', '')] || apiKeysData[prov.replace('_free', '')];
+        if (entry?.model && String(entry.model).trim()) return String(entry.model).trim();
+        if (envModel && envModel.trim()) return envModel.trim();
+        const { models } = await fetchProviderModels(prov, apiKey, false);
+        const valid = (models || []).find(m => m?.id && !/embed|whisper|tts|moderation|guard|audio/i.test(m.id));
+        if (!valid?.id) {
+          throw new Error(`No active model configured or discovered for ${prov}. Please select a model in API Key Manager.`);
+        }
+        return valid.id;
       };
 
       const targetProvider = (provider || 'gemini_direct').toLowerCase();
@@ -249,7 +275,7 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
           const apiKey = getConfiguredKey('gemini_direct', process.env.GEMINI_API_KEY);
           if (!apiKey) throw new Error('GEMINI_API_KEY not configured');
           const ai = new GoogleGenAI({ apiKey });
-          modelUsed = apiKeysData.gemini_direct?.model || 'gemini-2.5-flash';
+          modelUsed = await resolveBenchmarkModel('gemini_direct', apiKey, process.env.GEMINI_MODEL);
           const pStart = Date.now();
           const response = await ai.models.generateContent({
             model: modelUsed,
@@ -266,7 +292,7 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
         try {
           const apiKey = getConfiguredKey('groq', process.env.GROQ_API_KEY);
           if (!apiKey) throw new Error('GROQ_API_KEY not configured');
-          modelUsed = apiKeysData.groq?.model || 'llama-3.3-70b-versatile';
+          modelUsed = await resolveBenchmarkModel('groq', apiKey, process.env.GROQ_MODEL);
           const pStart = Date.now();
           const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
@@ -285,7 +311,7 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
         try {
           const apiKey = getConfiguredKey('mistral_direct', process.env.MISTRAL_API_KEY);
           if (!apiKey) throw new Error('MISTRAL_API_KEY not configured');
-          modelUsed = apiKeysData.mistral_direct?.model || 'mistral-small-latest';
+          modelUsed = await resolveBenchmarkModel('mistral_direct', apiKey, process.env.MISTRAL_MODEL);
           const pStart = Date.now();
           const r = await fetch('https://api.mistral.ai/v1/chat/completions', {
             method: 'POST',
@@ -304,7 +330,7 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
         try {
           const apiKey = getConfiguredKey('nvidia', process.env.NVIDIA_API_KEY);
           if (!apiKey) throw new Error('NVIDIA_API_KEY not configured');
-          modelUsed = apiKeysData.nvidia?.model || 'meta/llama-3.1-70b-instruct';
+          modelUsed = await resolveBenchmarkModel('nvidia', apiKey, process.env.NVIDIA_MODEL);
           const pStart = Date.now();
           const r = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
             method: 'POST',
@@ -323,7 +349,7 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
         try {
           const apiKey = getConfiguredKey('openrouter_free', process.env.OPENROUTER_API_KEY);
           if (!apiKey) throw new Error('OPENROUTER_API_KEY not configured');
-          modelUsed = apiKeysData.openrouter_free?.model || 'meta-llama/llama-3.3-70b-instruct:free';
+          modelUsed = await resolveBenchmarkModel('openrouter_free', apiKey, process.env.OPENROUTER_MODEL);
           const pStart = Date.now();
           const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
@@ -342,7 +368,7 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
         try {
           const apiKey = getConfiguredKey('cohere', process.env.COHERE_API_KEY);
           if (!apiKey) throw new Error('COHERE_API_KEY not configured');
-          modelUsed = apiKeysData.cohere?.model || 'command-r-08-2024';
+          modelUsed = await resolveBenchmarkModel('cohere', apiKey, process.env.COHERE_MODEL);
           const pStart = Date.now();
           const r = await fetch('https://api.cohere.com/v2/chat', {
             method: 'POST',
@@ -361,7 +387,7 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
         try {
           const apiKey = getConfiguredKey('huggingface', process.env.HUGGINGFACE_API_KEY);
           if (!apiKey) throw new Error('HUGGINGFACE_API_KEY not configured');
-          modelUsed = apiKeysData.huggingface?.model || 'Qwen/Qwen2.5-72B-Instruct';
+          modelUsed = await resolveBenchmarkModel('huggingface', apiKey, process.env.HUGGINGFACE_MODEL || process.env.HF_MODEL);
           const pStart = Date.now();
           const r = await fetch('https://router.huggingface.co/v1/chat/completions', {
             method: 'POST',
@@ -1071,7 +1097,122 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
     }
   });
 
-  // Admin Course Archive Endpoint via Neon
+  // Admin Course Archive, Restore, Publish, and Permanent Delete Endpoints via Neon PostgreSQL
+  app.get('/api/admin/courses/archived', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    const isAdmin = await checkIsAdmin(user.uid, user.email);
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin privileges required' });
+    }
+
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+    try {
+      const coursesRes = await pool.query(
+        `SELECT id, code, title, description, department, faculty, level, semester, status, scope, updated_at
+         FROM courses
+         WHERE status = 'archived'
+         ORDER BY updated_at DESC`
+      );
+      const courses = coursesRes.rows.map((c: any) => ({
+        id: c.id,
+        code: c.code || c.id,
+        title: c.title,
+        description: c.description || '',
+        department: c.department || '',
+        faculty: c.faculty || '',
+        faculties: c.faculty ? [c.faculty] : [],
+        departments: c.department ? [c.department] : [],
+        level: c.level || '100',
+        semester: c.semester || '1st Semester',
+        scope: c.scope || 'DEPARTMENT',
+        status: c.status,
+        isDeleted: true,
+        deletedAt: c.updated_at ? new Date(c.updated_at).toISOString() : new Date().toISOString(),
+        syllabus: []
+      }));
+      res.json({ success: true, courses });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to fetch archived courses', details: err.message });
+    }
+  });
+
+  app.post('/api/admin/courses/:id/restore', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    const isAdmin = await checkIsAdmin(user.uid, user.email);
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin privileges required' });
+    }
+
+    const { id } = req.params;
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+    try {
+      await pool.query(
+        `UPDATE courses SET status = 'published', version = COALESCE(version, 1) + 1, updated_at = NOW() WHERE id = $1`,
+        [id]
+      );
+      catalogCache.invalidateAll();
+      res.json({ success: true, courseId: id });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to restore course', details: err.message });
+    }
+  });
+
+  app.post('/api/admin/courses/:id/publish', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    const isAdmin = await checkIsAdmin(user.uid, user.email);
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin privileges required' });
+    }
+
+    const { id } = req.params;
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+    try {
+      await pool.query(
+        `UPDATE courses SET status = 'published', version = COALESCE(version, 1) + 1, updated_at = NOW() WHERE id = $1`,
+        [id]
+      );
+      catalogCache.invalidateAll();
+      res.json({ success: true, courseId: id });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to publish course', details: err.message });
+    }
+  });
+
+  app.delete('/api/admin/courses/:id/permanent', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    const isAdmin = await checkIsAdmin(user.uid, user.email);
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin privileges required' });
+    }
+
+    const { id } = req.params;
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`DELETE FROM course_lessons WHERE course_id = $1`, [id]);
+      await client.query(`DELETE FROM course_modules WHERE course_id = $1`, [id]);
+      await client.query(`DELETE FROM course_formulas WHERE course_id = $1`, [id]).catch(() => {});
+      await client.query(`DELETE FROM courses WHERE id = $1`, [id]);
+      await client.query('COMMIT');
+      catalogCache.invalidateAll();
+      res.json({ success: true, courseId: id });
+    } catch (err: any) {
+      await client.query('ROLLBACK');
+      res.status(500).json({ error: 'Failed to permanently delete course', details: err.message });
+    } finally {
+      client.release();
+    }
+  });
+
   app.delete('/api/admin/courses/:id', verifyAuth, async (req: any, res: any) => {
     const user = req.user;
     const isAdmin = await checkIsAdmin(user.uid, user.email);

@@ -211,6 +211,7 @@ async function retry<T>(fn: () => Promise<T>, providerName: string, retries = 3,
 }
 
 import { dbTelemetry } from './dbTelemetry';
+import { fetchProviderModels, ProviderModelOption } from './modelDiscovery';
 
 let sharedApiKeysSnapshotCache: { data: Record<string, any> | null; fetchedAt: number } = {
   data: null,
@@ -218,6 +219,49 @@ let sharedApiKeysSnapshotCache: { data: Record<string, any> | null; fetchedAt: n
 };
 const API_KEYS_CACHE_TTL_MS = 60 * 1000;
 const lastExhaustedWriteByProviderKey = new Map<string, number>();
+
+function selectOptimalDiscoveredModel(models: ProviderModelOption[]): { primary: string; fallback: string } {
+  const validModels = (models || []).filter(m => {
+    const id = String(m?.id || '').trim().toLowerCase();
+    if (!id) return false;
+    // Exclude non-chat utility models based on capability type keywords in metadata
+    if (id.includes('embed') || id.includes('whisper') || id.includes('tts') || id.includes('moderation') || id.includes('guard') || id.includes('audio')) {
+      return false;
+    }
+    return true;
+  });
+
+  if (validModels.length === 0) return { primary: '', fallback: '' };
+
+  // Rank purely by live upstream metadata (e.g. contextWindow when provided by the upstream API)
+  const ranked = [...validModels].sort((a, b) => {
+    const ctxA = typeof a.contextWindow === 'number' ? a.contextWindow : 0;
+    const ctxB = typeof b.contextWindow === 'number' ? b.contextWindow : 0;
+    if (ctxB !== ctxA) return ctxB - ctxA;
+    return 0;
+  });
+
+  const primary = String(ranked[0]?.id || '').trim();
+  const fallback = ranked.length > 1 ? String(ranked[1]?.id || '').trim() : '';
+  return { primary, fallback };
+}
+
+function getEnvConfiguredModelForProvider(providerName: string): string {
+  const norm = providerName.toLowerCase().trim();
+  const envMap: Record<string, string | undefined> = {
+    gemini: process.env.GEMINI_MODEL,
+    gemini_direct: process.env.GEMINI_MODEL,
+    groq: process.env.GROQ_MODEL,
+    mistral: process.env.MISTRAL_MODEL,
+    mistral_direct: process.env.MISTRAL_MODEL,
+    cohere: process.env.COHERE_MODEL,
+    huggingface: process.env.HUGGINGFACE_MODEL || process.env.HF_MODEL,
+    openrouter: process.env.OPENROUTER_MODEL,
+    openrouter_free: process.env.OPENROUTER_MODEL,
+    nvidia: process.env.NVIDIA_MODEL
+  };
+  return (envMap[norm] || '').trim();
+}
 
 export class DynamicKeyRotator {
   private providerName: string;
@@ -228,6 +272,7 @@ export class DynamicKeyRotator {
   private exhaustedKeys: Set<string> = new Set();
   private configuredModel: string = '';
   private configuredFallbackModel: string = '';
+  private resolvingModelPromise: Promise<string> | null = null;
 
   constructor(providerName: string, fallbackKeyString: string = '') {
     this.providerName = providerName;
@@ -235,13 +280,19 @@ export class DynamicKeyRotator {
   }
 
   hasConfiguredModel(): boolean {
-    return Boolean(this.configuredModel && this.configuredModel.trim().length > 0);
+    if (this.configuredModel && this.configuredModel.trim().length > 0) return true;
+    const envModel = getEnvConfiguredModelForProvider(this.providerName);
+    return Boolean(envModel);
   }
 
   updateFromData(providerData: any) {
     if (!providerData) return;
-    this.configuredModel = providerData.model || '';
-    this.configuredFallbackModel = providerData.fallbackModel || '';
+    if (providerData.model && String(providerData.model).trim()) {
+      this.configuredModel = String(providerData.model).trim();
+    }
+    if (providerData.fallbackModel && String(providerData.fallbackModel).trim()) {
+      this.configuredFallbackModel = String(providerData.fallbackModel).trim();
+    }
     if (Array.isArray(providerData.keys)) {
       this.dbKeys = providerData.keys
         .filter((k: any) => k && k.key && k.key.trim().length > 0)
@@ -271,15 +322,27 @@ export class DynamicKeyRotator {
         sharedApiKeysSnapshotCache = { data, fetchedAt: now };
       }
 
-      if (data && data[this.providerName]) {
-        this.configuredModel = data[this.providerName].model || '';
-        this.configuredFallbackModel = data[this.providerName].fallbackModel || '';
+      const providerEntry = data
+        ? (data[this.providerName] ||
+           data[this.providerName.replace('_direct', '')] ||
+           data[this.providerName.replace('_free', '')] ||
+           data[`${this.providerName}_direct`] ||
+           data[`${this.providerName}_free`])
+        : null;
 
-        if (Array.isArray(data[this.providerName].keys)) {
+      if (providerEntry) {
+        if (providerEntry.model && String(providerEntry.model).trim()) {
+          this.configuredModel = String(providerEntry.model).trim();
+        }
+        if (providerEntry.fallbackModel && String(providerEntry.fallbackModel).trim()) {
+          this.configuredFallbackModel = String(providerEntry.fallbackModel).trim();
+        }
+
+        if (Array.isArray(providerEntry.keys)) {
           let needsUpdate = false;
           const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
 
-          const updatedKeys = data[this.providerName].keys.map((k: any) => {
+          const updatedKeys = providerEntry.keys.map((k: any) => {
             if (k.isExhausted && k.exhaustedAt) {
               const exhaustedDate = new Date(k.exhaustedAt);
               const currentDate = new Date(now);
@@ -298,9 +361,9 @@ export class DynamicKeyRotator {
             return k;
           });
 
-          if (needsUpdate) {
+          if (needsUpdate && data) {
             data[this.providerName] = {
-              ...data[this.providerName],
+              ...providerEntry,
               keys: updatedKeys
             };
             await setSystemSettingsDoc('api_keys', { [this.providerName]: data[this.providerName] }, true);
@@ -308,11 +371,11 @@ export class DynamicKeyRotator {
             dbTelemetry.recordSuppressedWrite('system_settings', 'unchanged_api_key_reset_check', 1);
           }
 
-          this.dbKeys = data[this.providerName].keys
+          this.dbKeys = providerEntry.keys
             .filter((k: any) => k.key && k.key.trim().length > 0)
             .map((k: any) => k.key.trim());
 
-          for (const k of data[this.providerName].keys) {
+          for (const k of providerEntry.keys) {
             if (k.isExhausted) {
               this.exhaustedKeys.add(k.key.trim());
             } else {
@@ -327,13 +390,93 @@ export class DynamicKeyRotator {
     }
   }
 
+  private async resolveModelDynamically(): Promise<string> {
+    if (this.configuredModel && this.configuredModel.trim()) {
+      return this.configuredModel.trim();
+    }
+
+    const envModel = getEnvConfiguredModelForProvider(this.providerName);
+    if (envModel) {
+      this.configuredModel = envModel;
+      return envModel;
+    }
+
+    if (this.resolvingModelPromise) {
+      return this.resolvingModelPromise;
+    }
+
+    this.resolvingModelPromise = (async () => {
+      try {
+        // 1. Check persisted live discovered_models in Neon PostgreSQL
+        const discoveredDoc = await getSystemSettingsDoc('discovered_models', false);
+        const norm = this.providerName.toLowerCase().trim();
+        const storedEntry = discoveredDoc
+          ? (discoveredDoc[norm] ||
+             discoveredDoc[norm.replace('_direct', '')] ||
+             discoveredDoc[norm.replace('_free', '')] ||
+             discoveredDoc[`${norm}_direct`] ||
+             discoveredDoc[`${norm}_free`])
+          : null;
+
+        if (storedEntry && Array.isArray(storedEntry.models) && storedEntry.models.length > 0) {
+          const { primary, fallback } = selectOptimalDiscoveredModel(storedEntry.models);
+          if (primary) {
+            this.configuredModel = primary;
+            if (!this.configuredFallbackModel && fallback) {
+              this.configuredFallbackModel = fallback;
+            }
+            return primary;
+          }
+        }
+
+        // 2. Perform live upstream model discovery from the provider's API
+        const { models } = await fetchProviderModels(this.providerName, undefined, false);
+        if (Array.isArray(models) && models.length > 0) {
+          const { primary, fallback } = selectOptimalDiscoveredModel(models);
+          if (primary) {
+            this.configuredModel = primary;
+            if (!this.configuredFallbackModel && fallback) {
+              this.configuredFallbackModel = fallback;
+            }
+            const currentSettings = (await getSystemSettingsDoc('api_keys', false)) || {};
+            const existingProv = currentSettings[this.providerName] || {};
+            await setSystemSettingsDoc('api_keys', {
+              [this.providerName]: {
+                ...existingProv,
+                model: primary,
+                ...(fallback && !existingProv.fallbackModel ? { fallbackModel: fallback } : {})
+              }
+            }, true).catch(() => {});
+            sharedApiKeysSnapshotCache = { data: null, fetchedAt: 0 };
+            return primary;
+          }
+        }
+      } catch (err: any) {
+        console.warn(`[DynamicKeyRotator] Live model discovery for ${this.providerName} failed: ${err.message}`);
+      }
+
+      return '';
+    })();
+
+    try {
+      return await this.resolvingModelPromise;
+    } finally {
+      this.resolvingModelPromise = null;
+    }
+  }
+
   async getModel(): Promise<string> {
     await this.fetchKeys(false);
-    return (this.configuredModel || '').trim();
+    const current = (this.configuredModel || '').trim();
+    if (current) return current;
+    return await this.resolveModelDynamically();
   }
 
   async getFallbackModel(): Promise<string> {
     await this.fetchKeys(false);
+    if (!this.configuredModel) {
+      await this.resolveModelDynamically();
+    }
     const fallback = (this.configuredFallbackModel || '').trim();
     const primary = (this.configuredModel || '').trim();
     if (fallback && fallback.toLowerCase() === primary.toLowerCase()) {

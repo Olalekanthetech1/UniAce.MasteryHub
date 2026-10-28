@@ -134,8 +134,11 @@ export function validateLessonSyntax(content: string, pedagogyType: DisciplinePe
  * Retrieves course-level references (textbook TOCs, university syllabi) and classifies pedagogy type.
  */
 export function buildDomainBriefPrompt(options: CurriculumGenerationOptions): string {
-  const { courseName, courseCode, department } = options;
-  return `Analyze the course title "${courseName}" ${courseCode ? `(Code: ${courseCode})` : ''} within the department "${department || 'General Studies'}".
+  const { courseName, courseCode, department, level, outline, sourceText } = options;
+  const normalizedLevel = (level || '100').trim();
+  return `Analyze the course title "${courseName}" ${courseCode ? `(Code: ${courseCode})` : ''} at Academic Level "${normalizedLevel} Level" within the department "${department || 'General Studies'}".
+${outline && outline.trim() ? `\n[ADMIN-PROVIDED SYLLABUS OUTLINE (MANDATORY PRIMARY AUTHORITY)]:\n${outline.trim()}\n` : ''}
+${sourceText && sourceText.trim() ? `\n[SOURCE REFERENCE MATERIAL]:\n${sourceText.substring(0, 2000)}\n` : ''}
 
 [GROUNDING & COURSE-LEVEL TAXONOMY TASK]:
 1. Identify the primary authoritative academic discipline.
@@ -145,36 +148,39 @@ export function buildDomainBriefPrompt(options: CurriculumGenerationOptions): st
    - "SOCIAL_SCIENCES_BUSINESS": Economics, finance, management, sociology, psychology (emphasizes empirical methodology, behavioral/market case studies, statistical interpretation).
    - "BIOMEDICAL_LIFE_SCIENCES": Biology, medicine, pharmacology, biochemistry (emphasizes biochemical pathways, physiological mechanisms, clinical implications).
    - "GENERAL_FOUNDATIONS": Interdisciplinary survey or academic study skills.
-3. List 3-5 sub-disciplines.
-4. List 8-14 core course topics that define the standard syllabus of this specific course in accredited universities (e.g. standard undergraduate curriculum). Anchor in course-level textbook tables of contents and published university syllabi.
-5. Identify 2-3 canonical reference textbooks or standard university syllabus benchmarks (e.g., "Callister - Materials Science and Engineering: An Introduction", "MIT OpenCourseWare 3.091").
-6. Formulate 3-4 foundational axioms/principles that establish the core framework for orientation in Module 1.
+3. Calibrate the "courseLevelFramework" specifically to "${normalizedLevel} Level" university expectations:
+   - 100 Level: First-year foundational principles, introductory concepts, fundamental definitions, and broad disciplinary orientation.
+   - 200 Level: Second-year core analytical methods, intermediate theory, and structured problem-solving.
+   - 300 Level: Third-year upper-division specialized mechanisms, rigorous derivations, and applied systems analysis.
+   - 400 / 500 Level: Advanced senior/graduate-level synthesis, complex mathematical/theoretical modeling, and research-grade case studies.
+4. List 3-5 sub-disciplines relevant to "${courseName}" at ${normalizedLevel} Level.
+5. List 8-14 core course topics that define the syllabus of this course at ${normalizedLevel} Level:
+   - CRITICAL: If an [ADMIN-PROVIDED SYLLABUS OUTLINE] is present above, you MUST extract and include EVERY topic, unit, and theme from the admin's outline into "coreCourseTopics", ordered logically for ${normalizedLevel} Level.
+   - If no admin outline is provided, derive the standard accredited university syllabus topics for "${courseName}" (${courseCode || ''}) at ${normalizedLevel} Level.
+6. Identify 2-3 canonical reference textbooks or standard university syllabus benchmarks appropriate for ${normalizedLevel} Level.
+7. Formulate 3-4 foundational axioms/principles that establish the core framework for orientation in Module 1.
 
 Return strictly a JSON object:
 {
-  "primaryDomain": "e.g. Materials Science and Engineering",
-  "subDisciplines": ["Structure of Materials", "Thermodynamics of Solids", "Mechanical Properties", "Phase Transformations"],
+  "primaryDomain": "Authoritative academic discipline",
+  "subDisciplines": ["Sub-discipline 1", "Sub-discipline 2", "Sub-discipline 3"],
   "pedagogyType": "STEM_MATHEMATICAL",
-  "courseLevelFramework": "Undergraduate University Level Core",
+  "courseLevelFramework": "${normalizedLevel} Level University Curriculum Standard",
   "recommendedCreditHours": 3,
   "targetModuleCountRange": { "min": 6, "max": 10 },
-  "canonicalCourseReferences": ["Callister & Rethwisch - Materials Science and Engineering: An Introduction", "MIT OCW 3.091 Course Syllabus"],
+  "canonicalCourseReferences": ["Authoritative Textbook 1", "Accredited University Syllabus Benchmark"],
   "foundationalAxioms": [
-    "The central Materials Science Paradigm: Processing -> Structure -> Properties -> Performance",
-    "Classification taxonomy of engineering materials: Metals, Ceramics, Polymers, and Composites",
-    "Historical evolution and technological role of materials in societal development"
+    "Foundational Principle 1",
+    "Foundational Principle 2",
+    "Foundational Principle 3"
   ],
   "coreCourseTopics": [
-    "Introduction to Materials Classification and the Materials Paradigm",
-    "Atomic Structure and Chemical Bonding in Solids",
-    "Crystal Structures and Crystallographic Planes/Directions",
-    "Imperfections, Point Defects, and Dislocations in Solids",
-    "Diffusion Mechanisms and Fick's Laws",
-    "Mechanical Properties, Stress-Strain Relations, and Elastic/Plastic Deformation",
-    "Dislocations and Strengthening Mechanisms in Metals",
-    "Phase Equilibria, Binary Phase Diagrams, and the Iron-Carbon System",
-    "Phase Transformations and Microstructural Evolution",
-    "Corrosion, Degradation, and Failure Analysis"
+    "Core Topic 1",
+    "Core Topic 2",
+    "Core Topic 3",
+    "Core Topic 4",
+    "Core Topic 5",
+    "Core Topic 6"
   ]
 }`;
 }
@@ -204,8 +210,29 @@ export function buildCurriculumSkeletonPrompt(
     academicStandard = 'Globally Adaptive (Universal University Standard)'
   } = options;
 
-  const params = deriveCurriculumParameters(level, semester, creditUnits || domainBrief.recommendedCreditHours, depth);
+  const normalizedLevel = (level || '100').trim();
+  const params = deriveCurriculumParameters(normalizedLevel, semester, creditUnits || domainBrief.recommendedCreditHours, depth);
   const normalizedScope = scope.toUpperCase();
+
+  let levelCalibrationDirective = '';
+  if (normalizedLevel.includes('100')) {
+    levelCalibrationDirective = `ACADEMIC LEVEL CALIBRATION (100 LEVEL — FIRST-YEAR UNDERGRADUATE):
+- Assume students are entering the discipline from secondary/high-school foundations.
+- Prioritize conceptual clarity, fundamental laws/definitions, step-by-step introductory derivations, and foundational terminology before intermediate applications.
+- Do NOT jump into graduate-level or 400-level specialized research topics unless explicitly requested in the Admin Outline.`;
+  } else if (normalizedLevel.includes('200')) {
+    levelCalibrationDirective = `ACADEMIC LEVEL CALIBRATION (200 LEVEL — SECOND-YEAR LOWER-DIVISION CORE):
+- Build upon 100-level introductory prerequisites with structured analytical methods, core disciplinary theorems/frameworks, and standard quantitative/qualitative problem sets.`;
+  } else if (normalizedLevel.includes('300')) {
+    levelCalibrationDirective = `ACADEMIC LEVEL CALIBRATION (300 LEVEL — THIRD-YEAR UPPER-DIVISION):
+- Emphasize rigorous theoretical mechanisms, multi-variable/system-level analysis, formal derivations, and specialized domain applications.`;
+  } else if (normalizedLevel.includes('400') || normalizedLevel.includes('500')) {
+    levelCalibrationDirective = `ACADEMIC LEVEL CALIBRATION (${normalizedLevel} LEVEL — SENIOR / ADVANCED CAPSTONE):
+- Deliver advanced theoretical synthesis, complex modeling, edge-case analysis, and professional/research-grade case studies.`;
+  } else {
+    levelCalibrationDirective = `ACADEMIC LEVEL CALIBRATION (${normalizedLevel} LEVEL):
+- Calibrate prerequisite assumptions, theoretical rigor, and topic progression strictly to ${normalizedLevel} Level university standards.`;
+  }
 
   let audienceDirective = '';
   if (normalizedScope === 'GLOBAL' || normalizedScope === 'PUBLIC' || normalizedScope === 'ALL') {
@@ -221,24 +248,37 @@ export function buildCurriculumSkeletonPrompt(
 - Pedagogical Directive: Teach "${domainBrief.primaryDomain}" with full theoretical rigor, discipline-standard formulations, formal proofs, and specialized professional case studies.`;
   }
 
+  const hasAdminOutline = Boolean(outline && outline.trim().length > 0);
+
   return `You are an expert university curriculum committee chair in ${domainBrief.primaryDomain}.
-Design a complete, comprehensive university syllabus skeleton for "${courseName}" ${courseCode ? `(${courseCode})` : ''}.
+Design a complete, comprehensive ${normalizedLevel} Level university syllabus skeleton for "${courseName}" ${courseCode ? `(${courseCode})` : ''}.
 
 AUTHORITATIVE DOMAIN: ${domainBrief.primaryDomain}
 PEDAGOGY TYPE: ${domainBrief.pedagogyType}
+TARGET ACADEMIC LEVEL: ${normalizedLevel} Level (${domainBrief.courseLevelFramework || 'University Standard'})
 GROUNDING REFERENCES: ${domainBrief.canonicalCourseReferences.join('; ')}
 REQUIRED CORE TOPICS: ${domainBrief.coreCourseTopics.join(', ')}
 
+${levelCalibrationDirective}
+
 ${audienceDirective}
+${hasAdminOutline ? `
+[MANDATORY ADMIN-PROVIDED COURSE OUTLINE / SYLLABUS]:
+"""
+${outline!.trim()}
+"""
+STRICT OUTLINE ADHERENCE DIRECTIVE:
+- The Admin has provided an explicit syllabus outline above.
+- You MUST faithfully incorporate EVERY module, unit, and topic from the Admin-Provided Course Outline into the generated modules and lessons.
+- Do NOT omit, replace, or ignore any topic specified in the Admin's outline. Expand each topic into well-structured lessons appropriate for ${normalizedLevel} Level.` : ''}
 
 [CRITICAL CURRICULUM ARCHITECTURE RULES]:
-1. DYNAMIC MODULE COUNT: Generate between ${params.minModules} and ${params.maxModules} full academic modules to provide genuine university-level depth for a ${params.credits}-credit course.
+1. DYNAMIC MODULE COUNT: ${hasAdminOutline ? `Structure the modules to faithfully cover all units in the Admin-Provided Outline (generating at least ${params.minModules} modules, or matching the structural divisions of the Admin Outline).` : `Generate between ${params.minModules} and ${params.maxModules} full academic modules to provide genuine ${normalizedLevel} Level depth for a ${params.credits}-credit course.`}
 2. DOMAIN-AGNOSTIC MODULE 1 ORIENTATION RULE:
-   - Module 1 MUST establish the history, scope, foundational taxonomy, and core theoretical framework of the discipline.
-   - It serves as the foundational orientation for students before progressing into specialized microstructural or advanced thematic units.
+   - Module 1 MUST establish the history, scope, foundational taxonomy, and core theoretical framework of the discipline at ${normalizedLevel} Level${hasAdminOutline ? ', integrating the introductory topics of the Admin Outline' : ''}.
    - Ground Module 1 in the domain's foundational axioms: ${domainBrief.foundationalAxioms.join('; ')}.
 3. PROGRESSIVE TAXONOMY & PREREQUISITES:
-   - Organize modules so foundational mechanisms and prerequisite concepts precede complex applications, derivations, and specialized topics.
+   - Organize modules so foundational mechanisms and prerequisite concepts precede complex applications, derivations, and specialized topics calibrated for ${normalizedLevel} Level.
 4. BLOOM'S TAXONOMY LEARNING OUTCOMES:
    - Formulate 5-8 measurable "learningOutcomes" covering Bloom's taxonomy (Remember, Understand, Apply, Analyze, Evaluate, Create).
    - Map each module to the relevant learning outcome indices.
@@ -247,17 +287,17 @@ ${audienceDirective}
 
 ${feedbackCritique ? `\n[AUDIT FEEDBACK FROM PREVIOUS REVIEW TO REMEDY]:\n${feedbackCritique}\n` : ''}
 
-Level: ${level || 'Undergraduate'}
+Level: ${normalizedLevel} Level
+Semester: ${semester || '1st Semester'}
 Tone: ${tone}
 Depth: ${depth}
 Academic Standard: ${academicStandard}
-${outline ? `Additional Outlines: ${outline}` : ''}
 ${sourceText ? `Source Reference: ${sourceText.substring(0, 3000)}` : ''}
 
 Return strictly a JSON object:
 {
-  "pedagogicalReasoning": "Curriculum architecture rationale grounded in ${domainBrief.canonicalCourseReferences.join(' and ')}",
-  "description": "Comprehensive course overview rooted in ${domainBrief.primaryDomain}",
+  "pedagogicalReasoning": "Curriculum architecture rationale grounded in ${domainBrief.canonicalCourseReferences.join(' and ')} for ${normalizedLevel} Level",
+  "description": "Comprehensive ${normalizedLevel} Level course overview rooted in ${domainBrief.primaryDomain}",
   "pedagogyType": "${domainBrief.pedagogyType}",
   "creditHours": ${params.credits},
   "learningOutcomes": [
@@ -285,40 +325,41 @@ export function buildOutlineCriticPrompt(
   proposedSkeleton: CourseSkeleton,
   options: CurriculumGenerationOptions
 ): string {
-  const { courseName } = options;
+  const { courseName, courseCode, level, outline } = options;
+  const normalizedLevel = (level || '100').trim();
   const moduleSummary = (proposedSkeleton.modules || []).map((m, idx) => 
     `Module ${idx + 1}: "${m.title}" -> Lessons: ${(m.lessonTitles || m.topics || []).join(', ')}`
   ).join('\n');
 
   return `You are a strict University Academic Accreditation Auditor & Subject Matter Critic.
-Evaluate the proposed syllabus for "${courseName}" against the authoritative discipline "${domainBrief.primaryDomain}".
+Evaluate the proposed syllabus for "${courseName}" ${courseCode ? `(${courseCode})` : ''} at Academic Level "${normalizedLevel} Level" against the authoritative discipline "${domainBrief.primaryDomain}".
 
-EXPECTED CANONICAL TOPICS (From Benchmark Syllabi):
-${domainBrief.coreCourseTopics.join('\n- ')}
-
+EXPECTED CANONICAL TOPICS (From Benchmark Syllabi & Domain Brief):
+- ${domainBrief.coreCourseTopics.join('\n- ')}
+${outline && outline.trim() ? `\nMANDATORY ADMIN-PROVIDED SYLLABUS OUTLINE (MUST BE 100% COVERED):\n"""\n${outline.trim()}\n"""\n` : ''}
 PROPOSED SYLLABUS OUTLINE (${proposedSkeleton.modules?.length || 0} Modules):
 ${moduleSummary}
 
 [AUDIT RUBRIC AXES]:
-1. COVERAGE SCORE (0-100): Are the expected core topics of ${domainBrief.primaryDomain} adequately represented in the syllabus?
-2. FOUNDATIONS ORIENTATION SCORE (0-100): Does Module 1 properly establish the history, scope, taxonomy, and core conceptual framework of the discipline?
-3. PREREQUISITE & SEQUENCING SCORE (0-100): Is the pedagogical progression logical? Do foundational concepts precede advanced applications?
-4. WORKLOAD BALANCE & DENSITY (0-100): Does the module count (${proposedSkeleton.modules?.length || 0}) and lesson count provide legitimate university depth without superficial rushing or bloated repetition?
+1. COVERAGE SCORE (0-100): Are all expected core topics of ${domainBrief.primaryDomain} AND 100% of the topics in the Admin-Provided Syllabus Outline (if provided) represented in the proposed syllabus? Any topic from the Admin Outline that is missing MUST be listed in "missingTopics" and reduce "coverageScore".
+2. FOUNDATIONS ORIENTATION SCORE (0-100): Does Module 1 properly establish the history, scope, taxonomy, and core conceptual framework of the discipline for ${normalizedLevel} Level students?
+3. PREREQUISITE & LEVEL SEQUENCING SCORE (0-100): Is the pedagogical progression logical for ${normalizedLevel} Level? Do foundational concepts precede advanced applications without inappropriate level jumps?
+4. WORKLOAD BALANCE & DENSITY (0-100): Does the module count (${proposedSkeleton.modules?.length || 0}) and lesson count provide legitimate ${normalizedLevel} Level university depth without superficial rushing or bloated repetition?
 
 Return strictly a JSON object:
 {
-  "isValid": true/false,
+  "isValid": true,
   "coverageScore": 90,
   "foundationsScore": 95,
   "workloadBalanceScore": 90,
   "sequencingScore": 95,
   "consistencyScore": 95,
   "confidenceState": "verified",
-  "coveredTopics": ["List of core topics covered in the modules"],
-  "missingTopics": ["Core topics omitted, if any"],
-  "sequencingErrors": ["Any prerequisite violations, if any"],
+  "coveredTopics": ["List of core/admin topics covered in the modules"],
+  "missingTopics": ["Any admin outline or core topics omitted, if any"],
+  "sequencingErrors": ["Any prerequisite or academic level calibration violations, if any"],
   "genericFillerDetected": false,
-  "reasoning": "Summary evaluation explaining the scores and verdict"
+  "reasoning": "Summary evaluation explaining the scores, admin outline fidelity, and ${normalizedLevel} Level alignment"
 }`;
 }
 

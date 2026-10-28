@@ -202,5 +202,51 @@ export const CourseService = {
     if (!res.ok) {
       throw new Error(`Failed to archive course ${courseId} via Neon`);
     }
+  },
+
+  async getArchivedCourses(): Promise<Course[]> {
+    const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+    const res = await fetch('/api/admin/courses/archived', {
+      headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+    });
+    if (!res.ok) {
+      throw new Error('Failed to fetch archived courses via Neon');
+    }
+    const data = await res.json();
+    return Array.isArray(data.courses) ? data.courses : [];
+  },
+
+  async restoreCourse(courseId: string): Promise<void> {
+    const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+    const res = await fetch(`/api/admin/courses/${encodeURIComponent(courseId)}/restore`, {
+      method: 'POST',
+      headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to restore course ${courseId} via Neon`);
+    }
+  },
+
+  async publishCourse(courseId: string): Promise<void> {
+    const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+    const res = await fetch(`/api/admin/courses/${encodeURIComponent(courseId)}/publish`, {
+      method: 'POST',
+      headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to publish course ${courseId} via Neon`);
+    }
+  },
+
+  async permanentDeleteCourse(courseId: string): Promise<void> {
+    const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+    const res = await fetch(`/api/admin/courses/${encodeURIComponent(courseId)}/permanent`, {
+      method: 'DELETE',
+      headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to permanently delete course ${courseId} via Neon`);
+    }
   }
 };
+

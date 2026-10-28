@@ -46,7 +46,7 @@ import toast from 'react-hot-toast';
 import PricingModal from './PricingModal';
 import { safeFetchJson } from '../utils/safeFetch';
 
-export interface PastPaperQuestion {
+export interface CBTExamQuestion {
   id: string;
   question: string;
   options?: string[];
@@ -57,15 +57,18 @@ export interface PastPaperQuestion {
   topic?: string;
 }
 
-export interface PastPaper {
+export interface CBTExamAssessment {
   id: string;
   courseCode: CourseId;
   title: string;
   year: string;
   semester: Semester;
   department?: string;
-  questions: PastPaperQuestion[];
+  questions: CBTExamQuestion[];
 }
+
+export type PastPaperQuestion = CBTExamQuestion;
+export type PastPaper = CBTExamAssessment;
 
 export interface SkillExerciseOption {
   text: string;
@@ -82,12 +85,22 @@ export interface SkillMatchPair {
 
 export interface SkillExercise {
   id: string;
-  type: 'concept_carousel' | 'match_pairs' | 'smart_mcq' | 'fill_blanks' | 'explain_concept' | 'highlight_mistake';
+  type:
+    | 'concept_carousel'
+    | 'concept_flashcard'
+    | 'match_pairs'
+    | 'smart_mcq'
+    | 'fill_blanks'
+    | 'explain_concept'
+    | 'highlight_mistake';
   prompt: string;
   instruction?: string;
   passage?: string;
   mistakeTarget?: string;
   correctionText?: string;
+  frontTitle?: string;
+  frontFormulaOrVisual?: string;
+  backAnswer?: string;
   cards?: string[];
   pairs?: SkillMatchPair[];
   question?: string;
@@ -101,49 +114,114 @@ export interface SkillExercise {
   sampleAnswer?: string;
   learnMore?: string;
   learnConcept?: string;
+  difficultyTier?: number;
+  isFinalChallenge?: boolean;
 }
 
-interface HighlightToken {
-  id: string;
+interface HighlightWordUnit {
+  index: number;
   text: string;
-  isMistakeTarget: boolean;
+  cleanWord: string;
 }
 
-function buildHighlightTokens(passage: string, mistakeTarget?: string): HighlightToken[] {
-  if (!passage) return [];
-  const cleanTarget = (mistakeTarget || '').trim();
-  const tokens: HighlightToken[] = [];
+interface AnalyzedHighlightPassage {
+  words: HighlightWordUnit[];
+  targetStartIdx: number;
+  targetEndIdx: number;
+  targetWordCount: number;
+  dynamicInstruction: string;
+}
 
-  if (cleanTarget && passage.toLowerCase().includes(cleanTarget.toLowerCase())) {
-    const targetLower = cleanTarget.toLowerCase();
-    const passageLower = passage.toLowerCase();
-    const targetIdx = passageLower.indexOf(targetLower);
+function normalizeWordForCompare(str: string): string {
+  return (str || '')
+    .toLowerCase()
+    .replace(/^[.,!?;:"'()[\]{}]+|[.,!?;:"'()[\]{}]+$/g, '')
+    .trim();
+}
 
-    const beforeStr = passage.substring(0, targetIdx);
-    const targetStr = passage.substring(targetIdx, targetIdx + cleanTarget.length);
-    const afterStr = passage.substring(targetIdx + cleanTarget.length);
-
-    const beforeSub = beforeStr.match(/(\$[^\$]+\$|\S+)/g) || [];
-    beforeSub.forEach((st: string, idx: number) => {
-      tokens.push({ id: `b_${idx}`, text: st, isMistakeTarget: false });
-    });
-
-    tokens.push({ id: `target_0`, text: targetStr, isMistakeTarget: true });
-
-    const afterSub = afterStr.match(/(\$[^\$]+\$|\S+)/g) || [];
-    afterSub.forEach((st: string, idx: number) => {
-      tokens.push({ id: `a_${idx}`, text: st, isMistakeTarget: false });
-    });
-  } else {
-    const raw = passage.match(/(\$[^\$]+\$|\S+)/g) || [];
-    raw.forEach((st: string, idx: number) => {
-      const isTarget = cleanTarget
-        ? st.toLowerCase().replace(/[.,!?;:]/g, '') === cleanTarget.toLowerCase().replace(/[.,!?;:]/g, '')
-        : false;
-      tokens.push({ id: `t_${idx}`, text: st, isMistakeTarget: isTarget });
-    });
+/**
+ * Splits a passage into individual selectable word units (keeping inline $...$ math expressions intact)
+ * WITHOUT pre-grouping multi-word mistakes into a single button, so students genuinely select
+ * 1-word or N-word phrases via drag or tap just like the reference video.
+ */
+function analyzeHighlightPassage(
+  passage: string,
+  mistakeTarget?: string,
+  explicitInstruction?: string
+): AnalyzedHighlightPassage {
+  if (!passage) {
+    return {
+      words: [],
+      targetStartIdx: -1,
+      targetEndIdx: -1,
+      targetWordCount: 1,
+      dynamicInstruction: "You're looking for one word that is a mistake."
+    };
   }
-  return tokens;
+
+  const rawTokens: string[] = passage.match(/(\$[^\$]+\$|\S+)/g) || [];
+  const words: HighlightWordUnit[] = rawTokens.map((t: string, idx: number) => ({
+    index: idx,
+    text: t,
+    cleanWord: normalizeWordForCompare(t)
+  }));
+
+  const targetTokens: string[] = (mistakeTarget || '')
+    .trim()
+    .match(/(\$[^\$]+\$|\S+)/g) || [];
+  const cleanTargetWords = targetTokens.map((t: string) => normalizeWordForCompare(t)).filter(Boolean);
+
+  let targetStartIdx = -1;
+  let targetEndIdx = -1;
+
+  if (cleanTargetWords.length > 0 && words.length >= cleanTargetWords.length) {
+    for (let i = 0; i <= words.length - cleanTargetWords.length; i++) {
+      let allMatch = true;
+      for (let j = 0; j < cleanTargetWords.length; j++) {
+        if (words[i + j].cleanWord !== cleanTargetWords[j]) {
+          allMatch = false;
+          break;
+        }
+      }
+      if (allMatch) {
+        targetStartIdx = i;
+        targetEndIdx = i + cleanTargetWords.length - 1;
+        break;
+      }
+    }
+  }
+
+  // Fallback substring match if punctuation/math attached
+  if (targetStartIdx === -1 && cleanTargetWords.length > 0) {
+    const firstTarget = cleanTargetWords[0];
+    const foundIdx = words.findIndex(
+      (w) => w.cleanWord === firstTarget || w.cleanWord.includes(firstTarget)
+    );
+    if (foundIdx !== -1) {
+      targetStartIdx = foundIdx;
+      targetEndIdx = Math.min(words.length - 1, foundIdx + cleanTargetWords.length - 1);
+    }
+  }
+
+  const targetWordCount =
+    targetStartIdx !== -1 && targetEndIdx >= targetStartIdx
+      ? targetEndIdx - targetStartIdx + 1
+      : Math.max(1, cleanTargetWords.length || 1);
+
+  const dynamicInstruction =
+    targetWordCount === 1
+      ? "You're looking for one word that is a mistake."
+      : `You're looking for a ${targetWordCount}-word phrase that is a mistake.`;
+
+  return {
+    words,
+    targetStartIdx,
+    targetEndIdx,
+    targetWordCount,
+    dynamicInstruction: explicitInstruction && explicitInstruction.includes(String(targetWordCount))
+      ? explicitInstruction
+      : dynamicInstruction
+  };
 }
 
 export interface SkillSessionPayload {
@@ -152,6 +230,7 @@ export interface SkillSessionPayload {
   skillId: string;
   skillTitle: string;
   learnSummary: string;
+  recommendedMasteryTarget?: number;
   exercises: SkillExercise[];
 }
 
@@ -173,6 +252,16 @@ const MarkdownInline: React.FC<{ content: string; className?: string }> = ({ con
       {content || ''}
     </ReactMarkdown>
   </div>
+);
+
+const MarkdownWordSpan: React.FC<{ content: string }> = ({ content }) => (
+  <ReactMarkdown
+    components={{ p: ({ children }) => <>{children}</> }}
+    remarkPlugins={[remarkMath]}
+    rehypePlugins={[rehypeKatex]}
+  >
+    {content || ''}
+  </ReactMarkdown>
 );
 
 const formatMathToken = (token: string): string => {
@@ -265,8 +354,9 @@ export default function SkillPracticeHub({
   const feedContainerRef = useRef<HTMLDivElement | null>(null);
   const hasAwardedSkillXPRef = useRef<boolean>(false);
 
-  // Concept Carousel (Format A) state per exercise
+  // Concept Carousel (Format A) & Flip Flashcard (Format A2) state per exercise
   const [carouselIndexMap, setCarouselIndexMap] = useState<Record<number, number>>({});
+  const [flippedFlashcardMap, setFlippedFlashcardMap] = useState<Record<number, boolean>>({});
 
   // Match the Pairs (Format B) state per exercise
   const [selectedLeftPairMap, setSelectedLeftPairMap] = useState<Record<number, string | null>>({});
@@ -289,48 +379,20 @@ export default function SkillPracticeHub({
   const [isEvaluatingMap, setIsEvaluatingMap] = useState<Record<number, boolean>>({});
   const recognitionRef = useRef<any>(null);
 
-  // Highlight the Mistake (Format F) state per exercise
-  const [highlightSelectionMap, setHighlightSelectionMap] = useState<Record<number, string | null>>({});
+  // Highlight the Mistake (Format F) — Contiguous Word Range Selection & Drag State
+  const [highlightRangeMap, setHighlightRangeMap] = useState<
+    Record<number, { start: number; end: number } | null>
+  >({});
+  const [highlightStatusMap, setHighlightStatusMap] = useState<
+    Record<number, 'selecting' | 'correct' | 'wrong'>
+  >({});
   const [highlightRevealedMap, setHighlightRevealedMap] = useState<Record<number, boolean>>({});
-
-  const handleHighlightTokenTap = (
-    exIdx: number,
-    token: HighlightToken,
-    exercise: SkillExercise
-  ) => {
-    setHighlightSelectionMap((prev) => ({ ...prev, [exIdx]: token.id }));
-
-    if (token.isMistakeTarget) {
-      setCompletedExerciseMap((prev) => ({ ...prev, [exIdx]: true }));
-      setFeedbackSheet({
-        type: 'correct',
-        title: 'Correct!',
-        message: exercise.explanation || `"${token.text}" is the mistake! ${exercise.correctionText ? `It should be "${exercise.correctionText}".` : ''}`,
-        canAdvance: true,
-        targetExIndex: exIdx
-      });
-    } else {
-      setFeedbackSheet({
-        type: 'try_again',
-        title: 'Not quite',
-        message: `"${token.text}" is logically sound in this context. Look closely for a phrase or unit that breaks academic consistency!`,
-        canAdvance: false,
-        targetExIndex: exIdx
-      });
-    }
-  };
-
-  const handleRevealHighlightMistake = (exIdx: number, exercise: SkillExercise) => {
-    setHighlightRevealedMap((prev) => ({ ...prev, [exIdx]: true }));
-    setCompletedExerciseMap((prev) => ({ ...prev, [exIdx]: true }));
-    setFeedbackSheet({
-      type: 'correct',
-      title: 'Mistake Revealed 🔍',
-      message: `The mistake is "${exercise.mistakeTarget || 'the flagged phrase'}". ${exercise.correctionText ? `It should be "${exercise.correctionText}".` : ''} ${exercise.explanation || ''}`,
-      canAdvance: true,
-      targetExIndex: exIdx
-    });
-  };
+  const dragSelectionRef = useRef<{
+    exIdx: number;
+    anchorIdx: number;
+    currentIdx: number;
+    isDragging: boolean;
+  } | null>(null);
 
   // Bottom Sheets & Modals inside Skill Session
   const [feedbackSheet, setFeedbackSheet] = useState<{
@@ -351,7 +413,194 @@ export default function SkillPracticeHub({
   const [skippedExerciseMap, setSkippedExerciseMap] = useState<Record<number, boolean>>({});
   const [isFetchingNextExercise, setIsFetchingNextExercise] = useState<boolean>(false);
   const [speakingText, setSpeakingText] = useState<string | null>(null);
-  const REQUIRED_MASTERY_COUNT = 4;
+
+  // Dynamic Mastery Target (Never hardcoded to 4; adapts to subtopic complexity & live student mistakes)
+  const [dynamicMasteryTarget, setDynamicMasteryTarget] = useState<number>(6);
+
+  // Helper to evaluate a selected word range [start, end] in "Highlight the mistake"
+  const evaluateHighlightRange = useCallback(
+    (
+      exIdx: number,
+      startIdx: number,
+      endIdx: number,
+      analyzed: AnalyzedHighlightPassage,
+      exercise: SkillExercise
+    ) => {
+      const normStart = Math.min(startIdx, endIdx);
+      const normEnd = Math.max(startIdx, endIdx);
+      const selectedSpanLength = normEnd - normStart + 1;
+
+      setHighlightRangeMap((prev) => ({ ...prev, [exIdx]: { start: normStart, end: normEnd } }));
+
+      // Check if the selected word range matches the mistake target
+      const selectedCleanPhrase = analyzed.words
+        .slice(normStart, normEnd + 1)
+        .map((w) => w.cleanWord)
+        .join(' ');
+      const targetCleanPhrase = (exercise.mistakeTarget || '')
+        .trim()
+        .split(/\s+/)
+        .map((w) => normalizeWordForCompare(w))
+        .filter(Boolean)
+        .join(' ');
+
+      const isExactIndexMatch =
+        analyzed.targetStartIdx !== -1 &&
+        normStart === analyzed.targetStartIdx &&
+        normEnd === analyzed.targetEndIdx;
+      const isCleanPhraseMatch =
+        Boolean(targetCleanPhrase) && selectedCleanPhrase === targetCleanPhrase;
+
+      if (isExactIndexMatch || isCleanPhraseMatch) {
+        setHighlightStatusMap((prev) => ({ ...prev, [exIdx]: 'correct' }));
+        setCompletedExerciseMap((prev) => ({ ...prev, [exIdx]: true }));
+        setFeedbackSheet({
+          type: 'correct',
+          title: 'Correct!',
+          message:
+            exercise.explanation ||
+            (exercise.correctionText
+              ? `The correct term here is "${exercise.correctionText}".`
+              : ''),
+          canAdvance: true,
+          targetExIndex: exIdx + 1
+        });
+      } else if (selectedSpanLength >= analyzed.targetWordCount) {
+        // Student completed selecting the required number of words (1 word or N-word phrase), but it's not the mistake
+        setHighlightStatusMap((prev) => ({ ...prev, [exIdx]: 'wrong' }));
+        // Dynamically increase mastery target by 1 on mistake (up to +3 above initial target) so weak areas are reinforced
+        setDynamicMasteryTarget((prev) =>
+          Math.min((activeSkillSession?.recommendedMasteryTarget || 6) + 3, prev + 1)
+        );
+        setFeedbackSheet({
+          type: 'try_again',
+          title: 'Not quite',
+          message: '',
+          canAdvance: false,
+          targetExIndex: exIdx
+        });
+      } else {
+        // Still selecting (e.g., tapped 1st word of a 2-word phrase) — keep light blue highlight without popping sheet yet
+        setHighlightStatusMap((prev) => ({ ...prev, [exIdx]: 'selecting' }));
+      }
+    },
+    [activeSkillSession?.recommendedMasteryTarget]
+  );
+
+  const handleWordPointerDown = (
+    exIdx: number,
+    wordIdx: number,
+    analyzed: AnalyzedHighlightPassage
+  ) => {
+    if (highlightStatusMap[exIdx] === 'correct' || highlightRevealedMap[exIdx]) return;
+
+    const existingRange = highlightRangeMap[exIdx];
+    const existingStatus = highlightStatusMap[exIdx];
+
+    // If looking for a multi-word phrase and the user already tapped 1 word in 'selecting' state,
+    // tapping an adjacent word expands the selection to [start, end]
+    if (
+      analyzed.targetWordCount > 1 &&
+      existingStatus === 'selecting' &&
+      existingRange &&
+      existingRange.start === existingRange.end &&
+      Math.abs(wordIdx - existingRange.start) > 0 &&
+      Math.abs(wordIdx - existingRange.start) < analyzed.targetWordCount
+    ) {
+      const newStart = Math.min(existingRange.start, wordIdx);
+      const newEnd = Math.max(existingRange.start, wordIdx);
+      dragSelectionRef.current = {
+        exIdx,
+        anchorIdx: newStart,
+        currentIdx: newEnd,
+        isDragging: true
+      };
+      setHighlightRangeMap((prev) => ({ ...prev, [exIdx]: { start: newStart, end: newEnd } }));
+      setHighlightStatusMap((prev) => ({ ...prev, [exIdx]: 'selecting' }));
+      return;
+    }
+
+    dragSelectionRef.current = {
+      exIdx,
+      anchorIdx: wordIdx,
+      currentIdx: wordIdx,
+      isDragging: true
+    };
+    setHighlightRangeMap((prev) => ({ ...prev, [exIdx]: { start: wordIdx, end: wordIdx } }));
+    setHighlightStatusMap((prev) => ({ ...prev, [exIdx]: 'selecting' }));
+  };
+
+  const handleWordPointerEnter = (exIdx: number, wordIdx: number) => {
+    const drag = dragSelectionRef.current;
+    if (!drag || !drag.isDragging || drag.exIdx !== exIdx) return;
+    drag.currentIdx = wordIdx;
+    const normStart = Math.min(drag.anchorIdx, wordIdx);
+    const normEnd = Math.max(drag.anchorIdx, wordIdx);
+    setHighlightRangeMap((prev) => ({ ...prev, [exIdx]: { start: normStart, end: normEnd } }));
+    setHighlightStatusMap((prev) => ({ ...prev, [exIdx]: 'selecting' }));
+  };
+
+  const handlePassageTouchMove = (exIdx: number, e: React.TouchEvent<HTMLDivElement>) => {
+    const drag = dragSelectionRef.current;
+    if (!drag || !drag.isDragging || drag.exIdx !== exIdx) return;
+    const touch = e.touches[0];
+    if (!touch) return;
+    const el = document.elementFromPoint(touch.clientX, touch.clientY);
+    const wordSpan = el?.closest('[data-highlight-word-idx]') as HTMLElement | null;
+    if (wordSpan) {
+      const idxAttr = Number(wordSpan.getAttribute('data-highlight-word-idx'));
+      if (Number.isFinite(idxAttr) && idxAttr !== drag.currentIdx) {
+        drag.currentIdx = idxAttr;
+        const normStart = Math.min(drag.anchorIdx, idxAttr);
+        const normEnd = Math.max(drag.anchorIdx, idxAttr);
+        setHighlightRangeMap((prev) => ({ ...prev, [exIdx]: { start: normStart, end: normEnd } }));
+        setHighlightStatusMap((prev) => ({ ...prev, [exIdx]: 'selecting' }));
+      }
+    }
+  };
+
+  const handlePassagePointerUp = (
+    exIdx: number,
+    analyzed: AnalyzedHighlightPassage,
+    exercise: SkillExercise
+  ) => {
+    const drag = dragSelectionRef.current;
+    if (!drag || !drag.isDragging || drag.exIdx !== exIdx) return;
+    drag.isDragging = false;
+    evaluateHighlightRange(exIdx, drag.anchorIdx, drag.currentIdx, analyzed, exercise);
+  };
+
+  const handleRevealHighlightMistake = (exIdx: number, exercise: SkillExercise) => {
+    const analyzed = analyzeHighlightPassage(
+      exercise.passage || '',
+      exercise.mistakeTarget,
+      exercise.instruction
+    );
+    if (analyzed.targetStartIdx !== -1) {
+      setHighlightRangeMap((prev) => ({
+        ...prev,
+        [exIdx]: { start: analyzed.targetStartIdx, end: analyzed.targetEndIdx }
+      }));
+    }
+    setHighlightStatusMap((prev) => ({ ...prev, [exIdx]: 'correct' }));
+    setHighlightRevealedMap((prev) => ({ ...prev, [exIdx]: true }));
+    setCompletedExerciseMap((prev) => ({ ...prev, [exIdx]: true }));
+    // Using Reveal adds +1 to dynamicMasteryTarget so the student completes an extra unassisted exercise
+    setDynamicMasteryTarget((prev) =>
+      Math.min((activeSkillSession?.recommendedMasteryTarget || 6) + 3, prev + 1)
+    );
+    setFeedbackSheet({
+      type: 'correct',
+      title: 'Correct!',
+      message:
+        exercise.explanation ||
+        `The mistake is "${exercise.mistakeTarget || 'the highlighted phrase'}". ${
+          exercise.correctionText ? `It should be "${exercise.correctionText}".` : ''
+        }`,
+      canAdvance: true,
+      targetExIndex: exIdx + 1
+    });
+  };
 
   useEffect(() => {
     return () => {
@@ -386,10 +635,10 @@ export default function SkillPracticeHub({
   };
 
   // --- CBT Mock Simulator State ---
-  const [allPapers, setAllPapers] = useState<PastPaper[]>([]);
+  const [allPapers, setAllPapers] = useState<CBTExamAssessment[]>([]);
   const [isLoadingPapers, setIsLoadingPapers] = useState(true);
-  const [selectedPaper, setSelectedPaper] = useState<PastPaper | null>(null);
-  const [activeQuestions, setActiveQuestions] = useState<PastPaperQuestion[]>([]);
+  const [selectedPaper, setSelectedPaper] = useState<CBTExamAssessment | null>(null);
+  const [activeQuestions, setActiveQuestions] = useState<CBTExamQuestion[]>([]);
   const [sessionMode, setSessionMode] = useState<ExamSessionMode>('cbt');
   const [secondsPerQuestion, setSecondsPerQuestion] = useState<number>(60);
   const [timeLeftSeconds, setTimeLeftSeconds] = useState<number>(0);
@@ -409,7 +658,7 @@ export default function SkillPracticeHub({
   const [srsScheduleStatus, setSrsScheduleStatus] = useState<'idle' | 'scheduling' | 'scheduled' | 'error'>('idle');
   const [scheduledSrsCount, setScheduledSrsCount] = useState<number>(0);
   const [isCompilingPaper, setIsCompilingPaper] = useState<boolean>(false);
-  const [compileQuestionCount, setCompileQuestionCount] = useState<number>(10);
+  const [compileQuestionCount, setCompileQuestionCount] = useState<'dynamic' | number>('dynamic');
   const [compileDifficulty, setCompileDifficulty] = useState<'standard' | 'high'>('standard');
 
   const hasFinalizedRef = useRef<boolean>(false);
@@ -468,16 +717,17 @@ export default function SkillPracticeHub({
     };
   }, [syllabus, getSkillLevel]);
 
-  // Fetch CBT Mock Papers from Neon PostgreSQL
+  // Fetch CBT Mock Assessments from Neon PostgreSQL
   const fetchPapers = useCallback(async () => {
     setIsLoadingPapers(true);
     try {
-      const result = await safeFetchJson<{ papers?: PastPaper[] }>('/api/past-papers');
+      const result = await safeFetchJson<{ exams?: CBTExamAssessment[]; papers?: CBTExamAssessment[] }>('/api/cbt/exams');
       if (result.ok && result.data) {
-        setAllPapers(Array.isArray(result.data.papers) ? result.data.papers : []);
+        const list = result.data.exams || result.data.papers;
+        setAllPapers(Array.isArray(list) ? list : []);
       }
     } catch (error) {
-      console.warn('Could not fetch CBT mock papers:', error);
+      console.warn('Could not fetch CBT mock assessments:', error);
     } finally {
       setIsLoadingPapers(false);
     }
@@ -486,6 +736,57 @@ export default function SkillPracticeHub({
   useEffect(() => {
     fetchPapers();
   }, [fetchPapers]);
+
+  // Persistent Seen-Exercise Tracker (prevents repeating questions across "Practice Again" sessions)
+  const getSeenExercisePrompts = useCallback(
+    (skillId: string): string[] => {
+      try {
+        const raw = localStorage.getItem(`uniace_seen_exercises_${activeCourseId}_${skillId}`);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    },
+    [activeCourseId]
+  );
+
+  const recordSeenExercises = useCallback(
+    (skillId: string, exercises: SkillExercise[]) => {
+      try {
+        const existing = getSeenExercisePrompts(skillId);
+        const nextSet = new Set<string>(existing);
+        exercises.forEach((ex) => {
+          const sig = [
+            ex.question || '',
+            ex.passage || '',
+            ex.sentenceWithBlanks || '',
+            ex.frontTitle || '',
+            ...(ex.cards || []).slice(0, 2),
+            ...(ex.pairs || []).map((p) => `${p.left}:${p.right}`)
+          ]
+            .filter(Boolean)
+            .join(' | ')
+            .trim();
+          if (sig.length > 5) nextSet.add(sig.slice(0, 220));
+          if (ex.question && ex.question.trim().length > 5) nextSet.add(ex.question.trim());
+          if (ex.passage && ex.passage.trim().length > 5) nextSet.add(ex.passage.trim());
+          if (ex.sentenceWithBlanks && ex.sentenceWithBlanks.trim().length > 5) {
+            nextSet.add(ex.sentenceWithBlanks.trim());
+          }
+        });
+        const merged = Array.from(nextSet).slice(-80);
+        localStorage.setItem(
+          `uniace_seen_exercises_${activeCourseId}_${skillId}`,
+          JSON.stringify(merged)
+        );
+      } catch {
+        // Ignore storage quota errors
+      }
+    },
+    [activeCourseId, getSeenExercisePrompts]
+  );
 
   const availableCourses = useMemo(
     () =>
@@ -543,8 +844,14 @@ export default function SkillPracticeHub({
       setSessionAttempts((prev) => ({ ...prev, [skillId]: currentAttempt }));
     }
 
+    const previouslySeenPrompts = getSeenExercisePrompts(skillId);
+
     setIsGeneratingSkill(skillId);
-    const toastId = toast.loading(`Loading interactive skill session: ${skillTitle}...`);
+    const toastId = toast.loading(
+      currentAttempt > 1
+        ? `Generating fresh unseen exercises for ${skillTitle}...`
+        : `Loading interactive skill session: ${skillTitle}...`
+    );
 
     try {
       const token = await user.getIdToken();
@@ -565,7 +872,9 @@ export default function SkillPracticeHub({
             skillTitle,
             skillContent,
             rollingMastery,
-            sessionAttempt: currentAttempt
+            sessionAttempt: currentAttempt,
+            avoidPrompts: previouslySeenPrompts,
+            forceFresh: currentAttempt > 1 || previouslySeenPrompts.length > 0
           })
         }
       );
@@ -575,6 +884,14 @@ export default function SkillPracticeHub({
       }
 
       const session = result.data.session;
+      recordSeenExercises(skillId, session.exercises || []);
+
+      const computedTarget =
+        typeof session.recommendedMasteryTarget === 'number' && session.recommendedMasteryTarget >= 4
+          ? session.recommendedMasteryTarget
+          : Math.max(5, (session.exercises || []).length);
+      setDynamicMasteryTarget(computedTarget);
+
       const initShuffledRight: Record<number, SkillMatchPair[]> = {};
       const initFilledBlanks: Record<number, (string | null)[]> = {};
       session.exercises.forEach((ex, idx) => {
@@ -599,6 +916,10 @@ export default function SkillPracticeHub({
       setBlanksCheckedMap({});
       setExplanationInputMap({});
       setIsEvaluatingMap({});
+      setHighlightRangeMap({});
+      setHighlightStatusMap({});
+      setHighlightRevealedMap({});
+      setFlippedFlashcardMap({});
       hasAwardedSkillXPRef.current = false;
       setSkillSessionCompleted(false);
 
@@ -643,9 +964,20 @@ export default function SkillPracticeHub({
       const currentLvl = getSkillLevel(activeSkillSession.skillId, activeSkillSession.skillTitle);
       const rollingMastery = currentLvl >= 3 ? 90 : currentLvl === 2 ? 75 : 50;
 
-      const avoidList = (activeSkillSession.exercises || [])
-        .map((e) => e.prompt || e.question || '')
+      const currentSessionPrompts = (activeSkillSession.exercises || [])
+        .flatMap((e) => [
+          e.question || '',
+          e.passage || '',
+          e.sentenceWithBlanks || '',
+          e.frontTitle || '',
+          e.prompt || ''
+        ])
         .filter(Boolean);
+      const historicalSeen = getSeenExercisePrompts(activeSkillSession.skillId);
+      const avoidList = Array.from(new Set([...historicalSeen, ...currentSessionPrompts])).slice(-60);
+
+      const verifiedCount = Object.values(completedExerciseMap).filter(Boolean).length;
+      const isFinalChallenge = verifiedCount >= dynamicMasteryTarget - 1;
 
       const res = await safeFetchJson<{ success: boolean; exercise?: SkillExercise; error?: string }>(
         '/api/skill-session/next-exercise',
@@ -663,13 +995,16 @@ export default function SkillPracticeHub({
             skillTitle: activeSkillSession.skillTitle,
             skillContent: activeSkillSession.learnSummary,
             rollingMastery,
-            avoidPrompts: avoidList
+            avoidPrompts: avoidList,
+            isFinalChallenge
           })
         }
       );
 
       if (res.ok && res.data?.exercise) {
         const newEx = res.data.exercise;
+        recordSeenExercises(activeSkillSession.skillId, [newEx]);
+
         setActiveSkillSession((prev) => {
           if (!prev) return null;
           const nextIndex = prev.exercises.length;
@@ -700,7 +1035,18 @@ export default function SkillPracticeHub({
     } finally {
       setIsFetchingNextExercise(false);
     }
-  }, [activeSkillSession, isFetchingNextExercise, user, getSkillLevel, activeCourseId, activeCourseObj]);
+  }, [
+    activeSkillSession,
+    isFetchingNextExercise,
+    user,
+    getSkillLevel,
+    activeCourseId,
+    activeCourseObj,
+    getSeenExercisePrompts,
+    recordSeenExercises,
+    completedExerciseMap,
+    dynamicMasteryTarget
+  ]);
 
   // Mark an exercise as completed with verified correctness
   const markExerciseCompleted = useCallback((exIdx: number) => {
@@ -716,7 +1062,7 @@ export default function SkillPracticeHub({
     setFeedbackSheet(null);
 
     const verifiedCount = Object.values(completedExerciseMap).filter(Boolean).length;
-    if (target >= activeSkillSession.exercises.length && verifiedCount < REQUIRED_MASTERY_COUNT) {
+    if (target >= activeSkillSession.exercises.length && verifiedCount < dynamicMasteryTarget) {
       fetchAndAppendNextExercise();
     }
     scrollToExercise(target);
@@ -725,7 +1071,7 @@ export default function SkillPracticeHub({
     feedbackSheet,
     currentExIndex,
     completedExerciseMap,
-    REQUIRED_MASTERY_COUNT,
+    dynamicMasteryTarget,
     fetchAndAppendNextExercise,
     scrollToExercise
   ]);
@@ -748,7 +1094,7 @@ export default function SkillPracticeHub({
       // Pre-fetch next dynamic exercise from lesson content when approaching the end
       const total = activeSkillSession.exercises.length;
       const verifiedCount = Object.values(completedExerciseMap).filter(Boolean).length;
-      if (index >= total - 1 && verifiedCount < REQUIRED_MASTERY_COUNT && !isFetchingNextExercise) {
+      if (index >= total - 1 && verifiedCount < dynamicMasteryTarget && !isFetchingNextExercise) {
         fetchAndAppendNextExercise();
       }
     }
@@ -756,7 +1102,7 @@ export default function SkillPracticeHub({
     currentExIndex,
     activeSkillSession,
     completedExerciseMap,
-    REQUIRED_MASTERY_COUNT,
+    dynamicMasteryTarget,
     isFetchingNextExercise,
     fetchAndAppendNextExercise
   ]);
@@ -816,12 +1162,12 @@ export default function SkillPracticeHub({
     const verifiedCount = Object.values(completedExerciseMap).filter(Boolean).length;
     if (
       activeSkillSession &&
-      verifiedCount >= REQUIRED_MASTERY_COUNT &&
+      verifiedCount >= dynamicMasteryTarget &&
       currentExIndex >= activeSkillSession.exercises.length
     ) {
       handleCompleteSession();
     }
-  }, [activeSkillSession, currentExIndex, completedExerciseMap, REQUIRED_MASTERY_COUNT, handleCompleteSession]);
+  }, [activeSkillSession, currentExIndex, completedExerciseMap, dynamicMasteryTarget, handleCompleteSession]);
 
   // Next subtopic in course sequence
   const nextSubTopic = useMemo(() => {
@@ -863,7 +1209,11 @@ export default function SkillPracticeHub({
           explanation: cardsSummary
         }
       ]);
-      toast('Added concept to your Spaced Repetition review deck!', { icon: '🧠' });
+      // Dynamically extend required mastery count when student requests extra practice
+      setDynamicMasteryTarget((prev) =>
+        Math.min((activeSkillSession.recommendedMasteryTarget || 6) + 3, prev + 1)
+      );
+      toast('Added concept to your Spaced Repetition review deck & queued extra practice!', { icon: '🧠' });
     } else {
       markExerciseCompleted(exIdx);
     }
@@ -872,6 +1222,41 @@ export default function SkillPracticeHub({
     }
     scrollToExercise(exIdx + 1);
   };
+
+  // Format 1B: "Check your knowledge" Tap-to-Flip Flashcard decision (Video 00:12)
+  const handleFlashcardDecision = (needsPractice: boolean, exIdx: number, exercise: SkillExercise) => {
+    if (needsPractice && activeSkillSession) {
+      setSessionMistakes((prev) => [
+        ...prev,
+        {
+          topic: activeSkillSession.skillTitle,
+          question: exercise.question || exercise.frontTitle || activeSkillSession.skillTitle,
+          correctAnswer: exercise.backAnswer || '',
+          explanation: exercise.learnMore || exercise.backAnswer || ''
+        }
+      ]);
+      setDynamicMasteryTarget((prev) =>
+        Math.min((activeSkillSession.recommendedMasteryTarget || 6) + 3, prev + 1)
+      );
+      toast('Scheduled for reinforcement practice!', { icon: '🧠' });
+    } else {
+      markExerciseCompleted(exIdx);
+    }
+    if (exIdx >= (activeSkillSession?.exercises.length || 1) - 1) {
+      fetchAndAppendNextExercise();
+    }
+    scrollToExercise(exIdx + 1);
+  };
+
+  // Distinct vibrant color palette for matched pairs (Matches Screenshot: Indigo, Rose Pink, Sky Blue, Leaf Green + dynamic extras)
+  const MATCH_PAIR_COLOR_CLASSES = [
+    'bg-[#4E46F5] dark:bg-[#4E46F5] border-[#4E46F5] text-white shadow-xs',
+    'bg-[#FF80AB] dark:bg-[#FF80AB] border-[#FF80AB] text-white shadow-xs',
+    'bg-[#63B4FF] dark:bg-[#63B4FF] border-[#63B4FF] text-white shadow-xs',
+    'bg-[#68A828] dark:bg-[#68A828] border-[#68A828] text-white shadow-xs',
+    'bg-[#F59E0B] dark:bg-[#F59E0B] border-[#F59E0B] text-white shadow-xs',
+    'bg-[#8B5CF6] dark:bg-[#8B5CF6] border-[#8B5CF6] text-white shadow-xs'
+  ];
 
   // Format B: Match the Pairs handlers
   const handleSelectLeftPair = (exIdx: number, pairId: string) => {
@@ -894,12 +1279,27 @@ export default function SkillPracticeHub({
 
       if (nextMatched.length === exercise.pairs.length) {
         markExerciseCompleted(exIdx);
+
+        // Build complete explanation covering all matched pairs dynamically
+        const combinedPairExplanations = exercise.pairs
+          .map((p) => {
+            if (p.explanation && p.explanation.trim().length > 0) {
+              const trimmed = p.explanation.trim();
+              return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+            }
+            return `${p.left} corresponds to ${p.right}.`;
+          })
+          .join(' ');
+
+        const fullSummaryMessage =
+          exercise.explanation && exercise.explanation.trim().length > 15
+            ? exercise.explanation.trim()
+            : combinedPairExplanations;
+
         setFeedbackSheet({
           type: 'correct',
           title: 'Correct!',
-          message:
-            rightPair.explanation ||
-            'You matched every notation and concept with its exact academic interpretation.',
+          message: fullSummaryMessage,
           canAdvance: true,
           targetExIndex: exIdx + 1
         });
@@ -910,10 +1310,13 @@ export default function SkillPracticeHub({
     } else {
       setWrongPairFlashMap((prev) => ({ ...prev, [exIdx]: rightPair.id }));
       setTimeout(() => setWrongPairFlashMap((prev) => ({ ...prev, [exIdx]: null })), 650);
+      setDynamicMasteryTarget((prev) =>
+        Math.min((activeSkillSession?.recommendedMasteryTarget || 6) + 3, prev + 1)
+      );
       setFeedbackSheet({
         type: 'try_again',
-        title: 'Try again',
-        message: `That pair doesn't match. Compare the formal notation carefully with its definition.`,
+        title: 'Not quite',
+        message: '',
         canAdvance: false
       });
     }
@@ -944,6 +1347,9 @@ export default function SkillPracticeHub({
         const current = prev[exIdx] || [];
         return current.includes(optIdx) ? prev : { ...prev, [exIdx]: [...current, optIdx] };
       });
+      setDynamicMasteryTarget((prev) =>
+        Math.min((activeSkillSession?.recommendedMasteryTarget || 6) + 3, prev + 1)
+      );
       if (activeSkillSession) {
         const rightOpt = exercise.options?.find((o) => o.isCorrect);
         setSessionMistakes((prev) => [
@@ -958,7 +1364,7 @@ export default function SkillPracticeHub({
       }
       setFeedbackSheet({
         type: 'try_again',
-        title: 'Try again',
+        title: 'Not quite',
         message: opt.feedback || 'Not quite. Re-check the core condition and try another option.',
         canAdvance: false
       });
@@ -992,6 +1398,9 @@ export default function SkillPracticeHub({
     setFilledBlanksMap((prev) => ({ ...prev, [exIdx]: [...exercise.correctBlanks!] }));
     setRevealedBlanksMap((prev) => ({ ...prev, [exIdx]: true }));
     setBlanksCheckedMap((prev) => ({ ...prev, [exIdx]: true }));
+    setDynamicMasteryTarget((prev) =>
+      Math.min((activeSkillSession?.recommendedMasteryTarget || 6) + 3, prev + 1)
+    );
     setFeedbackSheet({
       type: 'correct',
       title: 'Solution Revealed',
@@ -1029,6 +1438,9 @@ export default function SkillPracticeHub({
         fetchAndAppendNextExercise();
       }
     } else {
+      setDynamicMasteryTarget((prev) =>
+        Math.min((activeSkillSession?.recommendedMasteryTarget || 6) + 3, prev + 1)
+      );
       if (activeSkillSession) {
         setSessionMistakes((prev) => [
           ...prev,
@@ -1042,7 +1454,7 @@ export default function SkillPracticeHub({
       }
       setFeedbackSheet({
         type: 'try_again',
-        title: 'Try again',
+        title: 'Not quite',
         message:
           exercise.hint ||
           'Check the highlighted slots: green slots are correct, and red slots are inaccurate. Tap the red slots to remove and replace them.',
@@ -1129,6 +1541,9 @@ export default function SkillPracticeHub({
             fetchAndAppendNextExercise();
           }
         } else {
+          setDynamicMasteryTarget((prev) =>
+            Math.min((activeSkillSession?.recommendedMasteryTarget || 6) + 3, prev + 1)
+          );
           setFeedbackSheet({
             type: 'try_again',
             title: 'Refine your explanation',
@@ -1230,7 +1645,7 @@ export default function SkillPracticeHub({
           body: JSON.stringify({
             courseId: activeCourseId,
             moduleId: selectedPaper?.id || 'cbt_mock_exam',
-            quizType: sessionMode === 'cbt' ? 'cbt_exam_simulator' : 'past_paper_practice',
+            quizType: sessionMode === 'cbt' ? 'cbt_exam_simulator' : 'cbt_study_mode',
             scorePct: pct,
             correctCount: score,
             totalQuestions: total,
@@ -1311,10 +1726,10 @@ export default function SkillPracticeHub({
     return () => clearInterval(timer);
   }, [isStarted, showResults, sessionMode, timeLeftSeconds, finalizeExamSession]);
 
-  const startPaperSession = (paper: PastPaper) => {
+  const startPaperSession = (paper: CBTExamAssessment) => {
     const qs = paper.questions || [];
     if (qs.length === 0) {
-      toast.error('This CBT mock paper has no questions.');
+      toast.error('This CBT mock assessment has no questions.');
       return;
     }
 
@@ -1365,13 +1780,15 @@ export default function SkillPracticeHub({
   const handleCompileNewPaper = async () => {
     if (!activeCourseId || isCompilingPaper) return;
     if (!user) {
-      toast.error('Please sign in to compile a Syllabus CBT Mock paper.');
+      toast.error('Please sign in to compile a Syllabus CBT Mock assessment.');
       return;
     }
 
     setIsCompilingPaper(true);
+    const labelCount =
+      compileQuestionCount === 'dynamic' ? 'dynamic syllabus-scaled' : `${compileQuestionCount}-question`;
     const toastId = toast.loading(
-      `Compiling ${compileQuestionCount}-question Syllabus CBT Mock for ${activeCourseId}...`
+      `Compiling ${labelCount} CBT Assessment for ${activeCourseId}...`
     );
     try {
       const token = await user.getIdToken();
@@ -1382,40 +1799,65 @@ export default function SkillPracticeHub({
         )
         .join('\n');
 
-      const result = await safeFetchJson<{ paper?: PastPaper; error?: string; details?: string }>(
-        '/api/past-papers/generate',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`
-          },
-          body: JSON.stringify({
-            courseId: activeCourseId,
-            courseTitle: activeCourseObj?.title || activeCourseId,
-            syllabusSummary,
-            questionCount: compileQuestionCount,
-            semester: activeSemester,
-            difficulty: compileDifficulty
-          })
-        }
-      );
+      // Gather already-compiled questions for this course so the new CBT exam has 0 repeats
+      const avoidQuestions = coursePapers
+        .flatMap((p) => (p.questions || []).map((q) => q.question))
+        .filter(Boolean)
+        .slice(-50);
 
-      if (!result.ok || !result.data?.paper) {
-        throw new Error(result.error || result.data?.error || result.data?.details || 'Failed to compile CBT mock paper');
+      // Gather weak topics from recent mistakes and user profile
+      const weakTopics = Array.from(
+        new Set([
+          ...sessionMistakes.map((m) => m.topic),
+          ...(profile?.learningProfile?.weaknesses || []),
+          ...syllabus.flatMap((m) =>
+            (m.subTopics || [])
+              .filter((s) => getSkillLevel(s.id, s.title) <= 1)
+              .map((s) => s.title)
+          )
+        ])
+      ).slice(0, 8);
+
+      const result = await safeFetchJson<{
+        exam?: CBTExamAssessment;
+        paper?: CBTExamAssessment;
+        error?: string;
+        details?: string;
+      }>('/api/cbt/generate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          courseId: activeCourseId,
+          courseTitle: activeCourseObj?.title || activeCourseId,
+          syllabusSummary,
+          questionCount: compileQuestionCount,
+          semester: activeSemester,
+          difficulty: compileDifficulty,
+          weakTopics,
+          avoidQuestions
+        })
+      });
+
+      const compiledExam = result.data?.exam || result.data?.paper;
+      if (!result.ok || !compiledExam) {
+        throw new Error(
+          result.error || result.data?.error || result.data?.details || 'Failed to compile CBT mock assessment'
+        );
       }
 
-      const newPaper: PastPaper = result.data.paper;
-      setAllPapers((prev) => [newPaper, ...prev.filter((p) => p.id !== newPaper.id)]);
-      toast.success(`Compiled "${newPaper.title}" (${newPaper.questions.length} questions)!`, {
+      setAllPapers((prev) => [compiledExam, ...prev.filter((p) => p.id !== compiledExam.id)]);
+      toast.success(`Compiled "${compiledExam.title}" (${compiledExam.questions.length} unseen questions)!`, {
         id: toastId
       });
-      setSelectedPaper(newPaper);
-      setActiveQuestions(newPaper.questions || []);
+      setSelectedPaper(compiledExam);
+      setActiveQuestions(compiledExam.questions || []);
       setIsStarted(false);
     } catch (err: any) {
-      console.error('Error compiling CBT paper:', err);
-      toast.error(err.message || 'Failed to compile CBT mock paper from course syllabus.', {
+      console.error('Error compiling CBT assessment:', err);
+      toast.error(err.message || 'Failed to compile CBT mock assessment from course syllabus.', {
         id: toastId
       });
     } finally {
@@ -1423,7 +1865,7 @@ export default function SkillPracticeHub({
     }
   };
 
-  const handleUseFiftyFifty = async (q: PastPaperQuestion) => {
+  const handleUseFiftyFifty = async (q: CBTExamQuestion) => {
     if (sessionMode === 'cbt' && !showResults) return;
     if (isUsingFiftyFifty[q.id] || eliminatedOptions[q.id]) return;
 
@@ -1488,8 +1930,8 @@ export default function SkillPracticeHub({
     const verifiedCorrectCount = Object.keys(completedExerciseMap).filter(
       (k) => completedExerciseMap[Number(k)]
     ).length;
-    const isMasteryEarned = verifiedCorrectCount >= REQUIRED_MASTERY_COUNT;
-    const progressPct = Math.min(100, Math.round((verifiedCorrectCount / REQUIRED_MASTERY_COUNT) * 100));
+    const isMasteryEarned = verifiedCorrectCount >= dynamicMasteryTarget;
+    const progressPct = Math.min(100, Math.round((verifiedCorrectCount / Math.max(1, dynamicMasteryTarget)) * 100));
     const newLevel = getSkillLevel(activeSkillSession.skillId, activeSkillSession.skillTitle);
     const isCompletedScreen = isMasteryEarned && currentExIndex >= activeSkillSession.exercises.length;
 
@@ -1542,22 +1984,34 @@ export default function SkillPracticeHub({
               key={exercise.id || exIdx}
               className="h-full w-full shrink-0 snap-start snap-always flex flex-col justify-start px-4 sm:px-6 pt-5 pb-28 overflow-y-auto max-w-2xl mx-auto"
             >
-              <div className="mb-4">
+              {/* Exercise Header + Flag Icon + Subtle Horizontal Divider (Matches Video & Screenshot) */}
+              <div className="flex items-center justify-between border-b border-slate-100 dark:border-zinc-800/80 pb-3.5 mb-5">
                 <h3 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
-                  {exercise.prompt ||
-                    (exercise.type === 'concept_carousel'
-                      ? 'Review the concept'
-                      : exercise.type === 'match_pairs'
-                      ? 'Match the pairs'
-                      : exercise.type === 'fill_blanks'
-                      ? 'Fill in the blanks'
-                      : exercise.type === 'explain_concept'
-                      ? 'Explain the concept'
-                      : 'Choose the correct answer')}
+                  {exercise.type === 'match_pairs'
+                    ? 'Match the pairs'
+                    : exercise.type === 'highlight_mistake'
+                    ? 'Highlight the mistake'
+                    : exercise.type === 'concept_carousel'
+                    ? 'Review the concept'
+                    : exercise.type === 'concept_flashcard'
+                    ? 'Check your knowledge'
+                    : exercise.type === 'fill_blanks'
+                    ? exercise.prompt || 'Fill in the blanks'
+                    : exercise.type === 'explain_concept'
+                    ? exercise.prompt || 'Explain the concept'
+                    : exercise.prompt || 'Choose the correct answer'}
                 </h3>
+                <button
+                  type="button"
+                  onClick={() => toast('Question flagged for academic review.', { icon: '🚩' })}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:text-zinc-500 dark:hover:text-zinc-300 transition-colors"
+                  title="Report or flag this exercise"
+                >
+                  <Flag size={18} />
+                </button>
               </div>
 
-              {/* FORMAT 1: SWIPEABLE 6-CARD CONCEPT CAROUSEL */}
+              {/* FORMAT 1: DYNAMIC SWIPEABLE CONCEPT CAROUSEL (6 to 10+ Cards, Video 00:11) */}
               {exercise.type === 'concept_carousel' && Array.isArray(exercise.cards) && (
                 <div className="space-y-6">
                   <div
@@ -1582,20 +2036,20 @@ export default function SkillPracticeHub({
                       return (
                         <div
                           key={cIdx}
-                          className="snap-start shrink-0 w-[85%] sm:w-[78%] min-h-[290px] sm:min-h-[320px] rounded-2xl border border-slate-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900/90 p-6 sm:p-8 flex flex-col justify-between shadow-sm relative transition-all duration-200"
+                          className="snap-start shrink-0 w-[85%] sm:w-[78%] min-h-[290px] sm:min-h-[320px] rounded-2xl border border-slate-200/80 dark:border-zinc-800 bg-stone-50/70 dark:bg-zinc-900/90 p-6 sm:p-8 flex flex-col justify-between shadow-xs relative transition-all duration-200"
                         >
                           <div className="flex items-center justify-between mb-3">
-                            <span className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/60 px-2.5 py-1 rounded-full border border-indigo-100 dark:border-indigo-900/50">
-                              Card {cIdx + 1} of {exercise.cards!.length}
+                            <span className="text-xs font-semibold text-slate-500 dark:text-zinc-400">
+                              {cIdx + 1} / {exercise.cards!.length}
                             </span>
                             <button
                               type="button"
                               onClick={() => toggleSpeechSynthesis(cardText)}
-                              title={isSpeaking ? "Stop listening" : "Listen to card"}
+                              title={isSpeaking ? 'Stop listening' : 'Listen to card'}
                               className={`p-2 rounded-xl border transition-all ${
                                 isSpeaking
                                   ? 'bg-indigo-600 text-white border-indigo-600 animate-pulse shadow-md'
-                                  : 'border-slate-200 dark:border-zinc-800 text-slate-500 dark:text-zinc-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-50 dark:hover:bg-zinc-800'
+                                  : 'border-slate-200 dark:border-zinc-800 text-slate-500 dark:text-zinc-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-zinc-800'
                               }`}
                             >
                               {isSpeaking ? <VolumeX size={18} /> : <Volume2 size={18} />}
@@ -1658,29 +2112,131 @@ export default function SkillPracticeHub({
                 </div>
               )}
 
-              {/* FORMAT 2: INTERACTIVE MATCH THE PAIRS */}
+              {/* FORMAT 1B: "CHECK YOUR KNOWLEDGE" TAP-TO-FLIP FLASHCARD (Matches Video 00:12) */}
+              {exercise.type === 'concept_flashcard' && (
+                <div className="space-y-6">
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() =>
+                      setFlippedFlashcardMap((prev) => ({
+                        ...prev,
+                        [exIdx]: !prev[exIdx]
+                      }))
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setFlippedFlashcardMap((prev) => ({
+                          ...prev,
+                          [exIdx]: !prev[exIdx]
+                        }));
+                      }
+                    }}
+                    className="w-full min-h-[340px] sm:min-h-[370px] rounded-2xl border border-slate-200/90 dark:border-zinc-800 bg-stone-50/80 dark:bg-zinc-900/90 p-5 sm:p-7 flex flex-col justify-between cursor-pointer shadow-xs hover:border-slate-300 dark:hover:border-zinc-700 transition-all"
+                  >
+                    {/* Visual / Formula Dark Banner Box (Matches Video 00:12 Top Graphic) */}
+                    <div className="w-full rounded-xl bg-zinc-900 dark:bg-black text-white p-5 sm:p-6 text-center space-y-2 shadow-inner">
+                      {exercise.frontTitle && (
+                        <div className="text-sm sm:text-base font-extrabold tracking-wide text-amber-300">
+                          <MarkdownInline content={exercise.frontTitle} />
+                        </div>
+                      )}
+                      {exercise.frontFormulaOrVisual && (
+                        <div className="text-xs sm:text-sm text-zinc-200 font-medium leading-relaxed">
+                          <MarkdownInline content={exercise.frontFormulaOrVisual} />
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Question or Flipped Back Answer */}
+                    <div className="my-auto py-6 text-center px-2">
+                      {!flippedFlashcardMap[exIdx] ? (
+                        <div className="text-lg sm:text-xl font-medium text-slate-900 dark:text-white leading-relaxed">
+                          <MarkdownInline
+                            content={
+                              exercise.question ||
+                              `What is the core academic principle behind ${activeSkillSession.skillTitle}?`
+                            }
+                          />
+                        </div>
+                      ) : (
+                        <motion.div
+                          initial={{ opacity: 0, y: 6 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="space-y-2 text-left bg-white dark:bg-zinc-950/90 p-4 sm:p-5 rounded-xl border border-emerald-200 dark:border-emerald-900/60"
+                        >
+                          <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                            Verified Answer
+                          </div>
+                          <div className="text-base sm:text-lg font-medium text-slate-900 dark:text-white leading-relaxed">
+                            <MarkdownInline content={exercise.backAnswer || exercise.learnMore || ''} />
+                          </div>
+                        </motion.div>
+                      )}
+                    </div>
+
+                    <div className="text-center text-xs sm:text-sm font-medium text-slate-400 dark:text-zinc-500">
+                      {flippedFlashcardMap[exIdx] ? 'Tap to flip back to question' : 'Tap to flip'}
+                    </div>
+                  </div>
+
+                  {/* Needs practice / I know it buttons (Matches Video 00:12) */}
+                  <div className="grid grid-cols-2 gap-3 pt-1">
+                    <button
+                      onClick={() => handleFlashcardDecision(true, exIdx, exercise)}
+                      className="py-3.5 px-4 rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50/40 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 font-semibold text-sm hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
+                    >
+                      Needs practice
+                    </button>
+                    <button
+                      onClick={() => handleFlashcardDecision(false, exIdx, exercise)}
+                      className="py-3.5 px-4 rounded-xl border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/40 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400 font-semibold text-sm hover:bg-emerald-50 dark:hover:bg-emerald-950/40 transition-colors"
+                    >
+                      I know it
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* FORMAT 2: INTERACTIVE COLOR-CODED MATCH THE PAIRS (Matches Screenshot) */}
               {exercise.type === 'match_pairs' && Array.isArray(exercise.pairs) && (
-                <div className="space-y-5">
-                  <p className="text-sm text-slate-600 dark:text-zinc-400">
-                    Tap a term or notation on the left, then tap its matching meaning on the right.
-                  </p>
-                  <div className="grid grid-cols-2 gap-3 sm:gap-4">
+                <div className="space-y-6">
+                  {/* Dynamic Sub-Instruction with Bold Category Terms */}
+                  <div className="text-sm sm:text-base text-slate-800 dark:text-zinc-200 leading-relaxed">
+                    <MarkdownInline
+                      content={
+                        exercise.instruction ||
+                        exercise.question ||
+                        (exercise.prompt &&
+                        exercise.prompt.trim().toLowerCase() !== 'match the pairs'
+                          ? exercise.prompt
+                          : `Match the following **${activeSkillSession.skillTitle}** terms with their corresponding **definitions or units**`)
+                      }
+                    />
+                  </div>
+
+                  {/* Two Columns Separated by Subtle Center Vertical Divider */}
+                  <div className="grid grid-cols-[1fr_1px_1fr] gap-3 sm:gap-5 items-stretch">
                     {/* Left Column */}
-                    <div className="space-y-3">
-                      {exercise.pairs.map((pair) => {
+                    <div className="space-y-3.5">
+                      {exercise.pairs.map((pair, leftIdx) => {
                         const isMatched = (matchedPairsMap[exIdx] || []).includes(pair.id);
                         const isSelected = selectedLeftPairMap[exIdx] === pair.id;
+                        const matchedColorClass =
+                          MATCH_PAIR_COLOR_CLASSES[leftIdx % MATCH_PAIR_COLOR_CLASSES.length];
+
                         return (
                           <button
                             key={pair.id}
                             disabled={isMatched}
                             onClick={() => handleSelectLeftPair(exIdx, pair.id)}
-                            className={`w-full min-h-[68px] p-3.5 rounded-xl border text-center flex items-center justify-center transition-all text-sm font-medium ${
+                            className={`w-full min-h-[64px] sm:min-h-[68px] px-4 py-3.5 rounded-2xl border text-center flex items-center justify-center transition-all text-sm sm:text-base font-medium ${
                               isMatched
-                                ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-400 text-emerald-700 dark:text-emerald-300 opacity-60'
+                                ? matchedColorClass
                                 : isSelected
                                 ? 'bg-white dark:bg-zinc-900 border-2 border-slate-900 dark:border-white text-slate-900 dark:text-white shadow-sm'
-                                : 'bg-stone-100/80 dark:bg-zinc-900 border-stone-200 dark:border-zinc-800 text-slate-800 dark:text-zinc-200 hover:border-slate-400'
+                                : 'bg-[#F3F2EE] dark:bg-zinc-900 border-transparent dark:border-zinc-800 text-slate-800 dark:text-zinc-200 hover:border-slate-300 dark:hover:border-zinc-700'
                             }`}
                           >
                             <MarkdownInline content={pair.left} />
@@ -1689,22 +2245,32 @@ export default function SkillPracticeHub({
                       })}
                     </div>
 
+                    {/* Center Vertical Divider Line */}
+                    <div className="w-px bg-slate-200/90 dark:bg-zinc-800 my-2 shrink-0" />
+
                     {/* Right Column */}
-                    <div className="space-y-3">
+                    <div className="space-y-3.5">
                       {(shuffledRightPairsMap[exIdx] || exercise.pairs || []).map((pair) => {
                         const isMatched = (matchedPairsMap[exIdx] || []).includes(pair.id);
                         const isWrong = wrongPairFlashMap[exIdx] === pair.id;
+                        const originalLeftIdx = Math.max(
+                          0,
+                          exercise.pairs!.findIndex((p) => p.id === pair.id)
+                        );
+                        const matchedColorClass =
+                          MATCH_PAIR_COLOR_CLASSES[originalLeftIdx % MATCH_PAIR_COLOR_CLASSES.length];
+
                         return (
                           <button
                             key={pair.id}
                             disabled={isMatched}
                             onClick={() => handleSelectRightPair(exIdx, pair, exercise)}
-                            className={`w-full min-h-[68px] p-3.5 rounded-xl border text-center flex items-center justify-center transition-all text-sm font-medium ${
+                            className={`w-full min-h-[64px] sm:min-h-[68px] px-4 py-3.5 rounded-2xl border text-center flex items-center justify-center transition-all text-sm sm:text-base font-medium ${
                               isMatched
-                                ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-400 text-emerald-700 dark:text-emerald-300 opacity-60'
+                                ? matchedColorClass
                                 : isWrong
                                 ? 'bg-rose-50 dark:bg-rose-950/40 border-2 border-rose-500 text-rose-700 dark:text-rose-300'
-                                : 'bg-stone-100/80 dark:bg-zinc-900 border-stone-200 dark:border-zinc-800 text-slate-800 dark:text-zinc-200 hover:border-slate-400'
+                                : 'bg-[#F3F2EE] dark:bg-zinc-900 border-transparent dark:border-zinc-800 text-slate-800 dark:text-zinc-200 hover:border-slate-300 dark:hover:border-zinc-700'
                             }`}
                           >
                             <MarkdownInline content={pair.right} />
@@ -1916,55 +2482,105 @@ export default function SkillPracticeHub({
                 </div>
               )}
 
-              {/* FORMAT 6: HIGHLIGHT THE MISTAKE (SPOT THE ERROR) */}
-              {exercise.type === 'highlight_mistake' && (
-                <div className="space-y-6">
-                  {/* Target instruction label */}
-                  <div className="text-sm font-semibold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-100 dark:border-indigo-900/50 px-4 py-2.5 rounded-xl text-center">
-                    {exercise.instruction || "You're looking for one word that is a mistake."}
-                  </div>
+              {/* FORMAT 6: HIGHLIGHT THE MISTAKE (NATURAL PARAGRAPH + CONTIGUOUS WORD SCRUB, Video 00:00-00:09 & 00:13-00:25) */}
+              {exercise.type === 'highlight_mistake' &&
+                (() => {
+                  const analyzed = analyzeHighlightPassage(
+                    exercise.passage || '',
+                    exercise.mistakeTarget,
+                    exercise.instruction
+                  );
+                  const currentRange = highlightRangeMap[exIdx] || null;
+                  const status = highlightStatusMap[exIdx] || 'idle';
 
-                  {/* Interactive passage container */}
-                  <div className="p-6 sm:p-8 rounded-2xl bg-slate-50 dark:bg-zinc-900/80 border border-slate-200 dark:border-zinc-800 text-base sm:text-lg leading-relaxed space-y-4">
-                    <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                      {(() => {
-                        const tokens = buildHighlightTokens(exercise.passage || '', exercise.mistakeTarget);
-                        const selectedTokenId = highlightSelectionMap[exIdx];
-                        const isRevealed = Boolean(highlightRevealedMap[exIdx]);
+                  return (
+                    <div
+                      className="space-y-8 pt-1"
+                      onPointerUp={() => handlePassagePointerUp(exIdx, analyzed, exercise)}
+                      onPointerCancel={() => handlePassagePointerUp(exIdx, analyzed, exercise)}
+                      onTouchMove={(e) => handlePassageTouchMove(exIdx, e)}
+                      onTouchEnd={() => handlePassagePointerUp(exIdx, analyzed, exercise)}
+                    >
+                      {/* Natural flowing paragraph with zero button borders around words (Matches Video 00:00) */}
+                      <p className="text-base sm:text-[19px] leading-[1.85] text-slate-900 dark:text-zinc-100 select-none touch-none tracking-[-0.005em]">
+                        {analyzed.words.map((w, idx) => {
+                          const isSelected =
+                            currentRange !== null &&
+                            idx >= currentRange.start &&
+                            idx <= currentRange.end;
+                          const isPrevSelected =
+                            currentRange !== null &&
+                            idx - 1 >= currentRange.start &&
+                            idx - 1 <= currentRange.end;
+                          const isNextSelected =
+                            currentRange !== null &&
+                            idx + 1 >= currentRange.start &&
+                            idx + 1 <= currentRange.end;
 
-                        return tokens.map((t) => {
-                          const isSelected = selectedTokenId === t.id;
-                          const isCorrectMistake = t.isMistakeTarget;
-                          const showAsGreen = (isSelected && isCorrectMistake) || (isRevealed && isCorrectMistake);
-                          const showAsRed = isSelected && !isCorrectMistake;
+                          const isCorrectHighlight = isSelected && status === 'correct';
+                          const isSkyBlueHighlight =
+                            isSelected && (status === 'selecting' || status === 'wrong');
 
-                          let pillStyle = "px-2.5 py-1 rounded-lg transition-all duration-150 cursor-pointer font-medium select-none ";
-                          if (showAsGreen) {
-                            pillStyle += "bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-200 border border-emerald-400 dark:border-emerald-600 font-bold shadow-sm scale-105";
-                          } else if (showAsRed) {
-                            pillStyle += "bg-rose-100 dark:bg-rose-950/80 text-rose-800 dark:text-rose-200 border border-rose-400 dark:border-rose-600 font-bold animate-shake";
-                          } else if (isSelected) {
-                            pillStyle += "bg-sky-100 dark:bg-sky-950/80 text-sky-800 dark:text-sky-200 border border-sky-400 font-semibold";
+                          let wordHighlightClass =
+                            'cursor-pointer transition-colors duration-100 py-0.5 ';
+                          if (isCorrectHighlight) {
+                            wordHighlightClass +=
+                              'bg-emerald-300/85 dark:bg-emerald-500/45 text-slate-950 dark:text-white ';
+                          } else if (isSkyBlueHighlight) {
+                            wordHighlightClass +=
+                              'bg-sky-200/95 dark:bg-sky-500/40 text-slate-950 dark:text-white ';
                           } else {
-                            pillStyle += "bg-white dark:bg-zinc-800/80 text-slate-800 dark:text-zinc-200 border border-slate-200 dark:border-zinc-700 hover:border-indigo-400 hover:bg-indigo-50/50 dark:hover:bg-indigo-950/30";
+                            wordHighlightClass +=
+                              'hover:bg-sky-100/60 dark:hover:bg-sky-900/30 ';
                           }
 
+                          if (isSelected) {
+                            if (!isPrevSelected && !isNextSelected) {
+                              wordHighlightClass += 'rounded-md px-1 -mx-0.5';
+                            } else if (!isPrevSelected && isNextSelected) {
+                              wordHighlightClass += 'rounded-l-md pl-1';
+                            } else if (isPrevSelected && !isNextSelected) {
+                              wordHighlightClass += 'rounded-r-md pr-1';
+                            }
+                          } else {
+                            wordHighlightClass += 'rounded-xs';
+                          }
+
+                          const spaceHighlightClass =
+                            isSelected && isNextSelected
+                              ? isCorrectHighlight
+                                ? 'bg-emerald-300/85 dark:bg-emerald-500/45 py-0.5'
+                                : 'bg-sky-200/95 dark:bg-sky-500/40 py-0.5'
+                              : '';
+
                           return (
-                            <button
-                              key={t.id}
-                              type="button"
-                              onClick={() => handleHighlightTokenTap(exIdx, t, exercise)}
-                              className={pillStyle}
-                            >
-                              <MarkdownInline content={t.text} />
-                            </button>
+                            <React.Fragment key={w.index}>
+                              <span
+                                data-highlight-word-idx={w.index}
+                                onPointerDown={(e) => {
+                                  if (e.button !== undefined && e.button !== 0) return;
+                                  handleWordPointerDown(exIdx, w.index, analyzed);
+                                }}
+                                onPointerEnter={() => handleWordPointerEnter(exIdx, w.index)}
+                                className={wordHighlightClass}
+                              >
+                                <MarkdownWordSpan content={w.text} />
+                              </span>
+                              {idx < analyzed.words.length - 1 && (
+                                <span className={spaceHighlightClass}> </span>
+                              )}
+                            </React.Fragment>
                           );
-                        });
-                      })()}
+                        })}
+                      </p>
+
+                      {/* Dynamic Muted-Gray Instruction BELOW the Paragraph (Matches Video 00:00 & 00:13) */}
+                      <p className="text-sm sm:text-base text-slate-500 dark:text-zinc-400 text-center font-normal pt-2">
+                        {analyzed.dynamicInstruction}
+                      </p>
                     </div>
-                  </div>
-                </div>
-              )}
+                  );
+                })()}
             </div>
           ))}
 
@@ -1990,7 +2606,7 @@ export default function SkillPracticeHub({
                     {activeSkillSession.skillTitle}
                   </h2>
                   <p className="text-sm text-slate-500 dark:text-zinc-400">
-                    You demonstrated mastery across interactive exercises and earned +60 XP toward your next course trophy.
+                    You demonstrated mastery across {dynamicMasteryTarget} adaptive exercises and earned +60 XP toward your next course trophy.
                   </p>
                 </div>
 
@@ -2036,7 +2652,7 @@ export default function SkillPracticeHub({
                       }
                       className="flex-1 py-3 px-4 rounded-2xl border border-slate-200 dark:border-zinc-700 font-bold text-sm text-slate-700 dark:text-zinc-200 hover:bg-slate-50 dark:hover:bg-zinc-800 transition-colors"
                     >
-                      Practice Again (Rotate Variations)
+                      Practice Again (Fresh Unseen Set)
                     </button>
                     <button
                       onClick={() => setActiveSkillSession(null)}
@@ -2069,7 +2685,7 @@ export default function SkillPracticeHub({
           )}
         </div>
 
-        {/* FLOATING BOTTOM ACTION DOCK (Recommendation 2: Learn | Hint | Reveal | Submit - NO Prev/Next) */}
+        {/* FLOATING BOTTOM ACTION DOCK (Learn | Hint | Reveal | Submit - NO Prev/Next) */}
         {!isCompletedScreen && activeExercise && (
           <div className="fixed bottom-5 left-0 right-0 z-30 flex flex-col items-center gap-2 px-4 pointer-events-none pb-safe">
             <div className="pointer-events-auto inline-flex items-center gap-1 sm:gap-2 p-1.5 sm:p-2 rounded-2xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 shadow-xl">
@@ -2081,15 +2697,17 @@ export default function SkillPracticeHub({
                 <span className="text-[11px] font-bold text-purple-800 dark:text-purple-300">Learn</span>
               </button>
 
-              {activeExercise.type !== 'concept_carousel' && activeExercise.type !== 'fill_blanks' && (
-                <button
-                  onClick={() => setShowHintSheet(true)}
-                  className="flex flex-col items-center justify-center min-w-[58px] py-1.5 px-3 rounded-xl hover:bg-slate-50 dark:hover:bg-zinc-800 transition-colors border-l border-slate-100 dark:border-zinc-800"
-                >
-                  <Lightbulb size={18} className="text-emerald-600 dark:text-emerald-400 mb-0.5" />
-                  <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300">Hint</span>
-                </button>
-              )}
+              {activeExercise.type !== 'concept_carousel' &&
+                activeExercise.type !== 'concept_flashcard' &&
+                activeExercise.type !== 'fill_blanks' && (
+                  <button
+                    onClick={() => setShowHintSheet(true)}
+                    className="flex flex-col items-center justify-center min-w-[58px] py-1.5 px-3 rounded-xl hover:bg-slate-50 dark:hover:bg-zinc-800 transition-colors border-l border-slate-100 dark:border-zinc-800"
+                  >
+                    <Lightbulb size={18} className="text-emerald-600 dark:text-emerald-400 mb-0.5" />
+                    <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300">Hint</span>
+                  </button>
+                )}
 
               {activeExercise.type === 'highlight_mistake' && (
                 <button
@@ -2125,7 +2743,7 @@ export default function SkillPracticeHub({
           </div>
         )}
 
-        {/* SLIDE-UP SOCRATIC HINT BOTTOM SHEET (matches Video 1 0:37-0:41) */}
+        {/* SLIDE-UP SOCRATIC HINT BOTTOM SHEET (matches Video 0:08 & 0:37-0:41) */}
         <AnimatePresence>
           {showHintSheet && activeExercise && (
             <motion.div
@@ -2167,79 +2785,84 @@ export default function SkillPracticeHub({
           )}
         </AnimatePresence>
 
-        {/* SLIDE-UP CORRECT! / TRY AGAIN FEEDBACK BOTTOM SHEET (Always visible above all nav) */}
+        {/* SLIDE-UP "CORRECT!" / "NOT QUITE" FEEDBACK BOTTOM SHEET (Matches Screenshot & Video) */}
         <AnimatePresence>
           {feedbackSheet && (
             <motion.div
               initial={{ opacity: 0, y: 80 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 80 }}
-              className="fixed inset-x-0 bottom-0 z-[80] p-4 sm:p-6 pb-safe flex justify-center bg-black/30 backdrop-blur-xs"
+              className="fixed inset-x-0 bottom-0 z-[80] p-4 sm:p-6 pb-safe flex justify-center bg-black/15 backdrop-blur-[1px]"
             >
               <div
-                className={`max-w-lg w-full rounded-3xl border p-5 sm:p-6 shadow-2xl space-y-4 ${
+                className={`max-w-lg w-full rounded-3xl border p-6 sm:p-7 shadow-2xl space-y-5 ${
                   feedbackSheet.type === 'correct'
-                    ? 'bg-emerald-50 dark:bg-emerald-950/95 border-emerald-300 dark:border-emerald-800'
-                    : 'bg-rose-50 dark:bg-rose-950/95 border-rose-300 dark:border-rose-800'
+                    ? 'bg-[#F4FAF7] dark:bg-zinc-900 border-[#D0E8DD] dark:border-emerald-700'
+                    : 'bg-[#FDF6F6] dark:bg-zinc-900 border-[#F3D2D2] dark:border-rose-700'
                 }`}
               >
                 <div className="flex items-center justify-between">
                   <h4
-                    className={`text-lg font-bold flex items-center gap-2 ${
+                    className={`text-lg sm:text-xl font-extrabold ${
                       feedbackSheet.type === 'correct'
-                        ? 'text-emerald-800 dark:text-emerald-300'
-                        : 'text-rose-800 dark:text-rose-300'
+                        ? 'text-[#009959] dark:text-emerald-400'
+                        : 'text-[#E5484D] dark:text-rose-400'
                     }`}
                   >
-                    {feedbackSheet.type === 'correct' ? <CheckCircle2 size={20} /> : <XCircle size={20} />}
-                    <span>{feedbackSheet.title}</span>
+                    {feedbackSheet.title}
                   </h4>
                   <button
                     onClick={() => setFeedbackSheet(null)}
-                    className="p-1 rounded-lg text-slate-500 hover:text-slate-800 dark:text-zinc-400"
+                    className={`p-1 rounded-lg transition-colors ${
+                      feedbackSheet.type === 'correct'
+                        ? 'text-[#009959] hover:bg-emerald-100/60 dark:text-emerald-400'
+                        : 'text-[#E5484D] hover:bg-rose-100/60 dark:text-rose-400'
+                    }`}
                   >
-                    <X size={20} />
+                    <X size={22} />
                   </button>
                 </div>
 
-                <div
-                  className={`text-sm sm:text-base leading-relaxed max-h-[35vh] overflow-y-auto ${
-                    feedbackSheet.type === 'correct'
-                      ? 'text-emerald-900 dark:text-emerald-100'
-                      : 'text-rose-900 dark:text-rose-100'
-                  }`}
-                >
-                  <MarkdownInline content={feedbackSheet.message} />
-                </div>
+                {feedbackSheet.message && feedbackSheet.message.trim().length > 0 && (
+                  <div
+                    className={`text-sm sm:text-base font-medium leading-relaxed max-h-[35vh] overflow-y-auto ${
+                      feedbackSheet.type === 'correct'
+                        ? 'text-[#008A50] dark:text-emerald-200'
+                        : 'text-[#C6373C] dark:text-rose-200'
+                    }`}
+                  >
+                    <MarkdownInline content={feedbackSheet.message} />
+                  </div>
+                )}
 
-                <div className="space-y-2.5 pt-1">
-                  {feedbackSheet.canAdvance ? (
-                    <button
-                      onClick={handleAdvanceSkillExercise}
-                      className="w-full py-3.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm transition-colors shadow-md flex items-center justify-center gap-2"
-                    >
-                      <span>Continue to Next</span>
-                      <ChevronRight size={16} />
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => setFeedbackSheet(null)}
-                      className="w-full py-3.5 rounded-full bg-rose-600 hover:bg-rose-700 text-white font-bold text-sm transition-colors shadow-md"
-                    >
-                      Try again
-                    </button>
-                  )}
-
+                {/* Stacked Full-Width Pill Buttons: "Learn more" (outlined) on top, "Continue" (solid) below (Matches Screenshot & Video) */}
+                <div className="space-y-3 pt-2">
                   <button
                     onClick={() => setShowLearnModal(true)}
-                    className={`w-full py-2.5 rounded-full border font-bold text-xs sm:text-sm transition-colors ${
+                    className={`w-full py-3.5 rounded-full border font-bold text-sm sm:text-base transition-colors ${
                       feedbackSheet.type === 'correct'
-                        ? 'border-emerald-600/40 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100/60 dark:hover:bg-emerald-900/40'
-                        : 'border-rose-600/40 text-rose-800 dark:text-rose-200 hover:bg-rose-100/60 dark:hover:bg-rose-900/40'
+                        ? 'border-[#009959]/60 text-[#008A50] dark:text-emerald-300 hover:bg-emerald-100/50 dark:hover:bg-emerald-950/40'
+                        : 'border-[#E5484D]/60 text-[#C6373C] dark:text-rose-300 hover:bg-rose-100/50 dark:hover:bg-rose-950/40'
                     }`}
                   >
                     Learn more
                   </button>
+
+                  {feedbackSheet.canAdvance ? (
+                    <button
+                      onClick={handleAdvanceSkillExercise}
+                      className="w-full py-3.5 rounded-full bg-[#00A35C] hover:bg-[#008F50] text-white font-bold text-sm sm:text-base transition-colors shadow-xs"
+                    >
+                      Continue
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setFeedbackSheet(null)}
+                      className="w-full py-3.5 rounded-full bg-[#EB5757] hover:bg-[#D94646] text-white font-bold text-sm sm:text-base transition-colors shadow-xs"
+                    >
+                      Continue
+                    </button>
+                  )}
                 </div>
               </div>
             </motion.div>
@@ -2399,7 +3022,7 @@ export default function SkillPracticeHub({
                 No syllabus units found for {activeCourseId}
               </h3>
               <p className="text-sm text-slate-500 dark:text-zinc-400 max-w-md mx-auto">
-                Switch to the CBT Mock tab to compile a syllabus examination paper or select another course above.
+                Switch to the CBT Mock tab to compile a syllabus examination assessment or select another course above.
               </p>
             </div>
           ) : (
@@ -2451,7 +3074,7 @@ export default function SkillPracticeHub({
                                 {sub.title}
                               </h3>
                               <p className="text-[11px] sm:text-xs text-slate-400 dark:text-zinc-500 truncate">
-                                Concept carousel · Match pairs · Smart MCQ · Fill blanks · Voice explain
+                                Concept carousel · Flashcard flip · Highlight mistake · Match pairs · Smart MCQ · Fill blanks
                               </p>
                             </div>
                           </div>
@@ -2541,21 +3164,25 @@ export default function SkillPracticeHub({
                 <div className="space-y-1">
                   <div className="flex items-center gap-2 text-indigo-700 dark:text-indigo-300 font-bold text-sm">
                     <Sparkles size={16} />
-                    <span>Compile New Syllabus CBT Mock Paper</span>
+                    <span>Compile Dynamic Syllabus CBT Assessment</span>
                   </div>
                   <p className="text-xs text-slate-600 dark:text-zinc-400">
-                    Generates fresh university-standard multiple-choice questions across all units of {activeCourseId}.
+                    Dynamically scales question count to your syllabus depth & weak topics with zero repeated questions.
                   </p>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2.5">
                   <select
                     value={compileQuestionCount}
-                    onChange={(e) => setCompileQuestionCount(Number(e.target.value))}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setCompileQuestionCount(val === 'dynamic' ? 'dynamic' : Number(val));
+                    }}
                     className="px-3 py-2 rounded-xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 text-xs font-bold text-slate-700 dark:text-zinc-200"
                   >
-                    <option value={5}>5 Questions</option>
-                    <option value={10}>10 Questions</option>
+                    <option value="dynamic">Dynamic (Syllabus & Mastery Scaled)</option>
+                    <option value={8}>8 Questions</option>
+                    <option value={12}>12 Questions</option>
                     <option value={15}>15 Questions</option>
                     <option value={20}>20 Questions</option>
                   </select>
@@ -2582,7 +3209,7 @@ export default function SkillPracticeHub({
                     ) : (
                       <>
                         <Sparkles size={14} />
-                        <span>Compile CBT Mock</span>
+                        <span>Compile CBT Assessment</span>
                       </>
                     )}
                   </button>
