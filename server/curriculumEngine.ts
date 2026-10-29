@@ -1,11 +1,14 @@
 import { Marked } from 'marked';
 import markedKatex from 'marked-katex-extension';
+import katex from 'katex';
 import { 
   DomainBrief, 
   DisciplinePedagogyType, 
   CourseSkeleton, 
   OutlineCriticRubric, 
-  deriveCurriculumParameters 
+  deriveCurriculumParameters,
+  isBareDiagramOrFragment,
+  normalizeLessonMarkdownContent
 } from '../src/shared/courseSchemas.js';
 import { LATEX_INSTRUCTION } from '../src/shared/prompts.js';
 
@@ -42,9 +45,9 @@ export interface CurriculumGenerationOptions {
 }
 
 /**
- * Lesson syntax and structural validator powered by Marked + marked-katex-extension.
- * Enforces balanced KaTeX delimiters, valid AST tokenization, valid markdown table structure,
- * and substantive content. Rejects faulty content with actionable diagnostic errors.
+ * Lesson syntax and structural validator powered by Marked AST + direct katex.renderToString() + marked-katex-extension.
+ * Enforces balanced KaTeX delimiters, valid AST tokenization (>= 3 headings & >= 3 substantive prose blocks),
+ * equation-level katex.renderToString({ throwOnError: true }) verification, and valid markdown table structure.
  */
 export function validateLessonSyntax(content: string, pedagogyType: DisciplinePedagogyType = 'STEM_MATHEMATICAL'): { isValid: boolean; errors: string[] } {
   const errors: string[] = [];
@@ -52,32 +55,82 @@ export function validateLessonSyntax(content: string, pedagogyType: DisciplinePe
     return { isValid: false, errors: ['Lesson content is empty or null.'] };
   }
 
-  const trimmed = content.trim();
-  if (trimmed.length < 200) {
-    errors.push(`Lesson content is too brief (${trimmed.length} chars). Expected substantive university lesson.`);
+  const trimmed = normalizeLessonMarkdownContent(content);
+  if (trimmed.length < 800) {
+    errors.push(`Lesson content is too brief (${trimmed.length} chars). Expected a comprehensive university lesson (>= 800 chars).`);
   }
 
-  // 1. KaTeX Math Delimiter Balance Check
-  const displayMathMatches = trimmed.match(/\$\$/g) || [];
+  if (isBareDiagramOrFragment(trimmed)) {
+    errors.push('Lesson content consists only of a bare diagram/code snippet without substantive university academic prose and section headings.');
+  }
+
+  if (/viewBox=\\"|xmlns=\\"/.test(trimmed)) {
+    errors.push('Lesson content contains raw unescaped JSON attribute quotes (\\").');
+  }
+
+  // 0. Code Fence Balance Check
+  const codeFenceMatches = trimmed.match(/^```/gm) || [];
+  if (codeFenceMatches.length % 2 !== 0) {
+    errors.push(`Unbalanced markdown code fences (\`\`\`). Found ${codeFenceMatches.length} fence markers.`);
+  }
+
+  // 1. KaTeX Display Math & Direct katex.renderToString() Equation Verification
+  const withoutCodeFences = trimmed.replace(/```[\s\S]*?```/g, '');
+  const displayMathMatches = withoutCodeFences.match(/(?<!\\)\$\$/g) || [];
   if (displayMathMatches.length % 2 !== 0) {
     errors.push(`Unbalanced display math delimiters ($$). Found ${displayMathMatches.length} occurrences (must be an even number).`);
   }
 
-  const withoutDisplayMath = trimmed.replace(/\$\$[\s\S]*?\$\$/g, '');
-  const unescapedSingleDollars = (withoutDisplayMath.match(/(?<!\\)\$/g) || []).length;
-  if (unescapedSingleDollars % 2 !== 0) {
-    errors.push(`Unbalanced inline math delimiters ($). Found ${unescapedSingleDollars} unescaped dollar signs.`);
-  }
-
-  const beginMatches = trimmed.match(/\\begin\{([a-zA-Z*]+)\}/g) || [];
-  const endMatches = trimmed.match(/\\end\{([a-zA-Z*]+)\}/g) || [];
+  const beginMatches = withoutCodeFences.match(/\\begin\{([a-zA-Z*]+)\}/g) || [];
+  const endMatches = withoutCodeFences.match(/\\end\{([a-zA-Z*]+)\}/g) || [];
   if (beginMatches.length !== endMatches.length) {
     errors.push(`Mismatched LaTeX environment tags: found ${beginMatches.length} \\begin{} vs ${endMatches.length} \\end{}.`);
   }
 
-  // 2. AST Parse & KaTeX Compilation Validation via Marked + marked-katex-extension
+  // Verify extracted $$ ... $$ display equations directly with katex.renderToString
+  const displayBlocks = withoutCodeFences.match(/(?<!\\)\$\$([\s\S]*?)(?<!\\)\$\$/g) || [];
+  for (const rawBlock of displayBlocks) {
+    const mathExpr = rawBlock.slice(2, -2).trim();
+    if (!mathExpr) continue;
+    try {
+      katex.renderToString(mathExpr, { throwOnError: true, displayMode: true, strict: false });
+    } catch (kErr: any) {
+      errors.push(`KaTeX display equation syntax error: ${kErr?.message || String(kErr)}`);
+    }
+  }
+
+  // Verify extracted $ ... $ inline equations directly with katex.renderToString (ignoring escaped \$ currency)
+  const withoutDisplay = withoutCodeFences.replace(/(?<!\\)\$\$[\s\S]*?(?<!\\)\$\$/g, '').replace(/`[^`\n]+`/g, '');
+  const inlineBlocks = withoutDisplay.match(/(?<!\\|\$)\$(?!\$)((?:\\\$|[^$\n])+?)(?<!\\|\$)\$(?!\$)/g) || [];
+  for (const rawInline of inlineBlocks) {
+    const mathExpr = rawInline.slice(1, -1).trim();
+    if (!mathExpr) continue;
+    // Skip currency ranges like "$100 and $200" that are not LaTeX math
+    if (/^\d[\d,.]*\s+[a-zA-Z]/.test(mathExpr) && !/[\\^_{}=]/.test(mathExpr)) continue;
+    try {
+      katex.renderToString(mathExpr, { throwOnError: true, displayMode: false, strict: false });
+    } catch (kErr: any) {
+      errors.push(`KaTeX inline equation syntax error in "$${mathExpr}$": ${kErr?.message || String(kErr)}`);
+    }
+  }
+
+  // 2. AST Parse, Structural Heading/Prose Check & KaTeX Compilation Validation via Marked
   try {
     const tokens = curriculumMarkedValidator.lexer(trimmed);
+    let headingCount = 0;
+    let substantiveBlockCount = 0;
+    for (const token of tokens as any[]) {
+      if (token.type === 'heading') headingCount++;
+      if (token.type === 'paragraph' || token.type === 'list' || token.type === 'blockquote' || token.type === 'table') {
+        substantiveBlockCount++;
+      }
+    }
+    if (headingCount < 3) {
+      errors.push(`Insufficient structural section headings (found ${headingCount}, expected at least 3 '##' section headings).`);
+    }
+    if (substantiveBlockCount < 3) {
+      errors.push(`Insufficient academic prose blocks (found ${substantiveBlockCount}, expected at least 3 substantive paragraphs/tables/lists).`);
+    }
     curriculumMarkedValidator.parser(tokens);
   } catch (astErr: any) {
     errors.push(`Markdown/KaTeX compilation error: ${astErr?.message || String(astErr)}`);
@@ -457,13 +510,14 @@ ${pedagogyDirective}
 5. Key Takeaways & Practice Discussion Prompt: Dynamic summary questions for student reflection.
 
 [STRICT JSON OUTPUT FORMAT]:
-- Place the ENTIRE lesson (all sections above) inside the single "content" markdown field. Do NOT output separate keys for sections.
-- When emphasizing words or symbols inside the text, use single quotes (e.g. 'voltage', 'current') or backticks, never raw double quotes.
+- Place the ENTIRE lesson (all 5 sections above, minimum 1,500 characters of detailed academic prose, equations, tables, and diagrams) inside the single "content" markdown field. Do NOT output separate keys for sections.
+- Use clear "## " markdown headings for each major section.
+- When emphasizing words or writing SVG/HTML attributes inside "content", use single quotes (e.g., <svg viewBox='0 0 500 250' width='100%'> or 'pressure') or backticks, never unescaped double quotes.
 
 Return strictly a JSON object:
 {
   "pedagogicalReasoning": "How this lesson satisfies university learning outcomes in ${domainBrief.primaryDomain}",
   "title": "${topicTitle}",
-  "content": "Full detailed markdown lesson text compiling all sections above. Follow all formatting rules."
+  "content": "## 1. Executive Summary\\n\\nFull detailed markdown lesson text compiling all sections above..."
 }`;
 }

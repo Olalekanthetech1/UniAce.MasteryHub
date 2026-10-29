@@ -311,18 +311,45 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   } | null>(null);
   const [quickCourseName, setQuickCourseName] = useState('');
   const [quickCourseCode, setQuickCourseCode] = useState('');
-  const [quickSubject, setQuickSubject] = useState<Subject>('Mathematics');
+  const [quickSubject, setQuickSubject] = useState<Subject>('General Studies');
   const [quickLevel, setQuickLevel] = useState<Level>('100');
   const [quickSemester, setQuickSemester] = useState<Semester>('1st Semester');
-  const [quickDepartment, setQuickDepartment] = useState<Department>('Mathematics');
+  const [quickDepartment, setQuickDepartment] = useState<Department | ''>('');
   const [courseScope, setCourseScope] = useState<CourseScope>('DEPARTMENT');
   const [selectedFaculties, setSelectedFaculties] = useState<string[]>([]);
-  const [selectedDepartments, setSelectedDepartments] = useState<Department[]>(['Mathematics']);
+  const [selectedDepartments, setSelectedDepartments] = useState<Department[]>([]);
   const [quickCourseOutline, setQuickCourseOutline] = useState('');
   const [quickTone, setQuickTone] = useState('academic');
   const [quickDepth, setQuickDepth] = useState('standard');
   const [quickAcademicStandard, setQuickAcademicStandard] = useState<string>('Globally Adaptive (Universal University Standard)');
   const [customAcademicStandard, setCustomAcademicStandard] = useState<string>('');
+
+  useEffect(() => {
+    if (!quickCourseCode) return;
+    const trimmed = quickCourseCode.trim().toUpperCase();
+    if (/^(GET|ENG|MEE|CVE|CHE|EEE|MCE|PET|AGE|ARC)/i.test(trimmed)) {
+      if (!selectedFaculties.includes('Engineering')) {
+        setSelectedFaculties(prev => Array.from(new Set([...prev, 'Engineering'])));
+      }
+      if (!quickDepartment || quickDepartment === 'Mathematics') {
+        setQuickDepartment('General Engineering');
+      }
+    } else if (/^(MAT|MTH|STA)/i.test(trimmed)) {
+      if (!selectedFaculties.includes('Science')) {
+        setSelectedFaculties(prev => Array.from(new Set([...prev, 'Science'])));
+      }
+      if (!quickDepartment) {
+        setQuickDepartment('Mathematics');
+      }
+    } else if (/^(PHY)/i.test(trimmed)) {
+      if (!selectedFaculties.includes('Science')) {
+        setSelectedFaculties(prev => Array.from(new Set([...prev, 'Science'])));
+      }
+      if (!quickDepartment) {
+        setQuickDepartment('Physics');
+      }
+    }
+  }, [quickCourseCode]);
   const [sourceFile, setSourceFile] = useState<File | null>(null);
   const [sourceText, setSourceText] = useState('');
   const [isReadingFile, setIsReadingFile] = useState(false);
@@ -1131,7 +1158,8 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
       showToast('Please provide both course code and name', 'error');
       return;
     }
-    if (!quickDepartment) {
+    const resolvedDept = quickDepartment || (selectedDepartments.length > 0 ? selectedDepartments[0] : (selectedFaculties.includes('Engineering') ? 'General Engineering' : ''));
+    if (!resolvedDept) {
       showToast('Please select a target Department for course generation', 'error');
       return;
     }
@@ -1157,7 +1185,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
             [],
             quickLevel,
             quickSemester,
-            quickDepartment,
+            resolvedDept,
             undefined, // curriculumBenchmark
             quickTone,
             quickDepth,
@@ -1219,7 +1247,8 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
 
   const handleFinalizeGeneration = async (opts?: { resume?: boolean }) => {
     if (!courseSkeleton) return;
-    if (!quickDepartment) {
+    const resolvedDept = quickDepartment || (selectedDepartments.length > 0 ? selectedDepartments[0] : (selectedFaculties.includes('Engineering') ? 'General Engineering' : ''));
+    if (!resolvedDept) {
       showToast('Please select a target Department before generating full content', 'error');
       return;
     }
@@ -1256,7 +1285,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
           provider: aiProvider,
           level: quickLevel,
           semester: quickSemester,
-          department: quickDepartment,
+          department: resolvedDept,
           tone: quickTone,
           depth: quickDepth,
           sourceText,
@@ -3479,7 +3508,20 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
                     </p>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                    <div>
+                      <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Department</label>
+                      <select 
+                        value={quickDepartment}
+                        onChange={(e) => setQuickDepartment(e.target.value as Department)}
+                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      >
+                        <option value="">Select Department...</option>
+                        {DEPARTMENTS.map(dept => (
+                          <option key={dept} value={dept}>{dept}</option>
+                        ))}
+                      </select>
+                    </div>
                     <div>
                       <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Course Scope</label>
                       <select 

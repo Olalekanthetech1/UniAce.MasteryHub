@@ -16,7 +16,8 @@ import {
   Users,
   Bot,
   History,
-  Radio
+  Radio,
+  Sparkles
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
@@ -1321,7 +1322,7 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
                 <div className="bg-slate-950 rounded-xl p-2.5 border border-slate-800">
                   <div className="text-[10px] text-slate-400 uppercase font-bold">AI Accuracy</div>
                   <div className="text-sm font-black text-emerald-300 mt-0.5">
-                    {challengerCal?.accuracyPct ?? 65}%
+                    {challengerCal?.targetAccuracyPct ?? 65}%
                   </div>
                 </div>
               </div>

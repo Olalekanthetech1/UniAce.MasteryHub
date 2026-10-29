@@ -13,6 +13,7 @@
 import crypto from 'crypto';
 import { queryPostgres } from '../postgresPool';
 import { logger } from '../logger';
+import { catalogCache } from '../cache/catalogCache';
 
 export interface CourseGenerationJobEntity {
   job_id: string;
@@ -323,6 +324,7 @@ export class JobRepository {
         JSON.stringify(params.lesson.assetReferences || {})
       ]);
     }
+    catalogCache.invalidateCourse(params.courseId);
   }
 
   /**

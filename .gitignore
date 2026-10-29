@@ -11,3 +11,13 @@ public/assets/aistudio/
 .tempmediaStorage/
 *.mp4
 
+# Temporary script files & scratchpads
+scripts/temp*
+scripts/tmp*
+scripts/*tmp*
+scripts/*scratch*
+scripts/*realign*
+scripts/*populate*
+scripts/*refine*
+*.tmp
+*.temp

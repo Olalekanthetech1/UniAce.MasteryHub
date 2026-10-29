@@ -244,10 +244,17 @@ async function callGenerateAPI(prompt: string, type: 'skeleton' | 'module' | 'le
     // 1. Strip internal reasoning <think>...</think>
     let content = rawContent.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 
-    // 2. Strip markdown code block wrappers if present
-    const mdMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-    if (mdMatch && mdMatch[1].trim()) {
-      content = mdMatch[1].trim();
+    // 2. Strip outer markdown code block wrappers ONLY if the entire payload is wrapped in a fence
+    if (!content.startsWith('{') && !content.startsWith('[')) {
+      const outerMdMatch = content.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+      if (outerMdMatch && outerMdMatch[1].trim()) {
+        content = outerMdMatch[1].trim();
+      } else {
+        const fencedJsonMatch = content.match(/```json\s*([\s\S]*?)\s*```/i);
+        if (fencedJsonMatch && fencedJsonMatch[1].trim()) {
+          content = fencedJsonMatch[1].trim();
+        }
+      }
     }
 
     try {

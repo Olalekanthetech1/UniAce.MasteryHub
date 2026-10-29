@@ -78,7 +78,10 @@ import {
   deriveCurriculumParameters,
   getModuleOrderIndex,
   getLessonOrderIndex,
-  sortCourseSyllabus
+  sortCourseSyllabus,
+  normalizeLessonMarkdownContent,
+  isGenericLessonTitle,
+  isBareDiagramOrFragment
 } from './src/shared/courseSchemas.js';
 import { VISUALIZATION_AND_DIAGRAM_DIRECTIVE } from './src/shared/prompts.js';
 import {
@@ -1131,6 +1134,14 @@ app.get('/api/courses/:courseId/modules', async (req, res) => {
   try {
     const { courseId } = req.params;
     const modules = await courseRepository.getCourseModules(courseId);
+    auditCourseHealthInPostgres(courseId).then(health => {
+      if (health.needsHealing && !activeRunningCourseJobs.has(courseId)) {
+        const app = getAdminApp();
+        healCourseInPostgres(app ? app.firestore() : null, courseId).catch(err => {
+          console.warn(`[Self-Heal] Background heal trigger on module fetch failed for ${courseId}:`, err?.message);
+        });
+      }
+    }).catch(() => {});
     const latencyMs = Date.now() - t0;
     res.json({ modules, total: modules.length, latencyMs });
   } catch (err: any) {
@@ -1147,6 +1158,14 @@ app.get('/api/courses/:courseId/modules/:moduleId/lessons', async (req, res) => 
     const lessons = await courseRepository.getCourseLessons(courseId, moduleId);
     if (lessons === null) {
       return res.status(404).json({ error: 'Module is archived or does not exist' });
+    }
+    if (lessons.length === 0 || lessons.some((l: any) => isGenericLessonTitle(l.title) || isBareDiagramOrFragment(l.content_markdown || ''))) {
+      if (!activeRunningCourseJobs.has(courseId)) {
+        const app = getAdminApp();
+        healCourseInPostgres(app ? app.firestore() : null, courseId).catch(err => {
+          console.warn(`[Self-Heal] Background heal trigger on lesson fetch failed for ${courseId}:`, err?.message);
+        });
+      }
     }
     const latencyMs = Date.now() - t0;
     res.json({ lessons, total: lessons.length, latencyMs });
@@ -2942,10 +2961,19 @@ function parseRobustJSON<T = any>(text: string): T {
   // 1. Strip internal CoT reasoning tags <think>...</think>
   let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 
-  // 2. Extract from markdown code block if present
-  const markdownMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (markdownMatch && markdownMatch[1].trim()) {
-    cleaned = markdownMatch[1].trim();
+  // 2. Extract from outer markdown code block ONLY if the payload does not already start with JSON
+  // Never match inner ```svg or ```function-plot blocks inside a JSON string!
+  if (!cleaned.startsWith('{') && !cleaned.startsWith('[')) {
+    const outerFenceMatch = cleaned.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    if (outerFenceMatch && outerFenceMatch[1].trim()) {
+      cleaned = outerFenceMatch[1].trim();
+    } else {
+      const explicitJsonFence = cleaned.match(/```json\s*([\s\S]*?)\s*```/i);
+      const firstBrace = cleaned.search(/[\{\[]/);
+      if (explicitJsonFence && explicitJsonFence[1].trim() && (firstBrace === -1 || (explicitJsonFence.index ?? 0) < firstBrace)) {
+        cleaned = explicitJsonFence[1].trim();
+      }
+    }
   }
 
   // 3. Try direct JSON.parse first
@@ -2985,10 +3013,16 @@ function parseRobustJSON<T = any>(text: string): T {
       candidateText = cleaned.substring(startIndex, endIndex + 1);
     }
   } else {
-    // If no JSON object/array is found at all, the AI produced raw markdown text
+    // If no JSON object/array is found at all, only accept if it is a complete, multi-section academic markdown document
+    const normalizedRaw = normalizeLessonMarkdownContent(cleaned);
+    if (isBareDiagramOrFragment(normalizedRaw)) {
+      throw new Error('Zero-Fallback Policy: AI response contained no JSON structure and was a truncated fragment or bare diagram.');
+    }
+    const headingMatch = normalizedRaw.match(/^#{1,2}\s+([^\n]+)/m);
+    const extractedTitle = headingMatch && !isGenericLessonTitle(headingMatch[1]) ? headingMatch[1].trim() : undefined;
     return {
-      title: 'Lesson',
-      content: cleaned
+      ...(extractedTitle ? { title: extractedTitle } : {}),
+      content: normalizedRaw
     } as unknown as T;
   }
 
@@ -3068,7 +3102,7 @@ function parseRobustJSON<T = any>(text: string): T {
   // 7. Fallback: Extract structured section fields or content from candidate text
   try {
     const titleMatch = candidateText.match(/"title"\s*:\s*"([^"]+)"/i);
-    const title = titleMatch ? titleMatch[1] : 'Lesson';
+    const extractedTitle = titleMatch && !isGenericLessonTitle(titleMatch[1]) ? titleMatch[1].trim() : undefined;
 
     const contentMatch = candidateText.match(/"content"\s*:\s*"([\s\S]*)/i);
     if (contentMatch) {
@@ -3081,10 +3115,13 @@ function parseRobustJSON<T = any>(text: string): T {
           rawContent = rawContent.slice(0, -1);
         }
       }
-      return {
-        title,
-        content: rawContent
-      } as unknown as T;
+      const normalizedContent = normalizeLessonMarkdownContent(rawContent);
+      if (!isBareDiagramOrFragment(normalizedContent)) {
+        return {
+          ...(extractedTitle ? { title: extractedTitle } : {}),
+          content: normalizedContent
+        } as unknown as T;
+      }
     }
 
     // Check for sectioned keys: introduction, theoreticalFoundations, etc.
@@ -3102,10 +3139,13 @@ function parseRobustJSON<T = any>(text: string): T {
     if (takeawaysMatch) sections.push(`## Key Takeaways\n\n${takeawaysMatch[1]}`);
 
     if (sections.length > 0) {
-      return {
-        title,
-        content: sections.join('\n\n')
-      } as unknown as T;
+      const joinedSections = normalizeLessonMarkdownContent(sections.join('\n\n'));
+      if (!isBareDiagramOrFragment(joinedSections)) {
+        return {
+          ...(extractedTitle ? { title: extractedTitle } : {}),
+          content: joinedSections
+        } as unknown as T;
+      }
     }
   } catch (extractErr) {
     console.warn('Regex extraction fallback encountered an error:', extractErr);
@@ -5795,8 +5835,8 @@ async function completeWithProviderJSON<T = any>(opts: CompleteProviderOptions<T
   const primaryKey = normalizedRequested || routingConfig[opts.type] || 'gemini_direct';
   const normalizedPrimary = primaryKey === 'gemini' ? 'gemini_direct' : primaryKey === 'mistral' ? 'mistral_direct' : primaryKey;
 
-  // Strict mode: if requested or configured, fail fast rather than failing over
-  const isStrict = opts.strictMode === true || routingConfig.default_personality === 'strict_mode';
+  // Strict mode: only fail fast when explicitly requested on this call; otherwise allow multi-provider failover
+  const isStrict = opts.strictMode === true;
 
   const distinctProviders = ['gemini_direct', 'groq', 'nvidia', 'mistral_direct', 'cohere', 'openrouter_free', 'huggingface'];
   const queue = [normalizedPrimary];
@@ -6558,27 +6598,29 @@ async function executeCoordinatedGenerationJob(
 
               // Check if lesson already exists in Neon PostgreSQL on resume
               const existingLessonRes = await pool.query(
-                `SELECT content_markdown FROM course_lessons WHERE course_id = $1 AND module_id = $2 AND id = $3 LIMIT 1`,
+                `SELECT title, content_markdown FROM course_lessons WHERE course_id = $1 AND module_id = $2 AND id = $3 LIMIT 1`,
                 [courseId, moduleId, lessonId]
               ).catch(() => ({ rows: [] as any[] }));
 
-              if (isResume && existingLessonRes.rows[0]?.content_markdown && existingLessonRes.rows[0].content_markdown.length > 200) {
-                const existingContent = existingLessonRes.rows[0].content_markdown;
-                if (validateLessonSyntax(existingContent, domainBrief.pedagogyType).isValid) {
-                  completedLessonsCount++;
-                  const resumeElapsed = Math.round((Date.now() - jobStartTime) / 1000);
-                  const resumePct = Math.min(95, 15 + Math.round((completedLessonsCount / Math.max(1, totalLessonsCount)) * 75));
-                  await updateCourseGenerationStateInPostgres(courseId, {
-                    generationProgress: resumePct,
-                    statusMessage: `Reused Lesson ${completedLessonsCount}/${totalLessonsCount}: "${topic}"`,
-                    currentModule: modTitle,
-                    currentLesson: topic,
-                    completedLessons: completedLessonsCount,
-                    totalLessons: totalLessonsCount,
-                    elapsedSeconds: resumeElapsed
-                  });
-                  continue;
-                }
+              if (
+                isResume &&
+                existingLessonRes.rows[0]?.content_markdown &&
+                !isGenericLessonTitle(existingLessonRes.rows[0]?.title) &&
+                validateLessonSyntax(existingLessonRes.rows[0].content_markdown, domainBrief.pedagogyType).isValid
+              ) {
+                completedLessonsCount++;
+                const resumeElapsed = Math.round((Date.now() - jobStartTime) / 1000);
+                const resumePct = Math.min(95, 15 + Math.round((completedLessonsCount / Math.max(1, totalLessonsCount)) * 75));
+                await updateCourseGenerationStateInPostgres(courseId, {
+                  generationProgress: resumePct,
+                  statusMessage: `Reused Lesson ${completedLessonsCount}/${totalLessonsCount}: "${existingLessonRes.rows[0].title || topic}"`,
+                  currentModule: modTitle,
+                  currentLesson: existingLessonRes.rows[0].title || topic,
+                  completedLessons: completedLessonsCount,
+                  totalLessons: totalLessonsCount,
+                  elapsedSeconds: resumeElapsed
+                });
+                continue;
               }
 
               const startLessonElapsed = Math.round((Date.now() - jobStartTime) / 1000);
@@ -6607,6 +6649,16 @@ async function executeCoordinatedGenerationJob(
               let lessonTitle = topic;
               let lessonErrors: string[] = [];
 
+              const ValidatedLessonSchema = LessonContentSchema.superRefine((val, ctx) => {
+                const check = validateLessonSyntax(val.content || '', domainBrief.pedagogyType);
+                if (!check.isValid) {
+                  ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message: check.errors.join(' ')
+                  });
+                }
+              });
+
               while (lessonAttempts < 3) {
                 if (activeCancelledJobs.has(courseId)) return;
                 lessonAttempts++;
@@ -6632,7 +6684,7 @@ async function executeCoordinatedGenerationJob(
                 );
 
                 const critiqueAugmentedPrompt = lessonErrors.length > 0 
-                  ? `${lessonPrompt}\n\n[CRITICAL CORRECTION REQUIRED FROM PREVIOUS ATTEMPT]:\n${lessonErrors.join('\n')}\nEnsure strictly balanced LaTeX ($ and $$) and valid Markdown tables.`
+                  ? `${lessonPrompt}\n\n[CRITICAL CORRECTION REQUIRED FROM PREVIOUS ATTEMPT]:\n${lessonErrors.join('\n')}\nEnsure strictly balanced LaTeX ($ and $$), valid Markdown headings, and complete academic prose.`
                   : lessonPrompt;
 
                 const lessonData = await completeWithProviderJSON({
@@ -6644,13 +6696,13 @@ async function executeCoordinatedGenerationJob(
                     },
                     { role: 'user', content: critiqueAugmentedPrompt }
                   ],
-                  schema: LessonContentSchema,
+                  schema: ValidatedLessonSchema,
                   requestedProvider,
                   complexity: 'high'
                 });
 
-                lessonTitle = lessonData.title || topic;
-                lessonContent = lessonData.content || '';
+                lessonTitle = (!isGenericLessonTitle(lessonData.title) && lessonData.title ? lessonData.title.trim() : topic) || topic;
+                lessonContent = normalizeLessonMarkdownContent(lessonData.content || '');
 
                 const syntaxValidation = validateLessonSyntax(lessonContent, domainBrief.pedagogyType);
                 if (syntaxValidation.isValid) {
@@ -6662,8 +6714,9 @@ async function executeCoordinatedGenerationJob(
 
               if (activeCancelledJobs.has(courseId)) return;
 
-              if (!lessonContent || lessonContent.trim().length < 50) {
-                throw new Error(`Zero-Fallback Policy: Generated lesson content for "${topic}" is incomplete or empty.`);
+              const finalCheck = validateLessonSyntax(lessonContent, domainBrief.pedagogyType);
+              if (!finalCheck.isValid) {
+                throw new Error(`Zero-Fallback Policy: Generated lesson content for "${topic}" failed academic structural validation: ${finalCheck.errors.join(' ')}`);
               }
 
               await JobRepository.upsertModuleAndLesson({
@@ -6869,13 +6922,617 @@ Return strictly a JSON object:
   }
 }
 
-async function resumeInterruptedCourseJobs(_db: admin.firestore.Firestore | null) {
-  // Neon PostgreSQL job recovery is handled by JobRepository / MaintenanceSweeps
+interface CourseHealthAuditResult {
+  courseId: string;
+  courseTitle: string;
+  department: string;
+  level: string;
+  faculty: string;
+  semester: string;
+  scope: string;
+  needsHealing: boolean;
+  totalModules: number;
+  emptyModuleIds: string[];
+  corruptedLessonIds: { moduleId: string; lessonId: string; title: string; reason: string }[];
+  healthyLessonCount: number;
 }
+
+async function auditCourseHealthInPostgres(courseId: string): Promise<CourseHealthAuditResult> {
+  const pool = getPostgresPool();
+  if (!pool) {
+    return {
+      courseId,
+      courseTitle: courseId,
+      department: 'Engineering',
+      level: '200',
+      faculty: 'Engineering',
+      semester: '1st Semester',
+      scope: 'DEPARTMENT',
+      needsHealing: false,
+      totalModules: 0,
+      emptyModuleIds: [],
+      corruptedLessonIds: [],
+      healthyLessonCount: 0
+    };
+  }
+
+  const cRes = await pool.query(
+    `SELECT id, code, title, description, level, department, faculty, semester, scope FROM courses WHERE id = $1 LIMIT 1`,
+    [courseId]
+  );
+  if (cRes.rows.length === 0) {
+    return {
+      courseId,
+      courseTitle: courseId,
+      department: 'Engineering',
+      level: '200',
+      faculty: 'Engineering',
+      semester: '1st Semester',
+      scope: 'DEPARTMENT',
+      needsHealing: false,
+      totalModules: 0,
+      emptyModuleIds: [],
+      corruptedLessonIds: [],
+      healthyLessonCount: 0
+    };
+  }
+
+  const c = cRes.rows[0];
+  const modsRes = await pool.query(
+    `SELECT id, title, order_index FROM course_modules WHERE course_id = $1 ORDER BY order_index ASC`,
+    [courseId]
+  );
+  const lessRes = await pool.query(
+    `SELECT id, module_id, title, content_markdown, order_index FROM course_lessons WHERE course_id = $1 ORDER BY module_id, order_index ASC`,
+    [courseId]
+  );
+
+  const lessonsByMod: Record<string, any[]> = {};
+  for (const l of lessRes.rows) {
+    if (!lessonsByMod[l.module_id]) lessonsByMod[l.module_id] = [];
+    lessonsByMod[l.module_id].push(l);
+  }
+
+  const emptyModuleIds: string[] = [];
+  const corruptedLessonIds: { moduleId: string; lessonId: string; title: string; reason: string }[] = [];
+  let healthyLessonCount = 0;
+
+  for (const m of modsRes.rows) {
+    const modLessons = lessonsByMod[m.id] || [];
+    if (modLessons.length === 0) {
+      emptyModuleIds.push(m.id);
+      continue;
+    }
+    for (const l of modLessons) {
+      const normalized = normalizeLessonMarkdownContent(l.content_markdown || '');
+      const genericTitle = isGenericLessonTitle(l.title);
+      const syntaxCheck = validateLessonSyntax(normalized, 'GENERAL_FOUNDATIONS');
+      if (genericTitle || !syntaxCheck.isValid) {
+        corruptedLessonIds.push({
+          moduleId: m.id,
+          lessonId: l.id,
+          title: l.title || '',
+          reason: genericTitle ? `Generic title "${l.title}"` : syntaxCheck.errors.join('; ')
+        });
+      } else {
+        healthyLessonCount++;
+      }
+    }
+  }
+
+  const needsHealing = modsRes.rows.length === 0 || emptyModuleIds.length > 0 || corruptedLessonIds.length > 0;
+
+  return {
+    courseId: c.id,
+    courseTitle: c.title || c.id,
+    department: c.department || 'Academic Studies',
+    level: c.level || '200',
+    faculty: c.faculty || 'Academic Studies',
+    semester: c.semester || '1st Semester',
+    scope: c.scope || 'DEPARTMENT',
+    needsHealing,
+    totalModules: modsRes.rows.length,
+    emptyModuleIds,
+    corruptedLessonIds,
+    healthyLessonCount
+  };
+}
+
+const ModuleTopicPlanSchema = z.object({
+  modules: z.array(
+    z.object({
+      moduleId: z.string(),
+      moduleTitle: z.string(),
+      lessonTopics: z.array(z.string().min(4)).min(1)
+    })
+  ).min(1)
+});
+
+async function healCourseInPostgres(
+  _db: admin.firestore.Firestore | null,
+  courseId: string,
+  requestedProvider?: string
+): Promise<{ status: string; healedLessons: number; emptyModulesPopulated: number }> {
+  if (activeRunningCourseJobs.has(courseId)) {
+    return { status: 'already_running', healedLessons: 0, emptyModulesPopulated: 0 };
+  }
+
+  const pool = getPostgresPool();
+  if (!pool) {
+    throw new Error('Neon PostgreSQL database service unavailable.');
+  }
+
+  const audit = await auditCourseHealthInPostgres(courseId);
+  if (!audit.needsHealing) {
+    return { status: 'healthy', healedLessons: 0, emptyModulesPopulated: 0 };
+  }
+
+  if (audit.totalModules === 0) {
+    await executeCoordinatedGenerationJob(_db, {
+      courseId: audit.courseId,
+      courseName: audit.courseTitle,
+      department: audit.department,
+      level: audit.level,
+      semester: audit.semester,
+      scope: audit.scope,
+      selectedFaculties: [audit.faculty],
+      selectedDepartments: [audit.department],
+      provider: requestedProvider,
+      resume: true
+    });
+    return { status: 'started_full_generation', healedLessons: 0, emptyModulesPopulated: 0 };
+  }
+
+  activeRunningCourseJobs.add(courseId);
+  activeCancelledJobs.delete(courseId);
+  const jobStartTime = Date.now();
+
+  try {
+    console.log(`[Self-Heal] Starting targeted surgical repair for ${courseId} (${audit.courseTitle}): ${audit.emptyModuleIds.length} empty modules, ${audit.corruptedLessonIds.length} corrupted lessons (${audit.healthyLessonCount} healthy lessons preserved).`);
+
+    await updateCourseGenerationStateInPostgres(courseId, {
+      id: courseId,
+      code: courseId,
+      title: audit.courseTitle,
+      department: audit.department,
+      level: audit.level,
+      semester: audit.semester,
+      scope: audit.scope,
+      generationStatus: 'generating',
+      generationProgress: 12,
+      statusMessage: `Auditing & repairing ${audit.emptyModuleIds.length} incomplete module(s) and ${audit.corruptedLessonIds.length} corrupted lesson(s)...`
+    });
+
+    const domainPrompt = buildDomainBriefPrompt({
+      courseId: audit.courseId,
+      courseName: audit.courseTitle,
+      courseCode: audit.courseId,
+      department: audit.department,
+      level: audit.level
+    });
+
+    const domainBrief: any = await completeWithProviderJSON({
+      type: 'skeleton',
+      messages: [{ role: 'user', content: domainPrompt }],
+      schema: DomainBriefSchema,
+      requestedProvider,
+      complexity: 'standard'
+    });
+
+    const modsRes = await pool.query(
+      `SELECT id, title, description, order_index FROM course_modules WHERE course_id = $1 ORDER BY order_index ASC`,
+      [courseId]
+    );
+    const lessRes = await pool.query(
+      `SELECT id, module_id, title, content_markdown, order_index FROM course_lessons WHERE course_id = $1 ORDER BY module_id, order_index ASC`,
+      [courseId]
+    );
+
+    const lessonsByMod: Record<string, any[]> = {};
+    for (const l of lessRes.rows) {
+      if (!lessonsByMod[l.module_id]) lessonsByMod[l.module_id] = [];
+      lessonsByMod[l.module_id].push(l);
+    }
+
+    // Build list of modules that need canonical lesson titles (either 0 lessons or lessons titled 'Lesson')
+    const modulesNeedingTopics: { moduleId: string; moduleTitle: string; neededCount: number; existingHealthyTitles: string[] }[] = [];
+    for (const m of modsRes.rows) {
+      const modLessons = lessonsByMod[m.id] || [];
+      if (modLessons.length === 0) {
+        modulesNeedingTopics.push({
+          moduleId: m.id,
+          moduleTitle: m.title,
+          neededCount: 4,
+          existingHealthyTitles: []
+        });
+      } else if (modLessons.some((l: any) => isGenericLessonTitle(l.title))) {
+        modulesNeedingTopics.push({
+          moduleId: m.id,
+          moduleTitle: m.title,
+          neededCount: modLessons.length,
+          existingHealthyTitles: modLessons.filter((l: any) => !isGenericLessonTitle(l.title)).map((l: any) => l.title)
+        });
+      }
+    }
+
+    const topicPlanByModule: Record<string, string[]> = {};
+    if (modulesNeedingTopics.length > 0) {
+      const planPrompt = `You are a university curriculum committee chair for "${audit.courseTitle}" (${audit.courseId}, Level ${audit.level}, Department: ${audit.department}, Domain: ${domainBrief.primaryDomain}).
+Generate specific, rigorous university-level lesson titles for each of the following course modules.
+NEVER use generic titles like "Lesson", "Lesson 1", or "Introduction". Every lesson title must name the concrete academic concept, governing law, theorem, or analytical method covered.
+
+Modules requiring canonical lesson titles:
+${modulesNeedingTopics.map(m => `- moduleId: "${m.moduleId}", moduleTitle: "${m.moduleTitle}", exact number of lessonTopics required: ${m.neededCount}${m.existingHealthyTitles.length > 0 ? ` (keep existing valid topics at their positions: ${m.existingHealthyTitles.join('; ')})` : ''}`).join('\n')}
+
+Return strictly valid JSON matching:
+{
+  "modules": [
+    {
+      "moduleId": "m1",
+      "moduleTitle": "...",
+      "lessonTopics": ["Specific Topic 1", "Specific Topic 2", "..."]
+    }
+  ]
+}`;
+
+      const topicPlan = await completeWithProviderJSON({
+        type: 'skeleton',
+        messages: [
+          { role: 'system', content: `You are an accredited university curriculum architect in ${domainBrief.primaryDomain}. Output strictly valid JSON.` },
+          { role: 'user', content: planPrompt }
+        ],
+        schema: ModuleTopicPlanSchema,
+        requestedProvider,
+        complexity: 'high'
+      });
+
+      for (const mp of topicPlan.modules || []) {
+        if (mp.moduleId && Array.isArray(mp.lessonTopics)) {
+          topicPlanByModule[mp.moduleId] = mp.lessonTopics;
+        }
+      }
+    }
+
+    // Build exact list of lesson repair tasks while preserving all healthy lessons untouched
+    interface LessonRepairTask {
+      moduleId: string;
+      moduleTitle: string;
+      moduleOrder: number;
+      lessonId: string;
+      lessonOrder: number;
+      topic: string;
+    }
+
+    const repairTasks: LessonRepairTask[] = [];
+    for (let mIdx = 0; mIdx < modsRes.rows.length; mIdx++) {
+      const m = modsRes.rows[mIdx];
+      const modOrder = m.order_index ?? (mIdx + 1);
+      const modLessons = lessonsByMod[m.id] || [];
+      const plannedTopics = topicPlanByModule[m.id] || [];
+
+      if (modLessons.length === 0) {
+        const count = plannedTopics.length > 0 ? plannedTopics.length : 4;
+        for (let lIdx = 0; lIdx < count; lIdx++) {
+          const topic = plannedTopics[lIdx] || `${m.title.replace(/^Module\s*\d+\s*:\s*/i, '')} — Part ${lIdx + 1}`;
+          repairTasks.push({
+            moduleId: m.id,
+            moduleTitle: m.title,
+            moduleOrder: modOrder,
+            lessonId: `${m.id}-l${lIdx + 1}`,
+            lessonOrder: lIdx + 1,
+            topic
+          });
+        }
+      } else {
+        for (let lIdx = 0; lIdx < modLessons.length; lIdx++) {
+          const l = modLessons[lIdx];
+          const normalized = normalizeLessonMarkdownContent(l.content_markdown || '');
+          const genericTitle = isGenericLessonTitle(l.title);
+          const syntaxCheck = validateLessonSyntax(normalized, domainBrief.pedagogyType);
+
+          if (!genericTitle && syntaxCheck.isValid) {
+            // If normalization cleaned up minor escaping, persist normalized markdown without regenerating
+            if (normalized !== l.content_markdown) {
+              await pool.query(
+                `UPDATE course_lessons SET content_markdown = $1, updated_at = NOW() WHERE course_id = $2 AND module_id = $3 AND id = $4`,
+                [normalized, courseId, m.id, l.id]
+              ).catch(() => {});
+            }
+            continue;
+          }
+
+          // Determine canonical topic title
+          const candidateTopic = (!genericTitle && l.title ? l.title : plannedTopics[lIdx]) || `${m.title.replace(/^Module\s*\d+\s*:\s*/i, '')} — Section ${lIdx + 1}`;
+
+          // Check if the existing content is already valid after normalization and only lacked a title
+          if (genericTitle && syntaxCheck.isValid) {
+            await JobRepository.upsertModuleAndLesson({
+              courseId,
+              module: {
+                id: m.id,
+                title: m.title,
+                description: m.description || '',
+                orderIndex: modOrder,
+                estimatedMinutes: 60
+              },
+              lesson: {
+                id: l.id,
+                title: candidateTopic,
+                contentMarkdown: normalized,
+                orderIndex: l.order_index ?? (lIdx + 1),
+                learningOutcomes: []
+              }
+            });
+            continue;
+          }
+
+          repairTasks.push({
+            moduleId: m.id,
+            moduleTitle: m.title,
+            moduleOrder: modOrder,
+            lessonId: l.id,
+            lessonOrder: l.order_index ?? (lIdx + 1),
+            topic: candidateTopic
+          });
+        }
+      }
+    }
+
+    const ValidatedLessonSchema = LessonContentSchema.superRefine((val, ctx) => {
+      const check = validateLessonSyntax(val.content || '', domainBrief.pedagogyType);
+      if (!check.isValid) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: check.errors.join(' ')
+        });
+      }
+    });
+
+    let completedRepairs = 0;
+    const totalRepairs = repairTasks.length;
+    const REPAIR_CONCURRENCY = 2;
+
+    for (let i = 0; i < totalRepairs; i += REPAIR_CONCURRENCY) {
+      if (activeCancelledJobs.has(courseId)) break;
+      const batch = repairTasks.slice(i, i + REPAIR_CONCURRENCY);
+      await Promise.all(
+        batch.map(async (task) => {
+          if (activeCancelledJobs.has(courseId)) return;
+          const pct = Math.min(95, 15 + Math.round((completedRepairs / Math.max(1, totalRepairs)) * 80));
+          await updateCourseGenerationStateInPostgres(courseId, {
+            generationProgress: pct,
+            statusMessage: `Repairing Lesson (${completedRepairs + 1}/${totalRepairs}): "${task.topic}" in ${task.moduleTitle}...`,
+            currentModule: task.moduleTitle,
+            currentLesson: task.topic,
+            completedLessons: audit.healthyLessonCount + completedRepairs,
+            totalLessons: audit.healthyLessonCount + totalRepairs,
+            elapsedSeconds: Math.round((Date.now() - jobStartTime) / 1000)
+          });
+
+          let attempts = 0;
+          let lessonContent = '';
+          let lessonTitle = task.topic;
+          let lessonErrors: string[] = [];
+
+          while (attempts < 3) {
+            attempts++;
+            const lessonPrompt = buildLessonPrompt(
+              task.topic,
+              task.moduleTitle,
+              task.moduleOrder,
+              domainBrief,
+              {
+                courseId: audit.courseId,
+                courseName: audit.courseTitle,
+                department: audit.department,
+                selectedFaculties: [audit.faculty],
+                selectedDepartments: [audit.department],
+                level: audit.level,
+                tone: 'academic',
+                depth: 'comprehensive',
+                scope: audit.scope,
+                academicStandard: 'Globally Adaptive (Universal University Standard)'
+              },
+              ''
+            );
+
+            const critiquePrompt = lessonErrors.length > 0
+              ? `${lessonPrompt}\n\n[CRITICAL CORRECTION REQUIRED FROM PREVIOUS ATTEMPT]:\n${lessonErrors.join('\n')}\nEnsure strictly balanced LaTeX ($ and $$), valid Markdown headings, and complete academic prose.`
+              : lessonPrompt;
+
+            const lessonData = await completeWithProviderJSON({
+              type: 'lesson',
+              messages: [
+                {
+                  role: 'system',
+                  content: `You are an expert university professor in ${domainBrief.primaryDomain}. You write rigorous educational lessons. You output strictly valid JSON with no preamble.\n\n${latexInstruction}`
+                },
+                { role: 'user', content: critiquePrompt }
+              ],
+              schema: ValidatedLessonSchema,
+              requestedProvider,
+              complexity: 'high'
+            });
+
+            lessonTitle = (!isGenericLessonTitle(lessonData.title) && lessonData.title ? lessonData.title.trim() : task.topic) || task.topic;
+            lessonContent = normalizeLessonMarkdownContent(lessonData.content || '');
+
+            const syntaxValidation = validateLessonSyntax(lessonContent, domainBrief.pedagogyType);
+            if (syntaxValidation.isValid) {
+              break;
+            } else {
+              lessonErrors = syntaxValidation.errors;
+            }
+          }
+
+          const finalValidation = validateLessonSyntax(lessonContent, domainBrief.pedagogyType);
+          if (!finalValidation.isValid) {
+            throw new Error(`Self-heal validation failed for ${courseId} ${task.lessonId} ("${task.topic}"): ${finalValidation.errors.join(' ')}`);
+          }
+
+          await JobRepository.upsertModuleAndLesson({
+            courseId,
+            module: {
+              id: task.moduleId,
+              title: task.moduleTitle,
+              description: '',
+              orderIndex: task.moduleOrder,
+              estimatedMinutes: 60
+            },
+            lesson: {
+              id: task.lessonId,
+              title: lessonTitle,
+              contentMarkdown: lessonContent,
+              orderIndex: task.lessonOrder,
+              learningOutcomes: []
+            }
+          });
+
+          completedRepairs++;
+          const postPct = Math.min(95, 15 + Math.round((completedRepairs / Math.max(1, totalRepairs)) * 80));
+          await updateCourseGenerationStateInPostgres(courseId, {
+            generationProgress: postPct,
+            statusMessage: `Verified & saved Lesson (${completedRepairs}/${totalRepairs}): "${lessonTitle}"`,
+            currentModule: task.moduleTitle,
+            currentLesson: lessonTitle,
+            completedLessons: audit.healthyLessonCount + completedRepairs,
+            totalLessons: audit.healthyLessonCount + totalRepairs,
+            elapsedSeconds: Math.round((Date.now() - jobStartTime) / 1000)
+          });
+        })
+      );
+    }
+
+    // Recompile final syllabus snapshot
+    const finalModsRes = await pool.query(
+      `SELECT id, title, description, order_index FROM course_modules WHERE course_id = $1 ORDER BY order_index ASC`,
+      [courseId]
+    );
+    const finalLessRes = await pool.query(
+      `SELECT id, module_id, title, order_index FROM course_lessons WHERE course_id = $1 ORDER BY module_id, order_index ASC`,
+      [courseId]
+    );
+    const finalLessonsByMod: Record<string, any[]> = {};
+    for (const l of finalLessRes.rows) {
+      if (!finalLessonsByMod[l.module_id]) finalLessonsByMod[l.module_id] = [];
+      finalLessonsByMod[l.module_id].push({ id: l.id, order: l.order_index, title: l.title });
+    }
+    const compiledSyllabus = sortCourseSyllabus(
+      finalModsRes.rows.map((m: any, mIdx: number) => ({
+        id: m.id,
+        order: m.order_index ?? (mIdx + 1),
+        title: m.title,
+        subTopics: (finalLessonsByMod[m.id] || []).sort((a, b) => (a.order || 0) - (b.order || 0))
+      }))
+    );
+
+    await updateCourseGenerationStateInPostgres(courseId, {
+      syllabus: compiledSyllabus,
+      generationStatus: 'completed',
+      generationProgress: 100,
+      statusMessage: `Course verified and healed (${completedRepairs} lesson(s) repaired, ${audit.healthyLessonCount} healthy lesson(s) preserved).`,
+      published: true,
+      status: 'published'
+    });
+
+    catalogCache.invalidateAll();
+    console.log(`[Self-Heal] Completed surgical repair for ${courseId}: ${completedRepairs} lessons healed.`);
+    void recordBackendSystemLog(
+      'success',
+      'ai',
+      `[Self-Heal] Completed surgical repair for ${courseId} (${audit.courseTitle}): ${completedRepairs} lessons healed, ${audit.healthyLessonCount} healthy preserved.`,
+      { courseId, completedRepairs, healthyLessonCount: audit.healthyLessonCount }
+    );
+
+    return {
+      status: 'healed',
+      healedLessons: completedRepairs,
+      emptyModulesPopulated: audit.emptyModuleIds.length
+    };
+  } catch (err: any) {
+    console.error(`[Self-Heal] Error healing course ${courseId}:`, err);
+    void recordBackendSystemLog(
+      'error',
+      'ai',
+      `[Self-Heal] Error healing course ${courseId}: ${err.message || String(err)}`,
+      { courseId, error: err.message || String(err) }
+    );
+    await updateCourseGenerationStateInPostgres(courseId, {
+      generationStatus: 'failed',
+      generationProgress: 100,
+      statusMessage: `Self-healing encountered an error: ${err.message || 'Unknown error'}`,
+      generationError: err.message || 'Self-healing failed'
+    });
+    throw err;
+  } finally {
+    activeRunningCourseJobs.delete(courseId);
+  }
+}
+
+async function resumeInterruptedCourseJobs(_db: admin.firestore.Firestore | null) {
+  try {
+    const pool = getPostgresPool();
+    if (!pool) return;
+    const coursesRes = await pool.query(`SELECT id FROM courses ORDER BY updated_at DESC`);
+    for (const row of coursesRes.rows) {
+      const courseId = row.id;
+      const audit = await auditCourseHealthInPostgres(courseId);
+      if (audit.needsHealing && !activeRunningCourseJobs.has(courseId)) {
+        console.log(`[Startup Health Audit] Course ${courseId} requires self-healing (${audit.emptyModuleIds.length} empty modules, ${audit.corruptedLessonIds.length} corrupted lessons). Queuing repair...`);
+        await healCourseInPostgres(_db, courseId).catch(err => {
+          console.warn(`[Startup Health Audit] Self-heal failed for ${courseId}:`, err?.message);
+        });
+      }
+    }
+  } catch (err: any) {
+    console.warn('[Startup Health Audit] Error scanning courses:', err?.message);
+  }
+}
+
+app.get('/api/courses/:courseId/health', async (req, res) => {
+  const { courseId } = req.params;
+  try {
+    const audit = await auditCourseHealthInPostgres(courseId);
+    const snapshot = activeCoordinatedJobSnapshots.get(courseId) || null;
+    const isRunning = activeRunningCourseJobs.has(courseId);
+    if (audit.needsHealing && !isRunning && req.query.heal === 'true') {
+      const app = getAdminApp();
+      healCourseInPostgres(app ? app.firestore() : null, courseId).catch(err => {
+        console.error(`[GET /api/courses/${courseId}/health] Auto-heal error:`, err);
+      });
+    }
+    return res.json({
+      courseId,
+      isRunning,
+      audit,
+      snapshot
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Failed to audit course health' });
+  }
+});
 
 app.post('/api/course/generate-coordinated', verifyAdmin, async (req, res) => {
   const app = getAdminApp();
   await executeCoordinatedGenerationJob(app ? app.firestore() : null, req.body, res);
+});
+
+app.post('/api/course/heal/:courseId', verifyAdmin, async (req, res) => {
+  const { courseId } = req.params;
+  const { provider } = req.body || {};
+  try {
+    const audit = await auditCourseHealthInPostgres(courseId);
+    if (!audit.needsHealing) {
+      return res.json({ status: 'healthy', audit });
+    }
+    const app = getAdminApp();
+    healCourseInPostgres(app ? app.firestore() : null, courseId, provider).catch(err => {
+      console.error(`[POST /api/course/heal/${courseId}] Background error:`, err);
+    });
+    return res.json({ status: 'healing_started', audit });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Failed to initiate course self-healing' });
+  }
 });
 
 app.get('/api/course/status/:courseId', verifyAdmin, async (req, res) => {
@@ -6883,7 +7540,7 @@ app.get('/api/course/status/:courseId', verifyAdmin, async (req, res) => {
 
   // 1. Check active coordinated generation job snapshot first
   const memSnapshot = activeCoordinatedJobSnapshots.get(courseId);
-  if (memSnapshot) {
+  if (memSnapshot && memSnapshot.generationStatus === 'generating') {
     return res.json(memSnapshot);
   }
 
@@ -6906,7 +7563,7 @@ app.get('/api/course/status/:courseId', verifyAdmin, async (req, res) => {
     }
   }
 
-  // 3. Check Neon PostgreSQL courses table
+  // 3. Check Neon PostgreSQL courses table and verify real structural health
   try {
     const pool = getPostgresPool();
     if (pool) {
@@ -6917,6 +7574,21 @@ app.get('/api/course/status/:courseId', verifyAdmin, async (req, res) => {
       );
       if (cRes.rows.length > 0) {
         const c = cRes.rows[0];
+        const health = await auditCourseHealthInPostgres(courseId);
+
+        if (health.needsHealing) {
+          if (!activeRunningCourseJobs.has(courseId)) {
+            const app = getAdminApp();
+            healCourseInPostgres(app ? app.firestore() : null, courseId).catch(err => {
+              console.warn(`[GET /api/course/status/${courseId}] Auto-heal error:`, err?.message);
+            });
+          }
+          const latestSnap = activeCoordinatedJobSnapshots.get(courseId);
+          if (latestSnap) {
+            return res.json(latestSnap);
+          }
+        }
+
         const modsRes = await pool.query(
           `SELECT id, title, description, order_index FROM course_modules WHERE course_id = $1 ORDER BY order_index ASC`,
           [courseId]
@@ -6947,9 +7619,11 @@ app.get('/api/course/status/:courseId', verifyAdmin, async (req, res) => {
           semester: c.semester || '1st Semester',
           scope: c.scope || 'DEPARTMENT',
           status: c.status,
-          generationStatus: 'completed',
-          generationProgress: 100,
-          statusMessage: 'Course available in Neon PostgreSQL catalog.',
+          generationStatus: health.needsHealing ? 'generating' : 'completed',
+          generationProgress: health.needsHealing ? 15 : 100,
+          statusMessage: health.needsHealing
+            ? `Self-healing ${health.emptyModuleIds.length} incomplete module(s) and ${health.corruptedLessonIds.length} corrupted lesson(s)...`
+            : 'Course verified and available in Neon PostgreSQL catalog.',
           syllabus
         });
       }

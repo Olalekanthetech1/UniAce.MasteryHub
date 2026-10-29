@@ -3143,7 +3143,7 @@ export const DEPARTMENTS: Department[] = [
   'Dentistry', 'Electrical Engineering', 'Material Science and Engineering', 'Mathematics', 
   'Mechanical Engineering', 'Mechatronics Engineering', 'Medical Laboratory Science', 'Medicine and Surgery', 
   'Nursing Science', 'Petroleum Engineering', 'Pharmacy', 'Physics', 'Physiology', 'Public Health', 
-  'Software Engineering', 'Statistics', 'Zoology', 'General Studies', 'General Engineering Training'
+  'Software Engineering', 'Statistics', 'Zoology', 'General Studies', 'General Engineering', 'General Engineering Training'
 ];
 
 export const LEVELS: Level[] = ['100', '200', '300', '400', '500', '600'];
@@ -3186,6 +3186,7 @@ export const DEPARTMENT_TO_FACULTY: Record<string, string> = {
   'Statistics': 'Science',
   'Zoology': 'Science',
   'General Studies': 'General Studies',
+  'General Engineering': 'Engineering',
   'General Engineering Training': 'Engineering'
 };
 

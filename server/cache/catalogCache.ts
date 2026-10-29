@@ -130,7 +130,7 @@ export class MultiInstanceCatalogCache {
   /**
    * Invalidates a course across local cache and notifies registered listeners
    */
-  public invalidateCourse(courseId: string, newVersion: number): void {
+  public invalidateCourse(courseId: string, newVersion = 1): void {
     // Delete all keys matching this course
     for (const key of Array.from(this.cache.keys())) {
       if (key.includes(courseId) || key.includes('catalog:list')) {
