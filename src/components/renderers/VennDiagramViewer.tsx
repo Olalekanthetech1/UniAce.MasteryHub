@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useRef } from 'react';
-import { Copy, Check, Download, Layers, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
+import { Copy, Check, Download, Layers, ZoomIn, ZoomOut, RotateCcw, AlertCircle } from 'lucide-react';
 
 export interface VennSet {
   name: string;
@@ -41,39 +41,29 @@ export default function VennDiagramViewer({ code, data }: VennDiagramViewerProps
   const chartRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
   const [zoom, setZoom] = useState(1);
-  const [hoveredRegion, setHoveredRegion] = useState<string | null>(null);
 
-  // Parse code if provided as JSON or custom DSL
-  const parsedData: VennDiagramData = useMemo(() => {
-    if (data) return data;
-    if (!code) {
-      return {
-        title: 'Sample Two-Set Venn Diagram',
-        sets: [
-          { name: 'A', label: 'Set A (Math)', size: 10, elements: ['Algebra', 'Calculus', 'Trig'] },
-          { name: 'B', label: 'Set B (Physics)', size: 12, elements: ['Mechanics', 'Waves', 'Optics'] }
-        ],
-        intersections: [
-          { sets: ['A', 'B'], size: 5, label: 'A ∩ B', elements: ['Vectors', 'Differential Eq'] }
-        ]
-      };
+  // Parse code strictly without static or fabricated fallback sets
+  const { parsedData, parseError } = useMemo((): { parsedData: VennDiagramData | null; parseError: string | null } => {
+    if (data) {
+      if (!Array.isArray(data.sets) || data.sets.length < 2) {
+        return { parsedData: null, parseError: 'Venn diagram data requires at least 2 sets.' };
+      }
+      return { parsedData: data, parseError: null };
+    }
+    if (!code || !code.trim()) {
+      return { parsedData: null, parseError: 'Empty Venn diagram specification.' };
     }
 
     try {
       const trimmed = code.trim();
       if (trimmed.startsWith('{')) {
-        return JSON.parse(trimmed);
+        const parsedJson = JSON.parse(trimmed);
+        if (!Array.isArray(parsedJson?.sets) || parsedJson.sets.length < 2) {
+          return { parsedData: null, parseError: 'JSON Venn diagram specification must define at least 2 sets.' };
+        }
+        return { parsedData: parsedJson, parseError: null };
       }
 
-      // Parse simple line-based syntax:
-      // Title: Student Enrollment
-      // Set A: Math = 25 (Calculus, Algebra)
-      // Set B: Physics = 20 (Thermodynamics, Waves)
-      // Set C: CS = 30 (Algorithms, Data Structures)
-      // A & B: 8
-      // B & C: 6
-      // A & C: 7
-      // A & B & C: 3
       const lines = trimmed.split('\n').map(l => l.trim()).filter(Boolean);
       let title = 'Venn Diagram';
       const sets: VennSet[] = [];
@@ -85,8 +75,6 @@ export default function VennDiagramViewer({ code, data }: VennDiagramViewerProps
           continue;
         }
 
-        // Check for intersection: A & B: 5 or A and B = 5
-        const intersectMatch = line.match(/^([A-Za-z0-9_\s&,+]+)(?::|=)\s*([0-9]+)?(?:\s*\((.*?)\))?/);
         if (line.includes('&') || line.toLowerCase().includes(' and ') || line.includes('∩')) {
           const parts = line.split(/[:=]/);
           const left = parts[0] || '';
@@ -105,7 +93,6 @@ export default function VennDiagramViewer({ code, data }: VennDiagramViewerProps
           continue;
         }
 
-        // Check for set: Set A: Calculus = 20 (x, y, z) or A: Math
         const setMatch = line.match(/^(?:Set\s+)?([A-Za-z0-9_]+)\s*(?::|=)\s*(.+)$/i);
         if (setMatch) {
           const name = setMatch[1].trim();
@@ -125,33 +112,24 @@ export default function VennDiagramViewer({ code, data }: VennDiagramViewerProps
         }
       }
 
-      if (sets.length === 0) {
-        // Fallback default
+      if (sets.length < 2) {
         return {
-          title,
-          sets: [
-            { name: 'A', label: 'Set A', size: 10 },
-            { name: 'B', label: 'Set B', size: 10 }
-          ],
-          intersections: [{ sets: ['A', 'B'], size: 4 }]
+          parsedData: null,
+          parseError: 'Unable to resolve at least 2 valid sets from the Venn diagram specification.'
         };
       }
 
-      return { title, sets, intersections };
-    } catch (err) {
-      console.warn('Failed to parse Venn diagram code:', err);
+      return { parsedData: { title, sets, intersections }, parseError: null };
+    } catch (err: any) {
       return {
-        title: 'Venn Diagram',
-        sets: [
-          { name: 'A', label: 'Set A' },
-          { name: 'B', label: 'Set B' }
-        ],
-        intersections: [{ sets: ['A', 'B'] }]
+        parsedData: null,
+        parseError: `Failed to parse Venn diagram syntax: ${err?.message || String(err)}`
       };
     }
   }, [code, data]);
 
-  const numSets = Math.min(Math.max(parsedData.sets.length, 2), 3);
+  const activeSets = parsedData?.sets || [];
+  const numSets = Math.min(Math.max(activeSets.length, 2), 3);
 
   // SVG Geometry Calculations
   const width = 540;
@@ -162,21 +140,21 @@ export default function VennDiagramViewer({ code, data }: VennDiagramViewerProps
   const setGeometry = useMemo(() => {
     if (numSets === 2) {
       return [
-        { cx: 210, cy: 160, r: radius, name: parsedData.sets[0]?.name || 'A' },
-        { cx: 330, cy: 160, r: radius, name: parsedData.sets[1]?.name || 'B' }
+        { cx: 210, cy: 160, r: radius, name: activeSets[0]?.name || 'A' },
+        { cx: 330, cy: 160, r: radius, name: activeSets[1]?.name || 'B' }
       ];
     } else {
-      // 3 sets: equilateral layout
       return [
-        { cx: 210, cy: 165, r: radius, name: parsedData.sets[0]?.name || 'A' }, // Left
-        { cx: 330, cy: 165, r: radius, name: parsedData.sets[1]?.name || 'B' }, // Right
-        { cx: 270, cy: 265, r: radius, name: parsedData.sets[2]?.name || 'C' }  // Bottom
+        { cx: 210, cy: 165, r: radius, name: activeSets[0]?.name || 'A' },
+        { cx: 330, cy: 165, r: radius, name: activeSets[1]?.name || 'B' },
+        { cx: 270, cy: 265, r: radius, name: activeSets[2]?.name || 'C' }
       ];
     }
-  }, [numSets, radius, parsedData.sets]);
+  }, [numSets, radius, activeSets]);
 
   // Label and Value Positions
   const labelPositions = useMemo(() => {
+    if (!parsedData) return {};
     if (numSets === 2) {
       const setA = parsedData.sets[0];
       const setB = parsedData.sets[1];
@@ -185,12 +163,11 @@ export default function VennDiagramViewer({ code, data }: VennDiagramViewerProps
       );
 
       return {
-        onlyA: { x: 155, y: 160, label: setA?.label || 'Set A', size: setA?.size, elements: setA?.elements },
-        onlyB: { x: 385, y: 160, label: setB?.label || 'Set B', size: setB?.size, elements: setB?.elements },
-        bothAB: { x: 270, y: 160, label: interAB?.label || 'A ∩ B', size: interAB?.size, elements: interAB?.elements }
+        onlyA: { x: 155, y: 160, label: setA?.label || setA?.name, size: setA?.size, elements: setA?.elements },
+        onlyB: { x: 385, y: 160, label: setB?.label || setB?.name, size: setB?.size, elements: setB?.elements },
+        bothAB: { x: 270, y: 160, label: interAB?.label || `${setA?.name} ∩ ${setB?.name}`, size: interAB?.size, elements: interAB?.elements }
       };
     } else {
-      // 3-set positions
       const setA = parsedData.sets[0];
       const setB = parsedData.sets[1];
       const setC = parsedData.sets[2];
@@ -201,16 +178,29 @@ export default function VennDiagramViewer({ code, data }: VennDiagramViewerProps
       const interABC = parsedData.intersections?.find(i => i.sets.length === 3 || (i.sets.includes(setA?.name) && i.sets.includes(setB?.name) && i.sets.includes(setC?.name)));
 
       return {
-        onlyA: { x: 160, y: 135, label: setA?.label || 'Set A', size: setA?.size, elements: setA?.elements },
-        onlyB: { x: 380, y: 135, label: setB?.label || 'Set B', size: setB?.size, elements: setB?.elements },
-        onlyC: { x: 270, y: 345, label: setC?.label || 'Set C', size: setC?.size, elements: setC?.elements },
-        interAB: { x: 270, y: 135, label: interAB?.label || 'A ∩ B', size: interAB?.size, elements: interAB?.elements },
-        interAC: { x: 210, y: 235, label: interAC?.label || 'A ∩ C', size: interAC?.size, elements: interAC?.elements },
-        interBC: { x: 330, y: 235, label: interBC?.label || 'B ∩ C', size: interBC?.size, elements: interBC?.elements },
-        interABC: { x: 270, y: 205, label: interABC?.label || 'A ∩ B ∩ C', size: interABC?.size, elements: interABC?.elements }
+        onlyA: { x: 160, y: 135, label: setA?.label || setA?.name, size: setA?.size, elements: setA?.elements },
+        onlyB: { x: 380, y: 135, label: setB?.label || setB?.name, size: setB?.size, elements: setB?.elements },
+        onlyC: { x: 270, y: 345, label: setC?.label || setC?.name, size: setC?.size, elements: setC?.elements },
+        interAB: { x: 270, y: 135, label: interAB?.label || `${setA?.name} ∩ ${setB?.name}`, size: interAB?.size, elements: interAB?.elements },
+        interAC: { x: 210, y: 235, label: interAC?.label || `${setA?.name} ∩ ${setC?.name}`, size: interAC?.size, elements: interAC?.elements },
+        interBC: { x: 330, y: 235, label: interBC?.label || `${setB?.name} ∩ ${setC?.name}`, size: interBC?.size, elements: interBC?.elements },
+        interABC: { x: 270, y: 205, label: interABC?.label || `${setA?.name} ∩ ${setB?.name} ∩ ${setC?.name}`, size: interABC?.size, elements: interABC?.elements }
       };
     }
   }, [numSets, parsedData]);
+
+  if (parseError || !parsedData) {
+    return (
+      <div className="my-4 p-4 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 text-xs font-mono">
+        <div className="flex items-center gap-2 font-bold mb-1">
+          <AlertCircle size={15} />
+          <span>Venn Diagram Specification Error</span>
+        </div>
+        <p className="mb-2">{parseError || 'Invalid Venn diagram data'}</p>
+        {code && <pre className="p-3 bg-white/70 dark:bg-black/40 rounded-xl overflow-x-auto text-[11px]">{code}</pre>}
+      </div>
+    );
+  }
 
   const handleCopyCode = async () => {
     const exportText = code || JSON.stringify(parsedData, null, 2);

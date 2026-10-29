@@ -9,6 +9,7 @@ import LockedFeature from './LockedFeature';
 import { Module, UserProgress } from '../types';
 import CalendarExportModal from './CalendarExportModal';
 import { exportElementToPdf } from '../utils/exportUtils';
+import MarkdownRenderer from './MarkdownRenderer';
 
 
 interface StudyPlanData {
@@ -158,7 +159,9 @@ export default function StudyPlan({ progress, syllabus }: StudyPlanProps) {
               </div>
               <div className="relative z-10 space-y-4">
                 <h2 className="text-2xl sm:text-3xl font-bold uppercase tracking-tight">{plan.title}</h2>
-                <p className="text-zinc-400 font-medium text-lg leading-relaxed max-w-2xl">{plan.overview}</p>
+                <div className="text-zinc-300 font-medium text-lg leading-relaxed max-w-2xl">
+                  <MarkdownRenderer content={plan.overview} />
+                </div>
                 <div className="flex flex-wrap gap-4 pt-4">
                   <div className="bg-white/10 px-4 py-2 rounded-xl flex items-center gap-2">
                     <Target size={16} className="text-emerald-400" />
@@ -192,12 +195,16 @@ export default function StudyPlan({ progress, syllabus }: StudyPlanProps) {
                       <CheckCircle2 size={16} />
                     </div>
                   </div>
-                  <h3 className="text-base sm:text-lg font-semibold text-zinc-900 dark:text-white mb-3">{day.focus}</h3>
+                  <h3 className="text-base sm:text-lg font-semibold text-zinc-900 dark:text-white mb-3">
+                    <MarkdownRenderer content={day.focus} inline />
+                  </h3>
                   <ul className="space-y-3">
                     {(day.tasks || []).map((task, tIdx) => (
                       <li key={tIdx} className="flex items-start gap-3 text-sm text-zinc-600 dark:text-zinc-400 font-medium">
-                        <div className="mt-1 w-1.5 h-1.5 rounded-full bg-zinc-300 dark:bg-zinc-700 shrink-0" />
-                        {task}
+                        <div className="mt-1.5 w-1.5 h-1.5 rounded-full bg-zinc-300 dark:bg-zinc-700 shrink-0" />
+                        <div className="flex-1">
+                          <MarkdownRenderer content={task} inline />
+                        </div>
                       </li>
                     ))}
                   </ul>
@@ -214,7 +221,9 @@ export default function StudyPlan({ progress, syllabus }: StudyPlanProps) {
                     <div className="w-10 h-10 bg-amber-50 dark:bg-amber-900/20 rounded-xl flex items-center justify-center text-amber-500 shrink-0">
                       <Sparkles size={20} />
                     </div>
-                    <p className="text-sm text-zinc-600 dark:text-zinc-400 font-medium leading-relaxed">{tip}</p>
+                    <div className="text-sm text-zinc-600 dark:text-zinc-400 font-medium leading-relaxed flex-1">
+                      <MarkdownRenderer content={tip} inline />
+                    </div>
                   </div>
                 ))}
               </div>

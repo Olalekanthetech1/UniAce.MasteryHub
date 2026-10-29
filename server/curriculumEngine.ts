@@ -1,3 +1,5 @@
+import { Marked } from 'marked';
+import markedKatex from 'marked-katex-extension';
 import { 
   DomainBrief, 
   DisciplinePedagogyType, 
@@ -6,6 +8,20 @@ import {
   deriveCurriculumParameters 
 } from '../src/shared/courseSchemas.js';
 import { LATEX_INSTRUCTION } from '../src/shared/prompts.js';
+
+const curriculumMarkedValidator = new Marked({
+  gfm: true,
+  breaks: true,
+});
+
+curriculumMarkedValidator.use(
+  markedKatex({
+    throwOnError: true,
+    nonStandard: true,
+    output: 'htmlAndMathml',
+    strict: false,
+  })
+);
 
 export interface CurriculumGenerationOptions {
   courseId: string;
@@ -26,9 +42,9 @@ export interface CurriculumGenerationOptions {
 }
 
 /**
- * Lesson syntax and structural validator.
- * Enforces balanced KaTeX delimiters, valid markdown table structure, and substantive content.
- * Rejects faulty content with actionable diagnostic errors instead of silent patching.
+ * Lesson syntax and structural validator powered by Marked + marked-katex-extension.
+ * Enforces balanced KaTeX delimiters, valid AST tokenization, valid markdown table structure,
+ * and substantive content. Rejects faulty content with actionable diagnostic errors.
  */
 export function validateLessonSyntax(content: string, pedagogyType: DisciplinePedagogyType = 'STEM_MATHEMATICAL'): { isValid: boolean; errors: string[] } {
   const errors: string[] = [];
@@ -42,30 +58,32 @@ export function validateLessonSyntax(content: string, pedagogyType: DisciplinePe
   }
 
   // 1. KaTeX Math Delimiter Balance Check
-  // Count $$ occurrences (display math)
   const displayMathMatches = trimmed.match(/\$\$/g) || [];
   if (displayMathMatches.length % 2 !== 0) {
     errors.push(`Unbalanced display math delimiters ($$). Found ${displayMathMatches.length} occurrences (must be an even number).`);
   }
 
-  // Strip $$...$$ blocks first to check inline $...$
   const withoutDisplayMath = trimmed.replace(/\$\$[\s\S]*?\$\$/g, '');
-  
-  // Find single $ that are math delimiters (ignore escaped \$ and standard currency if not matching)
-  // Simple check: count unescaped single $
   const unescapedSingleDollars = (withoutDisplayMath.match(/(?<!\\)\$/g) || []).length;
   if (unescapedSingleDollars % 2 !== 0) {
     errors.push(`Unbalanced inline math delimiters ($). Found ${unescapedSingleDollars} unescaped dollar signs.`);
   }
 
-  // Check for unclosed \begin{env} ... \end{env}
   const beginMatches = trimmed.match(/\\begin\{([a-zA-Z*]+)\}/g) || [];
   const endMatches = trimmed.match(/\\end\{([a-zA-Z*]+)\}/g) || [];
   if (beginMatches.length !== endMatches.length) {
     errors.push(`Mismatched LaTeX environment tags: found ${beginMatches.length} \\begin{} vs ${endMatches.length} \\end{}.`);
   }
 
-  // 2. Markdown Table Check (Math-Aware)
+  // 2. AST Parse & KaTeX Compilation Validation via Marked + marked-katex-extension
+  try {
+    const tokens = curriculumMarkedValidator.lexer(trimmed);
+    curriculumMarkedValidator.parser(tokens);
+  } catch (astErr: any) {
+    errors.push(`Markdown/KaTeX compilation error: ${astErr?.message || String(astErr)}`);
+  }
+
+  // 3. Markdown Table Check (Math-Aware)
   const lines = trimmed.split('\n');
   let inTable = false;
   let tableHeaderCols = 0;
@@ -74,7 +92,6 @@ export function validateLessonSyntax(content: string, pedagogyType: DisciplinePe
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i].trim();
     if (rawLine.startsWith('|') && rawLine.endsWith('|')) {
-      // Mask math blocks ($...$ and $$...$$) and escaped pipes (\|) to prevent absolute value bars (|x|) from corrupting table column counts
       const maskedLine = rawLine
         .replace(/\\\|/g, '__ESCAPED_PIPE__')
         .replace(/\$\$[\s\S]*?\$\$/g, '__DISPLAY_MATH__')
@@ -87,11 +104,9 @@ export function validateLessonSyntax(content: string, pedagogyType: DisciplinePe
         tableRowIndex = 0;
       } else {
         tableRowIndex++;
-        // If it's the second row, check if it's the delimiter row (e.g., |---|---|)
         if (tableRowIndex === 1 && maskedLine.includes('---')) {
-          // Valid separator
+          // Valid GFM table separator
         } else if (cols.length !== tableHeaderCols && cols.length > 0) {
-          // Check if column mismatch is severe
           if (Math.abs(cols.length - tableHeaderCols) > 2) {
             errors.push(`Markdown table column count mismatch at line ${i + 1}: header has ${tableHeaderCols} columns, but row has ${cols.length}.`);
             break;
@@ -104,22 +119,12 @@ export function validateLessonSyntax(content: string, pedagogyType: DisciplinePe
     }
   }
 
-  // 3. Diagram & Visualization Integrity Check
-  // Mermaid quadrantChart must never be used for Cartesian coordinate geometry or continuous math curves
+  // 4. Diagram & Visualization Integrity Check
   const mermaidBlocks = trimmed.match(/```mermaid[\s\S]*?```/gi) || [];
   for (const block of mermaidBlocks) {
     if (/quadrantChart/i.test(block) && /(origin|circle|tangent|radius|slope|x\^2|y\^2|coordinate|axis)/i.test(block)) {
       errors.push('Invalid mathematical visualization: Mermaid quadrantChart was used for Cartesian geometry/curves. Use ```function-plot or ```svg instead.');
       break;
-    }
-  }
-
-  // 4. Domain-Specific Pedagogical Expectation Check
-  if (pedagogyType === 'STEM_MATHEMATICAL') {
-    // Expect at least some mathematical notation or quantitative concepts
-    const hasMath = trimmed.includes('$') || trimmed.includes('\\') || /\b(equation|formula|theorem|parameter|derivative|matrix|vector|integral|ratio|constant)\b/i.test(trimmed);
-    if (!hasMath && trimmed.length > 500) {
-      // Soft note, not a hard rejection unless strictly math course
     }
   }
 

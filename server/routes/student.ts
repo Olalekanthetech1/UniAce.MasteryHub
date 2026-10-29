@@ -2,6 +2,7 @@ import express from 'express';
 import crypto from 'crypto';
 import { getPostgresPool } from '../postgresPool';
 import { logger } from '../logger';
+import { arenaRealtime } from '../arenaRealtime';
 
 // In-memory UID-keyed cache for bootstrap payloads (60-second TTL)
 interface BootstrapCacheEntry {
@@ -117,6 +118,13 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
           }
         }
 
+        const lp = u.learning_profile || {};
+        const userXp = Number(lp.xp ?? 0);
+        const rankRes = await pool.query(
+          `SELECT COUNT(*)::int + 1 AS rank FROM users WHERE (role = 'student' OR role IS NULL) AND COALESCE((learning_profile->>'xp')::int, 0) > $1`,
+          [userXp]
+        ).catch(() => ({ rows: [{ rank: 1 }] }));
+
         profile = {
           uid: u.uid,
           email: u.email,
@@ -128,7 +136,17 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
           subscription_start_date: u.subscription_start_date ? new Date(u.subscription_start_date).toISOString() : undefined,
           created_at: u.created_at ? new Date(u.created_at).toISOString() : undefined,
           ai_sparks: u.ai_sparks ?? 0,
-          learningProfile: u.learning_profile || {},
+          learningProfile: lp,
+          xp: userXp,
+          level: Number(lp.level ?? Math.max(1, Math.floor(userXp / 1000) + 1)),
+          streak: Number(lp.streak ?? 0),
+          arenaWins: Number(lp.arenaWins ?? 0),
+          arenaLosses: Number(lp.arenaLosses ?? 0),
+          arenaWinStreak: Number(lp.arenaWinStreak ?? 0),
+          rank: rankRes.rows[0]?.rank ?? 1,
+          department: lp.department || undefined,
+          academic_level: lp.academic_level || undefined,
+          semester: lp.semester || undefined,
           sessionId: u.session_id || null,
           sessionVersion: u.session_version || 1,
           updatedAt: u.updated_at
@@ -195,9 +213,11 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
       for (const row of configRes.rows) {
         systemConfig[row.key] = row.data;
       }
-      if (!systemConfig.feature_switches) {
-        systemConfig.feature_switches = { arena: false, tutor_dashboard: false };
-      }
+      systemConfig.feature_switches = {
+        arena: true,
+        tutor_dashboard: false,
+        ...(systemConfig.feature_switches || {})
+      };
 
       const payload = {
         success: true,
@@ -853,65 +873,908 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
   });
 
   /**
-   * Arena Matchmaking & Battles (Neon PostgreSQL arena_battles table)
+   * Helper: Fetch current waiting lobbies from Neon PostgreSQL
    */
-  app.post('/api/arena/matchmake', verifyAuth, async (req, res) => {
+  const fetchWaitingArenaBattles = async (pool: any) => {
+    await pool.query(
+      `DELETE FROM arena_battles WHERE status = 'waiting' AND created_at < NOW() - INTERVAL '10 minutes'`
+    ).catch(() => {});
+
+    const waitingRes = await pool.query(
+      `SELECT id, topic, created_at, data
+       FROM arena_battles
+       WHERE status = 'waiting'
+       ORDER BY created_at ASC
+       LIMIT 20`
+    );
+    return waitingRes.rows.map((r: any) => ({
+      id: r.id,
+      topicId: r.topic,
+      hostUid: r.data?.player1?.uid || '',
+      hostName: r.data?.player1?.name || 'Scholar',
+      hostAvatar: r.data?.player1?.avatar || '',
+      questionCount: Array.isArray(r.data?.questions) ? r.data.questions.length : 5,
+      createdAt: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString()
+    }));
+  };
+
+  /**
+   * Helper: Execute a server-scheduled opponent step (for recorded Ghost Replay or Telemetry-Calibrated Challenger)
+   */
+  const executeServerScheduledOpponentMove = async (
+    battleId: string,
+    questionIndex: number,
+    selectedOption: string,
+    isCorrect: boolean,
+    elapsedMs: number
+  ) => {
+    const pool = getPostgresPool();
+    if (!pool) return;
+    const client = await pool.connect();
     try {
-      const user = (req as any).user;
+      await client.query('BEGIN');
+      const res = await client.query(`SELECT id, data FROM arena_battles WHERE id = $1 FOR UPDATE`, [battleId]);
+      if ((res.rowCount ?? 0) === 0) {
+        await client.query('ROLLBACK');
+        return;
+      }
+      const data = { ...(res.rows[0].data || {}), id: battleId };
+      if (data.status !== 'active' || !data.player2) {
+        await client.query('COMMIT');
+        return;
+      }
+
+      const nowMs = Date.now();
+      if (data.expiresAtEpochMs && nowMs >= data.expiresAtEpochMs) {
+        await client.query('ROLLBACK');
+        await arenaRealtime.settleExpiredBattle(battleId, nowMs);
+        return;
+      }
+
+      const p2 = { ...data.player2 };
+      const p1 = { ...data.player1 };
+      if (p2.currentQuestionIndex !== questionIndex) {
+        await client.query('COMMIT');
+        return;
+      }
+
+      const actionLog = Array.isArray(p2.actionLog) ? [...p2.actionLog] : [];
+      actionLog.push({
+        questionIndex,
+        selectedOption,
+        correct: isCorrect,
+        elapsedMs,
+        timestamp: new Date(nowMs).toISOString()
+      });
+      p2.actionLog = actionLog;
+      p2.currentQuestionIndex = questionIndex + 1;
+
+      const DAMAGE_PER_HIT = 20;
+      if (isCorrect) {
+        p2.score = Number(p2.score || 0) + 100;
+        p1.health = Math.max(0, Number(p1.health ?? 100) - DAMAGE_PER_HIT);
+      } else {
+        p2.health = Math.max(0, Number(p2.health ?? 100) - DAMAGE_PER_HIT);
+      }
+
+      data.player1 = p1;
+      data.player2 = p2;
+
+      const totalQuestions = Array.isArray(data.questions) ? data.questions.length : 5;
+      const bothFinishedQuestions =
+        p1.currentQuestionIndex >= totalQuestions && p2.currentQuestionIndex >= totalQuestions;
+
+      if (p1.health <= 0 || p2.health <= 0 || bothFinishedQuestions) {
+        let winnerId = 'draw';
+        if (p1.health <= 0 && p2.health > 0) winnerId = p2.uid;
+        else if (p2.health <= 0 && p1.health > 0) winnerId = p1.uid;
+        else if (p1.score > p2.score) winnerId = p1.uid;
+        else if (p2.score > p1.score) winnerId = p2.uid;
+        else if (p1.health > p2.health) winnerId = p1.uid;
+        else if (p2.health > p1.health) winnerId = p2.uid;
+
+        data.status = 'finished';
+        data.winner = winnerId;
+        data.finishedAt = new Date(nowMs).toISOString();
+        data.finishedAtEpochMs = nowMs;
+        arenaRealtime.clearBattleSchedule(battleId);
+
+        if (!data.statsSettled) {
+          await arenaRealtime.settlePlayersArenaStatsInTx(client, data);
+          data.statsSettled = true;
+          invalidateBootstrapCache(p1.uid);
+        }
+      }
+
+      await client.query(
+        `UPDATE arena_battles
+         SET status = $1, winner_id = $2, data = $3::jsonb, updated_at = NOW()
+         WHERE id = $4`,
+        [data.status, data.winner || null, JSON.stringify(data), battleId]
+      );
+
+      await client.query('COMMIT');
+      arenaRealtime.broadcastToBattle(
+        battleId,
+        data.status === 'finished' ? 'battle:finished' : 'battle:state',
+        data
+      );
+    } catch (err: any) {
+      await client.query('ROLLBACK').catch(() => {});
+      logger.warn({ battleId, err: err.message }, '[Arena] Scheduled opponent move failed');
+    } finally {
+      client.release();
+    }
+  };
+
+  /**
+   * Helper: Dynamically compute Adaptive AI Challenger ([AI Challenger] Sparring Partner) calibration
+   * from the student's actual Neon PostgreSQL telemetry:
+   * 1. user_course_progress & user_quiz_attempts (course quiz scores & completed lessons)
+   * 2. user_spaced_repetition (SRS retention rate for that course)
+   * 3. arena_battles (past win/loss ratio for that course)
+   */
+  const computeAdaptiveChallengerTelemetry = async (db: any, uid: string, topicId: string) => {
+    const cleanTopic = String(topicId || '').trim();
+    const [quizStatsRes, progressStatsRes, srsStatsRes, courseBattlesRes, userStatsRes] = await Promise.all([
+      db.query(
+        `SELECT COUNT(*)::int AS attempts_count,
+                AVG(score_pct)::float AS avg_score,
+                COALESCE(AVG(time_spent_seconds), 0)::float AS avg_time_sec
+         FROM user_quiz_attempts
+         WHERE uid = $1 AND ($2 = '' OR course_id = $2)`,
+        [uid, cleanTopic]
+      ),
+      db.query(
+        `SELECT COALESCE(completed_lessons_count, 0)::int AS lessons_done,
+                COALESCE(completed_modules_count, 0)::int AS modules_done,
+                COALESCE(total_study_seconds, 0)::int AS study_sec
+         FROM user_course_progress
+         WHERE uid = $1 AND course_id = $2`,
+        [uid, cleanTopic]
+      ),
+      db.query(
+        `SELECT COUNT(*)::int AS total_cards,
+                COUNT(*) FILTER (WHERE box >= 2 OR (review_count > 0 AND ease_factor >= 2.3))::int AS retained_cards,
+                COALESCE(AVG(ease_factor), 2.5)::float AS avg_ease
+         FROM user_spaced_repetition
+         WHERE uid = $1 AND ($2 = '' OR course_id = $2)`,
+        [uid, cleanTopic]
+      ),
+      db.query(
+        `SELECT COUNT(*)::int AS total_battles,
+                COUNT(*) FILTER (WHERE winner_id = $1)::int AS wins,
+                COUNT(*) FILTER (WHERE winner_id IS NOT NULL AND winner_id != 'draw' AND winner_id != $1)::int AS losses
+         FROM arena_battles
+         WHERE status = 'finished'
+           AND ($2 = '' OR topic = $2)
+           AND (data->'player1'->>'uid' = $1 OR data->'player2'->>'uid' = $1)`,
+        [uid, cleanTopic]
+      ),
+      db.query(`SELECT learning_profile FROM users WHERE uid = $1`, [uid])
+    ]);
+
+    const attemptsCount = Number(quizStatsRes.rows[0]?.attempts_count ?? 0);
+    const rawQuizAvg = quizStatsRes.rows[0]?.avg_score;
+    const lp = userStatsRes.rows[0]?.learning_profile || {};
+    const profileCourseMastery =
+      cleanTopic && lp.mastery && typeof lp.mastery[cleanTopic] === 'number'
+        ? Number(lp.mastery[cleanTopic])
+        : null;
+
+    const quizScorePct: number | null =
+      attemptsCount > 0 && rawQuizAvg !== null && rawQuizAvg !== undefined
+        ? Math.round(Number(rawQuizAvg))
+        : profileCourseMastery !== null
+        ? Math.round(profileCourseMastery)
+        : null;
+
+    const lessonsDone = Number(progressStatsRes.rows[0]?.lessons_done ?? 0);
+    const studySeconds = Number(progressStatsRes.rows[0]?.study_sec ?? 0);
+
+    const srsCardsSampled = Number(srsStatsRes.rows[0]?.total_cards ?? 0);
+    const srsCardsRetained = Number(srsStatsRes.rows[0]?.retained_cards ?? 0);
+    const srsRetentionPct: number | null =
+      srsCardsSampled > 0 ? Math.round((srsCardsRetained / srsCardsSampled) * 100) : null;
+
+    const courseWins = Number(courseBattlesRes.rows[0]?.wins ?? 0);
+    const courseLosses = Number(courseBattlesRes.rows[0]?.losses ?? 0);
+    const courseBattlesSampled = Number(courseBattlesRes.rows[0]?.total_battles ?? 0);
+    const courseWinLossDecided = courseWins + courseLosses;
+    const courseWinRatePct: number | null =
+      courseWinLossDecided > 0 ? Math.round((courseWins / courseWinLossDecided) * 100) : null;
+
+    // Combine verified empirical signals dynamically
+    let weightedSum = 0;
+    let totalWeight = 0;
+    if (quizScorePct !== null) {
+      weightedSum += quizScorePct * 0.45;
+      totalWeight += 0.45;
+    }
+    if (srsRetentionPct !== null) {
+      weightedSum += srsRetentionPct * 0.30;
+      totalWeight += 0.30;
+    }
+    if (courseWinRatePct !== null) {
+      weightedSum += courseWinRatePct * 0.25;
+      totalWeight += 0.25;
+    }
+
+    let calibratedMasteryPct = 0;
+    if (totalWeight > 0) {
+      calibratedMasteryPct = Math.round(weightedSum / totalWeight);
+    } else if (lessonsDone > 0) {
+      calibratedMasteryPct = Math.min(45, lessonsDone * 10);
+    } else {
+      calibratedMasteryPct = 0;
+    }
+    calibratedMasteryPct = Math.max(0, Math.min(100, calibratedMasteryPct));
+
+    // Calibrate response speed & accuracy strictly by Course Mastery Tier:
+    // - Beginner (<50% course mastery): ~12–15 seconds per question (12000–15000ms)
+    // - Intermediate (50–80% course mastery): ~9–11.5 seconds per question (9000–11500ms)
+    // - Advanced (>80% course mastery): ~6–8 seconds per question (6000–8000ms) with high accuracy
+    let tier: 'beginner' | 'intermediate' | 'advanced' = 'beginner';
+    let tierLabel = 'Beginner (<50% Course Mastery)';
+    let pacingRangeLabel = '12–15s / question';
+    let minStepMs = 12000;
+    let maxStepMs = 15000;
+    let baseStepMs = 13500;
+    let targetAccuracyPct = 58;
+
+    if (calibratedMasteryPct > 80) {
+      tier = 'advanced';
+      tierLabel = 'Advanced (>80% Course Mastery)';
+      pacingRangeLabel = '6–8s / question';
+      minStepMs = 6000;
+      maxStepMs = 8000;
+      const ratio = Math.min(1, Math.max(0, (calibratedMasteryPct - 80) / 20));
+      baseStepMs = Math.round(8000 - ratio * 2000);
+      targetAccuracyPct = 88;
+    } else if (calibratedMasteryPct >= 50) {
+      tier = 'intermediate';
+      tierLabel = 'Intermediate (50–80% Course Mastery)';
+      pacingRangeLabel = '9–11.5s / question';
+      minStepMs = 9000;
+      maxStepMs = 11500;
+      const ratio = Math.min(1, Math.max(0, (calibratedMasteryPct - 50) / 30));
+      baseStepMs = Math.round(11500 - ratio * 2500);
+      targetAccuracyPct = 74;
+    } else {
+      tier = 'beginner';
+      tierLabel = 'Beginner (<50% Course Mastery)';
+      pacingRangeLabel = '12–15s / question';
+      minStepMs = 12000;
+      maxStepMs = 15000;
+      const ratio = Math.min(1, Math.max(0, calibratedMasteryPct / 49));
+      baseStepMs = Math.round(15000 - ratio * 3000);
+      targetAccuracyPct = 58;
+    }
+
+    return {
+      calibratedMasteryPct,
+      tier,
+      tierLabel,
+      pacingRangeLabel,
+      minStepMs,
+      maxStepMs,
+      baseStepMs,
+      targetAccuracyPct,
+      quizScorePct,
+      attemptsSampled: attemptsCount,
+      srsRetentionPct,
+      srsCardsSampled,
+      srsCardsRetained,
+      courseWinRatePct,
+      courseWins,
+      courseLosses,
+      arenaBattlesSampled: courseBattlesSampled,
+      lessonsCompleted: lessonsDone,
+      studySeconds
+    };
+  };
+
+  /**
+   * GET /api/arena/lobby-telemetry
+   * Real-time Arena lobby presence, open waiting queues across courses, recorded historical battle availability,
+   * and live Adaptive AI Challenger ([AI Challenger]) telemetry calibration for the selected course
+   */
+  app.get('/api/arena/lobby-telemetry', verifyAuth, async (req, res) => {
+    try {
       const pool = getPostgresPool();
       if (!pool) return res.status(503).json({ error: 'Database unavailable' });
 
-      const { topicId, player, questions = [] } = req.body || {};
-      if (!topicId || !player) {
-        return res.status(400).json({ error: 'topicId and player required' });
+      const user = (req as any).user;
+      const topicId = typeof req.query.topicId === 'string' ? req.query.topicId.trim() : '';
+      const [waitingBattles, challengerTelemetry] = await Promise.all([
+        fetchWaitingArenaBattles(pool),
+        computeAdaptiveChallengerTelemetry(pool, user.uid, topicId)
+      ]);
+      const presence = arenaRealtime.getOnlinePresenceSummary();
+
+      let historicalGhostCount = 0;
+      let latestGhostMeta: { recordedAt: string; playerName: string; battleId: string } | null = null;
+
+      if (topicId) {
+        const ghostRes = await pool.query(
+          `SELECT id, updated_at, data
+           FROM arena_battles
+           WHERE status = 'finished'
+             AND topic = $1
+             AND (
+               jsonb_array_length(COALESCE(data->'player1'->'actionLog', '[]'::jsonb)) > 0
+               OR jsonb_array_length(COALESCE(data->'player2'->'actionLog', '[]'::jsonb)) > 0
+             )
+           ORDER BY updated_at DESC
+           LIMIT 10`,
+          [topicId]
+        );
+        historicalGhostCount = ghostRes.rowCount ?? 0;
+        if (historicalGhostCount > 0) {
+          const top = ghostRes.rows[0];
+          const p1Log = Array.isArray(top.data?.player1?.actionLog) ? top.data.player1.actionLog : [];
+          const recordedPlayer = p1Log.length > 0 ? top.data.player1 : top.data?.player2;
+          latestGhostMeta = {
+            battleId: top.id,
+            playerName: recordedPlayer?.name || 'Scholar',
+            recordedAt: top.updated_at ? new Date(top.updated_at).toISOString() : new Date().toISOString()
+          };
+        }
       }
 
-      const waitingRes = await pool.query(
-        `SELECT id, data FROM arena_battles
-         WHERE status = 'waiting' AND topic = $1
-         ORDER BY created_at ASC
-         LIMIT 5`,
-        [topicId]
-      );
+      return res.json({
+        serverNow: Date.now(),
+        serverIsoTime: new Date().toISOString(),
+        onlineCount: presence.onlineCount,
+        onlineUsers: presence.users,
+        waitingBattles,
+        historicalGhostCount,
+        latestGhostMeta,
+        challengerTelemetry
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to fetch lobby telemetry' });
+    }
+  });
 
-      const validRow = waitingRes.rows.find((r) => r.data?.player1?.uid && r.data.player1.uid !== user.uid);
+  /**
+   * POST /api/arena/matchmake
+   * Atomic matchmaking in Neon PostgreSQL with real-time WebSocket room broadcast and server clock initialization
+   */
+  app.post('/api/arena/matchmake', verifyAuth, async (req, res) => {
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+
+    const user = (req as any).user;
+    const { topicId, player, questions = [], targetBattleId, skipQueueJoin = false } = req.body || {};
+    if (!topicId || !player) {
+      return res.status(400).json({ error: 'topicId and player required' });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      let validRow: any = null;
+      if (!skipQueueJoin) {
+        let waitingQuery = `
+          SELECT id, topic, data
+          FROM arena_battles
+          WHERE status = 'waiting' AND topic = $1
+          ORDER BY created_at ASC
+          LIMIT 5
+          FOR UPDATE SKIP LOCKED
+        `;
+        let queryParams: any[] = [topicId];
+
+        if (targetBattleId && typeof targetBattleId === 'string') {
+          waitingQuery = `
+            SELECT id, topic, data
+            FROM arena_battles
+            WHERE status = 'waiting' AND id = $1
+            FOR UPDATE SKIP LOCKED
+          `;
+          queryParams = [targetBattleId];
+        }
+
+        const waitingRes = await client.query(waitingQuery, queryParams);
+        validRow = waitingRes.rows.find(
+          (r) => r.data?.player1?.uid && r.data.player1.uid !== user.uid
+        );
+      }
+
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+
       if (validRow) {
+        const questionList = Array.isArray(validRow.data?.questions) && validRow.data.questions.length > 0
+          ? validRow.data.questions
+          : questions;
+        const durationSeconds = 60;
+        const expiresAtEpochMs = nowMs + durationSeconds * 1000;
+        const expiresAt = new Date(expiresAtEpochMs).toISOString();
+
+        const sanitizedPlayer2 = {
+          ...player,
+          uid: user.uid,
+          health: 100,
+          score: 0,
+          currentQuestionIndex: 0,
+          status: 'playing',
+          opponentType: 'human',
+          actionLog: []
+        };
+
         const updatedBattle = {
           ...validRow.data,
           id: validRow.id,
-          player2: player,
-          status: 'active'
+          topicId: validRow.topic || topicId,
+          player1: {
+            ...validRow.data.player1,
+            status: 'playing',
+            opponentType: 'human',
+            actionLog: Array.isArray(validRow.data.player1?.actionLog) ? validRow.data.player1.actionLog : []
+          },
+          player2: sanitizedPlayer2,
+          questions: questionList,
+          status: 'active',
+          opponentType: 'human',
+          startedAt: nowIso,
+          startedAtEpochMs: nowMs,
+          durationSeconds,
+          expiresAt,
+          expiresAtEpochMs
         };
-        await pool.query(
+
+        await client.query(
           `UPDATE arena_battles
            SET status = 'active', data = $1::jsonb, updated_at = NOW()
            WHERE id = $2`,
           [JSON.stringify(updatedBattle), validRow.id]
         );
-        return res.json({ joined: true, battleId: validRow.id, battle: updatedBattle });
+        await client.query('COMMIT');
+
+        arenaRealtime.registerActiveBattleSchedule(validRow.id, expiresAtEpochMs, []);
+        arenaRealtime.broadcastToBattle(validRow.id, 'battle:started', updatedBattle);
+        const remainingWaiting = await fetchWaitingArenaBattles(pool);
+        arenaRealtime.broadcastLobbyQueueUpdate(remainingWaiting);
+
+        return res.json({
+          joined: true,
+          battleId: validRow.id,
+          battle: updatedBattle,
+          serverNow: Date.now()
+        });
       }
 
-      const battleId = `battle_${Date.now()}_${crypto.randomUUID().slice(0, 6)}`;
+      const battleId = `battle_${nowMs}_${crypto.randomUUID().slice(0, 6)}`;
       const newBattle = {
         id: battleId,
         status: 'waiting',
-        player1: player,
+        player1: {
+          ...player,
+          uid: user.uid,
+          health: 100,
+          score: 0,
+          currentQuestionIndex: 0,
+          status: 'ready',
+          opponentType: 'human',
+          actionLog: []
+        },
         player2: null,
         questions,
         winner: null,
-        createdAt: new Date().toISOString(),
+        createdAt: nowIso,
+        createdAtEpochMs: nowMs,
         topicId
       };
 
-      await pool.query(
+      await client.query(
         `INSERT INTO arena_battles (id, topic, status, questions, data, created_at, updated_at)
          VALUES ($1, $2, 'waiting', $3::jsonb, $4::jsonb, NOW(), NOW())`,
         [battleId, topicId, JSON.stringify(questions), JSON.stringify(newBattle)]
       );
+      await client.query('COMMIT');
 
-      return res.json({ joined: false, battleId, battle: newBattle });
+      const updatedWaiting = await fetchWaitingArenaBattles(pool);
+      arenaRealtime.broadcastLobbyQueueUpdate(updatedWaiting);
+
+      return res.json({
+        joined: false,
+        battleId,
+        battle: newBattle,
+        serverNow: Date.now()
+      });
     } catch (err: any) {
+      await client.query('ROLLBACK').catch(() => {});
       return res.status(500).json({ error: err.message || 'Failed to matchmake battle' });
+    } finally {
+      client.release();
+    }
+  });
+
+  /**
+   * POST /api/arena/battles/:battleId/spar
+   * Instant Sparring Fallback when no live human challenger is in queue for the same course:
+   * - mode === 'ghost_replay': Replays a real historical student recording from Neon PostgreSQL at exact recorded timestamps.
+   * - mode === 'ai_challenger': Launches a transparent Adaptive AI Challenger ([AI Challenger]) calibrated from the student's live PostgreSQL telemetry.
+   */
+  app.post('/api/arena/battles/:battleId/spar', verifyAuth, async (req, res) => {
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+
+    const user = (req as any).user;
+    const { battleId } = req.params;
+    const { mode = 'ai_challenger' } = req.body || {};
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const existingRes = await client.query(
+        `SELECT id, topic, data FROM arena_battles WHERE id = $1 FOR UPDATE`,
+        [battleId]
+      );
+      if ((existingRes.rowCount ?? 0) === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Waiting battle not found' });
+      }
+
+      const battleData = { ...(existingRes.rows[0].data || {}), id: battleId };
+      if (battleData.status !== 'waiting') {
+        await client.query('COMMIT');
+        return res.json({ success: true, battle: battleData, serverNow: Date.now() });
+      }
+
+      const topicId = existingRes.rows[0].topic || battleData.topicId;
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+      let durationSeconds = 60;
+
+      const scheduledActions: Array<{ delayMs: number; execute: () => Promise<void> }> = [];
+
+      if (mode === 'ghost_replay') {
+        // Query Neon PostgreSQL for a genuine recorded human battle with a non-empty actionLog
+        const ghostRes = await client.query(
+          `SELECT id, updated_at, data
+           FROM arena_battles
+           WHERE status = 'finished'
+             AND topic = $1
+             AND id != $2
+             AND (
+               jsonb_array_length(COALESCE(data->'player1'->'actionLog', '[]'::jsonb)) > 0
+               OR jsonb_array_length(COALESCE(data->'player2'->'actionLog', '[]'::jsonb)) > 0
+             )
+           ORDER BY updated_at DESC
+           LIMIT 5`,
+          [topicId, battleId]
+        );
+
+        if ((ghostRes.rowCount ?? 0) === 0) {
+          await client.query('ROLLBACK');
+          return res.status(404).json({
+            error: 'No recorded human battle replay exists for this course yet in Neon PostgreSQL.',
+            code: 'NO_GHOST_RECORDING'
+          });
+        }
+
+        const chosenRow = ghostRes.rows[0];
+        const histData = chosenRow.data || {};
+        const p1Log = Array.isArray(histData.player1?.actionLog) ? histData.player1.actionLog : [];
+        const p2Log = Array.isArray(histData.player2?.actionLog) ? histData.player2.actionLog : [];
+        const recordedSource = p1Log.length >= p2Log.length ? histData.player1 : histData.player2;
+        const recordedActions: any[] = Array.isArray(recordedSource?.actionLog) ? recordedSource.actionLog : [];
+        const recordedQuestions = Array.isArray(histData.questions) && histData.questions.length > 0
+          ? histData.questions
+          : battleData.questions;
+
+        battleData.questions = recordedQuestions;
+        battleData.opponentType = 'ghost_replay';
+        battleData.recordedFromBattleId = chosenRow.id;
+        battleData.recordedBattleTimestamp = chosenRow.updated_at
+          ? new Date(chosenRow.updated_at).toISOString()
+          : histData.finishedAt || nowIso;
+
+        battleData.player2 = {
+          uid: `ghost_${recordedSource?.uid || 'scholar'}_${chosenRow.id.slice(-4)}`,
+          name: `${recordedSource?.name || 'Scholar'} [Ghost Replay]`,
+          avatar: recordedSource?.avatar || '',
+          score: 0,
+          currentQuestionIndex: 0,
+          health: 100,
+          status: 'playing',
+          opponentType: 'ghost_replay',
+          recordedFromBattleId: chosenRow.id,
+          recordedAt: battleData.recordedBattleTimestamp,
+          actionLog: []
+        };
+
+        let cumulativeFallbackMs = 0;
+        recordedActions.forEach((act: any, idx: number) => {
+          const rawElapsed = Number(act.elapsedMs);
+          const delayMs = Number.isFinite(rawElapsed) && rawElapsed > 500
+            ? Math.min(durationSeconds * 1000 - 1000, rawElapsed)
+            : (cumulativeFallbackMs += 8000);
+
+          scheduledActions.push({
+            delayMs,
+            execute: async () => {
+              await executeServerScheduledOpponentMove(
+                battleId,
+                typeof act.questionIndex === 'number' ? act.questionIndex : idx,
+                String(act.selectedOption || ''),
+                Boolean(act.correct),
+                delayMs
+              );
+            }
+          });
+        });
+      } else {
+        // mode === 'ai_challenger': Calibrate strictly from the student's live PostgreSQL telemetry
+        // (user_course_progress/user_quiz_attempts, user_spaced_repetition SRS retention, and arena_battles course W/L)
+        const telemetry = await computeAdaptiveChallengerTelemetry(client, user.uid, topicId);
+
+        const questions: any[] = Array.isArray(battleData.questions) ? battleData.questions : [];
+        // Ensure Beginner matches (12–15s per question) have sufficient timer headroom (90s)
+        durationSeconds = telemetry.tier === 'beginner'
+          ? Math.max(85, Math.ceil((questions.length * telemetry.maxStepMs) / 1000) + 10)
+          : telemetry.tier === 'intermediate'
+          ? 70
+          : 60;
+
+        battleData.opponentType = 'ai_challenger';
+        battleData.calibrationTelemetry = telemetry;
+
+        battleData.player2 = {
+          uid: `ai_challenger_${topicId}`,
+          name: `[AI Challenger] Sparring Partner (${telemetry.calibratedMasteryPct}% Mastery)`,
+          avatar: '',
+          score: 0,
+          currentQuestionIndex: 0,
+          health: 100,
+          status: 'playing',
+          opponentType: 'ai_challenger',
+          calibratedMasteryPct: telemetry.calibratedMasteryPct,
+          actionLog: []
+        };
+
+        let cumulativeMs = 0;
+        questions.forEach((q: any, idx: number) => {
+          const difficulty = Number(q?.difficulty ?? 3);
+          // Clamp per-question delay strictly within the calibrated tier bounds:
+          // Beginner (<50%): 12000–15000ms (12–15s)
+          // Intermediate (50–80%): 9000–11500ms (9–11.5s)
+          // Advanced (>80%): 6000–8000ms (6–8s)
+          const rawStepMs = telemetry.baseStepMs + (difficulty - 3) * 500 + ((idx % 2 === 0) ? -400 : 400);
+          const stepDelayMs = Math.max(
+            telemetry.minStepMs,
+            Math.min(telemetry.maxStepMs, rawStepMs)
+          );
+          cumulativeMs += stepDelayMs;
+
+          // Deterministic accuracy calibrated to tier targetAccuracyPct & question difficulty
+          const effectiveThreshold = 100 - telemetry.targetAccuracyPct + (difficulty - 3) * 6;
+          const deterministicScore = ((idx * 37 + difficulty * 19 + telemetry.calibratedMasteryPct) % 100);
+          const willAnswerCorrectly =
+            telemetry.tier === 'advanced'
+              ? idx !== 3 || telemetry.calibratedMasteryPct >= 92 // ~80-100% accuracy on 5 questions
+              : telemetry.tier === 'intermediate'
+              ? idx % 3 !== 2 // ~67-80% accuracy
+              : deterministicScore >= effectiveThreshold; // ~60% accuracy for beginner
+
+          const options: string[] = Array.isArray(q?.options) ? q.options : [];
+          const wrongOption = options.find((opt) => opt !== q?.correctAnswer) || '';
+          const chosenOption = willAnswerCorrectly ? String(q?.correctAnswer || '') : wrongOption;
+          const scheduledElapsed = cumulativeMs;
+
+          if (scheduledElapsed < durationSeconds * 1000 - 500) {
+            scheduledActions.push({
+              delayMs: scheduledElapsed,
+              execute: async () => {
+                await executeServerScheduledOpponentMove(
+                  battleId,
+                  idx,
+                  chosenOption,
+                  willAnswerCorrectly,
+                  scheduledElapsed
+                );
+              }
+            });
+          }
+        });
+      }
+
+      const expiresAtEpochMs = nowMs + durationSeconds * 1000;
+      const expiresAt = new Date(expiresAtEpochMs).toISOString();
+
+      battleData.player1 = {
+        ...battleData.player1,
+        status: 'playing',
+        actionLog: Array.isArray(battleData.player1?.actionLog) ? battleData.player1.actionLog : []
+      };
+      battleData.status = 'active';
+      battleData.startedAt = nowIso;
+      battleData.startedAtEpochMs = nowMs;
+      battleData.durationSeconds = durationSeconds;
+      battleData.expiresAt = expiresAt;
+      battleData.expiresAtEpochMs = expiresAtEpochMs;
+
+      await client.query(
+        `UPDATE arena_battles
+         SET status = 'active', questions = $1::jsonb, data = $2::jsonb, updated_at = NOW()
+         WHERE id = $3`,
+        [JSON.stringify(battleData.questions || []), JSON.stringify(battleData), battleId]
+      );
+      await client.query('COMMIT');
+
+      arenaRealtime.registerActiveBattleSchedule(battleId, expiresAtEpochMs, scheduledActions);
+      arenaRealtime.broadcastToBattle(battleId, 'battle:started', battleData);
+      const remainingWaiting = await fetchWaitingArenaBattles(pool);
+      arenaRealtime.broadcastLobbyQueueUpdate(remainingWaiting);
+
+      return res.json({
+        success: true,
+        battle: battleData,
+        serverNow: Date.now()
+      });
+    } catch (err: any) {
+      await client.query('ROLLBACK').catch(() => {});
+      return res.status(500).json({ error: err.message || 'Failed to launch sparring match' });
+    } finally {
+      client.release();
+    }
+  });
+
+  /**
+   * POST /api/arena/battles/:battleId/answer
+   * Server-authoritative answer submission & real-time timestamped combat resolution
+   */
+  app.post('/api/arena/battles/:battleId/answer', verifyAuth, async (req, res) => {
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+
+    const user = (req as any).user;
+    const { battleId } = req.params;
+    const { selectedOption } = req.body || {};
+    if (typeof selectedOption !== 'string') {
+      return res.status(400).json({ error: 'selectedOption is required' });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const existing = await client.query(
+        `SELECT id, data FROM arena_battles WHERE id = $1 FOR UPDATE`,
+        [battleId]
+      );
+      if ((existing.rowCount ?? 0) === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Battle not found' });
+      }
+
+      const data = { ...(existing.rows[0].data || {}), id: battleId };
+      const nowMs = Date.now();
+
+      if (data.status === 'finished') {
+        await client.query('COMMIT');
+        return res.json({ success: true, battle: data, serverNow: nowMs });
+      }
+
+      if (data.expiresAtEpochMs && nowMs >= data.expiresAtEpochMs) {
+        await client.query('ROLLBACK');
+        const settled = await arenaRealtime.settleExpiredBattle(battleId, nowMs);
+        return res.json({ success: true, battle: settled || data, serverNow: nowMs });
+      }
+
+      const isPlayer1 = data.player1?.uid === user.uid;
+      const isPlayer2 = data.player2?.uid === user.uid;
+      if (!isPlayer1 && !isPlayer2) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ error: 'Not a participant in this battle' });
+      }
+
+      const activePlayer = isPlayer1 ? { ...data.player1 } : { ...data.player2 };
+      const opponentPlayer = isPlayer1 ? { ...data.player2 } : { ...data.player1 };
+      const questions: any[] = Array.isArray(data.questions) ? data.questions : [];
+      const qIndex = Number(activePlayer.currentQuestionIndex || 0);
+      const currentQuestion = questions[qIndex];
+
+      if (!currentQuestion) {
+        await client.query('COMMIT');
+        return res.json({ success: true, battle: data, serverNow: nowMs });
+      }
+
+      const isCorrect = selectedOption === currentQuestion.correctAnswer;
+      const startedAtMs = Number(data.startedAtEpochMs || nowMs);
+      const elapsedMs = Math.max(100, nowMs - startedAtMs);
+
+      const actionLog = Array.isArray(activePlayer.actionLog) ? [...activePlayer.actionLog] : [];
+      actionLog.push({
+        questionIndex: qIndex,
+        selectedOption,
+        correct: isCorrect,
+        elapsedMs,
+        timestamp: new Date(nowMs).toISOString()
+      });
+
+      activePlayer.actionLog = actionLog;
+      activePlayer.currentQuestionIndex = qIndex + 1;
+
+      const DAMAGE_PER_HIT = 20;
+      if (isCorrect) {
+        activePlayer.score = Number(activePlayer.score || 0) + 100;
+        opponentPlayer.health = Math.max(0, Number(opponentPlayer.health ?? 100) - DAMAGE_PER_HIT);
+      } else {
+        activePlayer.health = Math.max(0, Number(activePlayer.health ?? 100) - DAMAGE_PER_HIT);
+      }
+
+      if (isPlayer1) {
+        data.player1 = activePlayer;
+        data.player2 = opponentPlayer;
+      } else {
+        data.player2 = activePlayer;
+        data.player1 = opponentPlayer;
+      }
+
+      const totalQuestions = questions.length || 5;
+      const bothFinishedQuestions =
+        Number(data.player1?.currentQuestionIndex || 0) >= totalQuestions &&
+        Number(data.player2?.currentQuestionIndex || 0) >= totalQuestions;
+
+      if (
+        Number(data.player1?.health ?? 100) <= 0 ||
+        Number(data.player2?.health ?? 100) <= 0 ||
+        bothFinishedQuestions
+      ) {
+        const p1 = data.player1;
+        const p2 = data.player2;
+        let winnerId = 'draw';
+        if (p1.health <= 0 && p2.health > 0) winnerId = p2.uid;
+        else if (p2.health <= 0 && p1.health > 0) winnerId = p1.uid;
+        else if (p1.score > p2.score) winnerId = p1.uid;
+        else if (p2.score > p1.score) winnerId = p2.uid;
+        else if (p1.health > p2.health) winnerId = p1.uid;
+        else if (p2.health > p1.health) winnerId = p2.uid;
+
+        data.status = 'finished';
+        data.winner = winnerId;
+        data.finishedAt = new Date(nowMs).toISOString();
+        data.finishedAtEpochMs = nowMs;
+        arenaRealtime.clearBattleSchedule(battleId);
+
+        if (!data.statsSettled) {
+          await arenaRealtime.settlePlayersArenaStatsInTx(client, data);
+          data.statsSettled = true;
+          invalidateBootstrapCache(user.uid);
+          if (opponentPlayer?.uid) invalidateBootstrapCache(opponentPlayer.uid);
+        }
+      }
+
+      await client.query(
+        `UPDATE arena_battles
+         SET status = $1, winner_id = $2, data = $3::jsonb, updated_at = NOW()
+         WHERE id = $4`,
+        [data.status, data.winner || null, JSON.stringify(data), battleId]
+      );
+
+      await client.query('COMMIT');
+
+      arenaRealtime.broadcastToBattle(
+        battleId,
+        data.status === 'finished' ? 'battle:finished' : 'battle:state',
+        data
+      );
+
+      return res.json({
+        success: true,
+        correct: isCorrect,
+        battle: data,
+        serverNow: Date.now()
+      });
+    } catch (err: any) {
+      await client.query('ROLLBACK').catch(() => {});
+      return res.status(500).json({ error: err.message || 'Failed to record battle answer' });
+    } finally {
+      client.release();
     }
   });
 
@@ -919,27 +1782,39 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
     try {
       const pool = getPostgresPool();
       if (!pool) return res.status(404).json({ error: 'Battle not found' });
-      const result = await pool.query(`SELECT id, data FROM arena_battles WHERE id = $1`, [req.params.battleId]);
+      const battleId = req.params.battleId;
+      const result = await pool.query(`SELECT id, data FROM arena_battles WHERE id = $1`, [battleId]);
       if ((result.rowCount ?? 0) === 0) {
         return res.status(404).json({ error: 'Battle not found' });
       }
-      return res.json({ battle: { ...result.rows[0].data, id: result.rows[0].id } });
+      let battle = { ...result.rows[0].data, id: result.rows[0].id };
+      const nowMs = Date.now();
+      if (battle.status === 'active' && battle.expiresAtEpochMs && nowMs >= battle.expiresAtEpochMs) {
+        const settled = await arenaRealtime.settleExpiredBattle(battleId, nowMs);
+        if (settled) battle = settled;
+      }
+      return res.json({ battle, serverNow: nowMs });
     } catch (err: any) {
       return res.status(500).json({ error: err.message || 'Failed to load battle' });
     }
   });
 
   app.patch('/api/arena/battles/:battleId', verifyAuth, async (req, res) => {
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+    const battleId = req.params.battleId;
+    const user = (req as any).user;
+
+    const client = await pool.connect();
     try {
-      const pool = getPostgresPool();
-      if (!pool) return res.status(503).json({ error: 'Database unavailable' });
-      const battleId = req.params.battleId;
-      const existing = await pool.query(`SELECT data FROM arena_battles WHERE id = $1`, [battleId]);
+      await client.query('BEGIN');
+      const existing = await client.query(`SELECT data FROM arena_battles WHERE id = $1 FOR UPDATE`, [battleId]);
       if ((existing.rowCount ?? 0) === 0) {
+        await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Battle not found' });
       }
 
-      const data = { ...(existing.rows[0].data || {}) };
+      const data = { ...(existing.rows[0].data || {}), id: battleId };
       const updates = req.body || {};
       for (const [k, v] of Object.entries(updates)) {
         if (k.includes('.')) {
@@ -950,28 +1825,417 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
         }
       }
 
-      await pool.query(
+      if (data.status === 'finished' && !data.statsSettled) {
+        data.finishedAt = data.finishedAt || new Date().toISOString();
+        data.finishedAtEpochMs = data.finishedAtEpochMs || Date.now();
+        arenaRealtime.clearBattleSchedule(battleId);
+        await arenaRealtime.settlePlayersArenaStatsInTx(client, data);
+        data.statsSettled = true;
+        invalidateBootstrapCache(user.uid);
+      }
+
+      await client.query(
         `UPDATE arena_battles
          SET status = $1, winner_id = $2, data = $3::jsonb, updated_at = NOW()
          WHERE id = $4`,
         [data.status || 'active', data.winner || null, JSON.stringify(data), battleId]
       );
+      await client.query('COMMIT');
 
-      return res.json({ success: true, battle: data });
+      arenaRealtime.broadcastToBattle(
+        battleId,
+        data.status === 'finished' ? 'battle:finished' : 'battle:state',
+        data
+      );
+
+      return res.json({ success: true, battle: data, serverNow: Date.now() });
     } catch (err: any) {
+      await client.query('ROLLBACK').catch(() => {});
       return res.status(500).json({ error: err.message || 'Failed to update battle' });
+    } finally {
+      client.release();
     }
   });
 
   app.delete('/api/arena/battles/:battleId', verifyAuth, async (req, res) => {
     try {
       const pool = getPostgresPool();
+      const battleId = req.params.battleId;
+      arenaRealtime.clearBattleSchedule(battleId);
       if (pool) {
-        await pool.query(`DELETE FROM arena_battles WHERE id = $1`, [req.params.battleId]);
+        await pool.query(`DELETE FROM arena_battles WHERE id = $1`, [battleId]);
+        const waitingBattles = await fetchWaitingArenaBattles(pool);
+        arenaRealtime.broadcastLobbyQueueUpdate(waitingBattles);
       }
-      return res.json({ success: true });
+      return res.json({ success: true, serverNow: Date.now() });
     } catch (err: any) {
       return res.status(500).json({ error: err.message || 'Failed to delete battle' });
+    }
+  });
+
+  /**
+   * GET /api/arena/challenges/live
+   * Dynamically resolves personalized & global Arena challenges with real-time progress from Neon PostgreSQL
+   */
+  app.get('/api/arena/challenges/live', verifyAuth, async (req, res) => {
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+    const user = (req as any).user;
+    const uid = user.uid;
+
+    try {
+      const todayKey = new Date().toISOString().slice(0, 10);
+
+      const [
+        userRowRes,
+        battlesTodayRes,
+        highScoreQuizzesRes,
+        weakCourseRes,
+        srsReviewedTodayRes,
+        srsDueRes,
+        configRes
+      ] = await Promise.all([
+        pool.query(`SELECT learning_profile, ai_sparks FROM users WHERE uid = $1`, [uid]),
+        pool.query(
+          `SELECT COUNT(*)::int AS total_finished,
+                  COUNT(*) FILTER (WHERE winner_id = $1)::int AS wins_today
+           FROM arena_battles
+           WHERE status = 'finished'
+             AND updated_at >= CURRENT_DATE
+             AND (data->'player1'->>'uid' = $1 OR data->'player2'->>'uid' = $1)`,
+          [uid]
+        ),
+        pool.query(
+          `SELECT COUNT(*)::int AS high_score_count
+           FROM user_quiz_attempts
+           WHERE uid = $1 AND score_pct >= 80 AND attempted_at >= CURRENT_DATE - INTERVAL '7 days'`,
+          [uid]
+        ),
+        pool.query(
+          `SELECT course_id, MIN(score_pct)::float AS lowest_score
+           FROM user_quiz_attempts
+           WHERE uid = $1 AND score_pct < 75
+           GROUP BY course_id
+           ORDER BY lowest_score ASC
+           LIMIT 1`,
+          [uid]
+        ),
+        pool.query(
+          `SELECT COUNT(*)::int AS reviewed_today
+           FROM user_spaced_repetition
+           WHERE uid = $1 AND review_count > 0 AND updated_at >= CURRENT_DATE`,
+          [uid]
+        ),
+        pool.query(
+          `SELECT COUNT(*)::int AS due_count, MIN(course_id) AS sample_course
+           FROM user_spaced_repetition
+           WHERE uid = $1 AND next_review_at <= NOW()`,
+          [uid]
+        ),
+        pool.query(`SELECT data FROM system_config WHERE key = 'challenges'`)
+      ]);
+
+      const lp = userRowRes.rows[0]?.learning_profile || {};
+      const claimedMap: Record<string, string> = lp.claimedChallenges || {};
+      const totalArenaWins = Number(lp.arenaWins ?? 0);
+      const arenaWinStreak = Number(lp.arenaWinStreak ?? 0);
+      const studyStreak = Number(lp.streak ?? 0);
+      const winsToday = Number(battlesTodayRes.rows[0]?.wins_today ?? 0);
+      const battlesFinishedToday = Number(battlesTodayRes.rows[0]?.total_finished ?? 0);
+      const highQuizzesCount = Number(highScoreQuizzesRes.rows[0]?.high_score_count ?? 0);
+      const srsReviewedToday = Number(srsReviewedTodayRes.rows[0]?.reviewed_today ?? 0);
+      const srsDueCount = Number(srsDueRes.rows[0]?.due_count ?? 0);
+      const weakCourse = weakCourseRes.rows[0]?.course_id || null;
+      const weakCourseScore = weakCourseRes.rows[0]?.lowest_score
+        ? Math.round(Number(weakCourseRes.rows[0].lowest_score))
+        : null;
+
+      // 1. Start with any admin-configured challenges in system_config
+      const configuredChallenges: any[] = Array.isArray(configRes.rows[0]?.data?.challenges)
+        ? configRes.rows[0].data.challenges.filter((c: any) => c && c.active !== false)
+        : [];
+
+      const evaluateChallengeProgress = (c: any) => {
+        const target = Math.max(1, Number(c.targetCount || 1));
+        let current = 0;
+        if (c.id === 'daily_battle_participate') {
+          current = battlesFinishedToday;
+        } else if (c.id?.startsWith('remediate_course_') && c.courseId) {
+          current = winsToday;
+        } else if (c.id === 'srs_daily_review') {
+          current = srsReviewedToday;
+        } else if (c.category === 'battle') {
+          current = c.scope === 'daily' ? winsToday : totalArenaWins;
+        } else if (c.category === 'streak') {
+          current = Math.max(arenaWinStreak, studyStreak);
+        } else if (c.category === 'quiz') {
+          current = highQuizzesCount;
+        } else if (c.category === 'study') {
+          current = srsReviewedToday;
+        }
+        const claimScopeKey = c.scope === 'daily' ? `${c.id}_${todayKey}` : c.id;
+        const isClaimed = Boolean(claimedMap[claimScopeKey]);
+        return {
+          ...c,
+          targetCount: target,
+          currentCount: Math.min(target, current),
+          completed: current >= target,
+          claimed: isClaimed,
+          claimScopeKey,
+          updatedAt: new Date().toISOString()
+        };
+      };
+
+      // 2. Dynamically construct telemetry-driven adaptive challenges based on the student's live PostgreSQL records
+      const adaptiveChallenges: any[] = [
+        {
+          id: 'daily_arena_victory',
+          title: 'Daily Arena Victor',
+          description: 'Win 1 live or sparring battle in the Academic Arena today',
+          reward: 25,
+          rewardType: 'sparks',
+          iconType: 'swords',
+          targetCount: 1,
+          category: 'battle',
+          scope: 'daily',
+          active: true
+        },
+        {
+          id: 'arena_win_streak_2',
+          title: 'Momentum Builder',
+          description: 'Maintain a 2-win combat streak or 2-day study streak',
+          reward: 100,
+          rewardType: 'xp',
+          iconType: 'flame',
+          targetCount: 2,
+          category: 'streak',
+          scope: 'daily',
+          active: true
+        },
+        {
+          id: 'high_accuracy_scholar',
+          title: 'Precision Mastery',
+          description: 'Score 80%+ on 2 practice quizzes in the last 7 days',
+          reward: 30,
+          rewardType: 'sparks',
+          iconType: 'star',
+          targetCount: 2,
+          category: 'quiz',
+          scope: 'daily',
+          active: true
+        }
+      ];
+
+      if (weakCourse && weakCourseScore !== null) {
+        adaptiveChallenges.unshift({
+          id: `remediate_course_${weakCourse}`,
+          title: `${weakCourse} Mastery Recovery`,
+          description: `Win 1 Arena battle today to reinforce ${weakCourse} (recent quiz: ${weakCourseScore}%)`,
+          reward: 35,
+          rewardType: 'sparks',
+          iconType: 'target',
+          targetCount: 1,
+          category: 'battle',
+          courseId: weakCourse,
+          scope: 'daily',
+          active: true
+        });
+      }
+
+      if (srsDueCount > 0 || srsReviewedToday > 0) {
+        adaptiveChallenges.push({
+          id: 'srs_daily_review',
+          title: 'Memory Consolidation',
+          description: `Review ${Math.min(5, Math.max(1, srsDueCount + srsReviewedToday))} Spaced Repetition flashcards today`,
+          reward: 20,
+          rewardType: 'sparks',
+          iconType: 'zap',
+          targetCount: Math.min(5, Math.max(1, srsDueCount + srsReviewedToday)),
+          category: 'study',
+          scope: 'daily',
+          active: true
+        });
+      }
+
+      const mergedById = new Map<string, any>();
+      for (const item of [...adaptiveChallenges, ...configuredChallenges]) {
+        if (item && item.id) {
+          mergedById.set(item.id, evaluateChallengeProgress(item));
+        }
+      }
+
+      return res.json({
+        challenges: Array.from(mergedById.values()),
+        serverNow: Date.now(),
+        serverIsoTime: new Date().toISOString()
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || 'Failed to compute live challenges' });
+    }
+  });
+
+  /**
+   * POST /api/arena/challenges/claim
+   * Atomically verifies challenge completion against Neon PostgreSQL and credits Sparks or XP
+   */
+  app.post('/api/arena/challenges/claim', verifyAuth, async (req, res) => {
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+    const user = (req as any).user;
+    const uid = user.uid;
+    const { challengeId } = req.body || {};
+
+    if (!challengeId || typeof challengeId !== 'string') {
+      return res.status(400).json({ error: 'challengeId is required' });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const userRes = await client.query(
+        `SELECT ai_sparks, learning_profile FROM users WHERE uid = $1 FOR UPDATE`,
+        [uid]
+      );
+      if ((userRes.rowCount ?? 0) === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      const lp = { ...(userRes.rows[0].learning_profile || {}) };
+      const claimedMap: Record<string, string> = { ...(lp.claimedChallenges || {}) };
+      const todayKey = new Date().toISOString().slice(0, 10);
+      const claimKey = `${challengeId}_${todayKey}`;
+
+      if (claimedMap[claimKey] || claimedMap[challengeId]) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Challenge reward already claimed' });
+      }
+
+      // Re-verify live telemetry counts inside transaction
+      const [battlesTodayRes, highQuizzesRes, srsReviewedRes, configRes] = await Promise.all([
+        client.query(
+          `SELECT COUNT(*) FILTER (WHERE winner_id = $1)::int AS wins_today
+           FROM arena_battles
+           WHERE status = 'finished'
+             AND updated_at >= CURRENT_DATE
+             AND (data->'player1'->>'uid' = $1 OR data->'player2'->>'uid' = $1)`,
+          [uid]
+        ),
+        client.query(
+          `SELECT COUNT(*)::int AS high_score_count
+           FROM user_quiz_attempts
+           WHERE uid = $1 AND score_pct >= 80 AND attempted_at >= CURRENT_DATE - INTERVAL '7 days'`,
+          [uid]
+        ),
+        client.query(
+          `SELECT COUNT(*)::int AS reviewed_today
+           FROM user_spaced_repetition
+           WHERE uid = $1 AND review_count > 0 AND updated_at >= CURRENT_DATE`,
+          [uid]
+        ),
+        client.query(`SELECT data FROM system_config WHERE key = 'challenges'`)
+      ]);
+
+      const winsToday = Number(battlesTodayRes.rows[0]?.wins_today ?? 0);
+      const totalWins = Number(lp.arenaWins ?? 0);
+      const winStreak = Math.max(Number(lp.arenaWinStreak ?? 0), Number(lp.streak ?? 0));
+      const highQuizzes = Number(highQuizzesRes.rows[0]?.high_score_count ?? 0);
+      const srsReviewed = Number(srsReviewedRes.rows[0]?.reviewed_today ?? 0);
+
+      let reward = 25;
+      let rewardType: 'sparks' | 'xp' = 'sparks';
+      let verifiedCompleted = false;
+
+      if (challengeId === 'daily_arena_victory' || challengeId.startsWith('remediate_course_')) {
+        reward = challengeId.startsWith('remediate_course_') ? 35 : 25;
+        rewardType = 'sparks';
+        verifiedCompleted = winsToday >= 1;
+      } else if (challengeId === 'arena_win_streak_2') {
+        reward = 100;
+        rewardType = 'xp';
+        verifiedCompleted = winStreak >= 2;
+      } else if (challengeId === 'high_accuracy_scholar') {
+        reward = 30;
+        rewardType = 'sparks';
+        verifiedCompleted = highQuizzes >= 2;
+      } else if (challengeId === 'srs_daily_review') {
+        reward = 20;
+        rewardType = 'sparks';
+        verifiedCompleted = srsReviewed >= 1;
+      } else {
+        const customList: any[] = Array.isArray(configRes.rows[0]?.data?.challenges)
+          ? configRes.rows[0].data.challenges
+          : [];
+        const matched = customList.find((c: any) => c && c.id === challengeId);
+        if (matched) {
+          reward = Number(matched.reward || 25);
+          rewardType = matched.rewardType === 'xp' ? 'xp' : 'sparks';
+          const target = Math.max(1, Number(matched.targetCount || 1));
+          const progressVal =
+            matched.category === 'battle'
+              ? totalWins
+              : matched.category === 'streak'
+              ? winStreak
+              : matched.category === 'quiz'
+              ? highQuizzes
+              : srsReviewed;
+          verifiedCompleted = progressVal >= target;
+        }
+      }
+
+      if (!verifiedCompleted) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Challenge requirements have not been met yet' });
+      }
+
+      claimedMap[claimKey] = new Date().toISOString();
+      lp.claimedChallenges = claimedMap;
+
+      let nextSparks = Number(userRes.rows[0].ai_sparks ?? 0);
+      let nextXp = Number(lp.xp ?? 0);
+
+      if (rewardType === 'sparks') {
+        nextSparks += reward;
+        await client.query(
+          `UPDATE users SET ai_sparks = $1, learning_profile = $2::jsonb, updated_at = NOW() WHERE uid = $3`,
+          [nextSparks, JSON.stringify(lp), uid]
+        );
+        await client.query(
+          `UPDATE user_sparks_wallets
+           SET free_sparks = COALESCE(free_sparks, 0) + $1,
+               total_sparks = COALESCE(total_sparks, 0) + $1,
+               updated_at = NOW()
+           WHERE uid = $2`,
+          [reward, uid]
+        ).catch(() => {});
+      } else {
+        nextXp += reward;
+        lp.xp = nextXp;
+        lp.level = Math.max(1, Math.floor(nextXp / 1000) + 1);
+        await client.query(
+          `UPDATE users SET learning_profile = $1::jsonb, updated_at = NOW() WHERE uid = $2`,
+          [JSON.stringify(lp), uid]
+        );
+      }
+
+      await client.query('COMMIT');
+      invalidateBootstrapCache(uid);
+
+      return res.json({
+        success: true,
+        challengeId,
+        reward,
+        rewardType,
+        ai_sparks: nextSparks,
+        xp: nextXp,
+        claimedAt: claimedMap[claimKey],
+        serverNow: Date.now()
+      });
+    } catch (err: any) {
+      await client.query('ROLLBACK').catch(() => {});
+      return res.status(500).json({ error: err.message || 'Failed to claim challenge reward' });
+    } finally {
+      client.release();
     }
   });
 }

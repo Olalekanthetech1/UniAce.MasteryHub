@@ -409,7 +409,9 @@ function runBenchmarkSuite() {
     console.error('❌ Benchmark failed threshold gates.');
     process.exit(1);
   }
+  process.exit(0);
 }
 
 runBenchmarkSuite();
+
 

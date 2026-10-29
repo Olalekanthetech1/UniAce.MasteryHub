@@ -16,6 +16,7 @@ import {
   BookOpen
 } from 'lucide-react';
 import { AIService } from '../services/ai';
+import MarkdownRenderer from './MarkdownRenderer';
 
 interface VisionToQuizProps {
   onClose: () => void;
@@ -167,9 +168,9 @@ export const VisionToQuiz: React.FC<VisionToQuizProps> = ({ onClose, onQuizGener
                     <CheckCircle2 size={20} />
                     <span className="font-bold text-sm uppercase tracking-wider">Analysis Complete</span>
                   </div>
-                  <p className="text-slate-700 text-sm leading-relaxed">
-                    {result.summary}
-                  </p>
+                  <div className="text-slate-700 text-sm leading-relaxed">
+                    <MarkdownRenderer content={result.summary} />
+                  </div>
                 </div>
 
                 <div className="space-y-4">
@@ -180,13 +181,15 @@ export const VisionToQuiz: React.FC<VisionToQuizProps> = ({ onClose, onQuizGener
                   <div className="space-y-3">
                     {result.quizzes.map((q: any, idx: number) => (
                       <div key={idx} className="p-4 bg-white border border-slate-100 rounded-2xl shadow-sm flex items-center justify-between group hover:border-emerald-200 transition-all">
-                        <div className="flex items-center gap-4">
-                          <div className="w-8 h-8 bg-slate-50 rounded-lg flex items-center justify-center text-slate-400 font-bold text-xs">
+                        <div className="flex items-center gap-4 min-w-0 flex-1">
+                          <div className="w-8 h-8 bg-slate-50 rounded-lg flex items-center justify-center text-slate-400 font-bold text-xs shrink-0">
                             {idx + 1}
                           </div>
-                          <p className="text-sm font-medium text-slate-700 line-clamp-1">{q.question}</p>
+                          <div className="text-sm font-medium text-slate-700 line-clamp-1">
+                            <MarkdownRenderer content={q.question} inline />
+                          </div>
                         </div>
-                        <ChevronRight size={18} className="text-slate-300 group-hover:text-emerald-500 transition-colors" />
+                        <ChevronRight size={18} className="text-slate-300 group-hover:text-emerald-500 transition-colors shrink-0" />
                       </div>
                     ))}
                   </div>

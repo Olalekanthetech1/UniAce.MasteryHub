@@ -90,6 +90,7 @@ import {
 } from './server/curriculumEngine.js';
 import { setupRagRoutes } from './server/routes/rag.js';
 import { setupStudentRoutes, invalidateBootstrapCache } from './server/routes/student.js';
+import { arenaRealtime } from './server/arenaRealtime.js';
 import { getPostgresPool } from './server/postgresPool.js';
 import { LogRepository } from './server/repositories/logRepository.js';
 import { MaintenanceSweeps } from './server/services/maintenanceSweeps.js';
@@ -11924,6 +11925,10 @@ async function startServer() {
       } else if (url.pathname === '/api/live') {
         liveWss.handleUpgrade(request, socket, head, (ws) => {
           liveWss.emit('connection', ws, request);
+        });
+      } else if (url.pathname === '/api/arena/ws') {
+        arenaRealtime.wss.handleUpgrade(request, socket, head, (ws) => {
+          void arenaRealtime.handleConnection(ws, request, getAdminApp);
         });
       }
     } catch (err) {

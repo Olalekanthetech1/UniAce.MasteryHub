@@ -301,6 +301,14 @@ export interface Quiz {
   questions: QuizQuestion[];
 }
 
+export interface BattleActionRecord {
+  questionIndex: number;
+  selectedOption: string;
+  correct: boolean;
+  elapsedMs: number;
+  timestamp: string;
+}
+
 export interface BattlePlayer {
   uid: string;
   name: string;
@@ -309,6 +317,11 @@ export interface BattlePlayer {
   currentQuestionIndex: number;
   health: number; // 0-100
   status: 'ready' | 'playing' | 'finished';
+  opponentType?: 'human' | 'ghost_replay' | 'ai_challenger';
+  calibratedMasteryPct?: number;
+  recordedFromBattleId?: string;
+  recordedAt?: string;
+  actionLog?: BattleActionRecord[];
 }
 
 export interface Battle {
@@ -319,6 +332,37 @@ export interface Battle {
   questions: QuizQuestion[];
   winner: string | null; // uid or 'draw'
   createdAt: string;
+  createdAtEpochMs?: number;
+  startedAt?: string;
+  startedAtEpochMs?: number;
+  expiresAt?: string;
+  expiresAtEpochMs?: number;
+  finishedAt?: string;
+  finishedAtEpochMs?: number;
+  durationSeconds?: number;
+  opponentType?: 'human' | 'ghost_replay' | 'ai_challenger';
+  recordedFromBattleId?: string;
+  recordedBattleTimestamp?: string;
+  calibrationTelemetry?: {
+    calibratedMasteryPct: number;
+    tier?: 'beginner' | 'intermediate' | 'advanced';
+    tierLabel?: string;
+    pacingRangeLabel?: string;
+    minStepMs?: number;
+    maxStepMs?: number;
+    baseStepMs: number;
+    targetAccuracyPct?: number;
+    quizScorePct?: number | null;
+    attemptsSampled: number;
+    srsRetentionPct?: number | null;
+    srsCardsSampled?: number;
+    srsCardsRetained?: number;
+    courseWinRatePct?: number | null;
+    courseWins?: number;
+    courseLosses?: number;
+    arenaBattlesSampled: number;
+    lessonsCompleted: number;
+  };
   topicId: string; // e.g., 'MAT101'
 }
 

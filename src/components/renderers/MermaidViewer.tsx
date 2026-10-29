@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import mermaid from 'mermaid';
+import DOMPurify from 'dompurify';
 import { Copy, Check, Download, AlertTriangle, RefreshCw, ZoomIn, ZoomOut, AlertCircle, Compass } from 'lucide-react';
 import FunctionPlotViewer from './FunctionPlotViewer';
 
@@ -64,11 +65,15 @@ export default function MermaidViewer({ chart }: MermaidViewerProps) {
       try {
         setHasError(false);
         const { svg } = await mermaid.render(id, chart.trim());
+        const cleanSvg = DOMPurify.sanitize(svg, {
+          USE_PROFILES: { svg: true, svgFilters: true, html: true },
+          ADD_TAGS: ['foreignObject'],
+        });
         if (isMounted) {
-          setSvgContent(svg);
+          setSvgContent(cleanSvg);
         }
       } catch (err) {
-        console.warn('Mermaid rendering failed, falling back:', err);
+        console.warn('Mermaid rendering failed:', err);
         if (isMounted) {
           setHasError(true);
         }

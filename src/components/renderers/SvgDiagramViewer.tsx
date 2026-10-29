@@ -1,50 +1,9 @@
 import React, { useMemo, useState } from 'react';
 import { Compass, ZoomIn, ZoomOut, RotateCcw, Copy, Check, Download, Code2, Eye, AlertCircle } from 'lucide-react';
+import { sanitizeSvgMarkup } from '../MarkdownRenderer';
 
 interface SvgDiagramViewerProps {
   code: string;
-}
-
-/**
- * Sanitizes and extracts raw SVG from incoming code blocks.
- * Enforces security by stripping executable scripts and event handlers.
- */
-function sanitizeSvg(rawSvg: string): { cleanSvg: string; error?: string } {
-  if (!rawSvg || typeof rawSvg !== 'string') {
-    return { cleanSvg: '', error: 'Empty diagram content' };
-  }
-
-  // 1. Extract SVG block if wrapped in markdown or extraneous text
-  let svgContent = rawSvg.trim();
-  const svgMatch = svgContent.match(/<svg[\s\S]*?<\/svg>/i);
-  if (svgMatch) {
-    svgContent = svgMatch[0];
-  } else if (!svgContent.startsWith('<svg')) {
-    return { cleanSvg: '', error: 'Valid <svg> element not found in diagram block' };
-  }
-
-  // 2. Strip dangerous script elements and malicious event handlers
-  svgContent = svgContent
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/\son\w+\s*=\s*["'][^"']*["']/gi, '')
-    .replace(/\shref\s*=\s*["']javascript:[^"']*["']/gi, '')
-    .replace(/\sxlink:href\s*=\s*["']javascript:[^"']*["']/gi, '');
-
-  // 3. Ensure responsive viewBox if missing
-  if (!/viewBox\s*=/i.test(svgContent)) {
-    const widthMatch = svgContent.match(/width\s*=\s*["']?(\d+)/i);
-    const heightMatch = svgContent.match(/height\s*=\s*["']?(\d+)/i);
-    const w = widthMatch ? parseInt(widthMatch[1], 10) : 600;
-    const h = heightMatch ? parseInt(heightMatch[1], 10) : 400;
-    svgContent = svgContent.replace(/<svg/i, `<svg viewBox="0 0 ${w} ${h}"`);
-  }
-
-  // 4. Ensure width="100%" and height="auto" for crisp responsive rendering
-  if (!/style\s*=/i.test(svgContent)) {
-    svgContent = svgContent.replace(/<svg/i, '<svg style="width: 100%; height: auto; max-height: 480px; display: block; margin: 0 auto;"');
-  }
-
-  return { cleanSvg: svgContent };
 }
 
 export default function SvgDiagramViewer({ code }: SvgDiagramViewerProps) {
@@ -52,7 +11,7 @@ export default function SvgDiagramViewer({ code }: SvgDiagramViewerProps) {
   const [copied, setCopied] = useState(false);
   const [showSource, setShowSource] = useState(false);
 
-  const { cleanSvg, error } = useMemo(() => sanitizeSvg(code), [code]);
+  const { cleanSvg, error } = useMemo(() => sanitizeSvgMarkup(code), [code]);
 
   const handleCopy = async () => {
     try {

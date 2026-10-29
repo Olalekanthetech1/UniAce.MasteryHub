@@ -37,9 +37,7 @@ import {
   VolumeX
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import ReactMarkdown from 'react-markdown';
-import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
+import { MarkdownInline, MarkdownWordSpan } from './MarkdownRenderer';
 import { useAuth } from '../context/AuthContext';
 import { useCourses } from '../context/CourseContext';
 import toast from 'react-hot-toast';
@@ -245,36 +243,6 @@ interface SkillPracticeHubProps {
 
 type HubTab = 'skills' | 'cbt' | 'cheatsheet';
 type ExamSessionMode = 'practice' | 'cbt';
-
-const MarkdownInline: React.FC<{ content: string; className?: string }> = ({ content, className = '' }) => (
-  <div className={`prose prose-slate dark:prose-invert max-w-none leading-relaxed ${className}`}>
-    <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
-      {content || ''}
-    </ReactMarkdown>
-  </div>
-);
-
-const MarkdownWordSpan: React.FC<{ content: string }> = ({ content }) => (
-  <ReactMarkdown
-    components={{ p: ({ children }) => <>{children}</> }}
-    remarkPlugins={[remarkMath]}
-    rehypePlugins={[rehypeKatex]}
-  >
-    {content || ''}
-  </ReactMarkdown>
-);
-
-const formatMathToken = (token: string): string => {
-  if (!token) return '';
-  const trimmed = token.trim();
-  if (trimmed.startsWith('$') && trimmed.endsWith('$')) {
-    return trimmed;
-  }
-  if (/^\\[a-zA-Z]+/.test(trimmed) || /\\[a-zA-Z]+/.test(trimmed)) {
-    return `$${trimmed}$`;
-  }
-  return token;
-};
 
 export default function SkillPracticeHub({
   activeCourseId: propCourseId,
@@ -2343,13 +2311,7 @@ export default function SkillPracticeHub({
                       return parts.map((segment, bIdx) => (
                         <React.Fragment key={bIdx}>
                           <span className="inline">
-                            <ReactMarkdown
-                              components={{ p: ({ children }) => <span>{children}</span> }}
-                              remarkPlugins={[remarkMath]}
-                              rehypePlugins={[rehypeKatex]}
-                            >
-                              {segment}
-                            </ReactMarkdown>
+                            <MarkdownWordSpan content={segment} />
                           </span>
                           {bIdx < parts.length - 1 && (() => {
                             const filledValue = blanks[bIdx];
@@ -2384,13 +2346,7 @@ export default function SkillPracticeHub({
                               >
                                 {isFilled ? (
                                   <span className="inline-flex items-center gap-1.5">
-                                    <ReactMarkdown
-                                      components={{ p: ({ children }) => <span>{children}</span> }}
-                                      remarkPlugins={[remarkMath]}
-                                      rehypePlugins={[rehypeKatex]}
-                                    >
-                                      {formatMathToken(filledValue!)}
-                                    </ReactMarkdown>
+                                    <MarkdownWordSpan content={filledValue!} />
                                     {checked && (
                                       isCorrect ? (
                                         <Check size={14} className="text-emerald-600 dark:text-emerald-400 shrink-0" />
@@ -2426,13 +2382,7 @@ export default function SkillPracticeHub({
                               : 'border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-slate-800 dark:text-zinc-200 hover:border-indigo-500 shadow-xs active:scale-95'
                           }`}
                         >
-                          <ReactMarkdown
-                            components={{ p: ({ children }) => <span>{children}</span> }}
-                            remarkPlugins={[remarkMath]}
-                            rehypePlugins={[rehypeKatex]}
-                          >
-                            {formatMathToken(word)}
-                          </ReactMarkdown>
+                          <MarkdownWordSpan content={word} />
                         </button>
                       );
                     })}
@@ -2767,11 +2717,7 @@ export default function SkillPracticeHub({
                 </div>
                 <div className="text-sm sm:text-base text-slate-700 dark:text-zinc-200 leading-relaxed">
                   <MarkdownInline
-                    content={
-                      activeExercise.hint ||
-                      activeExercise.learnMore ||
-                      'Break the statement down into its core variables and check how the input affects the output.'
-                    }
+                    content={activeExercise.hint || activeExercise.learnMore || ''}
                   />
                 </div>
                 <button

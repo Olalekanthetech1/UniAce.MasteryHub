@@ -23,6 +23,7 @@ import {
 import { motion } from 'motion/react';
 import { Module, CourseId, CourseObjective, UserProgress } from '../types';
 import { useAuth } from '../context/AuthContext';
+import MarkdownRenderer from './MarkdownRenderer';
 import { useCourses } from '../context/CourseContext';
 import { usePremiumStatus } from '../hooks/usePremiumStatus';
 import { LogService } from '../services/logService';
@@ -148,11 +149,10 @@ export default function CourseSyllabus({
     }
   };
 
-  // Wrapped Admin Regeneration that sets live syllabusStatus on course document
+  // Wrapped Admin Regeneration that invokes live course regeneration
   const triggerRegenerate = async () => {
     if (!isAdmin || !activeCourseId || !onRegenerate) return;
-    toast.error("Admin syllabus regeneration writes to Firestore are paused during Postgres catalog migration.");
-    return;
+    await onRegenerate();
   };
 
   // Normalize objectives with Bloom taxonomy levels and match with quiz performance
@@ -549,7 +549,9 @@ export default function CourseSyllabus({
                       </div>
                     )}
                     <div className="space-y-2 w-full">
-                      <p className="text-sm font-semibold text-slate-100 leading-relaxed">{obj.outcome}</p>
+                      <div className="text-sm font-semibold text-slate-100 leading-relaxed">
+                        <MarkdownRenderer content={obj.outcome} inline />
+                      </div>
                       
                       <div className="flex flex-wrap items-center gap-2">
                         {obj.bloomLevel && (

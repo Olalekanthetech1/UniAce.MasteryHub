@@ -10,7 +10,7 @@ export interface FeatureSwitches {
 
 export function useFeatureSwitches() {
   const { user } = useAuth();
-  const [switches, setSwitches] = useState<FeatureSwitches>({ arena: false, tutor_dashboard: false });
+  const [switches, setSwitches] = useState<FeatureSwitches>({ arena: true, tutor_dashboard: false });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -18,7 +18,7 @@ export function useFeatureSwitches() {
     const fetchSwitches = async () => {
       if (!user) {
         if (isMounted) {
-          setSwitches({ arena: false, tutor_dashboard: false });
+          setSwitches({ arena: true, tutor_dashboard: false });
           setLoading(false);
         }
         return;
@@ -30,7 +30,11 @@ export function useFeatureSwitches() {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         if (res.ok && res.data && isMounted) {
-          const fs = res.data.systemConfig?.feature_switches || { arena: false, tutor_dashboard: false };
+          const fs = {
+            arena: true,
+            tutor_dashboard: false,
+            ...(res.data.systemConfig?.feature_switches || {})
+          };
           setSwitches(fs);
         }
       } catch (err) {

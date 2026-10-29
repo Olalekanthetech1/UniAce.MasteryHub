@@ -13,6 +13,7 @@ import { useCourses } from '../context/CourseContext';
 import LockedFeature from './LockedFeature';
 import CourseContextBar from './CourseContextBar';
 import { isCourseEligibleForUser } from '../utils/courseEligibility';
+import MarkdownRenderer from './MarkdownRenderer';
 
 interface MasteryCenterProps {
   progress: UserProgress;
@@ -267,9 +268,9 @@ export default function MasteryCenter({
                         <div className="space-y-6 flex-1">
                           <div>
                             <h3 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white mb-2">Exam Readiness</h3>
-                            <p className="text-slate-600 dark:text-zinc-300 text-base sm:text-lg leading-relaxed">
-                              {readiness.analysis}
-                            </p>
+                            <div className="text-slate-600 dark:text-zinc-300 text-base sm:text-lg leading-relaxed">
+                              <MarkdownRenderer content={readiness.analysis} />
+                            </div>
                           </div>
                           
                           <div className="bg-slate-50 dark:bg-zinc-800/40 p-4 rounded-2xl border border-slate-100 dark:border-zinc-800">
@@ -277,7 +278,9 @@ export default function MasteryCenter({
                               <Target size={16} className="text-amber-500" />
                               <span className="text-sm font-bold text-slate-900 dark:text-white">Weakest Area to Focus On:</span>
                             </div>
-                            <p className="text-slate-600 dark:text-zinc-300 font-medium">{readiness.weakestArea}</p>
+                            <div className="text-slate-600 dark:text-zinc-300 font-medium">
+                              <MarkdownRenderer content={readiness.weakestArea} inline />
+                            </div>
                           </div>
                         </div>
                       </div>

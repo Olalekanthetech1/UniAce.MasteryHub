@@ -4,6 +4,7 @@ import { auth } from '../firebase';
 import { jsonrepair } from 'jsonrepair';
 import Papa from 'papaparse';
 import { exportJsonToExcel } from '../utils/exportUtils';
+import MarkdownRenderer from './MarkdownRenderer';
 
 type TabType = 'view' | 'add' | 'bulk';
 
@@ -514,10 +515,10 @@ export default function AdminQuestionBank() {
                         ) : (
                           <>
                             <div className="flex justify-between items-start mb-4">
-                              <h4 className="font-bold text-slate-900 dark:text-white text-lg">
-                                <span className="text-indigo-500 mr-2">Q{idx + 1}.</span>
-                                {q.question}
-                              </h4>
+                              <div className="font-bold text-slate-900 dark:text-white text-lg flex items-start gap-2">
+                                <span className="text-indigo-500 shrink-0">Q{idx + 1}.</span>
+                                <MarkdownRenderer content={q.question} inline />
+                              </div>
                               <div className="flex gap-2">
                                 <button onClick={() => setEditingQuestion({...q, paperId: paper.id})} className="text-slate-400 hover:text-indigo-500 transition-colors p-2">
                                   <Edit2 size={18} />
@@ -529,13 +530,15 @@ export default function AdminQuestionBank() {
                             </div>
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4 pl-8">
                               {q.options?.map((opt: string, oIdx: number) => (
-                                <div key={oIdx} className={`p-3 rounded-xl border ${opt === q.correctAnswer ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 font-medium' : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}>
-                                  <span className="font-bold mr-2">{String.fromCharCode(65 + oIdx)}.</span> {opt}
+                                <div key={oIdx} className={`p-3 rounded-xl border flex items-start gap-2 ${opt === q.correctAnswer ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 font-medium' : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}>
+                                  <span className="font-bold shrink-0">{String.fromCharCode(65 + oIdx)}.</span>
+                                  <MarkdownRenderer content={opt} inline />
                                 </div>
                               ))}
                             </div>
-                            <div className="pl-8 text-sm text-slate-500 dark:text-slate-400">
-                              <strong>Explanation:</strong> {q.explanation}
+                            <div className="pl-8 text-sm text-slate-500 dark:text-slate-400 flex items-start gap-1.5">
+                              <strong className="shrink-0">Explanation:</strong>
+                              <MarkdownRenderer content={q.explanation} inline />
                             </div>
                           </>
                         )}
@@ -797,10 +800,10 @@ export default function AdminQuestionBank() {
                 {extractedQuestions.map((q, idx) => (
                   <div key={idx} className="p-6 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
                     <div className="flex justify-between items-start mb-4">
-                      <h4 className="font-bold text-slate-900 dark:text-white text-lg">
-                        <span className="text-indigo-500 mr-2">Q{idx + 1}.</span>
-                        {q.question}
-                      </h4>
+                      <div className="font-bold text-slate-900 dark:text-white text-lg flex items-start gap-2">
+                        <span className="text-indigo-500 shrink-0">Q{idx + 1}.</span>
+                        <MarkdownRenderer content={q.question} inline />
+                      </div>
                       <button 
                         onClick={() => setExtractedQuestions(prev => prev.filter((_, i) => i !== idx))}
                         className="text-slate-400 hover:text-rose-500 transition-colors p-2"
@@ -813,16 +816,18 @@ export default function AdminQuestionBank() {
                       {(q?.options || []).map((opt: string, oIdx: number) => (
                         <div 
                           key={oIdx} 
-                          className={`p-3 rounded-xl border ${opt === q.correctAnswer ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 font-medium' : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}
+                          className={`p-3 rounded-xl border flex items-start gap-2 ${opt === q.correctAnswer ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 font-medium' : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}
                         >
-                          <span className="font-bold mr-2">{String.fromCharCode(65 + oIdx)}.</span> {opt}
+                          <span className="font-bold shrink-0">{String.fromCharCode(65 + oIdx)}.</span>
+                          <MarkdownRenderer content={opt} inline />
                         </div>
                       ))}
                     </div>
                     
                     <div className="pl-8 space-y-2">
-                      <div className="bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-200 p-3 rounded-xl text-sm">
-                        <strong>Explanation:</strong> {q.explanation}
+                      <div className="bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-200 p-3 rounded-xl text-sm flex items-start gap-1.5">
+                        <strong className="shrink-0">Explanation:</strong>
+                        <MarkdownRenderer content={q.explanation} inline />
                       </div>
                     </div>
                   </div>

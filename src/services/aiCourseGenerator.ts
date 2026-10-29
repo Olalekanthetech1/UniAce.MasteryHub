@@ -21,10 +21,27 @@ export interface GeneratedCourse {
 }
 
 import { jsonrepair } from 'jsonrepair';
+import { Marked } from 'marked';
+import markedKatex from 'marked-katex-extension';
+import DOMPurify from 'dompurify';
 import { PipelineMetadata } from '../types';
 import { autoHealQuestion } from './validators/aiSchemas';
 import { sanitizeForFirestore } from './courseService';
 import { auth } from '../firebase';
+
+const courseMarkedEngine = new Marked({
+  gfm: true,
+  breaks: true,
+});
+
+courseMarkedEngine.use(
+  markedKatex({
+    throwOnError: false,
+    nonStandard: true,
+    output: 'htmlAndMathml',
+    strict: false,
+  })
+);
 
 const getAuthToken = async () => {
   try {
@@ -35,218 +52,126 @@ const getAuthToken = async () => {
 };
 
 export function flagOffTopicDrift(content: string, courseName: string, department?: string): { hasDrift: boolean; hits: string[] } {
-  // Positive domain fidelity: check that the content contains vocabulary relevant to the course
   const normCourse = (courseName || '').toLowerCase();
   const lowerContent = (content || '').toLowerCase();
-  const stopWords = new Set(['and', 'the', 'of', 'in', 'to', 'for', 'with', 'a', 'an', 'introduction', 'introductory', 'fundamentals', 'principles']);
-  const tokens = normCourse.split(/[^a-z0-9]+/).filter(t => t.length > 2 && !stopWords.has(t));
-  
+  const tokens = normCourse.split(/[^a-z0-9]+/).filter(t => t.length > 3);
+
   if (tokens.length === 0) return { hasDrift: false, hits: [] };
   const matches = tokens.filter(t => lowerContent.includes(t));
   const hasDrift = matches.length === 0 && lowerContent.length > 500;
 
   return {
     hasDrift,
+    hasDriftHits: undefined,
     hits: hasDrift ? ['Missing core course title vocabulary'] : []
-  };
+  } as { hasDrift: boolean; hits: string[] };
 }
 
+/**
+ * Normalizes transport-level JSON escape artifacts and standard LaTeX delimiters
+ * without hardcoded keyword dictionaries, word-count heuristics, or format hacks.
+ */
 export function sanitizeLatex(content: any): any {
   if (content === null || content === undefined) return content;
   if (typeof content !== 'string') return content;
-  
-  // Fix any \infinity or infinity with backslash in the raw text to \infty for KaTeX compatibility
-  let sanitized = content.replace(/\\infinity\b/gi, '\\infty');
-  
-  // 0. Remove markdown code block wrappers if the AI incorrectly wrapped the entire response
+
+  let sanitized = content.replace(/\r\n/g, '\n');
+
+  // Unwrap outer markdown code fence if the model wrapped the entire payload
   sanitized = sanitized.replace(/^```(?:markdown)?\n([\s\S]*?)\n```$/g, '$1');
 
-  // 0.1. Disable indented code blocks by reducing any indentation that is 4 or more spaces to 2 spaces
-  // (unless it's inside a fenced code block with ```). This prevents accidental indented code blocks.
-  const lines = sanitized.split('\n');
-  let inFencedCodeBlock = false;
-  const processedLines = lines.map(line => {
-    if (line.trim().startsWith('```')) {
-      inFencedCodeBlock = !inFencedCodeBlock;
-      return line;
-    }
-    if (inFencedCodeBlock) {
-      return line;
-    }
-    const match = line.match(/^(\s+)(.*)/);
-    if (match) {
-      const indent = match[1];
-      const rest = match[2];
-      if (indent.includes('\t') || indent.length >= 4) {
-        return '  ' + rest;
+  // Restore control characters produced when JSON.parse interprets single-escaped LaTeX backslashes
+  sanitized = sanitized
+    .replace(/\x08/g, '\\b')
+    .replace(/\x0C/g, '\\f')
+    .replace(/\x0D/g, '\\r')
+    .replace(/\x09/g, '\\t');
+
+  // Convert literal double-escaped newline/tab sequences outside of LaTeX commands
+  sanitized = sanitized.replace(/\\n(?![a-zA-Z])/g, '\n');
+  sanitized = sanitized.replace(/\\t(?![a-zA-Z])/g, '\t');
+
+  // Standardize \[ ... \] and \( ... \) delimiters for marked-katex-extension
+  sanitized = sanitized.replace(/\\\[([\s\S]*?)\\\]/g, (_match, inner) => `\n$$\n${inner.trim()}\n$$\n`);
+  sanitized = sanitized.replace(/\\\(([\s\S]*?)\\\)/g, (_match, inner) => `$${inner.trim()}$`);
+
+  // Collapse double-escaped backslashes inside math spans that survived JSON decoding
+  sanitized = sanitized.replace(/\$\$([\s\S]+?)\$\$/g, (_match, inner) => {
+    const normalizedInner = inner.replace(/\\\\([a-zA-Z{}_^])/g, '\\$1').trim();
+    return `$$\n${normalizedInner}\n$$`;
+  });
+
+  sanitized = sanitized.replace(/\$([^$\n]+?)\$/g, (_match, inner) => {
+    const normalizedInner = inner.replace(/\\\\([a-zA-Z{}_^])/g, '\\$1').trim();
+    return `$${normalizedInner}$`;
+  });
+
+  return sanitized.replace(/\n{3,}/g, '\n\n');
+}
+
+/**
+ * Parses and validates generated course Markdown + KaTeX using Marked, marked-katex-extension, and DOMPurify.
+ */
+export function compileAndSanitizeCourseMarkdown(rawContent: string): {
+  normalizedMarkdown: string;
+  sanitizedHtml: string;
+  hasMath: boolean;
+  hasCode: boolean;
+  hasTables: boolean;
+} {
+  const normalizedMarkdown = sanitizeLatex(rawContent);
+  const tokens = courseMarkedEngine.lexer(normalizedMarkdown);
+
+  let hasMath = false;
+  let hasCode = false;
+  let hasTables = false;
+
+  const inspectTokens = (tokenList: any[]) => {
+    for (const token of tokenList) {
+      if (!token || typeof token !== 'object') continue;
+      if (token.type === 'inlineKatex' || token.type === 'blockKatex') {
+        hasMath = true;
+      } else if (token.type === 'code') {
+        hasCode = true;
+      } else if (token.type === 'table') {
+        hasTables = true;
+      }
+      if (Array.isArray(token.tokens)) {
+        inspectTokens(token.tokens);
+      }
+      if (Array.isArray(token.header)) {
+        for (const cell of token.header) {
+          if (Array.isArray(cell?.tokens)) inspectTokens(cell.tokens);
+        }
+      }
+      if (Array.isArray(token.rows)) {
+        for (const row of token.rows) {
+          if (Array.isArray(row)) {
+            for (const cell of row) {
+              if (Array.isArray(cell?.tokens)) inspectTokens(cell.tokens);
+            }
+          }
+        }
       }
     }
-    return line;
-  });
-  sanitized = processedLines.join('\n');
-  
-  // 0.5. Replace Unicode square root √ with LaTeX \sqrt{}
-  // Handle √ followed by parentheses, numbers, or variables, and ensure it catches cases without parentheses
-  sanitized = sanitized.replace(/√\(([^)]+)\)/g, '\\sqrt{$1}');
-  sanitized = sanitized.replace(/√([a-zA-Z0-9^+\-*/]+)/g, '\\sqrt{$1}');
-  
-  // 1. Replace \[ ... \] with $$ ... $$ for block math
-  sanitized = sanitized.replace(/\\\[/g, '\n$$$$\n').replace(/\\\]/g, '\n$$$$\n');
-  
-  // Ensure $$ is on its own line for remark-math to parse it correctly as block math
-  // This prevents unclosed block math from consuming the entire document and causing KaTeX errors
-  // sanitized = sanitized.replace(/([^\n])\$\$/g, '$1\n$$$$');
-  // sanitized = sanitized.replace(/\$\$([^\n])/g, '$$$$\n$1');
-  
-  // 2. Replace \( ... \) with $ ... $ for inline math
-  sanitized = sanitized.replace(/\\\(/g, '$').replace(/\\\)/g, '$');
-  
-  // 3. Fix common AI mistakes where it might double escape backslashes in raw markdown
-  // or fail to escape them in a way that the renderer expects.
-  // Most common: \\frac -> \frac
-  sanitized = sanitized.replace(/\\\\([a-zA-Z]+)/g, '\\$1');
-
-  // 4. Fix JSON escape character collisions with LaTeX macros
-  // When AI fails to double-escape, JSON.parse turns \b, \f, \n, \r, \t into control characters.
-  // We need to recover these back into LaTeX commands.
-  sanitized = sanitized.replace(/\x08(egin|matrix|pmat|bmat|vmat|Bmat|Vmat)/g, '\\b$1'); // \b -> \begin
-  sanitized = sanitized.replace(/\x0C(rac|orm)/g, '\\f$1'); // \f -> \frac
-  sanitized = sanitized.replace(/\x0A(abla|ewline|eg|u|i)/g, '\\n$1'); // \n -> \nabla, \newline, \neg, \nu, \ni
-  sanitized = sanitized.replace(/\x0D(ight|eft|ho|p)/g, '\\r$1'); // \r -> \right, \left, \rho, \rp
-  sanitized = sanitized.replace(/\x09(ext|heta|imes|an|au|o)/g, '\\t$1'); // \t -> \text, \theta, \times, \tan, \tau, \to
-
-  // 5. Fix literal \n and \t strings (backslash + n/t) that should be actual newlines/tabs
-  // This happens when AI double-escapes newlines in JSON.
-  // We replace \n with actual newline ONLY if it's not followed by a lowercase letter 
-  // that would make it a LaTeX command (like \nabla, \newline, \nu, \ni, \neg)
-  // This safely handles \nBy, \n1., \n#, \n\n while preserving \nabla.
-  sanitized = sanitized.replace(/\\n(?![a-z])/g, '\n');
-  sanitized = sanitized.replace(/\\t(?![a-z])/g, '\t');
-  
-  // 5.5 Fix missing backslashes for begin and end environments (e.g. if jsonrepair stripped them)
-  // It is safe to replace begin{ and end{ because they don't occur in normal English
-  sanitized = sanitized.replace(/(^|[^\\])begin\{/g, '$1\\begin{');
-  sanitized = sanitized.replace(/(^|[^\\])end\{/g, '$1\\end{');
-  
-  // Also fix other common math commands that might have lost their backslash
-  // Only match if they are NOT preceded by a backslash or a letter
-  sanitized = sanitized.replace(/(^|[^a-zA-Z\\])(cdot|rightarrow|leftarrow|Rightarrow|Leftarrow|infty|alpha|beta|gamma|delta|theta|omega|pi|sigma|mu|lambda)(?=[^a-zA-Z]|$)/g, '$1\\$2');
-  sanitized = sanitized.replace(/(^|[^a-zA-Z\\])(sum|int)_?\{/g, '$1\\$2_{');
-  sanitized = sanitized.replace(/(^|[^a-zA-Z\\])frac\{/g, '$1\\frac{');
-
-  // 5.6 Cleanup any duplicated prefixes caused by previous buggy sanitizeLatex versions
-  sanitized = sanitized.replace(/\\beginegin/g, '\\begin');
-  sanitized = sanitized.replace(/\\ffrac/g, '\\frac');
-  sanitized = sanitized.replace(/\\nnabla/g, '\\nabla');
-  sanitized = sanitized.replace(/\\nnewline/g, '\\newline');
-  sanitized = sanitized.replace(/\\nneg/g, '\\neg');
-  sanitized = sanitized.replace(/\\nnu/g, '\\nu');
-  sanitized = sanitized.replace(/\\nni/g, '\\ni');
-  sanitized = sanitized.replace(/\\rright/g, '\\right');
-  sanitized = sanitized.replace(/\\lleft/g, '\\left');
-  sanitized = sanitized.replace(/\\rrho/g, '\\rho');
-  sanitized = sanitized.replace(/\\ttext/g, '\\text');
-  sanitized = sanitized.replace(/\\ttheta/g, '\\theta');
-  sanitized = sanitized.replace(/\\ttimes/g, '\\times');
-  sanitized = sanitized.replace(/\\ttan/g, '\\tan');
-  sanitized = sanitized.replace(/\\ttau/g, '\\tau');
-  
-  // 5.7 Cleanup AI over-applying LaTeX backslashes to common English words
-  // This happens when AI follows "double-escape backslashes" too literally for words like "end"
-  sanitized = sanitized.replace(/\\end(\s+)/g, 'end$1');
-  
-  // 5.7.1 Fix missing backslashes for all math/logic/set keywords inside math blocks or interval notations
-  const mathKeywords = [
-    'cup', 'cap', 'subset', 'supset', 'subseteq', 'supseteq', 'in', 'notin', 
-    'setminus', 'emptyset', 'varnothing', 'infty', 'forall', 'exists', 
-    'implies', 'iff', 'to', 'le', 'leq', 'ge', 'geq', 'ne', 'neq', 
-    'approx', 'times', 'pm', 'div', 'cdot', 'alpha', 'beta', 'gamma', 
-    'delta', 'theta', 'omega', 'pi', 'sigma', 'mu', 'lambda', 'tau', 
-    'phi', 'psi'
-  ];
-
-  const fixMathKeywords = (mathContent: string) => {
-    let fixed = mathContent;
-    // Fix infinity -> infty
-    fixed = fixed.replace(/\\?infinity\b/gi, 'infty');
-    for (const kw of mathKeywords) {
-      const regex = new RegExp(`(?<!\\\\)\\b${kw}\\b`, 'g');
-      fixed = fixed.replace(regex, `\\${kw}`);
-    }
-    return fixed;
   };
 
-  // Inside $$...$$ block math
-  sanitized = sanitized.replace(/\$\$([\s\S]+?)\$\$/g, (match, mathContent) => {
-    let fixedContent = mathContent.trim();
-    if (fixedContent.endsWith('\\') && !fixedContent.endsWith('\\\\')) {
-      fixedContent = fixedContent.slice(0, -1);
-    }
-    return `$$${fixMathKeywords(fixedContent)}$$`;
-  });
+  inspectTokens(tokens as any[]);
 
-  // Inside $...$ inline math
-  sanitized = sanitized.replace(/\$([^$\n]+?)\$/g, (match, mathContent) => {
-    let fixedContent = mathContent.trim();
-    if (fixedContent.endsWith('\\') && !fixedContent.endsWith('\\\\')) {
-      fixedContent = fixedContent.slice(0, -1);
-    }
-    
-    // Heuristic: If it looks like a runaway math block that consumed plain text, don't fix keywords
-    const stripped = fixedContent.replace(/\\(text|mathrm|textbf|textit)\{.*?\}/g, '');
-    const words = stripped.match(/(?<!\\)[a-zA-Z]{3,}/g) || [];
-    if (words.length >= 3) {
-      return `$${fixedContent}$`; // Return as-is without fixing keywords
-    }
-    
-    return `$${fixMathKeywords(fixedContent)}$`;
-  });
+  const rendered = courseMarkedEngine.parser(tokens);
+  const sanitizedHtml = typeof window !== 'undefined' && DOMPurify?.sanitize
+    ? DOMPurify.sanitize(rendered, { USE_PROFILES: { html: true, mathMl: true, svg: true } })
+    : rendered;
 
-  // For cases outside of math blocks that look exactly like interval notation (e.g. )cup( or ) cup ( )
-  sanitized = sanitized.replace(/(?<=[)\]])\s*(cup|cap)\s*(?=[([\]])/gi, (match, p1) => {
-    return p1.toLowerCase() === 'cup' ? '\\cup' : '\\cap';
-  });
-  
-  // 5.8 Cleanup trailing backslashes that AI adds to the end of lines (LaTeX style newlines in markdown)
-  // This happens when AI gets confused and uses \\ for newlines in regular text
-  // We only remove it if it's at the end of a line and not preceded by a letter (which would be a command)
-  sanitized = sanitized.replace(/([^a-zA-Z\\])\\\s*(\n|$)/g, '$1$2');
-  sanitized = sanitized.replace(/^\\\s*(\n|$)/gm, '$1');
-  
-  // 6. Convert top-level AMS environments (align, equation, gather) to KaTeX-compatible inner environments (aligned, gathered)
-  sanitized = sanitized
-    .replace(/\\begin\{align\*?\}/g, '\\begin{aligned}')
-    .replace(/\\end\{align\*?\}/g, '\\end{aligned}')
-    .replace(/\\begin\{equation\*?\}/g, '\\begin{aligned}')
-    .replace(/\\end\{equation\*?\}/g, '\\end{aligned}')
-    .replace(/\\begin\{gather\*?\}/g, '\\begin{gathered}')
-    .replace(/\\end\{gather\*?\}/g, '\\end{gathered}')
-    .replace(/\\begin\{multline\*?\}/g, '\\begin{aligned}')
-    .replace(/\\end\{multline\*?\}/g, '\\end{aligned}');
-
-  // 6.1 Ensure \begin{...} and \end{...} are wrapped in $$ if they aren't already
-  const envs = ['aligned', 'gathered', 'cases', 'matrix', 'pmatrix', 'bmatrix', 'Bmatrix', 'vmatrix', 'Vmatrix', 'array'];
-  const envPattern = envs.join('|');
-  
-  // Strip existing $$ around these environments to avoid duplicate delimiters
-  const stripBeginRegex = new RegExp(`\\$\\$\\s*(\\\\begin\\{(?:${envPattern})\\*?\\})`, 'g');
-  sanitized = sanitized.replace(stripBeginRegex, '$1');
-  
-  const stripEndRegex = new RegExp(`(\\\\end\\{(?:${envPattern})\\*?\\})\\s*\\$\\$`, 'g');
-  sanitized = sanitized.replace(stripEndRegex, '$1');
-
-  // Wrap all standalone environments in $$ display math
-  const wrapBeginRegex = new RegExp(`(\\\\begin\\{(?:${envPattern})\\*?\\})`, 'g');
-  sanitized = sanitized.replace(wrapBeginRegex, '\n$$$$\n$1');
-  
-  const wrapEndRegex = new RegExp(`(\\\\end\\{(?:${envPattern})\\*?\\})`, 'g');
-  sanitized = sanitized.replace(wrapEndRegex, '$1\n$$$$\n');
-
-  // Clean up any excessive newlines created by the above replacements
-  sanitized = sanitized.replace(/\n{3,}/g, '\n\n');
-
-  return sanitized;
+  return {
+    normalizedMarkdown,
+    sanitizedHtml,
+    hasMath,
+    hasCode,
+    hasTables,
+  };
 }
+
 
 async function callGenerateAPI(prompt: string, type: 'skeleton' | 'module' | 'lesson', provider?: string): Promise<any> {
   const token = await getAuthToken();
@@ -447,10 +372,10 @@ export async function generateCourseFormulas(
     {
       "formulas": [
         {
-          "title": "Newton's Second Law",
-          "latex": "F = ma",
-          "description": "Relates the net force (F) acting on an object to its mass (m) and acceleration (a).",
-          "category": "Dynamics"
+          "title": "<Formula or Theorem Name>",
+          "latex": "<Valid LaTeX Expression>",
+          "description": "<Academic explanation of variables and domain application>",
+          "category": "<Specific Sub-discipline Category>"
         }
       ]
     }
@@ -468,11 +393,16 @@ export async function generateCourseFormulas(
 
   const result = await callGenerateAPI(formulaPrompt, 'skeleton', provider);
   
-  if (!result.formulas || !Array.isArray(result.formulas)) {
-    throw new Error("AI generated invalid formula format. Expected a 'formulas' array.");
+  if (!result || !Array.isArray(result.formulas) || result.formulas.length === 0) {
+    throw new Error("AI generated invalid formula format. Expected a non-empty 'formulas' array.");
   }
 
-  return result.formulas;
+  return result.formulas.map((f: any) => ({
+    title: sanitizeLatex(String(f?.title || '').trim()),
+    latex: sanitizeLatex(String(f?.latex || '').trim()),
+    description: sanitizeLatex(String(f?.description || '').trim()),
+    category: sanitizeLatex(String(f?.category || '').trim()),
+  })).filter((f: any) => f.title && f.latex);
 }
 
 export async function generateCourseSkeleton(
@@ -692,7 +622,7 @@ export async function generateLessonContent(
 
   const result = await callGenerateAPI(lessonPrompt, 'lesson', provider);
 
-  // Parse structured response or fallback gracefully
+  // Parse structured response strictly — fail transparently on malformed output
   let parsedOutput: any = null;
   if (typeof result === 'object' && result !== null) {
     parsedOutput = result;
@@ -702,16 +632,24 @@ export async function generateLessonContent(
     } catch (_) {
       try {
         parsedOutput = JSON.parse(jsonrepair(result));
-      } catch (e) {
-        parsedOutput = { body: result, introduction: '', keyConcepts: [], relevance: [] };
+      } catch (parseErr: any) {
+        throw new Error(`Failed to parse structured lesson response for "${lessonTitle}": ${parseErr?.message || String(parseErr)}`);
       }
     }
   }
 
-  const introduction = String(parsedOutput?.introduction || '').trim();
-  const rawBody = String(parsedOutput?.body || parsedOutput?.content || (typeof result === 'string' ? result : '')).trim();
-  const rawKeyConcepts = Array.isArray(parsedOutput?.keyConcepts) ? parsedOutput.keyConcepts : [];
-  const rawRelevance = Array.isArray(parsedOutput?.relevance) ? parsedOutput.relevance : [];
+  if (!parsedOutput || typeof parsedOutput !== 'object') {
+    throw new Error(`Lesson generation for "${lessonTitle}" returned an empty or non-object payload.`);
+  }
+
+  const introduction = String(parsedOutput.introduction || '').trim();
+  const rawBody = String(parsedOutput.body || parsedOutput.content || '').trim();
+  if (!rawBody) {
+    throw new Error(`Lesson generation for "${lessonTitle}" returned an empty lesson body.`);
+  }
+
+  const rawKeyConcepts = Array.isArray(parsedOutput.keyConcepts) ? parsedOutput.keyConcepts : [];
+  const rawRelevance = Array.isArray(parsedOutput.relevance) ? parsedOutput.relevance : [];
 
   // Deterministic Relevance Validation:
   // 1. Department must be in uniqueAudience (case-insensitive)
@@ -726,14 +664,13 @@ export async function generateLessonContent(
 
     if (!dept || concept.length < 3 || application.length < 20) return false;
 
-    // Check if department is in course audience
     const matchedDept = uniqueAudience.find(a => a.toLowerCase() === dept.toLowerCase());
     if (!matchedDept) return false;
 
     if (seenDepts.has(matchedDept.toLowerCase())) return false;
     seenDepts.add(matchedDept.toLowerCase());
 
-    entry.department = matchedDept; // Normalize casing
+    entry.department = matchedDept;
     return true;
   });
 
@@ -742,7 +679,8 @@ export async function generateLessonContent(
     ? `### Introduction: The Why Before the How\n\n${introduction}\n\n---\n\n${rawBody}`
     : rawBody;
 
-  const sanitizedContent = sanitizeLatex(fullLessonMarkdown);
+  const compiledLesson = compileAndSanitizeCourseMarkdown(fullLessonMarkdown);
+  const sanitizedContent = compiledLesson.normalizedMarkdown;
 
   // Post-generation off-topic drift check
   const driftCheck = flagOffTopicDrift(sanitizedContent, courseName, audienceLabel);
@@ -751,11 +689,11 @@ export async function generateLessonContent(
   }
 
   const cleanMetadata: PipelineMetadata = {
-    hasMath: Boolean(sanitizedContent.includes('$')),
-    hasCode: Boolean(sanitizedContent.includes('```')),
+    hasMath: compiledLesson.hasMath,
+    hasCode: compiledLesson.hasCode,
     audience: uniqueAudience,
     audienceHash: uniqueAudience.slice().sort().join(':'),
-    promptVersion: '2.2.0-relevance-overlay',
+    promptVersion: '3.0.0-marked-katex-dompurify',
     keyConcepts: rawKeyConcepts,
     relevance: validatedRelevance,
     generatedAt: new Date().toISOString()

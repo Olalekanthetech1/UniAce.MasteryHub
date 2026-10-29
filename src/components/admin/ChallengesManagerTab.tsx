@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Trophy, Swords, Flame, Star, Target, Zap, Plus, Trash2, Edit3, Save, CheckCircle, AlertCircle, RefreshCw } from 'lucide-react';
-import { ArenaChallenge, ChallengesService, DEFAULT_CHALLENGES } from '../../services/challengesConfig';
+import { ArenaChallenge, ChallengesService } from '../../services/challengesConfig';
 
 export default function ChallengesManagerTab() {
-  const [challenges, setChallenges] = useState<ArenaChallenge[]>(DEFAULT_CHALLENGES);
+  const [challenges, setChallenges] = useState<ArenaChallenge[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle');
