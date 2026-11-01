@@ -9771,23 +9771,42 @@ async function startServer() {
     // Send active lobbies immediately
     socket.emit('lobbies:update', Array.from(lobbies.values()));
 
-    socket.on('lobby:create', (data) => {
-      const lobbyId = `lobby_${Date.now()}`;
-      const newLobby = {
-        id: lobbyId,
-        host: data.hostName,
-        topic: data.topic,
-        players: [{ id: socket.id, name: data.hostName, score: 0 }],
-        maxPlayers: data.maxPlayers || 4,
-        entryFee: data.entryFee || 50,
-        status: 'waiting' as const
-      };
-      lobbies.set(lobbyId, newLobby);
-      socket.join(lobbyId);
-      
-      // Broadcast update
-      io.emit('lobbies:update', Array.from(lobbies.values()));
-      socket.emit('lobby:joined', newLobby);
+    socket.on('lobby:create', async (data) => {
+      try {
+        const arenaConfig = await getSystemConfigDoc('arena', true);
+        const lobbyPolicy = arenaConfig?.lobby;
+        if (!lobbyPolicy || lobbyPolicy.enabled !== true ||
+            !Number.isInteger(lobbyPolicy.maxPlayers) || lobbyPolicy.maxPlayers < 2 ||
+            !Number.isInteger(lobbyPolicy.entryFee) || lobbyPolicy.entryFee < 0 ||
+            !Number.isInteger(lobbyPolicy.questionTimeLimitSeconds) || lobbyPolicy.questionTimeLimitSeconds <= 0) {
+          socket.emit('lobby:error', 'Arena lobby policy is not configured or verified. No lobby was created.');
+          return;
+        }
+        if (typeof data?.hostName !== 'string' || !data.hostName.trim() ||
+            typeof data?.topic !== 'string' || !data.topic.trim()) {
+          socket.emit('lobby:error', 'A host name and academic topic are required.');
+          return;
+        }
+
+        const lobbyId = `lobby_${crypto.randomUUID()}`;
+        const newLobby = {
+          id: lobbyId,
+          host: data.hostName.trim(),
+          topic: data.topic.trim(),
+          players: [{ id: socket.id, name: data.hostName.trim(), score: 0 }],
+          maxPlayers: lobbyPolicy.maxPlayers,
+          entryFee: lobbyPolicy.entryFee,
+          questionTimeLimitSeconds: lobbyPolicy.questionTimeLimitSeconds,
+          status: 'waiting' as const
+        };
+        lobbies.set(lobbyId, newLobby);
+        socket.join(lobbyId);
+        io.emit('lobbies:update', Array.from(lobbies.values()));
+        socket.emit('lobby:joined', newLobby);
+      } catch (error) {
+        console.error('[Arena] Live lobby configuration could not be resolved:', error);
+        socket.emit('lobby:error', 'Arena lobby configuration is unavailable. No lobby was created.');
+      }
     });
 
     socket.on('lobby:join', (lobbyId, playerName) => {
@@ -9816,11 +9835,15 @@ async function startServer() {
     socket.on('lobby:start', async (lobbyId) => {
       const lobby = lobbies.get(lobbyId);
       if (lobby && lobby.players[0].id === socket.id) { // Only host can start
-        lobby.status = 'playing';
-        io.to(lobbyId).emit('match:started', lobby);
-        io.emit('lobbies:update', Array.from(lobbies.values()));
-        
         try {
+          const arenaConfig = await getSystemConfigDoc('arena', true);
+          const lobbyPolicy = arenaConfig?.lobby;
+          if (!lobbyPolicy || lobbyPolicy.enabled !== true ||
+              !Number.isInteger(lobbyPolicy.questionTimeLimitSeconds) || lobbyPolicy.questionTimeLimitSeconds <= 0 ||
+              lobby.questionTimeLimitSeconds !== lobbyPolicy.questionTimeLimitSeconds) {
+            socket.emit('lobby:error', 'Arena lobby timing policy is unavailable or changed. Recreate the lobby after configuration is corrected.');
+            return;
+          }
           const app = getAdminApp();
           let questionPayload: any = null;
 
@@ -9836,11 +9859,12 @@ async function startServer() {
                     const correctIdx = valid.options.findIndex((opt: string) => 
                       opt === valid.correctAnswer || opt === valid.answer
                     );
+                    if (correctIdx < 0) continue;
                     questionPayload = {
                       question: valid.question,
                       options: valid.options,
-                      correctIndex: correctIdx !== -1 ? correctIdx : 0,
-                      timeLimit: 15
+                      correctIndex: correctIdx,
+                      timeLimit: lobbyPolicy.questionTimeLimitSeconds
                     };
                     break;
                   }
@@ -9859,38 +9883,66 @@ async function startServer() {
   "options": ["string", "string", "string", "string"],
   "correctIndex": 0
 }`;
-            const providers = [globalGroqBreaker, globalGeminiDirectBreaker, globalMistralDirectBreaker];
-            for (const provider of providers) {
+            const routingConfig = await requireLiveRoutingConfig();
+            const providerMap: Record<string, any> = {
+              gemini_direct: globalGeminiDirectBreaker,
+              mistral_direct: globalMistralDirectBreaker,
+              groq: globalGroqBreaker,
+              cohere: globalCohereBreaker,
+              huggingface: globalHuggingFaceBreaker,
+              openrouter_free: globalOpenRouterFreeBreaker,
+              nvidia: globalNvidiaBreaker || globalNvidiaProvider
+            };
+            const providerNames = resolveLiveProviderQueue(routingConfig, 'quiz', providerMap);
+            let lastProviderError: any = null;
+            for (const providerName of providerNames) {
+              const provider = providerMap[providerName];
+              if (!provider) continue;
               try {
-                const res = await generateWithTelemetry(provider, [{ role: 'user', content: prompt }], { complexity: 'standard' });
-                const parsed = parseRobustJSON(res.text);
-                if (parsed.question && Array.isArray(parsed.options) && typeof parsed.correctIndex === 'number') {
+                const generation = await generateWithTelemetry(provider, [{ role: 'user', content: prompt }], { complexity: 'standard', jsonMode: true });
+                const parsed = parseRobustJSON(generation.text);
+                if (typeof parsed?.question === 'string' && parsed.question.trim() &&
+                    Array.isArray(parsed.options) && parsed.options.length >= 2 &&
+                    parsed.options.every((option: any) => typeof option === 'string' && option.trim()) &&
+                    Number.isInteger(parsed.correctIndex) && parsed.correctIndex >= 0 &&
+                    parsed.correctIndex < parsed.options.length) {
                   questionPayload = {
-                    question: parsed.question,
+                    question: parsed.question.trim(),
                     options: parsed.options,
                     correctIndex: parsed.correctIndex,
-                    timeLimit: 15
+                    timeLimit: lobbyPolicy.questionTimeLimitSeconds,
+                    providerUsed: providerName
                   };
                   break;
                 }
+                lastProviderError = new Error(`Configured provider ${providerName} returned an invalid question payload.`);
               } catch (aiErr) {
-                console.warn(`Provider [${provider.name}] failed for lobby question:`, aiErr);
+                lastProviderError = aiErr;
+                console.warn(`Configured provider [${providerName}] failed for lobby question:`, aiErr);
               }
+            }
+            if (!questionPayload) {
+              throw lastProviderError || new Error('No configured quiz provider returned a valid question.');
             }
           }
 
-          if (questionPayload) {
-            (lobby as any).currentQuestion = questionPayload;
-            setTimeout(() => {
-              io.to(lobbyId).emit('question:next', {
-                question: questionPayload.question,
-                options: questionPayload.options,
-                timeLimit: questionPayload.timeLimit || 15
-              });
-            }, 1000);
+          if (!questionPayload) {
+            throw new Error('No verified question content was obtained. The lobby cannot start without a real answer key.');
           }
+          (lobby as any).currentQuestion = questionPayload;
+          lobby.status = 'playing';
+          io.to(lobbyId).emit('match:started', lobby);
+          io.emit('lobbies:update', Array.from(lobbies.values()));
+          io.to(lobbyId).emit('question:next', {
+            question: questionPayload.question,
+            options: questionPayload.options,
+            timeLimit: questionPayload.timeLimit
+          });
         } catch (matchErr) {
           console.error('Error starting dynamic match:', matchErr);
+          lobby.status = 'waiting';
+          io.to(lobbyId).emit('lobby:error', 'No verified question could be generated. The lobby remains waiting.');
+          io.emit('lobbies:update', Array.from(lobbies.values()));
         }
       }
     });
