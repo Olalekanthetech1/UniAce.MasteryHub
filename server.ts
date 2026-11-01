@@ -4899,6 +4899,7 @@ async function updateCourseGenerationStateInPostgres(courseId: string, patch: Re
           statusVal
         ]
       );
+      catalogCache.invalidateCourse(courseId);
     } catch (pgErr: any) {
       console.warn(`[Coordinated Gen] Postgres course row upsert notice for ${courseId}:`, pgErr.message);
     }
@@ -7137,6 +7138,7 @@ app.post('/api/course/:courseId/publish', verifyAdmin, async (req, res) => {
        WHERE id = $1`,
       [courseId]
     );
+    catalogCache.invalidateCourse(courseId);
 
     res.json({ success: true, message: `Course ${courseId} published.` });
   } catch (error: any) {
