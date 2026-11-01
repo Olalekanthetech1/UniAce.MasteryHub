@@ -116,6 +116,7 @@ export const CourseService = {
       id: l.id,
       title: l.title,
       content: l.content_markdown || l.content || '',
+      instructionalContent: l.instructional_content || undefined,
       order: l.order_index
     })).sort((a: any, b: any) => getLessonOrderIndex(a) - getLessonOrderIndex(b));
   },

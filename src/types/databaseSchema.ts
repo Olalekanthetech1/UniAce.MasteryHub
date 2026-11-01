@@ -52,6 +52,7 @@ export interface CourseLessonEntity {
     url: string;
     caption?: string;
   }>;
+  instructional_content?: Record<string, any> | null;
   created_at: string;
   updated_at: string;
 }

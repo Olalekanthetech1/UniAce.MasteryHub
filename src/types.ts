@@ -51,6 +51,7 @@ export interface Course {
   coverageScore?: number;
   consistencyScore?: number;
   confidenceState?: 'verified' | 'needs_review' | 'failed';
+  academicVerificationState?: 'not_independently_verified' | 'subject_expert_reviewed';
   provenance?: CourseProvenance;
   deleted?: boolean;
   deletedAt?: string;
@@ -213,6 +214,7 @@ export interface SubTopic {
   relatedTo?: string[];
   groundingReferences?: string[];
   confidenceState?: 'verified' | 'needs_review' | 'failed';
+  instructionalContent?: import('./shared/courseSchemas').StudentInstructionalContent;
 }
 
 export interface Module {

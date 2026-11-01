@@ -73,6 +73,8 @@ import {
   CourseSkeletonSchema, 
   OutlineCriticRubricSchema,
   LessonContentSchema,
+  StructuredLessonOutputSchema,
+  InstructionalContentSchema,
   CourseProvenanceSchema,
   normalizeLearningOutcomes,
   deriveCurriculumParameters,
@@ -98,6 +100,7 @@ import { getPostgresPool } from './server/postgresPool.js';
 import { LogRepository } from './server/repositories/logRepository.js';
 import { MaintenanceSweeps } from './server/services/maintenanceSweeps.js';
 import { getMigrationMode } from './server/services/transitionEngine.js';
+import { ensureCourseReviewSchema } from './server/services/courseReviewSchema.js';
 
 
 // --- ADMIN AUTHORIZATION UTILITY ---
@@ -168,6 +171,9 @@ import { progressRepository } from './server/repositories/progressRepository';
 import { JobRepository } from './server/repositories/jobRepository';
 import { jobStreamManager } from './server/services/jobStreamManager';
 import { getFeatureFlags, initRuntimeFlagsSync } from './server/config/features';
+import { ensureCourseLearningSchema } from './server/services/courseLearningSchema';
+import { ensureCourseAssessmentSchema } from './server/services/courseAssessmentSchema';
+import { redactInstructionalAnswersForStudent, getInstructionalActivityReveal, type InstructionalActivityType } from './server/services/instructionalDelivery.js';
 import { getSystemConfigDoc, setSystemConfigDoc, getSystemSettingsDoc, setSystemSettingsDoc } from './server/systemConfigStore';
 
 const latexInstruction = `
@@ -1118,6 +1124,24 @@ app.get('/api/catalog/full', optionalAuth, async (req: any, res: any) => {
   }
 });
 
+/**
+ * Draft/in-review course content is never served through public read routes.
+ * Published courses remain publicly readable; non-published courses require
+ * an authenticated administrator for course, module, lesson and formula reads.
+ */
+async function requirePublishedCourseOrAdmin(req: any, res: any, next: any) {
+  try {
+    const course = await courseRepository.getCourseById(req.params.courseId);
+    if (!course) return res.status(404).json({ error: 'Course not found' });
+    if (course.status === 'published') return next();
+    return verifyAdmin(req, res, next);
+  } catch (error: any) {
+    const statusCode = error?.message?.includes('Database service unavailable') ? 503 : 500;
+    logger.error({ error: error?.message || String(error), courseId: req.params.courseId }, '[Course visibility] Failed');
+    return res.status(statusCode).json({ error: 'Could not verify course publication status' });
+  }
+}
+
 app.get('/api/courses', async (req, res) => {
   const t0 = Date.now();
   try {
@@ -1142,7 +1166,7 @@ app.get('/api/courses', async (req, res) => {
   }
 });
 
-app.get('/api/courses/:courseId', async (req, res) => {
+app.get('/api/courses/:courseId', optionalAuth, requirePublishedCourseOrAdmin, async (req, res) => {
   const t0 = Date.now();
   try {
     const { courseId } = req.params;
@@ -1159,7 +1183,7 @@ app.get('/api/courses/:courseId', async (req, res) => {
   }
 });
 
-app.get('/api/courses/:courseId/modules', async (req, res) => {
+app.get('/api/courses/:courseId/modules', optionalAuth, requirePublishedCourseOrAdmin, async (req, res) => {
   const t0 = Date.now();
   try {
     const { courseId } = req.params;
@@ -1181,7 +1205,7 @@ app.get('/api/courses/:courseId/modules', async (req, res) => {
   }
 });
 
-app.get('/api/courses/:courseId/modules/:moduleId/lessons', async (req, res) => {
+app.get('/api/courses/:courseId/modules/:moduleId/lessons', optionalAuth, requirePublishedCourseOrAdmin, async (req, res) => {
   const t0 = Date.now();
   try {
     const { courseId, moduleId } = req.params;
@@ -1198,7 +1222,11 @@ app.get('/api/courses/:courseId/modules/:moduleId/lessons', async (req, res) => 
       }
     }
     const latencyMs = Date.now() - t0;
-    res.json({ lessons, total: lessons.length, latencyMs });
+    const studentLessons = lessons.map((lesson: any) => ({
+      ...lesson,
+      instructional_content: redactInstructionalAnswersForStudent(lesson.instructional_content)
+    }));
+    res.json({ lessons: studentLessons, total: studentLessons.length, latencyMs });
   } catch (err: any) {
     logger.error({ err: err.message, courseId: req.params.courseId, moduleId: req.params.moduleId }, '[GET /api/courses/.../lessons] Failed');
     const statusCode = (err.message?.includes('Database service unavailable') || err.message?.includes('unreachable')) ? 503 : 500;
@@ -1206,7 +1234,7 @@ app.get('/api/courses/:courseId/modules/:moduleId/lessons', async (req, res) => 
   }
 });
 
-app.post('/api/courses/:courseId/modules/:moduleId/lessons/:lessonId', async (req, res) => {
+app.post('/api/courses/:courseId/modules/:moduleId/lessons/:lessonId', verifyAdmin, async (req, res) => {
   try {
     const { courseId, moduleId, lessonId } = req.params;
     const { title, content } = req.body;
@@ -1233,7 +1261,287 @@ app.post('/api/courses/:courseId/modules/:moduleId/lessons/:lessonId', async (re
   }
 });
 
-app.get('/api/courses/:courseId/formulas', async (req, res) => {
+
+/**
+ * Server-authorized single-lesson regeneration. It uses the same structured
+ * contract, discipline selection and structural validation as coordinated
+ * course generation; the browser cannot submit generated lesson text.
+ */
+app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regenerate', verifyAdmin, async (req: any, res: any) => {
+  const { courseId, moduleId, lessonId } = req.params;
+  const pool = getPostgresPool();
+  if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+  try {
+    await ensureCourseLearningSchema();
+    const [courseResult, moduleResult, lessonResult] = await Promise.all([
+      pool.query(
+        'SELECT id, code, title, level, department FROM courses WHERE id = $1 LIMIT 1',
+        [courseId]
+      ),
+      pool.query(
+        'SELECT id, title, description, order_index, estimated_minutes FROM course_modules WHERE course_id = $1 AND id = $2 AND is_archived IS NOT TRUE LIMIT 1',
+        [courseId, moduleId]
+      ),
+      pool.query(
+        'SELECT id, title, order_index, learning_outcomes FROM course_lessons WHERE course_id = $1 AND module_id = $2 AND id = $3 LIMIT 1',
+        [courseId, moduleId, lessonId]
+      )
+    ]);
+
+    if (!courseResult.rows[0] || !moduleResult.rows[0] || !lessonResult.rows[0]) {
+      return res.status(404).json({ error: 'Course, module, or lesson not found' });
+    }
+
+    const course = courseResult.rows[0];
+    const module = moduleResult.rows[0];
+    const lesson = lessonResult.rows[0];
+    const courseName = String(course.title || course.code || courseId);
+    const level = String(course.level || 'undergraduate');
+    const requestedProvider = typeof req.body?.provider === 'string' && req.body.provider.trim()
+      ? req.body.provider.trim()
+      : undefined;
+
+    const domainBrief = await completeWithProviderJSON({
+      type: 'skeleton',
+      messages: [{
+        role: 'user',
+        content: buildDomainBriefPrompt({
+          courseId,
+          courseName,
+          courseCode: String(course.code || courseId),
+          department: String(course.department || 'General Studies'),
+          level,
+          outline: `Module: ${module.title}\nLesson: ${lesson.title}`
+        })
+      }],
+      schema: DomainBriefSchema,
+      requestedProvider,
+      complexity: 'standard'
+    });
+
+    const learningOutcomes = Array.isArray(lesson.learning_outcomes)
+      ? lesson.learning_outcomes.filter((value: any) => typeof value === 'string' && value.trim())
+      : [];
+    const prompt = buildLessonPrompt(
+      String(lesson.title || lessonId),
+      String(module.title || moduleId),
+      Math.max(1, Number(module.order_index) || 1),
+      domainBrief,
+      {
+        courseId,
+        courseName,
+        department: String(course.department || 'General Studies'),
+        level,
+        depth: 'standard',
+        scope: 'DEPARTMENT'
+      },
+      learningOutcomes.join('\n')
+    );
+
+    const validatedSchema = StructuredLessonOutputSchema.superRefine((value, context) => {
+      if (value.instructionalContent.disciplineEngine !== domainBrief.pedagogyType) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['instructionalContent', 'disciplineEngine'],
+          message: 'Instructional engine does not match the server-selected course discipline.'
+        });
+      }
+      const syntax = validateLessonSyntax(value.content, domainBrief.pedagogyType);
+      if (!syntax.isValid) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['content'],
+          message: syntax.errors.join(' ')
+        });
+      }
+    });
+
+    const generated = await completeWithProviderJSON({
+      type: 'lesson',
+      messages: [
+        {
+          role: 'system',
+          content: `You are a university instructor in ${domainBrief.primaryDomain}. Return strictly valid JSON and follow the UniAce Mastery Framework. Do not claim independent academic verification.\n\n${latexInstruction}`
+        },
+        { role: 'user', content: prompt }
+      ],
+      schema: validatedSchema,
+      requestedProvider,
+      complexity: 'high'
+    });
+
+    const markdown = normalizeLessonMarkdownContent(generated.content);
+    const finalSyntax = validateLessonSyntax(markdown, domainBrief.pedagogyType);
+    if (!finalSyntax.isValid) {
+      return res.status(422).json({
+        error: 'Generated lesson failed structural validation',
+        validationErrors: finalSyntax.errors
+      });
+    }
+
+    const instructionalContent = {
+      ...generated.instructionalContent,
+      verification: {
+        structureValidation: 'passed',
+        academicAccuracy: 'not_independently_verified',
+        calculationValidation: domainBrief.pedagogyType === 'STEM_MATHEMATICAL'
+          ? 'pending_independent_check'
+          : 'not_applicable',
+        subjectExpertReview: 'not_reviewed',
+        checkedAt: new Date().toISOString(),
+        policyVersion: 'uniace-mastery-verification-v1'
+      }
+    };
+
+    await JobRepository.upsertModuleAndLesson({
+      courseId,
+      module: {
+        id: moduleId,
+        title: String(module.title || moduleId),
+        description: String(module.description || ''),
+        orderIndex: Math.max(1, Number(module.order_index) || 1),
+        estimatedMinutes: Number(module.estimated_minutes) || 60
+      },
+      lesson: {
+        id: lessonId,
+        title: String(generated.title || lesson.title || lessonId),
+        contentMarkdown: markdown,
+        orderIndex: Math.max(1, Number(lesson.order_index) || 1),
+        learningOutcomes,
+        instructionalContent
+      }
+    });
+
+    await recordBackendSystemLog(
+      'success',
+      'ai',
+      `Regenerated structured lesson ${lessonId} for course ${courseId}`,
+      {
+        courseId,
+        moduleId,
+        lessonId,
+        disciplineEngine: domainBrief.pedagogyType,
+        structureValidation: 'passed',
+        academicAccuracy: 'not_independently_verified'
+      },
+      { uid: req.user?.uid, email: req.user?.email }
+    );
+
+    return res.json({
+      success: true,
+      lesson: {
+        id: lessonId,
+        title: String(generated.title || lesson.title || lessonId),
+        content: markdown,
+        instructionalContent: redactInstructionalAnswersForStudent(instructionalContent)
+      },
+      verification: {
+        structureValidation: 'passed',
+        academicAccuracy: 'not_independently_verified',
+        calculationValidation: instructionalContent.verification.calculationValidation,
+        subjectExpertReview: 'not_reviewed'
+      }
+    });
+  } catch (error: any) {
+    logger.error({
+      error: error?.message || String(error),
+      courseId,
+      moduleId,
+      lessonId
+    }, '[Admin lesson regeneration] Failed');
+    return res.status(500).json({
+      error: 'Structured lesson regeneration failed. No replacement lesson was reported as successful.'
+    });
+  }
+});
+
+/**
+ * Persist a student's attempt before releasing the related comparison guide.
+ * This is a learning self-check, not proctored grading or a secure examination.
+ */
+app.post('/api/courses/:courseId/modules/:moduleId/lessons/:lessonId/attempts', verifyAuth, requirePublishedCourseOrAdmin, async (req: any, res: any) => {
+  const { courseId, moduleId, lessonId } = req.params;
+  const uid = req.user?.uid;
+  if (!uid) return res.status(401).json({ error: 'Authenticated user required' });
+
+  const { activityType, activityIndex, response } = req.body || {};
+  const allowedTypes = new Set(['guidedPractice', 'independentPractice', 'knowledgeChecks']);
+  if (!allowedTypes.has(activityType)) {
+    return res.status(400).json({ error: 'Unsupported lesson activity type' });
+  }
+  if (!Number.isInteger(activityIndex) || activityIndex < 0 || activityIndex > 100) {
+    return res.status(400).json({ error: 'A valid activity index is required' });
+  }
+  if (typeof response !== 'string' || response.trim().length < 3 || response.length > 10000) {
+    return res.status(400).json({ error: 'Write an attempt between 3 and 10000 characters before requesting the comparison guide' });
+  }
+
+  const pool = getPostgresPool();
+  if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+  try {
+    await ensureCourseAssessmentSchema();
+    const lessonResult = await pool.query(
+      'SELECT instructional_content FROM course_lessons WHERE course_id = $1 AND module_id = $2 AND id = $3 LIMIT 1',
+      [courseId, moduleId, lessonId]
+    );
+    if (!lessonResult.rows[0]) return res.status(404).json({ error: 'Lesson not found' });
+
+    let instructionalContent = lessonResult.rows[0].instructional_content;
+    if (typeof instructionalContent === 'string') {
+      try {
+        instructionalContent = JSON.parse(instructionalContent);
+      } catch {
+        return res.status(409).json({ error: 'Lesson instructional content is not valid structured data' });
+      }
+    }
+    let reveal: Record<string, string>;
+    try {
+      reveal = getInstructionalActivityReveal(
+        instructionalContent,
+        activityType as InstructionalActivityType,
+        activityIndex
+      );
+    } catch (revealError: any) {
+      const message = revealError?.message || 'Lesson activity is unavailable';
+      return res.status(message.includes('not found') ? 404 : 409).json({ error: message });
+    }
+
+    const savedAttempt = await pool.query(
+      `INSERT INTO course_lesson_practice_attempts
+        (uid, course_id, module_id, lesson_id, activity_type, activity_index, response_text)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, attempted_at`,
+      [uid, courseId, moduleId, lessonId, activityType, activityIndex, response.trim()]
+    );
+
+    return res.status(201).json({
+      success: true,
+      attempt: {
+        id: savedAttempt.rows[0]?.id,
+        attemptedAt: savedAttempt.rows[0]?.attempted_at
+      },
+      reveal,
+      grading: {
+        status: 'not_graded',
+        mode: 'student_self_check',
+        message: 'Your response was saved. Compare your reasoning with the guide; UniAce has not automatically graded this free-text attempt.'
+      }
+    });
+  } catch (error: any) {
+    logger.error({
+      error: error?.message || String(error),
+      uid,
+      courseId,
+      moduleId,
+      lessonId
+    }, '[Lesson practice attempt] Failed');
+    return res.status(500).json({ error: 'Could not save your attempt or release the comparison guide' });
+  }
+});
+
+app.get('/api/courses/:courseId/formulas', optionalAuth, requirePublishedCourseOrAdmin, async (req, res) => {
   const t0 = Date.now();
   try {
     const { courseId } = req.params;
@@ -4565,7 +4873,7 @@ async function updateCourseGenerationStateInPostgres(courseId: string, patch: Re
   const pool = getPostgresPool();
   if (pool && (patch.title || patch.description || patch.generationStatus === 'completed')) {
     try {
-      const statusVal = patch.generationStatus === 'completed' ? 'published' : (merged.status || 'published');
+      const statusVal = typeof merged.status === 'string' ? merged.status : 'draft';
       await pool.query(
         `INSERT INTO courses (id, code, title, description, level, department, faculty, semester, scope, status, version, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1, NOW(), NOW())
@@ -4592,6 +4900,7 @@ async function updateCourseGenerationStateInPostgres(courseId: string, patch: Re
           statusVal
         ]
       );
+      catalogCache.invalidateCourse(courseId);
     } catch (pgErr: any) {
       console.warn(`[Coordinated Gen] Postgres course row upsert notice for ${courseId}:`, pgErr.message);
     }
@@ -4622,10 +4931,7 @@ async function executeCoordinatedGenerationJob(
     scope,
     selectedFaculties = [],
     selectedDepartments = [],
-    approvedModules,
-    domainBrief: passedDomainBrief,
-    coverageScore: passedCoverageScore,
-    groundingReferences: passedGroundingReferences
+    approvedModules
   } = req.body;
 
   if (!courseId || typeof courseId !== 'string' || !courseId.trim()) {
@@ -4677,6 +4983,8 @@ async function executeCoordinatedGenerationJob(
       isAIGenerated: true,
       createdAt: existingSnap?.createdAt || new Date().toISOString(),
       generationStatus: 'generating',
+      status: 'draft',
+      published: false,
       generationProgress: isResume ? (existingSnap?.generationProgress || 15) : 5,
       statusMessage: isResume ? 'Resuming course generation from checkpoint...' : 'Coordinating course creation on server...'
     });
@@ -4690,6 +4998,7 @@ async function executeCoordinatedGenerationJob(
 
     (async () => {
       try {
+        await ensureCourseLearningSchema();
         console.log(`[Coordinated Gen] Starting Neon PostgreSQL background worker [Worker ID: ${WORKER_INSTANCE_ID}] for course ${courseId} (${rawDept})${isResume ? ' [RESUME MODE]' : ''}...`);
         recordBackendSystemLog(
           'info',
@@ -4719,7 +5028,7 @@ async function executeCoordinatedGenerationJob(
           sourceText
         });
 
-        const domainBrief: any = passedDomainBrief && passedDomainBrief.primaryDomain ? passedDomainBrief : await completeWithProviderJSON({
+        const domainBrief: any = await completeWithProviderJSON({
           type: 'skeleton',
           messages: [{ role: 'user', content: domainPrompt }],
           schema: DomainBriefSchema,
@@ -4739,23 +5048,28 @@ async function executeCoordinatedGenerationJob(
             pedagogyType: domainBrief.pedagogyType,
             creditHours: creditUnits
           };
-          if (req.body.rubricAudit && typeof req.body.rubricAudit.coverageScore === 'number') {
-            rubricAudit = req.body.rubricAudit;
-          } else {
-            const criticPrompt = buildOutlineCriticPrompt(domainBrief, skeleton, {
-              courseId,
-              courseName,
-              courseCode: courseId,
-              level,
-              outline
-            });
-            rubricAudit = await completeWithProviderJSON({
-              type: 'skeleton',
-              messages: [{ role: 'user', content: criticPrompt }],
-              schema: OutlineCriticRubricSchema,
-              requestedProvider,
-              complexity: 'standard'
-            });
+          // Re-audit the exact admin-reviewed outline on the server; browser-supplied scores are not evidence.
+          const criticPrompt = buildOutlineCriticPrompt(domainBrief, skeleton, {
+            courseId,
+            courseName,
+            courseCode: courseId,
+            level,
+            outline
+          });
+          rubricAudit = await completeWithProviderJSON({
+            type: 'skeleton',
+            messages: [{ role: 'user', content: criticPrompt }],
+            schema: OutlineCriticRubricSchema,
+            requestedProvider,
+            complexity: 'high'
+          });
+          const approvedSkeleton = rubricAudit.isValid &&
+            rubricAudit.coverageScore >= 75 &&
+            rubricAudit.foundationsScore >= 75 &&
+            rubricAudit.sequencingScore >= 75 &&
+            !rubricAudit.genericFillerDetected;
+          if (!approvedSkeleton) {
+            throw new Error(`Reviewed curriculum failed its server-side academic audit: ${rubricAudit.reasoning}`);
           }
         } else {
           let attempts = 0;
@@ -4848,7 +5162,7 @@ async function executeCoordinatedGenerationJob(
         }
 
         const normalizedOutcomes = normalizeLearningOutcomes(skeleton.learningOutcomes);
-        const canonicalRefs = domainBrief.canonicalCourseReferences || domainBrief.groundingReferences || passedGroundingReferences || [];
+        const canonicalRefs = domainBrief.canonicalCourseReferences;
 
         const syllabus = (skeleton.modules || []).map((m: any, mIdx: number) => ({
           id: `m${mIdx + 1}`,
@@ -4869,13 +5183,14 @@ async function executeCoordinatedGenerationJob(
           objectives: normalizedOutcomes.map(o => o.outcome),
           primaryDomain: domainBrief.primaryDomain,
           pedagogyType: domainBrief.pedagogyType,
-          coverageScore: rubricAudit?.coverageScore ?? passedCoverageScore ?? 90,
-          confidenceState: (rubricAudit?.coverageScore ?? 90) >= 90 ? 'verified' : 'needs_review',
+          coverageScore: rubricAudit.coverageScore,
+          confidenceState: 'needs_review',
+          academicVerificationState: 'not_independently_verified',
           rubricAudit,
           canonicalCourseReferences: canonicalRefs,
           groundingReferences: canonicalRefs,
           generationProgress: 20,
-          statusMessage: `Syllabus verified (Score: ${rubricAudit?.coverageScore ?? 90}%). Generating comprehensive lessons in parallel...`
+          statusMessage: `Curriculum structure audit passed (coverage: ${rubricAudit.coverageScore}%). Generating lessons; factual accuracy remains subject to independent verification...`
         });
 
         const totalModules = skeleton.modules.length;
@@ -4937,7 +5252,7 @@ async function executeCoordinatedGenerationJob(
 
               // Check if lesson already exists in Neon PostgreSQL on resume
               const existingLessonRes = await pool.query(
-                `SELECT title, content_markdown FROM course_lessons WHERE course_id = $1 AND module_id = $2 AND id = $3 LIMIT 1`,
+                `SELECT title, content_markdown, instructional_content FROM course_lessons WHERE course_id = $1 AND module_id = $2 AND id = $3 LIMIT 1`,
                 [courseId, moduleId, lessonId]
               ).catch(() => ({ rows: [] as any[] }));
 
@@ -4945,6 +5260,7 @@ async function executeCoordinatedGenerationJob(
                 isResume &&
                 existingLessonRes.rows[0]?.content_markdown &&
                 !isGenericLessonTitle(existingLessonRes.rows[0]?.title) &&
+                InstructionalContentSchema.safeParse(existingLessonRes.rows[0]?.instructional_content).success &&
                 validateLessonSyntax(existingLessonRes.rows[0].content_markdown, domainBrief.pedagogyType).isValid
               ) {
                 completedLessonsCount++;
@@ -4975,24 +5291,35 @@ async function executeCoordinatedGenerationJob(
                 elapsedSeconds: startLessonElapsed
               });
 
-              let targetOutcomeText = '';
-              if (moduleSkeleton.learningOutcomeIds && moduleSkeleton.learningOutcomeIds.length > 0) {
-                const targetIdx = parseInt(moduleSkeleton.learningOutcomeIds[0]);
-                if (!isNaN(targetIdx) && normalizedOutcomes[targetIdx]) {
-                  targetOutcomeText = normalizedOutcomes[targetIdx].outcome;
-                }
-              }
+              const targetOutcomeText = (moduleSkeleton.learningOutcomeIds || [])
+                .map((id: string) => {
+                  const targetIndex = Number.parseInt(id, 10);
+                  return Number.isInteger(targetIndex) && normalizedOutcomes[targetIndex]
+                    ? normalizedOutcomes[targetIndex].outcome
+                    : null;
+                })
+                .filter((outcome: string | null): outcome is string => Boolean(outcome))
+                .join('\n');
 
               let lessonAttempts = 0;
               let lessonContent = '';
               let lessonTitle = topic;
+              let instructionalContent: Record<string, any> | null = null;
               let lessonErrors: string[] = [];
 
-              const ValidatedLessonSchema = LessonContentSchema.superRefine((val, ctx) => {
+              const ValidatedLessonSchema = StructuredLessonOutputSchema.superRefine((val, ctx) => {
+                if (val.instructionalContent.disciplineEngine !== domainBrief.pedagogyType) {
+                  ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    path: ['instructionalContent', 'disciplineEngine'],
+                    message: 'Instructional engine does not match the course discipline.'
+                  });
+                }
                 const check = validateLessonSyntax(val.content || '', domainBrief.pedagogyType);
                 if (!check.isValid) {
                   ctx.addIssue({
                     code: z.ZodIssueCode.custom,
+                    path: ['content'],
                     message: check.errors.join(' ')
                   });
                 }
@@ -5042,6 +5369,17 @@ async function executeCoordinatedGenerationJob(
 
                 lessonTitle = (!isGenericLessonTitle(lessonData.title) && lessonData.title ? lessonData.title.trim() : topic) || topic;
                 lessonContent = normalizeLessonMarkdownContent(lessonData.content || '');
+                instructionalContent = {
+                  ...lessonData.instructionalContent,
+                  verification: {
+                    structureValidation: 'passed',
+                    academicAccuracy: 'not_independently_verified',
+                    calculationValidation: 'pending_independent_check',
+                    subjectExpertReview: 'not_reviewed',
+                    checkedAt: new Date().toISOString(),
+                    policyVersion: 'uniace-mastery-verification-v1'
+                  }
+                };
 
                 const syntaxValidation = validateLessonSyntax(lessonContent, domainBrief.pedagogyType);
                 if (syntaxValidation.isValid) {
@@ -5072,7 +5410,11 @@ async function executeCoordinatedGenerationJob(
                   title: lessonTitle,
                   contentMarkdown: lessonContent,
                   orderIndex: lIndex + 1,
-                  learningOutcomes: targetOutcomeText ? [targetOutcomeText] : []
+                  learningOutcomes: moduleSkeleton.learningOutcomeIds?.map((id: string) => {
+                    const outcomeIndex = Number.parseInt(id, 10);
+                    return Number.isInteger(outcomeIndex) && normalizedOutcomes[outcomeIndex] ? normalizedOutcomes[outcomeIndex].outcome : null;
+                  }).filter((value: string | null): value is string => Boolean(value)) || (targetOutcomeText ? [targetOutcomeText] : []),
+                  instructionalContent: instructionalContent || undefined
                 }
               });
 
@@ -5163,7 +5505,7 @@ Return strictly a JSON object:
             [courseId]
           );
           const lessRes = await pool.query(
-            `SELECT id, module_id, title, content_markdown, order_index FROM course_lessons WHERE course_id = $1 ORDER BY module_id, order_index ASC`,
+            `SELECT id, module_id, title, content_markdown, instructional_content, order_index FROM course_lessons WHERE course_id = $1 ORDER BY module_id, order_index ASC`,
             [courseId]
           );
 
@@ -5174,7 +5516,8 @@ Return strictly a JSON object:
               id: l.id,
               order: l.order_index,
               title: l.title,
-              content: l.content_markdown || ''
+              content: l.content_markdown || '',
+              instructionalContent: l.instructional_content || undefined
             });
           }
 
@@ -5184,7 +5527,7 @@ Return strictly a JSON object:
             title: m.title || `Module ${mIdx + 1}`,
             isFoundationModule: mIdx === 0,
             groundingReferences: canonicalRefs,
-            confidenceState: 'verified',
+            confidenceState: 'needs_review',
             subTopics: (lessonsByMod[m.id] || []).sort((a, b) => (a.order || 0) - (b.order || 0))
           }));
           compiledSyllabus = sortCourseSyllabus(compiledSyllabus);
@@ -5195,9 +5538,10 @@ Return strictly a JSON object:
         const provenance = {
           sources: canonicalRefs,
           modelVersion: requestedProvider || 'dynamic-multi-provider',
-          promptVersion: 'uniace-curriculum-v2.0',
+          promptVersion: 'uniace-mastery-curriculum-v3.0',
           generatedAt: new Date().toISOString(),
-          groundingScore: rubricAudit?.coverageScore ?? 95,
+          sourceStatus: sourceText ? 'admin_supplied_unverified' : 'model_suggested_unverified',
+          academicAccuracy: 'not_independently_verified',
           rubricAudit
         };
 
@@ -5208,9 +5552,11 @@ Return strictly a JSON object:
           provenance,
           generationStatus: 'completed',
           generationProgress: 100,
-          statusMessage: 'Course authored, verified, and published to Neon PostgreSQL catalog.',
-          published: true,
-          status: 'published'
+          confidenceState: 'needs_review',
+          academicVerificationState: 'not_independently_verified',
+          statusMessage: 'Course generated and saved as a draft for academic review. Structural checks passed; factual accuracy and calculations still require independent verification.',
+          published: false,
+          status: 'draft'
         });
 
         catalogCache.invalidateAll();
@@ -5224,7 +5570,7 @@ Return strictly a JSON object:
             courseName,
             completedLessons: completedLessonsCount,
             totalLessons: totalLessonsCount,
-            coverageScore: rubricAudit?.coverageScore ?? 95,
+            coverageScore: rubricAudit.coverageScore,
             memory: getLiveMemoryTelemetry(activeRunningCourseJobs.size)
           }
         );
@@ -6765,41 +7111,49 @@ app.post('/api/telemetry/module-action', verifyAuth, async (req, res) => {
   }
 });
 
-app.post('/api/course/:courseId/publish', verifyAuth, async (req, res) => {
+app.post('/api/course/:courseId/publish', verifyAdmin, async (req, res) => {
   const { courseId } = req.params;
   const pool = getPostgresPool();
-  if (!pool) return res.status(500).json({ error: 'Database service unavailable.' });
-
+  if (!pool) return res.status(503).json({ error: 'Database service unavailable.' });
+  const actor = (req as any).user;
+  let client: any;
   try {
-    const courseData = await courseRepository.getCourseById(courseId);
-    if (!courseData) {
-      return res.status(404).json({ error: 'Course not found.' });
-    }
-
-    if ((courseData as any).confidenceState === 'failed' || ((courseData as any).coverageScore && (courseData as any).coverageScore < 70)) {
-      return res.status(400).json({ 
-        error: 'Publishing Blocked: This course has failed quality/drift verification.',
-        reason: `Coverage Score (${(courseData as any).coverageScore}%) is below the required threshold or Confidence State is "failed".`,
-        needsRegeneration: true
-      });
-    }
-
-    await pool.query(
-      `UPDATE courses
-       SET published = true,
-           status_message = 'Course published successfully after human review.',
-           updated_at = NOW()
-       WHERE id = $1`,
+    await ensureCourseReviewSchema();
+    client = await pool.connect();
+    await client.query('BEGIN');
+    const courseResult = await client.query(
+      'SELECT status, review_status FROM courses WHERE id = $1 FOR UPDATE',
       [courseId]
     );
-
-    res.json({ success: true, message: `Course ${courseId} published.` });
+    if (courseResult.rows.length === 0) {
+      const error: any = new Error('Course not found.');
+      error.statusCode = 404;
+      throw error;
+    }
+    if (courseResult.rows[0].status !== 'draft' || courseResult.rows[0].review_status !== 'approved') {
+      const error: any = new Error('Course must complete the admin review workflow and be approved before publishing.');
+      error.statusCode = 409;
+      throw error;
+    }
+    await client.query(
+      "UPDATE courses SET published = true, status = 'published', status_message = 'Course published after recorded admin review.', updated_at = NOW() WHERE id = $1",
+      [courseId]
+    );
+    await client.query(
+      "INSERT INTO course_review_events (course_id, actor_uid, actor_email, action, from_status, to_status, created_at) VALUES ($1, $2, $3, 'publish_legacy_route', 'approved', 'published', NOW())",
+      [courseId, actor?.uid || 'admin', actor?.email || null]
+    );
+    await client.query('COMMIT');
+    catalogCache.invalidateCourse(courseId);
+    return res.json({ success: true, message: 'Course ' + courseId + ' published.' });
   } catch (error: any) {
+    if (client) await client.query('ROLLBACK').catch(() => undefined);
     console.error('Publish Error:', error);
-    res.status(500).json({ error: 'Failed to publish course.' });
+    return res.status(error?.statusCode || 500).json({ error: error?.message || 'Failed to publish course.' });
+  } finally {
+    client?.release();
   }
 });
-
 app.post('/api/admin/regression-test', verifyAuth, async (req, res) => {
   const { testCases } = req.body;
   if (!testCases || !Array.isArray(testCases)) {

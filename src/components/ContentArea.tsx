@@ -5,17 +5,19 @@ import { useState, useEffect, useRef } from 'react';
 import QuizGenerator from './QuizGenerator';
 import QuickCheck from './QuickCheck';
 import MarkdownRenderer from './MarkdownRenderer';
+import MasteryLessonPanel from './MasteryLessonPanel';
 import PricingModal from './PricingModal';
 import MiniTeacherModal from './MiniTeacherModal';
 import QuickSummaryModal from './QuickSummaryModal';
 import { AIService } from '../services/ai';
-import { generateLessonContent, sanitizeLatex } from '../services/aiCourseGenerator';
+import { sanitizeLatex } from '../services/aiCourseGenerator';
 import { sanitizeForFirestore } from '../services/courseService';
 import { LogService } from '../services/logService';
 import { useCourses } from '../context/CourseContext';
 import { useAuth } from '../context/AuthContext';
 import { usePremiumStatus } from '../hooks/usePremiumStatus';
 import { PipelineMetadata } from '../types';
+import type { StudentInstructionalContent } from '../shared/courseSchemas';
 
 const stripThinkTags = (text: string) => {
   return text.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
@@ -70,7 +72,7 @@ export default function ContentArea({
   const [isProactiveQuiz, setIsProactiveQuiz] = useState(false);
   const hasCheckedInRef = useRef<Set<string>>(new Set());
   const [lockedFeatureName, setLockedFeatureName] = useState('');
-  const [fetchedLesson, setFetchedLesson] = useState<{ id: string; content: string; metadata: PipelineMetadata } | null>(null);
+  const [fetchedLesson, setFetchedLesson] = useState<{ id: string; content: string; metadata: PipelineMetadata; instructionalContent?: StudentInstructionalContent } | null>(null);
   const [isFetchingContent, setIsFetchingContent] = useState(false);
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const { courses, refreshCourses } = useCourses();
@@ -85,7 +87,12 @@ export default function ContentArea({
 
   // Derive active lesson content synchronously on render to guarantee content availability precedes render
   const activeLessonData = (activeSubTopic?.content && activeSubTopic.content.trim().length > 0)
-    ? { id: activeSubTopic.id, content: sanitizeLatex(stripThinkTags(activeSubTopic.content)), metadata: {} as PipelineMetadata }
+    ? {
+        id: activeSubTopic.id,
+        content: sanitizeLatex(stripThinkTags(activeSubTopic.content)),
+        metadata: {} as PipelineMetadata,
+        instructionalContent: activeSubTopic.instructionalContent || (fetchedLesson?.id === activeSubTopic.id ? fetchedLesson.instructionalContent : undefined)
+      }
     : (fetchedLesson?.id === activeSubTopic?.id && fetchedLesson.content && fetchedLesson.content.trim().length > 0 ? fetchedLesson : null);
 
   const isCurrentLessonLoading = isFetchingContent || (!activeLessonData && !isGenerating);
@@ -127,10 +134,11 @@ export default function ContentArea({
     const loadContent = async () => {
       if (!courseId) return;
       
-      // If it already has content (legacy or preloaded courses), use it
-      if (activeSubTopic?.content) {
+      // Skip the network only when both the legacy reader content and structured learning payload are present.
+      // Legacy Markdown-only lessons are fetched once so a migrated structured payload can be loaded.
+      if (activeSubTopic?.content && activeSubTopic.instructionalContent) {
         const sanitized = sanitizeLatex(stripThinkTags(activeSubTopic.content));
-        setFetchedLesson({ id: activeSubTopic.id, content: sanitized, metadata: {} });
+        setFetchedLesson({ id: activeSubTopic.id, content: sanitized, metadata: {}, instructionalContent: activeSubTopic.instructionalContent });
         onLessonContentChange?.(sanitized);
         setIsFetchingContent(false);
         return;
@@ -146,7 +154,7 @@ export default function ContentArea({
         if (targetLesson && targetLesson.content) {
           console.log(`[ContentArea] Lesson found via Neon API! Content length: ${targetLesson.content.length}`);
           const sanitizedContent = sanitizeLatex(stripThinkTags(targetLesson.content));
-          setFetchedLesson({ id: activeSubTopic.id, content: sanitizedContent, metadata: {} });
+          setFetchedLesson({ id: activeSubTopic.id, content: sanitizedContent, metadata: {}, instructionalContent: targetLesson.instructionalContent });
           onLessonContentChange?.(sanitizedContent);
         } else {
           console.log(`[ContentArea] Lesson content not found for ${activeSubTopic?.id}`);
@@ -319,67 +327,67 @@ export default function ContentArea({
   };
 
   const handleGenerateLesson = async () => {
-    if (!isAdmin || !courseId) return;
-    
+    if (!isAdmin || !courseId || !activeSubTopic) return;
+
     setIsGenerating(true);
     setGenerationStep(0);
 
-    // Track regeneration telemetry
     try {
       const idToken = await user?.getIdToken();
-      fetch('/api/telemetry/module-action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
-        body: JSON.stringify({ courseId, moduleId: module.id, action: 'regenerate' })
-      }).catch(err => console.warn('Failed to track regeneration telemetry:', err));
-    } catch (e) {}
+      if (!idToken) throw new Error('Administrator authentication is required to regenerate a lesson.');
 
-    // Progress animation
-    const interval = setInterval(() => {
-      setGenerationStep(prev => (prev + 1) % generationSteps.length);
-    }, 3000);
-
-    try {
-      const currentCourse = courseId ? courses[courseId] : null;
-      const courseInput = currentCourse || { id: courseId, title: courseTitle };
-
-      const lesson = await generateLessonContent(
-        courseInput,
-        module.title,
-        activeSubTopic.title,
-        undefined
-      );
-
-      // Save via Neon API
-      try {
-        const idToken = await user?.getIdToken();
-        await fetch(`/api/courses/${encodeURIComponent(courseId)}/modules/${encodeURIComponent(module.id)}/lessons/${encodeURIComponent(activeSubTopic.id)}`, {
+      // Regeneration now runs on the server and uses the same structured lesson
+      // contract and validation as coordinated course generation.
+      const response = await fetch(
+        `/api/admin/courses/${encodeURIComponent(courseId)}/modules/${encodeURIComponent(module.id)}/lessons/${encodeURIComponent(activeSubTopic.id)}/regenerate`,
+        {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${idToken}`
+            Authorization: `Bearer ${idToken}`
           },
-          body: JSON.stringify({
-            title: activeSubTopic.title,
-            content: lesson.content || ''
-          })
-        });
-      } catch (saveErr) {
-        console.warn('Failed to save lesson content via API:', saveErr);
+          body: JSON.stringify({})
+        }
+      );
+
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.success || !payload?.lesson?.content) {
+        throw new Error(payload?.error || 'Structured lesson regeneration failed.');
       }
 
-      LogService.log('success', 'ai', `Generated lesson content for ${activeSubTopic.title}`, { courseId, moduleId: module.id, lessonId: activeSubTopic.id, audience: (lesson.metadata as any)?.audience });
+      const generatedContent = String(payload.lesson.content);
+      const instructionalContent = payload.lesson.instructionalContent as StudentInstructionalContent | undefined;
 
-      // Update local state
-      setFetchedLesson({ id: activeSubTopic.id, content: lesson.content, metadata: (lesson.metadata as PipelineMetadata) || {} });
-      onLessonContentChange?.(lesson.content);
+      setFetchedLesson({
+        id: activeSubTopic.id,
+        content: generatedContent,
+        metadata: {} as PipelineMetadata,
+        instructionalContent
+      });
+      onLessonContentChange?.(generatedContent);
 
-      // Update global state to reflect new content
+      LogService.log(
+        'success',
+        'ai',
+        `Regenerated structured lesson for ${activeSubTopic.title}`,
+        {
+          courseId,
+          moduleId: module.id,
+          lessonId: activeSubTopic.id,
+          academicAccuracy: payload.verification?.academicAccuracy || 'not_independently_verified'
+        }
+      );
+
       await refreshCourses();
     } catch (error: any) {
-      console.error('Lesson Generation Error:', error);
+      console.error('Structured Lesson Regeneration Error:', error);
+      LogService.log('error', 'ai', `Lesson regeneration failed for ${activeSubTopic.title}`, {
+        courseId,
+        moduleId: module.id,
+        lessonId: activeSubTopic.id,
+        error: error?.message || String(error)
+      });
     } finally {
-      clearInterval(interval);
       setIsGenerating(false);
     }
   };
@@ -628,6 +636,14 @@ export default function ContentArea({
                 )}
 
                 <MarkdownRenderer content={activeLessonData.content} />
+                {activeLessonData.instructionalContent && (
+                  <MasteryLessonPanel
+                    content={activeLessonData.instructionalContent}
+                    courseId={courseId || ''}
+                    moduleId={module.id}
+                    lessonId={activeSubTopic.id}
+                  />
+                )}
                 
                 {/* Source Citations & Grounding Section */}
                 {module.groundingReferences && module.groundingReferences.length > 0 && (
@@ -645,8 +661,8 @@ export default function ContentArea({
                       ))}
                     </div>
                     <p className="mt-4 text-[10px] text-zinc-400 italic">
-                      This content was dynamically generated and verified against the scholarly references listed above. 
-                      Confidence State: <span className="font-bold text-indigo-500">{module.confidenceState || 'Verified'}</span>
+                      These are the course-generation reference records. Their presence does not by itself establish that every lesson claim has been independently checked.
+                      Academic review state: <span className="font-bold text-indigo-500">{module.confidenceState || 'needs_review'}</span>
                     </p>
                   </div>
                 )}

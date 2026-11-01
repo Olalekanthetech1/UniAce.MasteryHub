@@ -6,6 +6,7 @@ import MermaidViewer from './renderers/MermaidViewer';
 import FunctionPlotViewer from './renderers/FunctionPlotViewer';
 import VennDiagramViewer from './renderers/VennDiagramViewer';
 import SvgDiagramViewer from './renderers/SvgDiagramViewer';
+import { normalizeMathDelimiters as normalizeSharedMathDelimiters } from '../shared/mathText';
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -69,15 +70,7 @@ const KATEX_ALLOWED_ATTR = [
  * Normalizes transport-level LaTeX delimiter variants (\( ... \) and \[ ... \])
  * so marked-katex-extension parses all math blocks uniformly.
  */
-export function normalizeMathDelimiters(raw: string): string {
-  if (typeof raw !== 'string' || !raw) return '';
-
-  return raw
-    .replace(/```(?:math|latex)\n([\s\S]+?)\n```/gi, (_m, body) => `\n\n$$\n${body.trim()}\n$$\n\n`)
-    .replace(/\\\[([\s\S]+?)\\\]/g, (_m, body) => `\n\n$$\n${body.trim()}\n$$\n\n`)
-    .replace(/\\\(([\s\S]+?)\\\)/g, (_m, body) => `$${body.trim()}$`);
-}
-
+export const normalizeMathDelimiters = normalizeSharedMathDelimiters;
 function createConfiguredMarkedInstance(): Marked {
   const instance = new Marked({
     gfm: true,

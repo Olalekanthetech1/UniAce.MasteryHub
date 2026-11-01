@@ -14,6 +14,7 @@ import crypto from 'crypto';
 import { queryPostgres } from '../postgresPool';
 import { logger } from '../logger';
 import { catalogCache } from '../cache/catalogCache';
+import { ensureCourseLearningSchema } from '../services/courseLearningSchema';
 
 export interface CourseGenerationJobEntity {
   job_id: string;
@@ -269,8 +270,12 @@ export class JobRepository {
       keyTerms?: string[];
       learningOutcomes?: string[];
       assetReferences?: any;
+      instructionalContent?: Record<string, any>;
     };
   }): Promise<void> {
+    // Ensure the additive Neon migration before writing structured instructional data.
+    if (params.lesson?.instructionalContent) await ensureCourseLearningSchema();
+
     // 1. Upsert course_module
     const moduleSql = `
       INSERT INTO course_modules (
@@ -299,9 +304,9 @@ export class JobRepository {
       const lessonSql = `
         INSERT INTO course_lessons (
           id, course_id, module_id, title, content_markdown, order_index,
-          key_terms, learning_outcomes, asset_references, created_at, updated_at
+          key_terms, learning_outcomes, asset_references, instructional_content, created_at, updated_at
         ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, NOW(), NOW()
+          $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, NOW(), NOW()
         )
         ON CONFLICT (id, course_id, module_id) DO UPDATE SET
           title = EXCLUDED.title,
@@ -310,6 +315,7 @@ export class JobRepository {
           key_terms = EXCLUDED.key_terms,
           learning_outcomes = EXCLUDED.learning_outcomes,
           asset_references = EXCLUDED.asset_references,
+          instructional_content = COALESCE(EXCLUDED.instructional_content, course_lessons.instructional_content),
           updated_at = NOW();
       `;
       await queryPostgres(lessonSql, [
@@ -321,7 +327,8 @@ export class JobRepository {
         params.lesson.orderIndex,
         params.lesson.keyTerms || [],
         params.lesson.learningOutcomes || [],
-        JSON.stringify(params.lesson.assetReferences || {})
+        JSON.stringify(params.lesson.assetReferences || []),
+        params.lesson.instructionalContent ? JSON.stringify(params.lesson.instructionalContent) : null
       ]);
     }
     catalogCache.invalidateCourse(params.courseId);

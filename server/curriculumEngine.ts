@@ -433,91 +433,84 @@ export function buildLessonPrompt(
   options: CurriculumGenerationOptions,
   learningOutcomeText?: string
 ): string {
-  const {
-    courseName,
-    department,
-    level = 'Undergraduate',
-    tone = 'academic',
-    depth = 'standard',
-    scope = 'DEPARTMENT',
-    academicStandard = 'Globally Adaptive (Universal University Standard)',
-    sourceText
-  } = options;
-
-  let pedagogyDirective = '';
-  switch (domainBrief.pedagogyType) {
-    case 'STEM_MATHEMATICAL':
-      pedagogyDirective = `DISCIPLINE STYLE: STEM / MATHEMATICAL & ENGINEERING
-- Formulate mathematical derivations, physical laws, and quantitative governing equations where applicable.
-- Enforce strict LaTeX formatting for equations: inline math in $...$ and display math in $$...$$.
-- Include clear comparison tables (e.g. properties, crystal systems, phases, or algorithmic bounds).
-- Include an authentic, sourced empirical engineering case study or experimental application.`;
-      break;
-    case 'HUMANITIES_LAW_ARTS':
-      pedagogyDirective = `DISCIPLINE STYLE: HUMANITIES / LAW & LIBERAL ARTS
-- Emphasize primary source textual analysis, historical historiography, rhetorical critique, and legal/ethical frameworks.
-- Include structured comparative critique tables (e.g. philosophical doctrines, statutory interpretations, or artistic periods).
-- Include an authentic historical or legal case study with sourced context.`;
-      break;
-    case 'SOCIAL_SCIENCES_BUSINESS':
-      pedagogyDirective = `DISCIPLINE STYLE: SOCIAL SCIENCES & BUSINESS / ECONOMICS
-- Emphasize empirical research methodologies, statistical tables, market/behavioral case studies, and macroeconomic models.
-- Include data comparison tables and methodological frameworks.
-- Include an authentic corporate, policy, or behavioral case study.`;
-      break;
-    case 'BIOMEDICAL_LIFE_SCIENCES':
-      pedagogyDirective = `DISCIPLINE STYLE: BIOMEDICAL & LIFE SCIENCES
-- Emphasize physiological mechanisms, biochemical pathways, clinical significance, and taxonomic classifications.
-- Include comparison tables of cellular structures, metabolic pathways, or pharmacological agents.
-- Include an authentic clinical case study or experimental study.`;
-      break;
-    default:
-      pedagogyDirective = `DISCIPLINE STYLE: GENERAL ACADEMIC FOUNDATIONS
-- Emphasize clear conceptual taxonomy, analytical frameworks, and structured real-world applications.
-- Include comparison tables and practical case studies.`;
-  }
-
-  const audienceList = [
+  const { courseName, department, level = 'Undergraduate', tone = 'academic', depth = 'standard',
+    scope = 'DEPARTMENT', academicStandard = 'Globally Adaptive (Universal University Standard)', sourceText } = options;
+  const audience = Array.from(new Set([
     ...(Array.isArray(options.selectedDepartments) ? options.selectedDepartments : []),
     ...(options.department ? [options.department] : []),
     ...(Array.isArray(options.selectedFaculties) ? options.selectedFaculties : [])
-  ].map(s => String(s).trim()).filter(Boolean);
+  ].map(v => String(v).trim()).filter(Boolean))).join(', ') || department || domainBrief.primaryDomain;
 
-  const uniqueAudience = Array.from(new Set(audienceList));
-  const audienceText = uniqueAudience.length > 0 ? uniqueAudience.join(', ') : (department || domainBrief.primaryDomain);
-  const isMultiAudience = uniqueAudience.length > 1;
+  const disciplineDirectives: Record<DomainBrief['pedagogyType'], string> = {
+    STEM_MATHEMATICAL: 'Build physical intuition, state governing assumptions, derive equations from established laws, define symbols and SI units, explain mathematical transformations, and check numerical reasonableness. Never invent experimental values.',
+    HUMANITIES_LAW_ARTS: 'Build historical/textual context, compare interpretations, demonstrate argument structure and primary-source analysis. Formal development means an interpretive method or evidentiary argument, not an artificial mathematical derivation. Distinguish facts from interpretation.',
+    SOCIAL_SCIENCES_BUSINESS: 'Explain theoretical mechanisms, assumptions, research design, causal logic, statistical methods and limits of evidence. Never fabricate datasets, study findings or company results.',
+    BIOMEDICAL_LIFE_SCIENCES: 'Explain structures, mechanisms, pathways, regulation, causal relationships and evidence quality. Use equations only when appropriate. Never invent clinical outcomes, reference values or treatment guidance.',
+    GENERAL_FOUNDATIONS: 'Prioritise definitions, conceptual relationships, evidence and discipline-appropriate examples. Select formal reasoning appropriate to the subject; do not force mathematics.'
+  };
 
-  return `Write a comprehensive, rigorous, university-level study guide and lesson for the topic: "${topicTitle}"
-within Module ${moduleOrder}: "${moduleTitle}" of the course "${courseName}".
+  return `Create a university lesson for "${topicTitle}" in Module ${moduleOrder}: "${moduleTitle}" of "${courseName}".
 
-AUTHORITATIVE DOMAIN: ${domainBrief.primaryDomain}
-TARGET ENROLLED AUDIENCE: ${audienceText}
-${isMultiAudience ? `AUDIENCE DIRECTIVE: This course serves a multi-department cohort (${audienceText}). Frame the foundational significance and applied case studies across these disciplines without narrowing the context exclusively to a single department.` : ''}
-LEVEL: ${level}
-TONE: ${tone}
-DEPTH: ${depth}
-ACADEMIC STANDARD: ${academicStandard}
-${learningOutcomeText ? `TARGET LEARNING OUTCOME: ${learningOutcomeText}` : ''}
-${sourceText ? `SOURCE REFERENCE: ${sourceText.substring(0, 1500)}` : ''}
+ACADEMIC CONTEXT
+Discipline: ${domainBrief.primaryDomain}
+Discipline engine: ${domainBrief.pedagogyType}
+Audience: ${audience}
+Level: ${level}
+Standard: ${academicStandard}
+Tone/depth: ${tone} / ${depth}
+Scope: ${scope}
+Target learning outcome: ${learningOutcomeText || 'Derive measurable objectives only from approved course outcomes and this topic.'}
+${sourceText ? `ADMIN-SUPPLIED SOURCE MATERIAL (primary grounding):\n${sourceText.substring(0, 3500)}` : 'No additional source material was supplied. Do not fabricate quotations, citations, page numbers, textbooks or empirical findings.'}
 
-${pedagogyDirective}
+DISCIPLINE ENGINE
+${disciplineDirectives[domainBrief.pedagogyType]}
 
-[PEDAGOGICAL REQUIREMENTS]:
-1. Executive Summary: Core thesis and why this topic matters within ${domainBrief.primaryDomain}.
-2. Theoretical Foundations: Systematic breakdown of mechanisms, principles, definitions, and formal theories.
-3. Detailed Breakdown: Step-by-step analysis with clear subheadings, structured bullet points, and markdown tables.
-4. Real-World Case Study: An authentic, fully grounded empirical application native to ${domainBrief.primaryDomain}.
-5. Key Takeaways & Practice Discussion Prompt: Dynamic summary questions for student reflection.
+UNIVERSAL MASTERY FRAMEWORK
+Organise learning around Understand → Explore → Apply → Verify → Master. This is a learning sequence, not ten compulsory long chapters. Keep every component proportionate to the topic.
 
-[STRICT JSON OUTPUT FORMAT]:
-- Place the ENTIRE lesson (all 5 sections above, minimum 1,500 characters of detailed academic prose, equations, tables, and diagrams) inside the single "content" markdown field. Do NOT output separate keys for sections.
-- Use clear "## " markdown headings for each major section.
-- When emphasizing words or writing SVG/HTML attributes inside "content", use single quotes (e.g., <svg viewBox='0 0 500 250' width='100%'> or 'pressure') or backticks, never unescaped double quotes.
+For the Markdown 'content' field, include at least three meaningful level-2 headings and at least 800 characters of substantive academic prose. Headings should reflect the discipline and topic, not generic filler.
 
-Return strictly a JSON object:
+Return BOTH readable Markdown in "content" and structured data in "instructionalContent".
+
+STRUCTURED CONTENT RULES
+- frameworkVersion must be "understand-explore-apply-verify-master-v1"; disciplineEngine must be "${domainBrief.pedagogyType}".
+- learningObjectives: 2-5 measurable capabilities aligned to approved outcomes.
+- prerequisites: genuine prerequisites with reason and readiness check; [] if none.
+- conceptIntroduction: intuition before technical detail.
+- deepExplanation: mechanisms, assumptions, relationships and boundaries.
+- formalDevelopment: relevant derivation, proof, argument, causal mechanism, research method or analytical framework.
+- workedExamples: at least one discipline-appropriate example with problem, ordered reasoning, solution and a genuine reasonableness/logic check.
+- applications and misconceptions: include only defensible items; otherwise return [] and explain why in applicationRationale or misconceptionRationale.
+- guidedPractice: at least one exercise with progressive hints, approach, answer and explanation.
+- independentPractice: at least one new no-hint exercise with answer/explanation for later reveal.
+- knowledgeChecks: at least two reasoning checks, not recall alone.
+- mastery.targetLevel: appropriate target 1-5 for this lesson; it is not evidence that any student has achieved that level.
+- mastery.criteria: observable evidence required before advancement.
+- mastery.retentionPrompts: later active-retrieval prompts.
+
+ACADEMIC INTEGRITY
+Do not invent syllabus topics, facts, laws, equations, numerical data, case studies, source references or verification claims. State assumptions and limits. Ensure examples, units, derivations and explanations are internally consistent. Qualify insufficiently grounded information. Use balanced LaTeX delimiters.
+
+STRICT JSON
+Return one valid JSON object only with top-level keys "title", "pedagogicalReasoning", "content", "instructionalContent".
+instructionalContent must follow this shape:
 {
-  "pedagogicalReasoning": "How this lesson satisfies university learning outcomes in ${domainBrief.primaryDomain}",
-  "title": "${topicTitle}",
-  "content": "## 1. Executive Summary\\n\\nFull detailed markdown lesson text compiling all sections above..."
-}`;
+ "frameworkVersion":"understand-explore-apply-verify-master-v1",
+ "disciplineEngine":"${domainBrief.pedagogyType}",
+ "learningObjectives":["..."],
+ "prerequisites":[{"concept":"...","whyNeeded":"...","readinessCheck":"..."}],
+ "conceptIntroduction":"...",
+ "deepExplanation":"...",
+ "formalDevelopment":"...",
+ "workedExamples":[{"title":"...","exampleType":"numerical","problem":"...","reasoningSteps":["...","..."],"solution":"...","verification":"..."}],
+ "applications":[{"context":"...","conceptConnection":"...","constraintsOrAssumptions":"..."}],
+ "applicationRationale":"...",
+ "misconceptions":[{"misconception":"...","whyItIsWrong":"...","correction":"..."}],
+ "misconceptionRationale":"...",
+ "guidedPractice":[{"prompt":"...","hints":["..."],"expectedApproach":"...","expectedAnswer":"...","explanation":"...","diagnosticSignals":["..."]}],
+ "independentPractice":[{"prompt":"...","hints":[],"expectedApproach":"...","expectedAnswer":"...","explanation":"...","diagnosticSignals":["..."]}],
+ "knowledgeChecks":[{"prompt":"...","responseMode":"explain","expectedReasoning":"...","answerOrRubric":"...","misconceptionSignals":["..."],"difficulty":2,"learningOutcome":"..."}],
+ "mastery":{"targetLevel":3,"criteria":["..."],"retentionPrompts":["..."]}
+}
+These are schema illustrations, not course facts. Return strict JSON without fences or commentary.`;
 }

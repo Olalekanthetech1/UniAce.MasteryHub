@@ -3,6 +3,7 @@ import { motion } from 'motion/react';
 import { Book, Search, Copy, Check, GraduationCap, ArrowLeft, Bookmark, AlertTriangle, BookOpen, ArrowRight } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import MarkdownRenderer from './MarkdownRenderer';
+import { asDisplayMath } from '../shared/mathText';
 import { useAuth } from '../context/AuthContext';
 import { CourseService } from '../services/courseService';
 import { useUserProgress } from '../hooks/useUserProgress';
@@ -391,7 +392,7 @@ export default function FormulaReference({
                         <div className="p-4 sm:p-8 bg-slate-50 dark:bg-zinc-950 rounded-2xl flex items-center justify-center min-h-[100px] sm:min-h-[140px] border border-slate-100 dark:border-zinc-800 group-hover:bg-white dark:group-hover:bg-zinc-900 transition-colors overflow-x-auto max-w-full">
                           <div className="text-lg sm:text-2xl text-slate-950 dark:text-white w-full text-center flex justify-center">
                             <div className="max-w-full overflow-x-auto py-2">
-                              <MarkdownRenderer content={`$$${(formula.latex || '').replace(/^\$|\$$/g, '')}$$`} />
+                              <MarkdownRenderer content={asDisplayMath(formula.latex || '')} />
                             </div>
                           </div>
                         </div>

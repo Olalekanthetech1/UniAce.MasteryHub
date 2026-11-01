@@ -28,6 +28,7 @@ import { PipelineMetadata } from '../types';
 import { autoHealQuestion } from './validators/aiSchemas';
 import { sanitizeForFirestore } from './courseService';
 import { auth } from '../firebase';
+import { normalizeMathDelimiters } from '../shared/mathText';
 
 const courseMarkedEngine = new Marked({
   gfm: true,
@@ -91,9 +92,9 @@ export function sanitizeLatex(content: any): any {
   sanitized = sanitized.replace(/\\n(?![a-zA-Z])/g, '\n');
   sanitized = sanitized.replace(/\\t(?![a-zA-Z])/g, '\t');
 
-  // Standardize \[ ... \] and \( ... \) delimiters for marked-katex-extension
-  sanitized = sanitized.replace(/\\\[([\s\S]*?)\\\]/g, (_match, inner) => `\n$$\n${inner.trim()}\n$$\n`);
-  sanitized = sanitized.replace(/\\\(([\s\S]*?)\\\)/g, (_match, inner) => `$${inner.trim()}$`);
+  // Normalize delimiters through the shared renderer-safe path. Code fences and inline
+  // code remain literal; only actual math regions are converted for KaTeX.
+  sanitized = normalizeMathDelimiters(sanitized);
 
   // Collapse double-escaped backslashes inside math spans that survived JSON decoding
   sanitized = sanitized.replace(/\$\$([\s\S]+?)\$\$/g, (_match, inner) => {
