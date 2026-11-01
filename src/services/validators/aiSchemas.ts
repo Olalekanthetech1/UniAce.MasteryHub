@@ -139,7 +139,7 @@ export const RecommendationSchema = z.object({
   title: z.string().min(1, 'Title cannot be empty'),
   reason: z.string().min(1, 'Reason cannot be empty'),
   moduleId: z.string().trim().min(1, 'Module reference is required'),
-  subTopicId: z.string().optional(),
+  subTopicId: z.string().trim().min(1, 'Subtopic reference is required'),
   type: z.enum(['review', 'new', 'mastery']),
 });
 
