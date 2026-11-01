@@ -53,7 +53,7 @@ export async function setSystemConfigDoc(
   merge: boolean = true
 ): Promise<void> {
   const pool = getPostgresPool();
-  if (!pool) return;
+  if (!pool) throw new Error('Cannot persist system configuration: Neon PostgreSQL is unavailable.');
 
   try {
     let nextData = payload;
@@ -73,7 +73,8 @@ export async function setSystemConfigDoc(
 
     configMemoryCache.set(key, { data: nextData, fetchedAt: Date.now() });
   } catch (err) {
-    console.warn(`[SystemConfigStore] Failed to write system_config key '${key}' to Neon:`, err);
+    console.error(`[SystemConfigStore] Failed to write system_config key '${key}' to Neon:`, err);
+    throw err;
   }
 }
 
