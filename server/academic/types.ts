@@ -10,7 +10,7 @@ export const AcademicPaperSchema = z.object({
   doi: z.string().nullable().optional(),
   url: z.string(),
   pdfUrl: z.string().nullable().optional(),
-  citationCount: z.number().default(0),
+  citationCount: z.number().nullable().optional(),
   source: z.enum(['arxiv', 'semantic_scholar', 'openalex']),
   relevanceScore: z.number().default(0),
   syllabusTags: z.array(z.string()).default([]),
@@ -44,14 +44,17 @@ export const CanonicalDefinitionsInputSchema = z.object({
 export type CanonicalDefinitionsInput = z.infer<typeof CanonicalDefinitionsInputSchema>;
 
 export interface CanonicalDefinition {
+  source: 'openalex';
+  sourceId: string;
+  sourceUrl: string;
   topic: string;
   subject: string;
   canonicalDefinition: string;
   sourceTextbooks: string[];
   keyEquations: string[];
-  courseAlignment: {
+  courseAlignment?: {
     curriculumBenchmark: string;
-    courseCode: string;
+    courseCode?: string;
   };
 }
 
