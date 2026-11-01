@@ -10,7 +10,7 @@ export const AcademicPaperSchema = z.object({
   doi: z.string().nullable().optional(),
   url: z.string(),
   pdfUrl: z.string().nullable().optional(),
-  citationCount: z.number().default(0),
+  citationCount: z.number().nullable().optional(),
   source: z.enum(['arxiv', 'semantic_scholar', 'openalex']),
   relevanceScore: z.number().default(0),
   syllabusTags: z.array(z.string()).default([]),
@@ -47,12 +47,9 @@ export interface CanonicalDefinition {
   topic: string;
   subject: string;
   canonicalDefinition: string;
-  sourceTextbooks: string[];
-  keyEquations: string[];
-  courseAlignment: {
-    curriculumBenchmark: string;
-    courseCode: string;
-  };
+  sourceProvider: 'openalex';
+  sourceUrl: string;
+  relatedConcepts: string[];
 }
 
 export interface CitationResult {
@@ -80,10 +77,8 @@ export interface AcademicProviderHealth {
 export interface AcademicConfig {
   enabled: boolean;
   cacheTtlHours: number;
-  semanticScholarApiKey?: string;
-  openAlexEmail?: string;
   arxivMaxResults: number;
-  defaultCourseAlignment: string; // e.g. "Global University Benchmark Syllabus (Adaptive)"
+  researchDepth: 'adaptive';
   providersEnabled: {
     arxiv: boolean;
     semanticScholar: boolean;
