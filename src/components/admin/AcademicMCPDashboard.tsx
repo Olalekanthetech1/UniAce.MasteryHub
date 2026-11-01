@@ -47,14 +47,48 @@ interface AcademicConfig {
   enabled: boolean;
   cacheTtlHours: number;
   semanticScholarApiKey?: string;
+  semanticScholarApiKeyConfigured?: boolean;
+  tavilyApiKey?: string;
+  tavilyApiKeyConfigured?: boolean;
   openAlexEmail?: string;
   arxivMaxResults: number;
   defaultCourseAlignment: string;
+  researchDepth: 'adaptive';
+  adaptiveMaxQueries: number;
+  minimumUsefulSources: number;
   providersEnabled: {
     arxiv: boolean;
     semanticScholar: boolean;
     openAlex: boolean;
+    tavily: boolean;
   };
+}
+
+interface WebSource {
+  title: string;
+  url: string;
+  content: string;
+  rawContent?: string;
+  score: number;
+  publishedDate?: string | null;
+  sourceClass: 'institutional_domain_candidate' | 'publisher_or_repository_candidate' | 'general_web_candidate';
+  verificationStatus: 'unverified';
+}
+
+interface WebSourceSearchResult {
+  query: string;
+  status: 'results_found' | 'no_results';
+  escalated: boolean;
+  stages: Array<{
+    searchDepth: 'basic' | 'advanced';
+    resultCount: number;
+    usefulSourceCount: number;
+    creditsUsed: number | null;
+    responseTimeSeconds: number | null;
+  }>;
+  sources: WebSource[];
+  creditsUsed: number | null;
+  disclaimer: string;
 }
 
 export const AcademicMCPDashboard: React.FC = () => {
@@ -62,13 +96,16 @@ export const AcademicMCPDashboard: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(false);
 
   // Search Sandbox State
-  const [searchQuery, setSearchQuery] = useState<string>('quantum computing optimization');
-  const [fieldOfStudy, setFieldOfStudy] = useState<string>('Computer Science');
-  const [courseCode, setCourseCode] = useState<string>('CSC 401');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [fieldOfStudy, setFieldOfStudy] = useState<string>('');
+  const [courseCode, setCourseCode] = useState<string>('');
   const [papers, setPapers] = useState<Paper[]>([]);
   const [selectedPaper, setSelectedPaper] = useState<Paper | null>(null);
   const [citationFormat, setCitationFormat] = useState<'apa' | 'bibtex'>('apa');
   const [citationResult, setCitationResult] = useState<{ apa: string; bibtex: string } | null>(null);
+  const [webResearchQuery, setWebResearchQuery] = useState<string>('');
+  const [webResearchLoading, setWebResearchLoading] = useState<boolean>(false);
+  const [webResearchResult, setWebResearchResult] = useState<WebSourceSearchResult | null>(null);
 
   // Engine Stats & Health State
   const [providerHealth, setProviderHealth] = useState<ProviderHealth[]>([]);
@@ -76,13 +113,18 @@ export const AcademicMCPDashboard: React.FC = () => {
     enabled: true,
     cacheTtlHours: 24,
     semanticScholarApiKey: '',
-    openAlexEmail: 'uniace.support@gmail.com',
+    tavilyApiKey: '',
+    openAlexEmail: '',
     arxivMaxResults: 5,
-    defaultCourseAlignment: 'Global University Benchmark Syllabus (Adaptive)',
+    defaultCourseAlignment: 'Source-backed course alignment',
+    researchDepth: 'adaptive',
+    adaptiveMaxQueries: 2,
+    minimumUsefulSources: 3,
     providersEnabled: {
       arxiv: true,
       semanticScholar: true,
       openAlex: true,
+      tavily: false,
     },
   });
   const [totalQueries, setTotalQueries] = useState<number>(0);
@@ -94,7 +136,7 @@ export const AcademicMCPDashboard: React.FC = () => {
       if (res.ok) {
         const data = await res.json();
         if (data.providerHealth) setProviderHealth(data.providerHealth);
-        if (data.config) setConfig(data.config);
+        if (data.config) setConfig({ ...data.config, semanticScholarApiKey: '', tavilyApiKey: '' });
         if (data.totalQueriesLogged !== undefined) setTotalQueries(data.totalQueriesLogged);
       }
     } catch (err) {
@@ -132,11 +174,36 @@ export const AcademicMCPDashboard: React.FC = () => {
 
       const data = await res.json();
       setPapers(data.papers || []);
-      toast.success(`Found ${data.papers?.length || 0} peer-reviewed papers in ${data.latencyMs}ms`);
+      toast.success(`Retrieved ${data.papers?.length ?? 0} scholarly records in ${data.latencyMs}ms`);
     } catch (err) {
       toast.error((err as Error).message || 'Failed to query academic registries');
     } finally {
       setLoading(false);
+    }
+  };
+
+
+  const handleWebSourceSearch = async () => {
+    if (webResearchQuery.trim().length < 4) {
+      toast.error('Enter a course research query of at least four characters.');
+      return;
+    }
+    setWebResearchLoading(true);
+    setWebResearchResult(null);
+    try {
+      const res = await fetch('/api/admin/academic/sources/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: webResearchQuery.trim(), maxResults: 10 }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Live curriculum source search failed.');
+      setWebResearchResult(data as WebSourceSearchResult);
+      toast.success(data.sources?.length ? `Retrieved ${data.sources.length} source candidates` : 'Live search returned no sources.');
+    } catch (err) {
+      toast.error((err as Error).message || 'Failed to search academic web sources.');
+    } finally {
+      setWebResearchLoading(false);
     }
   };
 
@@ -208,7 +275,7 @@ export const AcademicMCPDashboard: React.FC = () => {
               </span>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              Zero-Mock Scholarly Intelligence Layer (arXiv • Semantic Scholar • OpenAlex • Dynamic Global Syllabi)
+              Live Academic Research (Tavily • arXiv • Semantic Scholar • OpenAlex)
             </p>
           </div>
         </div>
@@ -313,14 +380,73 @@ export const AcademicMCPDashboard: React.FC = () => {
             </div>
           </div>
 
+
+          <div className="space-y-4 bg-slate-800/40 p-4 rounded-xl border border-slate-700">
+            <div>
+              <h3 className="text-sm font-semibold text-white">Course and Institutional Source Discovery</h3>
+              <p className="text-xs text-slate-400 mt-1">Search the live web for course descriptions, university curricula and relevant academic sources. Results remain unverified candidates until their original publishers and authority are checked.</p>
+            </div>
+            <div className="flex flex-col md:flex-row gap-3">
+              <input
+                type="text"
+                value={webResearchQuery}
+                onChange={(e) => setWebResearchQuery(e.target.value)}
+                placeholder="Enter course, subject, institution or curriculum research query"
+                className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
+              />
+              <button
+                onClick={handleWebSourceSearch}
+                disabled={webResearchLoading || !config.providersEnabled.tavily}
+                className="flex items-center justify-center gap-2 px-4 py-2 bg-cyan-700 hover:bg-cyan-600 disabled:opacity-50 text-white rounded-lg text-xs font-semibold"
+              >
+                {webResearchLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                Discover Live Sources
+              </button>
+            </div>
+            {!config.providersEnabled.tavily && (
+              <p className="text-xs text-amber-300">Enable Tavily and save the research settings before running web source discovery.</p>
+            )}
+            {webResearchResult && (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="text-slate-300">{webResearchResult.sources.length} source candidates returned</span>
+                  <span className="text-slate-400">Adaptive escalation: {webResearchResult.escalated ? 'advanced search executed' : 'not required'}</span>
+                  <span className="text-slate-400">Reported credits: {webResearchResult.creditsUsed ?? 'not supplied by provider'}</span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {webResearchResult.stages.map((stage, index) => (
+                    <span key={index} className="rounded-md bg-slate-900 border border-slate-700 px-2 py-1 text-[11px] text-slate-300">
+                      {stage.searchDepth}: {stage.resultCount} results, {stage.usefulSourceCount} above relevance threshold, {stage.creditsUsed ?? 'usage unavailable'} credits
+                    </span>
+                  ))}
+                </div>
+                <p className="text-xs text-amber-200/90">{webResearchResult.disclaimer}</p>
+                <div className="space-y-2">
+                  {webResearchResult.sources.map((source) => (
+                    <article key={source.url} className="rounded-lg bg-slate-900/80 border border-slate-700 p-3 space-y-2">
+                      <a href={source.url} target="_blank" rel="noopener noreferrer" className="text-sm font-medium text-cyan-300 hover:underline inline-flex items-center gap-1">
+                        {source.title}<ExternalLink className="w-3 h-3" />
+                      </a>
+                      <p className="text-xs text-slate-300 whitespace-pre-wrap">{source.content}</p>
+                      <div className="flex flex-wrap gap-2 text-[10px] text-slate-400">
+                        <span>{source.sourceClass.replaceAll('_', ' ')}</span>
+                        <span>Relevance score: {source.score}</span>
+                        <span>Verification: {source.verificationStatus}</span>
+                        {source.publishedDate && <span>Provider date: {source.publishedDate}</span>}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Results Display */}
           {papers.length > 0 && (
             <div className="space-y-4">
               <div className="flex items-center justify-between text-xs text-slate-400">
                 <span>Returned {papers.length} peer-reviewed results from arXiv, Semantic Scholar, and OpenAlex:</span>
-                <span className="text-emerald-400 flex items-center gap-1">
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Zero-Mock Live API Verification Passed
-                </span>
+                <span className="text-cyan-300">Live scholarly registry records</span>
               </div>
 
               <div className="space-y-3">
@@ -341,7 +467,7 @@ export const AcademicMCPDashboard: React.FC = () => {
                           <ExternalLink className="w-3.5 h-3.5 text-slate-400 inline" />
                         </a>
                         <p className="text-xs text-slate-400 mt-1">
-                          By <span className="text-slate-300">{paper.authors.slice(0, 3).join(', ')}{paper.authors.length > 3 ? ' et al.' : ''}</span> • {paper.venue || 'Academic Journal'} ({paper.year || 'N/A'})
+                          By <span className="text-slate-300">{paper.authors.slice(0, 3).join(', ')}{paper.authors.length > 3 ? ' et al.' : ''}</span> • {paper.venue ? `• ${paper.venue}` : ''} {paper.year != null ? `(${paper.year})` : ''}
                         </p>
                       </div>
 
@@ -489,12 +615,26 @@ export const AcademicMCPDashboard: React.FC = () => {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
             <div className="space-y-1">
-              <label className="text-slate-400">Semantic Scholar API Key (Optional for High Throughput)</label>
+              <label className="text-slate-400">Tavily API Key</label>
               <input
                 type="password"
+                autoComplete="new-password"
+                value={config.tavilyApiKey || ''}
+                onChange={(e) => setConfig({ ...config, tavilyApiKey: e.target.value })}
+                placeholder={config.tavilyApiKeyConfigured ? 'Credential stored — enter a new key to rotate' : 'Enter Tavily API key'}
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white"
+              />
+              <p className="text-[11px] text-slate-500">{config.tavilyApiKeyConfigured ? 'A credential is stored. The key itself is never returned to this dashboard.' : 'No Tavily credential is stored.'} Provider credentials are encrypted before they are written to Neon.</p>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-slate-400">Semantic Scholar API Key (Optional)</label>
+              <input
+                type="password"
+                autoComplete="new-password"
                 value={config.semanticScholarApiKey || ''}
                 onChange={(e) => setConfig({ ...config, semanticScholarApiKey: e.target.value })}
-                placeholder="Enter Semantic Scholar API key"
+                placeholder={config.semanticScholarApiKeyConfigured ? 'Credential stored — enter a new key to rotate' : 'Enter Semantic Scholar API key'}
                 className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white"
               />
             </div>
@@ -513,6 +653,8 @@ export const AcademicMCPDashboard: React.FC = () => {
               <label className="text-slate-400">Cache TTL (Hours)</label>
               <input
                 type="number"
+                min={1}
+                max={720}
                 value={config.cacheTtlHours}
                 onChange={(e) => setConfig({ ...config, cacheTtlHours: Number(e.target.value) })}
                 className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white"
@@ -520,16 +662,47 @@ export const AcademicMCPDashboard: React.FC = () => {
             </div>
 
             <div className="space-y-1">
-              <label className="text-slate-400">Default Benchmark Syllabus Standard (Globally Adaptive)</label>
+              <label className="text-slate-400">Minimum Useful Sources Before Escalation</label>
               <input
-                type="text"
-                value={config.defaultCourseAlignment}
-                onChange={(e) => setConfig({ ...config, defaultCourseAlignment: e.target.value })}
-                placeholder="e.g., Global University Benchmark Syllabus (Adaptive)"
+                type="number"
+                min={1}
+                max={10}
+                value={config.minimumUsefulSources}
+                onChange={(e) => setConfig({ ...config, minimumUsefulSources: Number(e.target.value) })}
                 className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white"
               />
-              <p className="text-[11px] text-slate-500">Dynamically adapts course syllabi and scholarly references across accredited global academic standards (e.g., ABET, ACM/IEEE, ECTS, Global University Benchmarks).</p>
             </div>
+
+            <div className="space-y-1">
+              <label className="text-slate-400">Maximum Adaptive Search Passes (1–2)</label>
+              <input
+                type="number"
+                min={1}
+                max={2}
+                value={config.adaptiveMaxQueries}
+                onChange={(e) => setConfig({ ...config, adaptiveMaxQueries: Number(e.target.value) })}
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white"
+              />
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-slate-700 bg-slate-900/70 p-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold text-white">Adaptive Research</p>
+                <p className="text-[11px] text-slate-400">Default research depth. Starts with basic search and escalates to advanced search when the live result set falls below the configured evidence threshold.</p>
+              </div>
+              <span className="rounded-md bg-cyan-900/60 px-2 py-1 text-[11px] text-cyan-200">adaptive</span>
+            </div>
+            <label className="flex items-center gap-2 text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={config.providersEnabled.tavily}
+                onChange={(e) => setConfig({ ...config, providersEnabled: { ...config.providersEnabled, tavily: e.target.checked } })}
+                className="accent-cyan-500"
+              />
+              Enable Tavily live web research
+            </label>
           </div>
 
           <div className="pt-3 flex justify-end">
