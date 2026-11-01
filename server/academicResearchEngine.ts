@@ -70,6 +70,7 @@ export async function getAcademicConfig(): Promise<AcademicConfig> {
     researchDepth: 'adaptive',
     adaptiveMaxQueries: activeConfig.adaptiveMaxQueries,
     minimumUsefulSources: activeConfig.minimumUsefulSources,
+    minimumRelevanceScore: activeConfig.minimumRelevanceScore,
     tavilyApiKeyConfigured: Boolean(activeConfig.tavilyApiKey),
     semanticScholarApiKeyConfigured: Boolean(activeConfig.semanticScholarApiKey),
   };
@@ -139,9 +140,11 @@ export async function searchAcademicWebSources(input: {
     for (const source of [...sources, ...advanced.results]) {
       const key = source.url.replace(/#.*$/, '').replace(/\/$/, '').toLowerCase();
       const previous = byUrl.get(key);
-      if (!previous || source.score > previous.score) byUrl.set(key, source);
+      const sourceScore = source.score ?? -1;
+      const previousScore = previous?.score ?? -1;
+      if (!previous || sourceScore > previousScore) byUrl.set(key, source);
     }
-    sources = Array.from(byUrl.values()).sort((a, b) => b.score - a.score).slice(0, maxResults);
+    sources = Array.from(byUrl.values()).sort((a, b) => (b.score ?? -1) - (a.score ?? -1)).slice(0, maxResults);
   }
 
   const measuredCredits = stages.every(stage => stage.creditsUsed !== null)
