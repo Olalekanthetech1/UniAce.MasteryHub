@@ -8,7 +8,7 @@
  *   - Bounded exponential retries (3 attempts, max 1500ms) failing fast to HTTP 503 on persistent outage.
  *   - Monotonic audit logging to entity_change_log.
  * - When ENABLE_POSTGRES_PROGRESS is false:
- *   - Routes through Firestore baseline.
+ *   - Fails closed with HTTP 503; Firestore fallback is disabled.
  */
 
 import crypto from 'crypto';
@@ -101,6 +101,13 @@ export class ProgressRepository {
   async recordStudyBatch(input: ProgressSyncInput): Promise<ProgressSyncResult> {
     const { uid, courseId, batchId, deltaSeconds = 0, completedLessonId, moduleId, clientTimestamp } = input;
     const flags = getFeatureFlags();
+    if (!flags.ENABLE_POSTGRES_PROGRESS) {
+      const unavailable: any = new Error(
+        'Progress storage is unavailable because Neon PostgreSQL progress storage is disabled. Firestore fallback is not permitted.'
+      );
+      unavailable.statusCode = 503;
+      throw unavailable;
+    }
 
     if (flags.ENABLE_POSTGRES_PROGRESS) {
       return executeWithRetry(async () => {
@@ -292,6 +299,13 @@ export class ProgressRepository {
    */
   async getCourseProgress(uid: string, courseId: string): Promise<UserCourseProgressEntity | null> {
     const flags = getFeatureFlags();
+    if (!flags.ENABLE_POSTGRES_PROGRESS) {
+      const unavailable: any = new Error(
+        'Progress storage is unavailable because Neon PostgreSQL progress storage is disabled. Firestore fallback is not permitted.'
+      );
+      unavailable.statusCode = 503;
+      throw unavailable;
+    }
 
     if (flags.ENABLE_POSTGRES_PROGRESS) {
       return executeWithRetry(async () => {
@@ -351,6 +365,13 @@ export class ProgressRepository {
    */
   async getUserLessonCompletions(uid: string, courseId: string): Promise<string[]> {
     const flags = getFeatureFlags();
+    if (!flags.ENABLE_POSTGRES_PROGRESS) {
+      const unavailable: any = new Error(
+        'Progress storage is unavailable because Neon PostgreSQL progress storage is disabled. Firestore fallback is not permitted.'
+      );
+      unavailable.statusCode = 503;
+      throw unavailable;
+    }
 
     if (flags.ENABLE_POSTGRES_PROGRESS) {
       return executeWithRetry(async () => {
@@ -429,6 +450,13 @@ export class ProgressRepository {
       .digest('hex');
 
     const flags = getFeatureFlags();
+    if (!flags.ENABLE_POSTGRES_PROGRESS) {
+      const unavailable: any = new Error(
+        'Progress storage is unavailable because Neon PostgreSQL progress storage is disabled. Firestore fallback is not permitted.'
+      );
+      unavailable.statusCode = 503;
+      throw unavailable;
+    }
 
     if (flags.ENABLE_POSTGRES_PROGRESS) {
       return executeWithRetry(async () => {
@@ -464,7 +492,7 @@ export class ProgressRepository {
           `INSERT INTO entity_change_log (event_id, entity_type, entity_id, operation, entity_version, payload, transaction_boundary_id, recorded_at)
            VALUES (gen_random_uuid()::varchar, 'user_quiz_attempts', $1 || ':' || $2, 'QUIZ_SUBMIT', 1, $3::jsonb, $4, NOW());`,
           [uid, quizId, JSON.stringify({ scorePct, passed, questionsSnapshotHash }), attemptIdempotencyKey]
-        ).catch(() => {});
+);
 
         return {
           id: row.id,
