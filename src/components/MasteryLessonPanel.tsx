@@ -5,6 +5,7 @@ import type {
   StudentKnowledgeCheckPrompt
 } from '../shared/courseSchemas';
 import { useAuth } from '../context/AuthContext';
+import MarkdownRenderer from './MarkdownRenderer';
 
 type PracticeActivityType = 'guidedPractice' | 'independentPractice';
 type ActivityType = PracticeActivityType | 'knowledgeChecks';
@@ -121,13 +122,13 @@ function PracticeCard({
           {item.hints.length ? `${item.hints.length} hints` : 'Independent reasoning'}
         </span>
       </div>
-      <p className="text-sm leading-6 text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap">{item.prompt}</p>
+      <div className="text-sm leading-6 text-zinc-800 dark:text-zinc-200"><MarkdownRenderer content={item.prompt} /></div>
       {item.hints.length > 0 && revealedHints > 0 && (
         <div className="rounded-xl bg-indigo-50 dark:bg-indigo-950/30 p-3 space-y-2">
           {item.hints.slice(0, revealedHints).map((hint, hintIndex) => (
-            <p key={hintIndex} className="text-sm text-indigo-900 dark:text-indigo-200">
-              <strong>Hint {hintIndex + 1}:</strong> {hint}
-            </p>
+            <div key={hintIndex} className="text-sm text-indigo-900 dark:text-indigo-200">
+              <strong>Hint {hintIndex + 1}:</strong> <MarkdownRenderer content={hint} inline />
+            </div>
           ))}
         </div>
       )}
@@ -163,10 +164,10 @@ function PracticeCard({
       {reveal && (
         <div className="rounded-xl bg-emerald-50 dark:bg-emerald-950/25 border border-emerald-200 dark:border-emerald-900 p-3 space-y-2">
           <p className="text-xs font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">Expected approach</p>
-          <p className="text-sm text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap">{reveal.expectedApproach}</p>
+          <div className="text-sm text-zinc-800 dark:text-zinc-200"><MarkdownRenderer content={reveal.expectedApproach} /></div>
           <p className="text-xs font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">Answer and explanation</p>
-          <p className="text-sm text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap">{reveal.expectedAnswer}</p>
-          <p className="text-sm text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap">{reveal.explanation}</p>
+          <div className="text-sm text-zinc-800 dark:text-zinc-200"><MarkdownRenderer content={reveal.expectedAnswer} /></div>
+          <div className="text-sm text-zinc-800 dark:text-zinc-200"><MarkdownRenderer content={reveal.explanation} /></div>
           <p className="text-xs text-emerald-800 dark:text-emerald-300">Your attempt was saved. This is a self-check; UniAce has not automatically graded the free-text response.</p>
         </div>
       )}
@@ -224,7 +225,7 @@ function KnowledgeCheckCard({
         <h4 className="font-semibold text-zinc-900 dark:text-zinc-100">Check {index + 1}</h4>
         <span className="text-xs text-zinc-500">Difficulty {check.difficulty}/5 · {check.responseMode}</span>
       </div>
-      <p className="text-sm leading-6 text-zinc-800 dark:text-zinc-200">{check.prompt}</p>
+      <div className="text-sm leading-6 text-zinc-800 dark:text-zinc-200"><MarkdownRenderer content={check.prompt} /></div>
       <textarea
         value={attempt}
         onChange={event => setAttempt(event.target.value)}
@@ -244,8 +245,8 @@ function KnowledgeCheckCard({
       {error && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{error}</p>}
       {reveal && (
         <div className="rounded-xl bg-zinc-50 dark:bg-zinc-900 p-3 space-y-2">
-          <p className="text-sm text-zinc-800 dark:text-zinc-200"><strong>Expected reasoning:</strong> {reveal.expectedReasoning}</p>
-          <p className="text-sm text-zinc-800 dark:text-zinc-200"><strong>Answer / rubric:</strong> {reveal.answerOrRubric}</p>
+          <div className="text-sm text-zinc-800 dark:text-zinc-200"><strong>Expected reasoning:</strong> <MarkdownRenderer content={reveal.expectedReasoning} inline /></div>
+          <div className="text-sm text-zinc-800 dark:text-zinc-200"><strong>Answer / rubric:</strong> <MarkdownRenderer content={reveal.answerOrRubric} inline /></div>
           <p className="text-xs text-zinc-500">Attempt saved for revision history. This free-text response has not been automatically graded.</p>
         </div>
       )}
@@ -271,7 +272,7 @@ export default function MasteryLessonPanel({
           </span>
         </div>
         <ul className="list-disc pl-5 space-y-1 text-sm text-zinc-800 dark:text-zinc-200">
-          {content.learningObjectives.map((objective, index) => <li key={index}>{objective}</li>)}
+          {content.learningObjectives.map((objective, index) => <li key={index}><MarkdownRenderer content={objective} inline /></li>)}
         </ul>
       </section>
 
@@ -280,9 +281,9 @@ export default function MasteryLessonPanel({
           <h3 className="font-bold text-zinc-900 dark:text-zinc-100">Check your prerequisites</h3>
           {content.prerequisites.map((item, index) => (
             <details key={index} className="rounded-xl border border-zinc-200 dark:border-zinc-700 p-3">
-              <summary className="cursor-pointer text-sm font-semibold text-zinc-800 dark:text-zinc-200">{item.concept}</summary>
-              <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">{item.whyNeeded}</p>
-              <p className="mt-2 text-sm text-zinc-800 dark:text-zinc-200"><strong>Readiness check:</strong> {item.readinessCheck}</p>
+              <summary className="cursor-pointer text-sm font-semibold text-zinc-800 dark:text-zinc-200"><MarkdownRenderer content={item.concept} inline /></summary>
+              <div className="mt-2 text-sm text-zinc-600 dark:text-zinc-300"><MarkdownRenderer content={item.whyNeeded} /></div>
+              <div className="mt-2 text-sm text-zinc-800 dark:text-zinc-200"><strong>Readiness check:</strong> <MarkdownRenderer content={item.readinessCheck} inline /></div>
             </details>
           ))}
         </section>
@@ -349,13 +350,13 @@ export default function MasteryLessonPanel({
       <section className="rounded-2xl border border-zinc-200 dark:border-zinc-700 p-4 space-y-3">
         <h3 className="font-bold text-zinc-900 dark:text-zinc-100">What mastery requires</h3>
         <ul className="list-disc pl-5 space-y-1 text-sm text-zinc-700 dark:text-zinc-300">
-          {content.mastery.criteria.map((criterion, index) => <li key={index}>{criterion}</li>)}
+          {content.mastery.criteria.map((criterion, index) => <li key={index}><MarkdownRenderer content={criterion} inline /></li>)}
         </ul>
         {content.mastery.retentionPrompts.length > 0 && (
           <div className="pt-3 border-t border-zinc-200 dark:border-zinc-700">
             <h4 className="font-semibold text-sm text-zinc-800 dark:text-zinc-200">Retrieval practice prompts</h4>
             <ul className="list-disc pl-5 mt-2 space-y-1 text-sm text-zinc-600 dark:text-zinc-300">
-              {content.mastery.retentionPrompts.map((prompt, index) => <li key={index}>{prompt}</li>)}
+              {content.mastery.retentionPrompts.map((prompt, index) => <li key={index}><MarkdownRenderer content={prompt} inline /></li>)}
             </ul>
             <p className="mt-2 text-xs text-zinc-500">Use these when revising this lesson later. A scheduled review is not yet recorded by this panel.</p>
           </div>
