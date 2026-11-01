@@ -24,12 +24,12 @@ interface Paper {
   title: string;
   authors: string[];
   abstract: string;
-  year?: number;
-  venue?: string;
+  year?: number | null;
+  venue?: string | null;
   doi?: string;
   url: string;
   pdfUrl?: string;
-  citationCount: number;
+  citationCount: number | null;
   source: 'arxiv' | 'semantic_scholar' | 'openalex';
   relevanceScore: number;
   syllabusTags: string[];
@@ -56,6 +56,7 @@ interface AcademicConfig {
   researchDepth: 'adaptive';
   adaptiveMaxQueries: number;
   minimumUsefulSources: number;
+  minimumRelevanceScore: number;
   providersEnabled: {
     arxiv: boolean;
     semanticScholar: boolean;
@@ -120,6 +121,7 @@ export const AcademicMCPDashboard: React.FC = () => {
     researchDepth: 'adaptive',
     adaptiveMaxQueries: 2,
     minimumUsefulSources: 3,
+    minimumRelevanceScore: 0.25,
     providersEnabled: {
       arxiv: true,
       semanticScholar: true,
@@ -430,7 +432,7 @@ export const AcademicMCPDashboard: React.FC = () => {
                       <p className="text-xs text-slate-300 whitespace-pre-wrap">{source.content}</p>
                       <div className="flex flex-wrap gap-2 text-[10px] text-slate-400">
                         <span>{source.sourceClass.replaceAll('_', ' ')}</span>
-                        <span>Relevance score: {source.score}</span>
+                        <span>Relevance score: {source.score ?? 'not supplied'}</span>
                         <span>Verification: {source.verificationStatus}</span>
                         {source.publishedDate && <span>Provider date: {source.publishedDate}</span>}
                       </div>
@@ -445,7 +447,7 @@ export const AcademicMCPDashboard: React.FC = () => {
           {papers.length > 0 && (
             <div className="space-y-4">
               <div className="flex items-center justify-between text-xs text-slate-400">
-                <span>Returned {papers.length} peer-reviewed results from arXiv, Semantic Scholar, and OpenAlex:</span>
+                <span>Retrieved {papers.length} scholarly records from arXiv, Semantic Scholar, and OpenAlex:</span>
                 <span className="text-cyan-300">Live scholarly registry records</span>
               </div>
 
@@ -669,6 +671,19 @@ export const AcademicMCPDashboard: React.FC = () => {
                 max={10}
                 value={config.minimumUsefulSources}
                 onChange={(e) => setConfig({ ...config, minimumUsefulSources: Number(e.target.value) })}
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-slate-400">Minimum Provider Relevance Score (0–1)</label>
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step={0.05}
+                value={config.minimumRelevanceScore}
+                onChange={(e) => setConfig({ ...config, minimumRelevanceScore: Number(e.target.value) })}
                 className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white"
               />
             </div>
