@@ -4625,10 +4625,7 @@ async function executeCoordinatedGenerationJob(
     scope,
     selectedFaculties = [],
     selectedDepartments = [],
-    approvedModules,
-    domainBrief: passedDomainBrief,
-    coverageScore: passedCoverageScore,
-    groundingReferences: passedGroundingReferences
+    approvedModules
   } = req.body;
 
   if (!courseId || typeof courseId !== 'string' || !courseId.trim()) {
@@ -4723,7 +4720,7 @@ async function executeCoordinatedGenerationJob(
           sourceText
         });
 
-        const domainBrief: any = passedDomainBrief && passedDomainBrief.primaryDomain ? passedDomainBrief : await completeWithProviderJSON({
+        const domainBrief: any = await completeWithProviderJSON({
           type: 'skeleton',
           messages: [{ role: 'user', content: domainPrompt }],
           schema: DomainBriefSchema,
@@ -4857,7 +4854,7 @@ async function executeCoordinatedGenerationJob(
         }
 
         const normalizedOutcomes = normalizeLearningOutcomes(skeleton.learningOutcomes);
-        const canonicalRefs = domainBrief.canonicalCourseReferences || domainBrief.groundingReferences || passedGroundingReferences || [];
+        const canonicalRefs = domainBrief.canonicalCourseReferences;
 
         const syllabus = (skeleton.modules || []).map((m: any, mIdx: number) => ({
           id: `m${mIdx + 1}`,
