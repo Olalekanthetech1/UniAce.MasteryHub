@@ -80,20 +80,20 @@ export function autoHealQuestion(q: any): any {
     options,
     correctAnswer,
     answer: correctAnswer,
-    explanation: typeof q.explanation === 'string' ? q.explanation.trim() : '',
-    hint: typeof q.hint === 'string' ? q.hint.trim() : ''
+    explanation: q.explanation.trim(),
+    hint: q.hint.trim()
   };
 }
 
 // 1. Quiz Question Schema
 export const QuizQuestionSchema = z.object({
-  id: z.string().min(1).optional().or(z.null()).transform((val) => val || `q-${Math.random().toString(36).substring(2, 11)}`),
+  id: z.string().trim().min(1, 'A generated question identifier is required.'),
   type: z.enum(['multiple-choice', 'fill-in-the-blank']),
   question: z.string().trim().min(1, 'Question text cannot be empty'),
-  options: z.array(z.string()).optional().default([]),
+  options: z.array(z.string()),
   correctAnswer: z.string().trim().min(1, 'Correct answer or model-answer rubric cannot be empty'),
-  explanation: z.string().optional(),
-  hint: z.string().optional(),
+  explanation: z.string().trim().min(1, 'A generated explanation is required.'),
+  hint: z.string().trim().min(1, 'A generated hint is required.'),
   difficulty: z.number().int().min(1).max(5),
   sourceReference: z.string().trim().min(1, 'A source reference is required'),
   bloomLevel: z.enum(['remembering', 'understanding', 'applying', 'analyzing', 'evaluating', 'creating']),
@@ -112,18 +112,18 @@ export const EvaluateWrittenAnswerSchema = z.object({
 
 // 3. Quick Check Schema
 export const QuickCheckSchema = z.object({
-  id: z.string().optional().or(z.null()).transform((val) => val || `qc-${Math.random().toString(36).substring(2, 11)}`),
+  id: z.string().trim().min(1, 'A generated quick-check identifier is required.'),
   type: z.literal('multiple-choice'),
   question: z.string().min(1, 'Question text cannot be empty'),
   options: z.array(z.string()).min(2, 'Multiple-choice questions need at least 2 options'),
   correctAnswer: z.string().min(1, 'Correct answer cannot be empty'),
-  explanation: z.string().optional().default(''),
-  hint: z.string().optional().default(''),
+  explanation: z.string().trim().min(1, 'A generated explanation is required.'),
+  hint: z.string().trim().min(1, 'A generated hint is required.'),
 }).transform((q) => autoHealQuestion(q));
 
 // 4. Flashcard Schema
 export const FlashcardSchema = z.object({
-  id: z.string().optional().or(z.null()).transform((val) => val || `fc-${Math.random().toString(36).substring(2, 11)}`),
+  id: z.string().trim().min(1, 'A generated flashcard identifier is required.'),
   front: z.string().min(1, 'Front cannot be empty'),
   back: z.string().min(1, 'Back cannot be empty'),
   moduleId: z.string().optional(),
@@ -178,8 +178,7 @@ export const BoosterLessonSchema = z.object({
  */
 export function safeParseAIResponse<T>(
   schema: z.ZodSchema<T>,
-  data: any,
-  fallback?: T
+  data: any
 ): T {
   if (!data) {
     throw new Error('Zero-Fallback Policy: No dynamic AI data received to validate.');
@@ -191,52 +190,6 @@ export function safeParseAIResponse<T>(
     return result.data;
   }
 
-  console.warn('AI Zod validation failed, attempting partial recovery from dynamic data:', result.error.format());
-
-  // Attempt partial array recovery for arrays of items (filtering out bad ones instead of failing all)
-  if (Array.isArray(data) && (schema instanceof z.ZodArray || (schema as any)._def?.typeName === 'ZodArray')) {
-    const itemSchema = (schema as any).element || (schema as any)._def?.type;
-    if (itemSchema) {
-      const parsedItems = data
-        .map((item) => {
-          const itemResult = itemSchema.safeParse(item);
-          return itemResult.success ? itemResult.data : null;
-        })
-        .filter((item): item is any => item !== null);
-
-      if (parsedItems.length > 0) {
-        return parsedItems as unknown as T;
-      }
-    }
-  }
-
-  // Attempt recovery for objects containing arrays of items (like { questions: [...] } or { flashcards: [...] })
-  if (data && typeof data === 'object') {
-    const keys = Object.keys(data);
-    for (const key of keys) {
-      const val = data[key];
-      if (Array.isArray(val)) {
-        // If the target schema expects an object with an array key (e.g. QuizQuestionsResponseSchema)
-        const shape = (schema as any).shape;
-        if (shape && shape[key]) {
-          const fieldSchema = shape[key];
-          const elementSchema = fieldSchema.element || fieldSchema._def?.type;
-          if (elementSchema) {
-            const parsedItems = val
-              .map((item) => {
-                const itemResult = elementSchema.safeParse(item);
-                return itemResult.success ? itemResult.data : null;
-              })
-              .filter((item): item is any => item !== null);
-
-            if (parsedItems.length > 0) {
-              return { [key]: parsedItems } as unknown as T;
-            }
-          }
-        }
-      }
-    }
-  }
 
   throw new Error(`Zero-Fallback Policy: AI response data does not match required schema (${result.error.issues.map(i => i.message).join('; ')}). Refusing to return static fallback.`);
 }
