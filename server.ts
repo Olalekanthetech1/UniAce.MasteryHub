@@ -10190,32 +10190,76 @@ app.get('/api/leaderboard', async (req, res) => {
   }
 });
 
-// 5. XP Reward Endpoint (Neon PostgreSQL)
+// XP awards are accepted only when both the current user record and live gamification policy are available.
 app.post('/api/user/reward-xp', verifyAuth, async (req, res) => {
-  const { amount } = req.body;
   const uid = (req as any).user.uid;
+  const amount = Number(req.body?.amount);
   const pool = getPostgresPool();
 
-  if (!pool || !uid) {
-    return res.status(503).json({ error: 'Service unavailable' });
-  }
-
-  const numAmount = parseInt(amount, 10);
-  if (isNaN(numAmount) || numAmount <= 0 || numAmount > 1000) {
-    return res.status(400).json({ error: 'Invalid XP amount' });
+  if (!pool || !uid) return res.status(503).json({ error: 'XP service unavailable.' });
+  if (!Number.isInteger(amount) || amount <= 0 || amount > 1000) {
+    return res.status(400).json({ error: 'A positive integer XP amount within the server limit is required.' });
   }
 
   try {
-    const uRes = await pool.query(`SELECT learning_profile FROM users WHERE uid = $1`, [uid]);
-    const lp = uRes.rows[0]?.learning_profile || {};
-    const nextXp = Number(lp.xp || 0) + numAmount;
-    const nextLp = { ...lp, xp: nextXp };
-    await pool.query(`UPDATE users SET learning_profile = $2::jsonb, updated_at = NOW() WHERE uid = $1`, [uid, JSON.stringify(nextLp)]);
+    const policy = await getSystemConfigDoc('gamification', true);
+    if (!policy || !Array.isArray(policy.levels) || policy.levels.length === 0) {
+      return res.status(503).json({ error: 'XP award unavailable: no live gamification level policy is configured.' });
+    }
 
-    res.json({ success: true, xp: nextXp });
+    const levels = policy.levels.map((entry: any) => {
+      if (!Number.isInteger(entry?.level) || entry.level < 1 ||
+          !Number.isInteger(entry?.xp) || entry.xp < 0 ||
+          typeof entry?.title !== 'string' || !entry.title.trim()) {
+        throw new Error('The persisted gamification level policy contains invalid entries.');
+      }
+      return { level: entry.level, xp: entry.xp, title: entry.title };
+    }).sort((a: any, b: any) => a.xp - b.xp);
+
+    if (new Set(levels.map((entry: any) => entry.level)).size !== levels.length ||
+        new Set(levels.map((entry: any) => entry.xp)).size !== levels.length) {
+      throw new Error('The persisted gamification level policy contains duplicate entries.');
+    }
+
+    const userResult = await pool.query(
+      `SELECT learning_profile FROM users WHERE uid = $1 FOR UPDATE`,
+      [uid]
+    );
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Authoritative user profile not found.' });
+    }
+
+    const profile = userResult.rows[0].learning_profile;
+    if (!profile || typeof profile !== 'object' ||
+        !Number.isInteger(profile.xp) || profile.xp < 0) {
+      return res.status(409).json({ error: 'The stored XP balance is missing or invalid; no balance was synthesized.' });
+    }
+
+    const nextXp = profile.xp + amount;
+    const eligibleLevels = levels.filter((entry: any) => nextXp >= entry.xp);
+    if (eligibleLevels.length === 0) {
+      return res.status(409).json({ error: 'The live level policy has no level applicable to the resulting XP balance.' });
+    }
+    const resultingLevel = eligibleLevels[eligibleLevels.length - 1];
+    const nextProfile = { ...profile, xp: nextXp, level: resultingLevel.level };
+
+    await pool.query(
+      `UPDATE users
+       SET learning_profile = $2::jsonb, updated_at = NOW()
+       WHERE uid = $1`,
+      [uid, JSON.stringify(nextProfile)]
+    );
+
+    return res.json({
+      success: true,
+      xp: nextXp,
+      level: resultingLevel.level,
+      levelTitle: resultingLevel.title,
+      policyVersion: typeof policy.version === 'string' ? policy.version : null
+    });
   } catch (error: any) {
-    console.error('Error rewarding XP:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Error awarding XP using live gamification policy:', error);
+    return res.status(503).json({ error: 'XP award could not be verified.', message: error.message });
   }
 });
 
