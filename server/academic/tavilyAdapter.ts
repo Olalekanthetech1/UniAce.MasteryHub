@@ -3,7 +3,7 @@ export interface TavilyAcademicSource {
   url: string;
   content: string;
   rawContent?: string;
-  score: number;
+  score: number | null;
   publishedDate?: string | null;
   sourceClass: 'institutional_domain_candidate' | 'publisher_or_repository_candidate' | 'general_web_candidate';
   verificationStatus: 'unverified';
@@ -113,7 +113,7 @@ export async function searchTavilyAcademicSources(
       url: url.toString(),
       content: raw.content,
       ...(typeof raw.raw_content === 'string' ? { rawContent: raw.raw_content } : {}),
-      score: typeof raw.score === 'number' && Number.isFinite(raw.score) ? raw.score : 0,
+      score: typeof raw.score === 'number' && Number.isFinite(raw.score) ? raw.score : null,
       ...(typeof raw.published_date === 'string' || raw.published_date === null
         ? { publishedDate: raw.published_date as string | null }
         : {}),
