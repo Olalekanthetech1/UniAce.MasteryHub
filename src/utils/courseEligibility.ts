@@ -30,34 +30,8 @@ export const resolveUserFaculty = (
  */
 export const isCourseGlobalCore = (course: Course): boolean => {
   if (!course) return false;
-
-  // 1. Explicit global scope flag from database/catalog
-  if (course.scope === 'GLOBAL') return true;
-
-  // 2. Explicit global offering designation
-  if (course.offerings?.some(o => o.type === 'global')) return true;
-
-  // 3. General Studies department or faculty designation
-  if (
-    (course.department && isSameDepartment(course.department, 'General Studies')) ||
-    (course.faculty && course.faculty.toLowerCase() === 'general studies')
-  ) {
-    return true;
-  }
-
-  // 4. Institutional academic course code prefix for university-wide General Studies
-  const idUpper = (course.id || '').toUpperCase();
-  const titleUpper = (course.title || '').toUpperCase();
-  if (
-    idUpper.startsWith('GST') ||
-    idUpper.startsWith('GNS') ||
-    titleUpper.startsWith('GST') ||
-    titleUpper.startsWith('GNS')
-  ) {
-    return true;
-  }
-
-  return false;
+  return course.scope === 'GLOBAL' ||
+    Boolean(course.offerings?.some(offering => offering.type === 'global'));
 };
 
 /**
@@ -65,32 +39,17 @@ export const isCourseGlobalCore = (course: Course): boolean => {
  * belonging to that faculty (e.g. GET courses for Engineering, BMS for Medicine).
  */
 export const isCourseFacultyCore = (course: Course, userFaculty: string): boolean => {
-  if (!course || !userFaculty) return false;
-  if (course.scope !== 'FACULTY') return false;
-
-  const targetFaculty = userFaculty.toLowerCase();
-
-  // 1. Direct faculty match
-  if (course.faculty && course.faculty.toLowerCase() === targetFaculty) {
-    return true;
-  }
-
-  // 2. Multi-faculty match
-  if (course.faculties && course.faculties.some(f => f.toLowerCase() === targetFaculty)) {
-    return true;
-  }
-
-  // 3. Faculty foundational training units (e.g. General Engineering Training for Engineering)
-  if (
-    targetFaculty === 'engineering' &&
-    course.department &&
-    (isSameDepartment(course.department, 'General Engineering Training') ||
-      isSameDepartment(course.department, 'GET'))
-  ) {
-    return true;
-  }
-
-  return false;
+  if (!course || !userFaculty || course.scope !== 'FACULTY') return false;
+  const targetFaculty = userFaculty.trim().toLowerCase();
+  return Boolean(
+    (course.faculty && course.faculty.trim().toLowerCase() === targetFaculty) ||
+    (Array.isArray(course.faculties) && course.faculties.some(f => f.trim().toLowerCase() === targetFaculty)) ||
+    (Array.isArray(course.offerings) && course.offerings.some(offering =>
+      offering.type === 'core' &&
+      typeof offering.facultyName === 'string' &&
+      offering.facultyName.trim().toLowerCase() === targetFaculty
+    ))
+  );
 };
 
 /**
