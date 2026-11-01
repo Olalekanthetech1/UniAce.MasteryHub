@@ -9458,6 +9458,10 @@ app.post('/api/admin/golden-set/runs/:id/step', verifyAuth, async (req, res) => 
   try {
     const authInfo = await verifyAdminOrTutorRole(req);
     if (!authInfo.isAuthorized) return res.status(403).json({ error: 'SME or Admin access required' });
+    const batchSize = Number(req.body?.batchSize);
+    if (!Number.isInteger(batchSize) || batchSize <= 0) {
+      return res.status(400).json({ error: 'A positive integer batchSize must be supplied.' });
+    }
     const adminApp = getAdminApp()!;
 
     const providerMap: Record<string, any> = {
@@ -9470,13 +9474,12 @@ app.post('/api/admin/golden-set/runs/:id/step', verifyAuth, async (req, res) => 
       nvidia: globalNvidiaBreaker || globalNvidiaProvider
     };
 
-    const routingSnap = await adminApp.firestore().collection('system_config').doc('routing').get();
-    const routingConfig = routingSnap.exists ? routingSnap.data() || {} : {};
+    const routingConfig = await requireLiveRoutingConfig();
 
     const updatedRun = await stepGoldenSetEvaluationRun({
       app: adminApp,
       runId: req.params.id,
-      batchSize: Number(req.body?.batchSize) || 3,
+      batchSize,
       providerMap,
       runThroughProductionTutorPipeline: async ({ question, domain, topic, targetProvider }) => {
         const startMs = Date.now();
@@ -9494,22 +9497,27 @@ app.post('/api/admin/golden-set/runs/:id/step', verifyAuth, async (req, res) => 
           hasImage: false
         });
 
-        const domainPreferred = routingConfig?.domainProviderRouting?.[domain];
-        const preferredKey = targetProvider && targetProvider !== 'production_routed'
-          ? targetProvider
-          : (domainPreferred || routingConfig.math_stem || routingConfig.chat || 'groq');
-
-        const candidateQueue = targetProvider && targetProvider !== 'production_routed'
-          ? [targetProvider]
-          : selectTieredProviderNames({
-              preferredProvider: preferredKey,
-              availableProviderKeys: Object.keys(providerMap).filter((k) => Boolean(providerMap[k])),
-              hasImage: false,
-              hasDocumentOrRag: false,
-              complexity: 'standard',
-              verifiedTier1Providers: Array.isArray(routingConfig.verifiedTier1Providers) ? routingConfig.verifiedTier1Providers : [],
-              isStemQuery: true
-            });
+        const domainPreferred = routingConfig.domainProviderRouting?.[domain];
+        const domainRoutingConfig = typeof domainPreferred === 'string' && domainPreferred.trim()
+          ? { ...routingConfig, math_stem: domainPreferred }
+          : routingConfig;
+        const explicitlyRequestedProvider =
+          targetProvider && targetProvider !== 'production_routed' ? targetProvider : undefined;
+        const configuredCandidateNames = resolveLiveProviderQueue(
+          domainRoutingConfig,
+          'math_stem',
+          providerMap,
+          explicitlyRequestedProvider
+        );
+        const candidateQueue = selectTieredProviderNames({
+          preferredProvider: configuredCandidateNames[0],
+          availableProviderKeys: configuredCandidateNames,
+          hasImage: false,
+          hasDocumentOrRag: false,
+          complexity: 'standard',
+          verifiedTier1Providers: Array.isArray(routingConfig.verifiedTier1Providers) ? routingConfig.verifiedTier1Providers : [],
+          isStemQuery: true
+        });
 
         let lastErr: any = null;
         for (const provKey of candidateQueue) {
