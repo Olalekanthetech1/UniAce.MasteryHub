@@ -73,6 +73,8 @@ import {
   CourseSkeletonSchema, 
   OutlineCriticRubricSchema,
   LessonContentSchema,
+  StructuredLessonOutputSchema,
+  InstructionalContentSchema,
   CourseProvenanceSchema,
   normalizeLearningOutcomes,
   deriveCurriculumParameters,
@@ -168,6 +170,7 @@ import { progressRepository } from './server/repositories/progressRepository';
 import { JobRepository } from './server/repositories/jobRepository';
 import { jobStreamManager } from './server/services/jobStreamManager';
 import { getFeatureFlags, initRuntimeFlagsSync } from './server/config/features';
+import { ensureCourseLearningSchema } from './server/services/courseLearningSchema';
 import { getSystemConfigDoc, setSystemConfigDoc, getSystemSettingsDoc, setSystemSettingsDoc } from './server/systemConfigStore';
 
 const latexInstruction = `
@@ -4690,6 +4693,7 @@ async function executeCoordinatedGenerationJob(
 
     (async () => {
       try {
+        await ensureCourseLearningSchema();
         console.log(`[Coordinated Gen] Starting Neon PostgreSQL background worker [Worker ID: ${WORKER_INSTANCE_ID}] for course ${courseId} (${rawDept})${isResume ? ' [RESUME MODE]' : ''}...`);
         recordBackendSystemLog(
           'info',
@@ -4739,23 +4743,28 @@ async function executeCoordinatedGenerationJob(
             pedagogyType: domainBrief.pedagogyType,
             creditHours: creditUnits
           };
-          if (req.body.rubricAudit && typeof req.body.rubricAudit.coverageScore === 'number') {
-            rubricAudit = req.body.rubricAudit;
-          } else {
-            const criticPrompt = buildOutlineCriticPrompt(domainBrief, skeleton, {
-              courseId,
-              courseName,
-              courseCode: courseId,
-              level,
-              outline
-            });
-            rubricAudit = await completeWithProviderJSON({
-              type: 'skeleton',
-              messages: [{ role: 'user', content: criticPrompt }],
-              schema: OutlineCriticRubricSchema,
-              requestedProvider,
-              complexity: 'standard'
-            });
+          // Re-audit the exact admin-reviewed outline on the server; browser-supplied scores are not evidence.
+          const criticPrompt = buildOutlineCriticPrompt(domainBrief, skeleton, {
+            courseId,
+            courseName,
+            courseCode: courseId,
+            level,
+            outline
+          });
+          rubricAudit = await completeWithProviderJSON({
+            type: 'skeleton',
+            messages: [{ role: 'user', content: criticPrompt }],
+            schema: OutlineCriticRubricSchema,
+            requestedProvider,
+            complexity: 'high'
+          });
+          const approvedSkeleton = rubricAudit.isValid &&
+            rubricAudit.coverageScore >= 75 &&
+            rubricAudit.foundationsScore >= 75 &&
+            rubricAudit.sequencingScore >= 75 &&
+            !rubricAudit.genericFillerDetected;
+          if (!approvedSkeleton) {
+            throw new Error(`Reviewed curriculum failed its server-side academic audit: ${rubricAudit.reasoning}`);
           }
         } else {
           let attempts = 0;
@@ -4937,7 +4946,7 @@ async function executeCoordinatedGenerationJob(
 
               // Check if lesson already exists in Neon PostgreSQL on resume
               const existingLessonRes = await pool.query(
-                `SELECT title, content_markdown FROM course_lessons WHERE course_id = $1 AND module_id = $2 AND id = $3 LIMIT 1`,
+                `SELECT title, content_markdown, instructional_content FROM course_lessons WHERE course_id = $1 AND module_id = $2 AND id = $3 LIMIT 1`,
                 [courseId, moduleId, lessonId]
               ).catch(() => ({ rows: [] as any[] }));
 
@@ -4945,6 +4954,7 @@ async function executeCoordinatedGenerationJob(
                 isResume &&
                 existingLessonRes.rows[0]?.content_markdown &&
                 !isGenericLessonTitle(existingLessonRes.rows[0]?.title) &&
+                InstructionalContentSchema.safeParse(existingLessonRes.rows[0]?.instructional_content).success &&
                 validateLessonSyntax(existingLessonRes.rows[0].content_markdown, domainBrief.pedagogyType).isValid
               ) {
                 completedLessonsCount++;
@@ -4986,13 +4996,22 @@ async function executeCoordinatedGenerationJob(
               let lessonAttempts = 0;
               let lessonContent = '';
               let lessonTitle = topic;
+              let instructionalContent: Record<string, any> | null = null;
               let lessonErrors: string[] = [];
 
-              const ValidatedLessonSchema = LessonContentSchema.superRefine((val, ctx) => {
+              const ValidatedLessonSchema = StructuredLessonOutputSchema.superRefine((val, ctx) => {
+                if (val.instructionalContent.disciplineEngine !== domainBrief.pedagogyType) {
+                  ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    path: ['instructionalContent', 'disciplineEngine'],
+                    message: 'Instructional engine does not match the course discipline.'
+                  });
+                }
                 const check = validateLessonSyntax(val.content || '', domainBrief.pedagogyType);
                 if (!check.isValid) {
                   ctx.addIssue({
                     code: z.ZodIssueCode.custom,
+                    path: ['content'],
                     message: check.errors.join(' ')
                   });
                 }
@@ -5042,6 +5061,17 @@ async function executeCoordinatedGenerationJob(
 
                 lessonTitle = (!isGenericLessonTitle(lessonData.title) && lessonData.title ? lessonData.title.trim() : topic) || topic;
                 lessonContent = normalizeLessonMarkdownContent(lessonData.content || '');
+                instructionalContent = {
+                  ...lessonData.instructionalContent,
+                  verification: {
+                    structureValidation: 'passed',
+                    academicAccuracy: 'not_independently_verified',
+                    calculationValidation: 'pending_independent_check',
+                    subjectExpertReview: 'not_reviewed',
+                    checkedAt: new Date().toISOString(),
+                    policyVersion: 'uniace-mastery-verification-v1'
+                  }
+                };
 
                 const syntaxValidation = validateLessonSyntax(lessonContent, domainBrief.pedagogyType);
                 if (syntaxValidation.isValid) {
@@ -5072,7 +5102,11 @@ async function executeCoordinatedGenerationJob(
                   title: lessonTitle,
                   contentMarkdown: lessonContent,
                   orderIndex: lIndex + 1,
-                  learningOutcomes: targetOutcomeText ? [targetOutcomeText] : []
+                  learningOutcomes: moduleSkeleton.learningOutcomeIds?.map((id: string) => {
+                    const outcomeIndex = Number.parseInt(id, 10);
+                    return Number.isInteger(outcomeIndex) && normalizedOutcomes[outcomeIndex] ? normalizedOutcomes[outcomeIndex].outcome : null;
+                  }).filter((value: string | null): value is string => Boolean(value)) || (targetOutcomeText ? [targetOutcomeText] : []),
+                  instructionalContent: instructionalContent || undefined
                 }
               });
 
@@ -5163,7 +5197,7 @@ Return strictly a JSON object:
             [courseId]
           );
           const lessRes = await pool.query(
-            `SELECT id, module_id, title, content_markdown, order_index FROM course_lessons WHERE course_id = $1 ORDER BY module_id, order_index ASC`,
+            `SELECT id, module_id, title, content_markdown, instructional_content, order_index FROM course_lessons WHERE course_id = $1 ORDER BY module_id, order_index ASC`,
             [courseId]
           );
 
@@ -5174,7 +5208,8 @@ Return strictly a JSON object:
               id: l.id,
               order: l.order_index,
               title: l.title,
-              content: l.content_markdown || ''
+              content: l.content_markdown || '',
+              instructionalContent: l.instructional_content || undefined
             });
           }
 
@@ -5184,7 +5219,7 @@ Return strictly a JSON object:
             title: m.title || `Module ${mIdx + 1}`,
             isFoundationModule: mIdx === 0,
             groundingReferences: canonicalRefs,
-            confidenceState: 'verified',
+            confidenceState: 'needs_review',
             subTopics: (lessonsByMod[m.id] || []).sort((a, b) => (a.order || 0) - (b.order || 0))
           }));
           compiledSyllabus = sortCourseSyllabus(compiledSyllabus);
@@ -5197,7 +5232,7 @@ Return strictly a JSON object:
           modelVersion: requestedProvider || 'dynamic-multi-provider',
           promptVersion: 'uniace-curriculum-v2.0',
           generatedAt: new Date().toISOString(),
-          groundingScore: rubricAudit?.coverageScore ?? 95,
+          groundingScore: rubricAudit.coverageScore,
           rubricAudit
         };
 
@@ -5208,7 +5243,9 @@ Return strictly a JSON object:
           provenance,
           generationStatus: 'completed',
           generationProgress: 100,
-          statusMessage: 'Course authored, verified, and published to Neon PostgreSQL catalog.',
+          confidenceState: 'needs_review',
+          academicVerificationState: 'not_independently_verified',
+          statusMessage: 'Course generated; structural checks passed. Academic accuracy and calculations still require independent verification.',
           published: true,
           status: 'published'
         });
@@ -5224,7 +5261,7 @@ Return strictly a JSON object:
             courseName,
             completedLessons: completedLessonsCount,
             totalLessons: totalLessonsCount,
-            coverageScore: rubricAudit?.coverageScore ?? 95,
+            coverageScore: rubricAudit.coverageScore,
             memory: getLiveMemoryTelemetry(activeRunningCourseJobs.size)
           }
         );
