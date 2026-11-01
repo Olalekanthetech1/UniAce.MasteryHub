@@ -55,77 +55,71 @@ export function validateRecordedHumanReplay(row: unknown): VerifiedRecordedHuman
     .filter((player): player is Record<string, any> =>
       isRecord(player) &&
       player.opponentType === 'human' &&
-      typeof player.uid === 'string' &&
-      player.uid.trim().length > 0 &&
-      typeof player.name === 'string' &&
-      player.name.trim().length > 0 &&
-      !['gladiator', 'scholar'].includes(player.name.trim().toLowerCase()) &&
       Array.isArray(player.actionLog) &&
       player.actionLog.length > 0
     )
     .sort((left, right) => right.actionLog.length - left.actionLog.length);
 
-  for (const sourcePlayer of humanPlayers) {
-    const actions: VerifiedRecordedHumanReplay['actions'] = [];
-    let previousElapsedMs = 0;
-    let valid = true;
+  // Choose the most complete source once. An invalid source must fail closed;
+  // it must never cause a switch to another participant's recording.
+  const sourcePlayer = humanPlayers[0];
+  if (!sourcePlayer) return null;
 
-    for (let index = 0; index < sourcePlayer.actionLog.length; index += 1) {
-      const action = sourcePlayer.actionLog[index];
-      if (!isRecord(action)) {
-        valid = false;
-        break;
-      }
+  if (
+    typeof sourcePlayer.uid !== 'string' ||
+    !sourcePlayer.uid.trim() ||
+    typeof sourcePlayer.name !== 'string' ||
+    !sourcePlayer.name.trim() ||
+    ['gladiator', 'scholar'].includes(sourcePlayer.name.trim().toLowerCase())
+  ) return null;
 
-      const questionIndex = action.questionIndex;
-      const selectedOption = action.selectedOption;
-      const elapsedMs = action.elapsedMs;
-      const timestamp = toValidTimestamp(action.timestamp);
-      const question = questions[index];
+  const actions: VerifiedRecordedHumanReplay['actions'] = [];
+  let previousElapsedMs = 0;
 
-      if (
-        questionIndex !== index ||
-        questionIndex >= questions.length ||
-        typeof selectedOption !== 'string' ||
-        typeof action.correct !== 'boolean' ||
-        typeof elapsedMs !== 'number' ||
-        !Number.isFinite(elapsedMs) ||
-        elapsedMs <= 0 ||
-        elapsedMs < previousElapsedMs ||
-        elapsedMs > durationSeconds * 1000 ||
-        !timestamp
-      ) {
-        valid = false;
-        break;
-      }
+  for (let index = 0; index < sourcePlayer.actionLog.length; index += 1) {
+    const action = sourcePlayer.actionLog[index];
+    if (!isRecord(action)) return null;
 
-      const correct = selectedOption === question.correctAnswer;
-      if (action.correct !== correct) {
-        valid = false;
-        break;
-      }
+    const questionIndex = action.questionIndex;
+    const selectedOption = action.selectedOption;
+    const elapsedMs = action.elapsedMs;
+    const timestamp = toValidTimestamp(action.timestamp);
+    const question = questions[index];
 
-      actions.push({ questionIndex, selectedOption, correct, elapsedMs, timestamp });
-      previousElapsedMs = elapsedMs;
-    }
+    if (
+      questionIndex !== index ||
+      questionIndex >= questions.length ||
+      typeof selectedOption !== 'string' ||
+      typeof action.correct !== 'boolean' ||
+      typeof elapsedMs !== 'number' ||
+      !Number.isFinite(elapsedMs) ||
+      elapsedMs <= 0 ||
+      elapsedMs < previousElapsedMs ||
+      elapsedMs > durationSeconds * 1000 ||
+      !timestamp
+    ) return null;
 
-    if (valid && actions.length > 0) {
-      return {
-        id: row.id,
-        recordedAt,
-        durationSeconds,
-        questions,
-        sourcePlayer: {
-          uid: sourcePlayer.uid,
-          name: sourcePlayer.name.trim(),
-          avatar: typeof sourcePlayer.avatar === 'string' && sourcePlayer.avatar.trim()
-            ? sourcePlayer.avatar
-            : null
-        },
-        actions
-      };
-    }
+    const correct = selectedOption === question.correctAnswer;
+    if (action.correct !== correct) return null;
+
+    actions.push({ questionIndex, selectedOption, correct, elapsedMs, timestamp });
+    previousElapsedMs = elapsedMs;
   }
 
-  return null;
+  if (actions.length === 0) return null;
+
+  return {
+    id: row.id,
+    recordedAt,
+    durationSeconds,
+    questions,
+    sourcePlayer: {
+      uid: sourcePlayer.uid,
+      name: sourcePlayer.name.trim(),
+      avatar: typeof sourcePlayer.avatar === 'string' && sourcePlayer.avatar.trim()
+        ? sourcePlayer.avatar
+        : null
+    },
+    actions
+  };
 }
