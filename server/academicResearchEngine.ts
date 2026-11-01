@@ -169,12 +169,14 @@ function calculateRelevanceScore(paper: AcademicPaper, queryTerms: string[]): nu
   }
 
   // Logarithmic citation weight
-  const citationBonus = Math.log(1 + (paper.citationCount || 0)) * 0.4;
+  const citationBonus = typeof paper.citationCount === 'number'
+    ? Math.log(1 + paper.citationCount) * 0.4
+    : 0;
 
-  // Exponential recency decay
+  // Missing publication years do not receive an assumed age or recency score.
   const currentYear = new Date().getFullYear();
-  const age = paper.year ? Math.max(0, currentYear - paper.year) : 10;
-  const recencyBonus = Math.exp(-0.05 * age) * 2.0;
+  const age = typeof paper.year === 'number' ? Math.max(0, currentYear - paper.year) : null;
+  const recencyBonus = age === null ? 0 : Math.exp(-0.05 * age) * 2.0;
 
   // DOI verified paper bonus
   const doiBonus = paper.doi ? 0.5 : 0;
