@@ -87,6 +87,7 @@ export interface AcademicConfig {
   researchDepth: 'adaptive';
   adaptiveMaxQueries: number;
   minimumUsefulSources: number;
+  minimumRelevanceScore: number;
   tavilyApiKeyConfigured: boolean;
   semanticScholarApiKeyConfigured: boolean;
   arxivMaxResults: number;
