@@ -48,17 +48,8 @@ export function autoHealQuestion(q: any): any {
       );
     }
 
-    if (!matchedOption) {
-      const cleanedAnswer = correctAnswer
-        .replace(/^(?:Option\\s+)?[A-Da-d1-4][\\).\\s\\-:]+/, '')
-        .trim()
-        .toLocaleLowerCase();
-      matchedOption = options.find((option: string) =>
-        option.replace(/^(?:Option\\s+)?[A-Da-d1-4][\\).\\s\\-:]+/, '')
-          .trim()
-          .toLocaleLowerCase() === cleanedAnswer
-      );
-    }
+    // Do not rewrite generated answers. Only exact, case-insensitive, or
+    // explicit option-index matches are accepted below.
 
     if (!matchedOption) {
       const letterMatch = correctAnswer.match(/^[A-Da-d]$/);
@@ -147,7 +138,7 @@ export const FlashcardsResponseSchema = z.object({
 export const RecommendationSchema = z.object({
   title: z.string().min(1, 'Title cannot be empty'),
   reason: z.string().min(1, 'Reason cannot be empty'),
-  moduleId: z.string().optional(),
+  moduleId: z.string().trim().min(1, 'Module reference is required'),
   subTopicId: z.string().optional(),
   type: z.enum(['review', 'new', 'mastery']),
 });
