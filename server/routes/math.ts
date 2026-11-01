@@ -4,8 +4,7 @@ import {
   executeMathComputation, 
   getMathEngineConfig, 
   saveMathEngineConfig, 
-  MathCalculationRequest,
-  DEFAULT_MATH_CONFIG 
+  MathCalculationRequest
 } from '../mathEngine';
 
 export function setupMathRoutes(
@@ -17,33 +16,40 @@ export function setupMathRoutes(
   // 1. Primary Math Computation Endpoint (Used by Student AI Chat & Interactive Solvers)
   app.post('/api/math/compute', async (req: express.Request, res: express.Response) => {
     try {
-      const { 
-        operation = 'simplify', 
-        expression, 
-        variable = 'x', 
-        bounds, 
-        matrixA, 
-        matrixB, 
-        matrixOp, 
-        rigorLevel = 'granular' 
-      } = req.body;
-
-      if (!expression && !matrixA) {
-        return res.status(400).json({ 
-          error: 'Missing mathematical expression or matrix payload.' 
-        });
-      }
-
-      const userId = (req as any).user?.uid || 'anonymous';
-      const calcReq: MathCalculationRequest = {
+      const {
         operation,
-        expression: String(expression || ''),
-        variable: String(variable || 'x'),
+        expression,
+        variable,
         bounds,
         matrixA,
         matrixB,
         matrixOp,
-        rigorLevel,
+        rigorLevel
+      } = req.body || {};
+
+      if (typeof operation !== 'string' || !operation.trim()) {
+        return res.status(400).json({ error: 'A calculation operation is required.' });
+      }
+      if (operation === 'matrix_operations') {
+        if (!Array.isArray(matrixA) || matrixA.length === 0 || !matrixOp) {
+          return res.status(400).json({ error: 'A source-supplied matrix and matrix operation are required.' });
+        }
+      } else if (typeof expression !== 'string' || !expression.trim() || typeof variable !== 'string' || !variable.trim()) {
+        return res.status(400).json({ error: 'A mathematical expression and independent variable are required.' });
+      }
+
+      const engineConfig = await getMathEngineConfig();
+      const effectiveRigor = rigorLevel || engineConfig.defaultRigor;
+      const userId = (req as any).user?.uid;
+      const calcReq: MathCalculationRequest = {
+        operation,
+        expression: typeof expression === 'string' ? expression : '',
+        variable: typeof variable === 'string' ? variable : undefined,
+        bounds,
+        matrixA,
+        matrixB,
+        matrixOp,
+        rigorLevel: effectiveRigor,
       };
 
       const result = await executeMathComputation(calcReq, userId);
@@ -82,26 +88,38 @@ export function setupMathRoutes(
       }
 
 
-      const { 
-        operation = 'derivative', 
-        expression = 'x^3 - 6*x^2 + 11*x - 6', 
-        variable = 'x', 
-        bounds, 
-        matrixA, 
-        matrixB, 
-        matrixOp = 'determinant',
-        rigorLevel = 'granular' 
-      } = req.body;
-
-      const calcReq: MathCalculationRequest = {
+      const {
         operation,
-        expression: String(expression || ''),
-        variable: String(variable || 'x'),
+        expression,
+        variable,
         bounds,
         matrixA,
         matrixB,
         matrixOp,
         rigorLevel
+      } = req.body || {};
+
+      if (typeof operation !== 'string' || !operation.trim()) {
+        return res.status(400).json({ error: 'A calculation operation is required.' });
+      }
+      if (operation === 'matrix_operations') {
+        if (!Array.isArray(matrixA) || matrixA.length === 0 || !matrixOp) {
+          return res.status(400).json({ error: 'A source-supplied matrix and matrix operation are required.' });
+        }
+      } else if (typeof expression !== 'string' || !expression.trim() || typeof variable !== 'string' || !variable.trim()) {
+        return res.status(400).json({ error: 'A mathematical expression and independent variable are required.' });
+      }
+
+      const engineConfig = await getMathEngineConfig();
+      const calcReq: MathCalculationRequest = {
+        operation,
+        expression: typeof expression === 'string' ? expression : '',
+        variable: typeof variable === 'string' ? variable : undefined,
+        bounds,
+        matrixA,
+        matrixB,
+        matrixOp,
+        rigorLevel: rigorLevel || engineConfig.defaultRigor
       };
 
       const result = await executeMathComputation(calcReq, user.uid);
@@ -154,8 +172,11 @@ export function setupMathRoutes(
       }
 
       const totalCount = recentLogs.length;
-      const avgLatencyMs = totalCount > 0 ? Math.round(totalLatency / totalCount) : 18;
-      const successRate = totalCount > 0 ? Number(((successCount / totalCount) * 100).toFixed(1)) : 100.0;
+      const avgLatencyMs = totalCount > 0 ? Math.round(totalLatency / totalCount) : null;
+      const successRate = totalCount > 0 ? Number(((successCount / totalCount) * 100).toFixed(1)) : null;
+      const observedOperations = Object.fromEntries(
+        Object.entries(opCounts).filter(([, count]) => count > 0)
+      );
 
       const currentConfig = await getMathEngineConfig();
 
@@ -163,20 +184,15 @@ export function setupMathRoutes(
         totalComputations: totalCount,
         avgLatencyMs,
         successRate,
-        operationDistribution: opCounts,
+        operationDistribution: observedOperations,
         activeEngine: currentConfig.defaultEngine,
         recentEvents: recentLogs
       });
     } catch (error: any) {
       console.error('[MathRoute] Stats Fetch Error:', error);
-      return res.status(500).json({ 
-        totalComputations: 0,
-        avgLatencyMs: 0,
-        successRate: 100,
-        operationDistribution: {},
-        activeEngine: 'SymPy / MathJS Symbolic',
-        recentEvents: [],
-        error: error.message 
+      return res.status(503).json({
+        error: 'Math Engine telemetry or configuration is unavailable.',
+        message: error.message
       });
     }
   });
