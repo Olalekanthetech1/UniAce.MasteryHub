@@ -40,11 +40,11 @@ test('converts explicit math code fences into display equations', () => {
 });
 
 test('KaTeX compiles normalized course equations into rendered math markup', () => {
-  const markdown = normalizeMathDelimiters('Hydrostatic pressure: \\(p = \\rho g h\\)\\n\\n\\[F = ma\\]');
+  const markdown = normalizeMathDelimiters('Hydrostatic pressure: \\(p = \\rho g h\\)\n\n\\[F = ma\\]');
   const marked = new Marked();
   marked.use(markedKatex({ throwOnError: false, output: 'htmlAndMathml', strict: false }));
   const html = marked.parse(markdown) as string;
   assert.match(html, /class="katex"/);
   assert.match(html, /class="katex-display"/);
-  assert.doesNotMatch(html, /\\\\rho g h/);
+  assert.equal(html.includes('\\rho g h'), false);
 });
