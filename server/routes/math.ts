@@ -13,6 +13,15 @@ export function setupMathRoutes(
   getAdminApp: any, 
   isAdminEmail: any
 ) {
+  const requireMathAdmin = async (user: any): Promise<boolean> => {
+    if (!user?.uid) return false;
+    if (typeof user.email === 'string' && isAdminEmail(user.email)) return true;
+    const pool = getPostgresPool();
+    if (!pool) return false;
+    const result = await pool.query('SELECT role FROM users WHERE uid = $1 LIMIT 1', [user.uid]);
+    return result.rows[0]?.role === 'admin';
+  };
+
   // 1. Primary Math Computation Endpoint (Used by Student AI Chat & Interactive Solvers)
   app.post('/api/math/compute', async (req: express.Request, res: express.Response) => {
     try {
@@ -140,6 +149,7 @@ export function setupMathRoutes(
   // 3. Telemetry & Analytics Endpoint (Real-Time Stats for Admin Dashboard)
   app.get('/api/math/stats', verifyAuth, async (req: express.Request, res: express.Response) => {
     try {
+      if (!(await requireMathAdmin((req as any).user))) return res.status(403).json({ error: 'Admin access required.' });
       const pool = getPostgresPool();
       if (!pool) return res.status(503).json({ error: 'Neon PostgreSQL not initialized' });
 
@@ -200,6 +210,7 @@ export function setupMathRoutes(
   // 4. Get Math Engine Config
   app.get('/api/admin/math-config', verifyAuth, async (req: express.Request, res: express.Response) => {
     try {
+      if (!(await requireMathAdmin((req as any).user))) return res.status(403).json({ error: 'Admin access required.' });
       const config = await getMathEngineConfig();
       return res.json(config);
     } catch (error: any) {
@@ -211,31 +222,15 @@ export function setupMathRoutes(
   app.post('/api/admin/math-config', verifyAuth, async (req: express.Request, res: express.Response) => {
     try {
       const user = (req as any).user;
-      const adminApp = getAdminApp();
-      if (!adminApp) return res.status(503).json({ error: 'Firebase not initialized' });
-
-      let isAdmin = false;
-      if (isAdminEmail(user.email)) {
-        isAdmin = true;
-      } else {
-        const pool = getPostgresPool();
-        if (pool) {
-          const res = await pool.query('SELECT role FROM users WHERE uid = $1', [user.uid]);
-          if (res.rows.length > 0 && res.rows[0].role === 'admin') {
-            isAdmin = true;
-          }
-        }
-      }
-      if (!isAdmin) {
-        return res.status(403).json({ error: 'Forbidden: Admin access required' });
+      if (!(await requireMathAdmin(user))) {
+        return res.status(403).json({ error: 'Admin access required.' });
       }
 
-
-      const updated = await saveMathEngineConfig(req.body);
+      const updated = await saveMathEngineConfig(req.body || {});
       return res.json({ success: true, config: updated });
     } catch (error: any) {
       console.error('[MathRoute] Save Config Error:', error);
-      return res.status(500).json({ error: error.message || 'Failed to save math config' });
+      return res.status(400).json({ error: error.message || 'Failed to save math config' });
     }
   });
 }
