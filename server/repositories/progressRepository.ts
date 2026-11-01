@@ -54,7 +54,7 @@ export interface QuizAttemptSubmission {
     explanation?: string;
     latex_proof?: string;
   }>;
-  passingScorePct?: number;
+  passingScorePct: number;
 }
 
 export interface QuizAttemptResult {
@@ -389,10 +389,18 @@ export class ProgressRepository {
       timeSpentSeconds,
       answers,
       canonicalQuestions,
-      passingScorePct = 70
+      passingScorePct
     } = submission;
 
-    // 1. Authoritative grading against canonical questions
+    if (!Array.isArray(canonicalQuestions) || canonicalQuestions.length === 0) {
+      throw new Error('Server-owned canonical quiz questions are required; refusing to record an ungrounded attempt.');
+    }
+    if (typeof passingScorePct !== 'number' || !Number.isFinite(passingScorePct) ||
+        passingScorePct < 0 || passingScorePct > 100) {
+      throw new Error('A valid server-owned passing threshold between 0 and 100 is required.');
+    }
+
+    // Grade only against canonical questions supplied by a trusted server-side caller.
     const questionMap = new Map<string, (typeof canonicalQuestions)[0]>();
     canonicalQuestions.forEach((q) => questionMap.set(q.id, q));
 
@@ -411,7 +419,7 @@ export class ProgressRepository {
       };
     });
 
-    const totalQuestions = canonicalQuestions.length > 0 ? canonicalQuestions.length : 1;
+    const totalQuestions = canonicalQuestions.length;
     const rawScore = (correctCount / totalQuestions) * 100;
     const scorePct = Number(rawScore.toFixed(2));
     const passed = scorePct >= passingScorePct;
