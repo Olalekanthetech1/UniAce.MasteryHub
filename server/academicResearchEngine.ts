@@ -10,7 +10,8 @@ import {
   AcademicConfigView,
   AcademicProviderHealth,
   AcademicProviderId,
-  ProviderExecution
+  ProviderExecution,
+  WebEvidence
 } from './academic/types.js';
 import { fetchFromArxiv } from './academic/arxivAdapter.js';
 import { fetchFromSemanticScholar, lookupPaperSemanticScholar } from './academic/semanticScholarAdapter.js';
