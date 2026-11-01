@@ -35,7 +35,7 @@ export default function PaywallManager({ onUpgrade }: PaywallManagerProps) {
 
     // Scenario A: Soft Warning (Trial ending soon or low sparks on free tier)
     const isTrialEndingSoon = isTrialActive && daysRemaining <= 1;
-    const isSparksLow = !isPremium && profile.ai_sparks > 0 && profile.ai_sparks < 50;
+    const isSparksLow = false; // Low-balance warnings require an explicit live threshold from pricing policy.
 
     if ((isTrialEndingSoon || isSparksLow) && !isDismissed) {
       setShowSoftWarning(true);
@@ -46,7 +46,7 @@ export default function PaywallManager({ onUpgrade }: PaywallManagerProps) {
     // Scenario C: Time Hard Stop (Trial Expired, Subscription Expired, or Out of Sparks)
     const isTrialExpired = !isTrialActive && profile.plan_type === 'free';
     const isSubscriptionExpired = profile.plan_type !== 'free' && !isPremium;
-    const isOutOfSparks = !isPremium && (profile.ai_sparks ?? 0) <= 0;
+    const isOutOfSparks = !isPremium && typeof profile.ai_sparks === 'number' && profile.ai_sparks <= 0;
 
     if ((isTrialExpired || isSubscriptionExpired || isOutOfSparks) && !isPremium) {
       setShowHardStop(true);
