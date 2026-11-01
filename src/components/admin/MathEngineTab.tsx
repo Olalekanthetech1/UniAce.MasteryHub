@@ -275,7 +275,7 @@ export default function MathEngineTab() {
                 </span>
               </h2>
               <p className="text-sm text-indigo-200/80">
-                Zero-hallucination symbolic mathematics, KaTeX step derivations, & university STEM solver pipeline.
+                Symbolic mathematics execution, KaTeX rendering, and recorded calculation telemetry.
               </p>
             </div>
           </div>
@@ -314,7 +314,7 @@ export default function MathEngineTab() {
           <div className="text-3xl font-black text-slate-900 dark:text-white">
             {stats?.avgLatencyMs ?? '—'} <span className="text-sm font-normal text-slate-500">ms</span>
           </div>
-          <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold">Deterministic in-memory AST speed</p>
+          <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold">Mean latency across returned telemetry events</p>
         </div>
 
         <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm space-y-2">
@@ -325,7 +325,7 @@ export default function MathEngineTab() {
           <div className="text-3xl font-black text-slate-900 dark:text-white">
             {stats?.successRate == null ? '—' : `${stats.successRate}%`}
           </div>
-          <p className="text-[11px] text-slate-500">Zero algebraic hallucinations</p>
+          <p className="text-[11px] text-slate-500">Success rate recorded by the Math Engine</p>
         </div>
 
         <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm space-y-2">
@@ -336,7 +336,7 @@ export default function MathEngineTab() {
           <div className="text-sm font-bold text-slate-900 dark:text-white truncate">
             {stats?.activeEngine || config?.defaultEngine || 'Not verified'}
           </div>
-          <p className="text-[11px] text-purple-600 dark:text-purple-400 font-semibold">Open Source & Free Layer</p>
+          <p className="text-[11px] text-purple-600 dark:text-purple-400 font-semibold">Configured computation engine</p>
         </div>
       </div>
 
@@ -366,7 +366,7 @@ export default function MathEngineTab() {
               </label>
               <select
                 value={config.defaultEngine}
-                onChange={(e) => setConfig({ ...config, defaultEngine: e.target.value as any })}
+                onChange={(e) => setConfig(current => current ? { ...current, defaultEngine: e.target.value as any } : current)}
                 className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-medium text-slate-800 dark:text-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none"
               >
                 <option value="smart_hybrid">Smart Hybrid (SymPy Local + Wolfram Fallback)</option>
@@ -390,7 +390,7 @@ export default function MathEngineTab() {
                 max="10000"
                 step="500"
                 value={config.timeoutMs}
-                onChange={(e) => setConfig({ ...config, timeoutMs: Number(e.target.value) })}
+                onChange={(e) => setConfig(current => current ? { ...current, timeoutMs: Number(e.target.value) } : current)}
                 className="w-full accent-indigo-600 h-2 bg-slate-100 dark:bg-slate-700 rounded-lg cursor-pointer"
               />
               <div className="flex justify-between text-[10px] text-slate-400">
@@ -408,7 +408,7 @@ export default function MathEngineTab() {
               <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
-                  onClick={() => setConfig({ ...config, defaultRigor: 'granular' })}
+                  onClick={() => setConfig(current => current ? { ...current, defaultRigor: 'granular' } : current)}
                   className={`py-2 px-3 rounded-xl text-xs font-bold border transition-all ${
                     config.defaultRigor === 'granular'
                       ? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-500 text-indigo-700 dark:text-indigo-300 shadow-sm'
@@ -419,7 +419,7 @@ export default function MathEngineTab() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setConfig({ ...config, defaultRigor: 'concise' })}
+                  onClick={() => setConfig(current => current ? { ...current, defaultRigor: 'concise' } : current)}
                   className={`py-2 px-3 rounded-xl text-xs font-bold border transition-all ${
                     config.defaultRigor === 'concise'
                       ? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-500 text-indigo-700 dark:text-indigo-300 shadow-sm'
@@ -440,11 +440,11 @@ export default function MathEngineTab() {
                 type="password"
                 placeholder="e.g. 26X9-XXXX-XXXX"
                 value={config.wolframAppId || ''}
-                onChange={(e) => setConfig({ ...config, wolframAppId: e.target.value })}
+                onChange={(e) => setConfig(current => current ? { ...current, wolframAppId: e.target.value } : current)}
                 className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-sm text-slate-800 dark:text-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none font-mono"
               />
               <p className="text-[11px] text-slate-500">
-                Used for thermodynamic equations and advanced physics simulations.
+                Used when the configured computation engine invokes Wolfram Alpha.
               </p>
             </div>
 
