@@ -579,23 +579,41 @@ MATH & EQUATIONS (CRITICAL):
     correctAnswer: string;
     subtopicTitle?: string;
     subtopicContent: string;
-    count?: number;
+    count: number;
     subject?: string;
     rollingMasteryScore?: number;
   }): Promise<string[]> => {
     const {
       question,
       correctAnswer,
-      subtopicTitle = '',
+      subtopicTitle,
       subtopicContent,
-      count = 3,
-      subject = 'University Assessment',
-      rollingMasteryScore = 50
+      count,
+      subject,
+      rollingMasteryScore
     } = params;
+
+    if (!question.trim() || !correctAnswer.trim() || !subtopicContent.trim()) {
+      throw new Error('Question, correct answer, and lesson source material are required.');
+    }
+    if (!Number.isInteger(count) || count < 1 || count > 10) {
+      throw new Error('A valid distractor count from 1 to 10 is required.');
+    }
+    if (rollingMasteryScore !== undefined &&
+        (!Number.isFinite(rollingMasteryScore) || rollingMasteryScore < 0 || rollingMasteryScore > 100)) {
+      throw new Error('Rolling mastery must be a verified percentage between 0 and 100.');
+    }
+
+    const masteryContext = rollingMasteryScore === undefined
+      ? 'No verified mastery score was supplied; do not infer the student mastery level.'
+      : `Verified rolling mastery: ${rollingMasteryScore}%`;
+    const rigorDirective = rollingMasteryScore !== undefined && rollingMasteryScore >= 75
+      ? 'Generate sophisticated distractors appropriate for the supplied high mastery score.'
+      : 'Generate rigorous university-level distractors from the source lesson.';
 
     const distractorPrompt = `INSTRUCTIONS:
 You are an expert university examiner and psychometrician.
-Generate exactly ${count} highly PLAUSIBLE BUT INCORRECT "distractor" answer options for a multiple-choice question.
+Generate exactly ${count} plausible but incorrect distractor answer options.
 
 QUESTION:
 "${question}"
@@ -604,43 +622,40 @@ CORRECT ANSWER:
 "${correctAnswer}"
 
 SUBTOPIC CONTEXT:
-Topic: "${subtopicTitle}"
-Subject / Domain: "${subject}"
-Student Rolling Mastery: ${rollingMasteryScore}%
+Topic: "${subtopicTitle || 'Not supplied; do not infer a topic title'}"
+Subject / Domain: "${subject || 'Not supplied; do not infer a subject'}"
+${masteryContext}
 Content Material:
-${(subtopicContent || '').slice(0, 4500)}
+${subtopicContent.slice(0, 4500)}
 
-DISTRACTOR RIGOR REQUIREMENTS:
-1. Contextually Grounded: Every distractor MUST be strictly derived from the provided subtopic content. Do NOT introduce unrelated terms.
-2. Common Misconceptions: Model real university student errors:
-   - For mathematical/physics questions: sign inversion ($+ \\leftrightarrow -$), reciprocal fraction errors, forgotten integration constants, or flipped matrix indices.
-   - For engineering/scientific topics: adjacent thermodynamic phases, conflated kinetic mechanisms, or inverted cause-and-effect relationships.
-   - For humanities/social science: plausible alternative historical interpretations or conflated frameworks.
-3. High Plausibility: Distractors must have similar length, tone, grammatical structure, and technical depth as the correct answer. NEVER provide silly or obviously false choices.
-4. Rigor Level: ${rollingMasteryScore >= 75 ? 'HIGH MASTERY: Generate sophisticated, subtle distractors that penalize superficial memorization and test deep mechanics.' : 'Standard university exam caliber.'}
+DISTRACTOR REQUIREMENTS:
+1. Every distractor must be strictly derived from the supplied source material.
+2. Model realistic misconceptions without introducing absent concepts.
+3. Every distractor must be distinct from the correct answer and from the other distractors.
+4. ${rigorDirective}
 
-Return your response strictly as a JSON object matching:
-{
-  "distractors": [
-    "string (Plausible distractor 1)",
-    "string (Plausible distractor 2)",
-    "string (Plausible distractor 3)"
-  ]
-}`;
+Return a JSON object containing a "distractors" array of exactly ${count} strings.`;
 
-    try {
-      const response = await callAI(distractorPrompt, undefined, 'json', 900, 'standard', 'quiz');
-      const raw = extractJSON(response.text || '{}');
-      const distractors = Array.isArray(raw?.distractors) ? raw.distractors : [];
-      const validDistractors = distractors
-        .map((d: any) => String(d || '').trim())
-        .filter((d: string) => d.length > 0 && d.toLowerCase() !== correctAnswer.trim().toLowerCase());
-
-      return validDistractors.slice(0, count);
-    } catch (err) {
-      console.warn('[AIService] Distractor generation fallback notice:', err);
-      return [];
+    const response = await callAI(distractorPrompt, undefined, 'json', 900, 'standard', 'quiz');
+    if (typeof response?.text !== 'string' || !response.text.trim()) {
+      throw new Error('The AI provider returned no distractor content.');
     }
+
+    const raw = extractJSON(response.text);
+    if (!Array.isArray(raw?.distractors) || raw.distractors.length !== count) {
+      throw new Error(`The AI provider returned an incomplete distractor set; exactly ${count} are required.`);
+    }
+
+    const seen = new Set<string>([correctAnswer.trim().toLocaleLowerCase()]);
+    return raw.distractors.map((value: unknown, index: number) => {
+      const distractor = typeof value === 'string' ? value.trim() : '';
+      const normalized = distractor.toLocaleLowerCase();
+      if (!distractor || seen.has(normalized)) {
+        throw new Error(`Distractor ${index + 1} is missing, duplicated, or identical to the correct answer.`);
+      }
+      seen.add(normalized);
+      return distractor;
+    });
   },
 
   generateQuiz: async (
@@ -1118,7 +1133,10 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
     Output ONLY the markdown content. Do not include any other text or conversational filler.`;
 
     const response = await callAI(prompt, undefined, undefined, 4000, 'high', 'lesson');
-    return sanitizeLatex(response.text || "Failed to generate lesson content.");
+    if (typeof response?.text !== 'string' || !response.text.trim()) {
+      throw new Error('The AI provider returned no lesson content.');
+    }
+    return sanitizeLatex(response.text);
   },
 
   generateTTS: async (text: string) => {
@@ -1287,28 +1305,23 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
   },
 
   getStruggleAnalytics: async () => {
-    try {
-      const token = await getAuthToken();
-      const response = await fetch('/api/admin/struggle-analytics', {
-        headers: {
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        }
-      });
-      if (!response.ok) {
-        console.warn(`Failed to fetch struggle analytics (${response.status})`);
-        return [];
-      }
-      const ct = response.headers.get('content-type');
-      if (!ct || !ct.includes('application/json')) {
-        console.warn(`Struggle analytics: Expected JSON response, got ${ct || 'unknown'}`);
-        return [];
-      }
-      const data = await response.json();
-      return Array.isArray(data.analytics) ? data.analytics : [];
-    } catch (error: any) {
-      console.warn('Get Struggle Analytics Warning:', error?.message || error);
-      return [];
+    const token = await getAuthToken();
+    if (!token) throw new Error('Authenticated admin credentials are required for struggle analytics.');
+    const response = await fetch('/api/admin/struggle-analytics', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!response.ok) {
+      throw new Error(`Struggle analytics request failed with HTTP ${response.status}.`);
     }
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      throw new Error(`Struggle analytics returned unexpected content type: ${contentType || 'missing'}.`);
+    }
+    const data = await response.json();
+    if (!Array.isArray(data?.analytics)) {
+      throw new Error('Struggle analytics response did not contain a verified analytics array.');
+    }
+    return data.analytics;
   },
 
   getChatAnalytics: async () => {
