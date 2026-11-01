@@ -2336,192 +2336,149 @@ app.get('/api/chat/reactions', verifyAuth, async (req: any, res: any) => {
   }
 });
 
-// --- Helper: Get and Validate Sparks (Daily Reset via Neon PostgreSQL primary) ---
-const getAndValidateSparks = async (uid: string, email: string | undefined): Promise<{ 
-  sparks: number, 
-  plan: string, 
-  role: string,
-  subscription_expiry?: string,
-  subscription_status?: string,
-  subscription_start_date?: string
+// --- Helper: Get and Validate Sparks (Neon PostgreSQL authoritative) ---
+const getAndValidateSparks = async (uid: string, email: string | undefined): Promise<{
+  sparks: number | null;
+  unlimited: boolean;
+  plan: string;
+  role: string;
+  subscription_expiry?: string;
+  subscription_status?: string;
+  subscription_start_date?: string;
 }> => {
   const pool = getPostgresPool();
-  if (pool) {
-    try {
-      const policyData = (await getSystemConfigDoc('evaluation_policy')) || {};
-      const configuredDailyFreeSparks: number | null =
-        typeof policyData.dailyFreeSparks === 'number' && policyData.dailyFreeSparks >= 0
-          ? policyData.dailyFreeSparks
-          : null;
+  if (!pool) throw new Error('Authoritative quota service unavailable: PostgreSQL is not connected.');
 
-      const now = new Date();
-      const todayStr = now.toISOString().split('T')[0];
+  const policyData = (await getSystemConfigDoc('evaluation_policy')) || {};
+  const configuredDailyFreeSparks: number | null =
+    typeof policyData.dailyFreeSparks === 'number' && Number.isFinite(policyData.dailyFreeSparks) && policyData.dailyFreeSparks >= 0
+      ? policyData.dailyFreeSparks
+      : null;
 
-      const userRes = await pool.query(
-        `SELECT uid, email, display_name, role, plan_type, ai_sparks,
-                last_spark_reset, created_at, subscription_status,
-                subscription_expiry, subscription_start_date
-         FROM users
-         WHERE uid = $1`,
+  const now = new Date();
+  const todayStr = now.toISOString().split('T')[0];
+  const userRes = await pool.query(
+    `SELECT uid, email, display_name, role, plan_type, ai_sparks,
+            last_spark_reset, created_at, subscription_status,
+            subscription_expiry, subscription_start_date
+     FROM users
+     WHERE uid = $1`,
+    [uid]
+  );
+
+  if ((userRes.rowCount ?? 0) === 0) {
+    throw new Error('Authoritative user account record is missing. Quota was not initialized with a synthetic balance.');
+  }
+
+  const row = userRes.rows[0];
+  const role = typeof row.role === 'string' && row.role.trim() ? row.role : null;
+  const plan = typeof row.plan_type === 'string' && row.plan_type.trim() ? row.plan_type : null;
+  const rawSparks = Number(row.ai_sparks);
+  if (!role || !plan || row.ai_sparks === null || row.ai_sparks === undefined || !Number.isFinite(rawSparks) || rawSparks < 0) {
+    throw new Error('Authoritative user quota record is incomplete or invalid.');
+  }
+
+  let sparks = Math.floor(rawSparks);
+  let expiry = row.subscription_expiry ? new Date(row.subscription_expiry).toISOString() : undefined;
+  let status = row.subscription_status || 'none';
+  let startDate = row.subscription_start_date ? new Date(row.subscription_start_date).toISOString() : undefined;
+
+  const createdAt = row.created_at ? new Date(row.created_at) : null;
+  const configuredTrialDays = Number(systemConfig?.trialDays);
+  const isTrialPolicyVerified = Number.isFinite(configuredTrialDays) && configuredTrialDays > 0;
+  const trialStartDate = createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt : null;
+  const isTrialActive = Boolean(
+    isTrialPolicyVerified &&
+    trialStartDate &&
+    now.getTime() - trialStartDate.getTime() < configuredTrialDays * 24 * 60 * 60 * 1000
+  );
+
+  let effectivePlan = plan;
+  if (isTrialActive && effectivePlan === 'free' && role !== 'admin' && status !== 'expired') {
+    effectivePlan = 'scholar';
+    status = 'active';
+    startDate = trialStartDate!.toISOString();
+    expiry = new Date(trialStartDate!.getTime() + configuredTrialDays * 24 * 60 * 60 * 1000).toISOString();
+  }
+
+  if (role !== 'admin' && effectivePlan !== 'free' && !isTrialActive) {
+    const expiryDate = expiry ? new Date(expiry) : null;
+    const isExpired = Boolean(
+      status === 'expired' ||
+      (expiryDate && !Number.isNaN(expiryDate.getTime()) && now > expiryDate) ||
+      (!expiryDate && status !== 'active')
+    );
+    if (isExpired) {
+      effectivePlan = 'free';
+      status = 'expired';
+      await pool.query(
+        `UPDATE users SET plan_type = 'free', subscription_status = 'expired', updated_at = NOW() WHERE uid = $1`,
         [uid]
       );
-
-      if ((userRes.rowCount ?? 0) === 0) {
-        const role = isAdminEmail(email) ? 'admin' : 'student';
-        const initialFreeAllowance =
-          typeof configuredDailyFreeSparks === 'number' && configuredDailyFreeSparks > 0
-            ? configuredDailyFreeSparks
-            : 50;
-        const displayName = email ? email.split('@')[0] : 'Student';
-
-        await pool.query(
-          `INSERT INTO users (
-             uid, email, display_name, role, plan_type, ai_sparks,
-             learning_profile, last_spark_reset, subscription_status, created_at, updated_at
-           )
-           VALUES ($1, $2, $3, $4, 'free', $5, '{}'::jsonb, NOW(), 'none', NOW(), NOW())
-           ON CONFLICT (uid) DO NOTHING`,
-          [uid, email || `${uid}@uniace.local`, displayName, role, initialFreeAllowance]
-        );
-        await pool.query(
-          `INSERT INTO user_sparks_wallets (uid, balance, plan_type, last_spark_reset, updated_at)
-           VALUES ($1, $2, 'free', NOW(), NOW())
-           ON CONFLICT (uid) DO UPDATE SET
-             balance = EXCLUDED.balance,
-             updated_at = NOW()`,
-          [uid, initialFreeAllowance]
-        );
-        await pool.query(
-          `INSERT INTO spark_ledger (ledger_id, user_id, delta, reason, ref_lock_id, created_at)
-           VALUES ($1, $2, $3, 'initial_seed', NULL, NOW())
-           ON CONFLICT (ledger_id) DO NOTHING`,
-          [`seed_${uid}`, uid, initialFreeAllowance]
-        );
-
-        if (email) {
-          MailService.sendWelcomeEmail(email, displayName, systemConfig.trialDays || 7).catch(err => {
-            console.error('Failed to send welcome email:', err);
-          });
-        }
-
-        return {
-          sparks: role === 'admin' ? 999999 : initialFreeAllowance,
-          plan: role === 'admin' ? 'scholar' : 'free',
-          role
-        };
-      }
-
-      const row = userRes.rows[0];
-      let sparks = Math.max(0, Number(row.ai_sparks ?? 0));
-      let plan = row.plan_type || 'free';
-      let role = row.role || (isAdminEmail(email) ? 'admin' : 'student');
-      const lastResetStr = row.last_spark_reset
-        ? new Date(row.last_spark_reset).toISOString().split('T')[0]
-        : '';
-      let expiry = row.subscription_expiry ? new Date(row.subscription_expiry).toISOString() : undefined;
-      let status = row.subscription_status || 'none';
-      let startDate = row.subscription_start_date
-        ? new Date(row.subscription_start_date).toISOString()
-        : undefined;
-
-      const createdAt = row.created_at ? new Date(row.created_at) : now;
-      const trialStartDate = !isNaN(createdAt.getTime()) ? createdAt : now;
-      const isTrialActive = (now.getTime() - trialStartDate.getTime()) < (7 * 24 * 60 * 60 * 1000);
-
-      if (isTrialActive && plan === 'free' && role !== 'admin' && status !== 'expired') {
-        plan = 'scholar';
-        status = 'active';
-        startDate = trialStartDate.toISOString();
-        expiry = new Date(trialStartDate.getTime() + (7 * 24 * 60 * 60 * 1000)).toISOString();
-      }
-
-      if (role !== 'admin' && plan !== 'free' && !isTrialActive) {
-        const expiryDate = expiry ? new Date(expiry) : null;
-        const isExpired = Boolean(
-          status === 'expired' ||
-          (expiryDate && !isNaN(expiryDate.getTime()) && now > expiryDate) ||
-          (!expiryDate && status !== 'active')
-        );
-        if (isExpired) {
-          plan = 'free';
-          status = 'expired';
-          await pool.query(
-            `UPDATE users SET plan_type = 'free', subscription_status = 'expired', updated_at = NOW() WHERE uid = $1`,
-            [uid]
-          );
-          await pool.query(
-            `UPDATE user_sparks_wallets SET plan_type = 'free', updated_at = NOW() WHERE uid = $1`,
-            [uid]
-          );
-        }
-      }
-
-      if (role === 'admin' || plan !== 'free') {
-        return {
-          sparks: 999999,
-          plan,
-          role,
-          subscription_expiry: expiry,
-          subscription_status: status,
-          subscription_start_date: startDate
-        };
-      }
-
-      if (
-        lastResetStr !== todayStr &&
-        configuredDailyFreeSparks !== null &&
-        configuredDailyFreeSparks > 0 &&
-        sparks < configuredDailyFreeSparks
-      ) {
-        const refillDelta = configuredDailyFreeSparks - sparks;
-        sparks = configuredDailyFreeSparks;
-        await pool.query(
-          `INSERT INTO spark_ledger (ledger_id, user_id, delta, reason, ref_lock_id, created_at)
-           VALUES ($1, $2, $3, 'daily_free_refill', NULL, NOW())
-           ON CONFLICT (ledger_id) DO NOTHING`,
-          [`refill_${uid}_${todayStr}`, uid, refillDelta]
-        );
-        await pool.query(
-          `UPDATE users SET ai_sparks = $1, last_spark_reset = NOW(), updated_at = NOW() WHERE uid = $2`,
-          [sparks, uid]
-        );
-        await pool.query(
-          `INSERT INTO user_sparks_wallets (uid, balance, plan_type, last_spark_reset, updated_at)
-           VALUES ($1, $2, 'free', NOW(), NOW())
-           ON CONFLICT (uid) DO UPDATE SET
-             balance = EXCLUDED.balance,
-             last_spark_reset = NOW(),
-             updated_at = NOW()`,
-          [uid, sparks]
-        );
-      }
-
-      return {
-        sparks,
-        plan,
-        role,
-        subscription_expiry: expiry,
-        subscription_status: status,
-        subscription_start_date: startDate
-      };
-    } catch (pgErr) {
-      console.warn(`Neon PostgreSQL quota read error for user ${uid}:`, pgErr);
-      const role = isAdminEmail(email) ? 'admin' : 'student';
-      return {
-        sparks: role === 'admin' ? 999999 : 0,
-        plan: role === 'admin' ? 'scholar' : 'free',
-        role
-      };
+      await pool.query(
+        `UPDATE user_sparks_wallets SET plan_type = 'free', updated_at = NOW() WHERE uid = $1`,
+        [uid]
+      );
     }
   }
 
-  const role = isAdminEmail(email) ? 'admin' : 'student';
+  if (role === 'admin' || effectivePlan !== 'free') {
+    return {
+      sparks,
+      unlimited: true,
+      plan: effectivePlan,
+      role,
+      subscription_expiry: expiry,
+      subscription_status: status,
+      subscription_start_date: startDate
+    };
+  }
+
+  if (
+    lastResetStr(row.last_spark_reset) !== todayStr &&
+    configuredDailyFreeSparks !== null &&
+    configuredDailyFreeSparks > 0 &&
+    sparks < configuredDailyFreeSparks
+  ) {
+    const refillDelta = configuredDailyFreeSparks - sparks;
+    sparks = configuredDailyFreeSparks;
+    await pool.query(
+      `INSERT INTO spark_ledger (ledger_id, user_id, delta, reason, ref_lock_id, created_at)
+       VALUES ($1, $2, $3, 'daily_free_refill', NULL, NOW())
+       ON CONFLICT (ledger_id) DO NOTHING`,
+      [`refill_${uid}_${todayStr}`, uid, refillDelta]
+    );
+    await pool.query(
+      `UPDATE users SET ai_sparks = $1, last_spark_reset = NOW(), updated_at = NOW() WHERE uid = $2`,
+      [sparks, uid]
+    );
+    await pool.query(
+      `INSERT INTO user_sparks_wallets (uid, balance, plan_type, last_spark_reset, updated_at)
+       VALUES ($1, $2, 'free', NOW(), NOW())
+       ON CONFLICT (uid) DO UPDATE SET
+         balance = EXCLUDED.balance,
+         last_spark_reset = NOW(),
+         updated_at = NOW()`,
+      [uid, sparks]
+    );
+  }
+
   return {
-    sparks: role === 'admin' ? 999999 : 0,
-    plan: role === 'admin' ? 'scholar' : 'free',
-    role
+    sparks,
+    unlimited: false,
+    plan: effectivePlan,
+    role,
+    subscription_expiry: expiry,
+    subscription_status: status,
+    subscription_start_date: startDate
   };
 };
+
+function lastResetStr(value: unknown): string {
+  if (!value) return '';
+  const date = new Date(String(value));
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString().split('T')[0];
+}
 
 // --- API Routes ---
 
@@ -2549,10 +2506,10 @@ app.get('/api/user/quota', verifyAuth, async (req, res) => {
     res.json({ ...quota, profile: profileData });
   } catch (error: any) {
     console.error(`Error fetching quota for ${user.uid}:`, error);
-    res.status(500).json({ 
-      error: 'Failed to fetch quota', 
-      message: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    const unavailable = !getPostgresPool() || /not connected|unavailable|record is missing|incomplete or invalid/i.test(String(error?.message || ''));
+    res.status(unavailable ? 503 : 500).json({
+      error: unavailable ? 'Authoritative quota is unavailable or unverified.' : 'Failed to fetch quota.',
+      message: error.message
     });
   }
 });
@@ -3618,7 +3575,8 @@ app.post('/api/chat', verifyAuth, async (req, res) => {
       isHttpSettledOrCompleted = true;
       return res.json({
         response: cachedAnswer,
-        sparksRemaining: isFreeUser ? settleCached.finalSparks : 999999,
+        sparksRemaining: isFreeUser ? settleCached.finalSparks : null,
+        unlimitedSparks: !isFreeUser,
         sparksCost: isFreeUser ? settleCached.actualCost : 0,
         meta: {
           providerUsed: 'semantic_cache',
@@ -3872,7 +3830,8 @@ app.post('/api/chat', verifyAuth, async (req, res) => {
 
     res.json({ 
       response: responseText, 
-      sparksRemaining: isFreeUser ? finalSparks : 999999,
+      sparksRemaining: isFreeUser ? finalSparks : null,
+      unlimitedSparks: !isFreeUser,
       sparksCost: isFreeUser ? settleResult.actualCost : 0,
       meta: {
         providerUsed: attribution.providerUsed,
@@ -12406,7 +12365,8 @@ async function startServer() {
           try {
             ws.send(JSON.stringify({ 
               type: 'meta', 
-              sparksRemaining: preAuthResult.isFreeUser ? finalSparks : 999999,
+              sparksRemaining: preAuthResult.isFreeUser ? finalSparks : null,
+              unlimitedSparks: !preAuthResult.isFreeUser,
               sparksCost: preAuthResult.isFreeUser ? settledCost : 0,
               tokens: sparkBillingTokens,
               providerUsed: wsAttribution.providerUsed,
