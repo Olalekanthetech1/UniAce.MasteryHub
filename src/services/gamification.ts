@@ -150,7 +150,7 @@ export class GamificationService {
         photoURL: typeof entry.avatar === 'string' ? entry.avatar : '',
         xp: entry.xp,
         rank: entry.rank,
-        streak: Number.isInteger(entry.streak) ? entry.streak : 0,
+        streak: Number.isInteger(entry.streak) ? entry.streak : null,
       };
     });
   }
