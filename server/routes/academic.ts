@@ -97,7 +97,7 @@ router.get('/stats', async (req: Request, res: Response) => {
     }
 
     res.json({
-      status: 'operational',
+      status: health.length > 0 && health.every(provider => provider.status === 'healthy') ? 'operational' : 'degraded',
       config,
       providerHealth: health,
       totalQueriesLogged: totalLogCount,
