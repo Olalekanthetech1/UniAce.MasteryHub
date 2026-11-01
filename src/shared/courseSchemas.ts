@@ -82,19 +82,197 @@ export const OutlineCriticRubricSchema = z.object({
 export type OutlineCriticRubric = z.infer<typeof OutlineCriticRubricSchema>;
 
 /**
- * Normalizes transport-level markdown formatting without hardcoding or mutating math formulas.
+ * Unicode mathematical glyphs that have direct, semantics-preserving LaTeX script equivalents.
+ * The maps are character-level rules, not formula-specific substitutions.
+ */
+const unicodeSubscriptMap = new Map<string, string>();
+const unicodeSuperscriptMap = new Map<string, string>();
+
+const subscriptDigits = '₀₁₂₃₄₅₆₇₈₉';
+const superscriptDigits = '⁰¹²³⁴⁵⁶⁷⁸⁹';
+
+for (let index = 0; index < 10; index += 1) {
+  unicodeSubscriptMap.set(subscriptDigits[index], String(index));
+  unicodeSuperscriptMap.set(superscriptDigits[index], String(index));
+}
+
+[
+  ['₊', '+'], ['₋', '-'], ['₌', '='], ['₍', '('], ['₎', ')'],
+  ['ₐ', 'a'], ['ₑ', 'e'], ['ₕ', 'h'], ['ᵢ', 'i'], ['ⱼ', 'j'],
+  ['ₖ', 'k'], ['ₗ', 'l'], ['ₘ', 'm'], ['ₙ', 'n'], ['ₒ', 'o'],
+  ['ₚ', 'p'], ['ᵣ', 'r'], ['ₛ', 's'], ['ₜ', 't'], ['ᵤ', 'u'],
+  ['ᵥ', 'v'], ['ₓ', 'x']
+].forEach(([glyph, replacement]) => unicodeSubscriptMap.set(glyph, replacement));
+
+[
+  ['⁺', '+'], ['⁻', '-'], ['⁼', '='], ['⁽', '('], ['⁾', ')'],
+  ['ⁱ', 'i'], ['ⁿ', 'n'], ['ᵃ', 'a'], ['ᵇ', 'b'], ['ᶜ', 'c'],
+  ['ᵈ', 'd'], ['ᵉ', 'e'], ['ᶠ', 'f'], ['ᵍ', 'g'], ['ʰ', 'h'],
+  ['ʲ', 'j'], ['ᵏ', 'k'], ['ˡ', 'l'], ['ᵐ', 'm'], ['ᵒ', 'o'],
+  ['ᵖ', 'p'], ['ʳ', 'r'], ['ˢ', 's'], ['ᵗ', 't'], ['ᵘ', 'u'],
+  ['ᵛ', 'v'], ['ʷ', 'w'], ['ˣ', 'x'], ['ʸ', 'y'], ['ᶻ', 'z']
+].forEach(([glyph, replacement]) => unicodeSuperscriptMap.set(glyph, replacement));
+
+function getUnicodeScript(glyph: string): { marker: '_' | '^'; value: string } | undefined {
+  const subscript = unicodeSubscriptMap.get(glyph);
+  if (subscript !== undefined) return { marker: '_', value: subscript };
+
+  const superscript = unicodeSuperscriptMap.get(glyph);
+  if (superscript !== undefined) return { marker: '^', value: superscript };
+
+  return undefined;
+}
+
+/**
+ * Converts consecutive Unicode subscript/superscript runs into grouped LaTeX scripts.
+ * In text mode, ordinary text is kept in separate \text{...} groups around each script.
+ */
+function normalizeUnicodeScriptRuns(value: string, textMode = false): string {
+  let output = '';
+  let textBuffer = '';
+  let index = 0;
+
+  const flushText = () => {
+    if (textBuffer.length === 0) return;
+    output += textMode ? '\\text{' + textBuffer + '}' : textBuffer;
+    textBuffer = '';
+  };
+
+  while (index < value.length) {
+    const script = getUnicodeScript(value[index]);
+    if (!script) {
+      textBuffer += value[index];
+      index += 1;
+      continue;
+    }
+
+    flushText();
+    const marker = script.marker;
+    let scriptValue = '';
+
+    while (index < value.length) {
+      const nextScript = getUnicodeScript(value[index]);
+      if (!nextScript || nextScript.marker !== marker) break;
+      scriptValue += nextScript.value;
+      index += 1;
+    }
+
+    output += marker + '{' + scriptValue + '}';
+  }
+
+  flushText();
+  return textMode && output.length === 0 ? '\\text{}' : output;
+}
+
+/** Finds a balanced closing brace while respecting escaped braces. */
+function findMatchingMathBrace(value: string, openingBraceIndex: number): number {
+  let depth = 0;
+
+  for (let index = openingBraceIndex; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === '\\') {
+      index += 1;
+      continue;
+    }
+    if (character === '{') depth += 1;
+    if (character === '}') {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+
+  return -1;
+}
+
+/**
+ * Normalizes Unicode scripts inside a math expression. \text{...} is parsed as a
+ * balanced group so chemical/text notation becomes e.g. \text{H}_{2}\text{O}.
+ */
+function normalizeMathBody(value: string): string {
+  let output = '';
+  let plainStart = 0;
+  let index = 0;
+
+  while (index < value.length) {
+    if (
+      value.startsWith('\\text{', index) &&
+      (index === 0 || value[index - 1] !== '\\')
+    ) {
+      const openingBraceIndex = index + 5;
+      const closingBraceIndex = findMatchingMathBrace(value, openingBraceIndex);
+
+      if (closingBraceIndex >= 0) {
+        output += normalizeUnicodeScriptRuns(value.slice(plainStart, index));
+        const textBody = value.slice(openingBraceIndex + 1, closingBraceIndex);
+        output += '\\text{' + normalizeUnicodeScriptRuns(textBody, true) + '}';
+        index = closingBraceIndex + 1;
+        plainStart = index;
+        continue;
+      }
+    }
+
+    index += 1;
+  }
+
+  output += normalizeUnicodeScriptRuns(value.slice(plainStart));
+  return output;
+}
+
+/** Applies Unicode-to-LaTeX normalization only to recognized Markdown math delimiters. */
+function normalizeMathUnicodeInMarkdown(value: string): string {
+  const mathBlockPattern = /(\$\$[\s\S]*?\$\$|(?<!\\)\$(?!\$)(?:\\[\s\S]|[^$\\])*?(?<!\\)\$(?!\$)|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\])/g;
+  const codeSegmentPattern = /(\x60{3}[\s\S]*?\x60{3}|~~~[\s\S]*?~~~|\x60+[^\x60\n]*\x60+)/g;
+
+  // Code spans/fences are opaque: mathematical-looking text in code is not rewritten.
+  return value.split(codeSegmentPattern).map((segment, segmentIndex) => {
+    if (segmentIndex % 2 === 1) return segment;
+
+    return segment.replace(mathBlockPattern, (mathBlock) => {
+      if (mathBlock.startsWith('$$')) {
+        return '$$' + normalizeMathBody(mathBlock.slice(2, -2)) + '$$';
+      }
+      if (mathBlock.startsWith('$')) {
+        return '$' + normalizeMathBody(mathBlock.slice(1, -1)) + '$';
+      }
+      if (mathBlock.startsWith('\\(')) {
+        return '\\(' + normalizeMathBody(mathBlock.slice(2, -2)) + '\\)';
+      }
+      return '\\[' + normalizeMathBody(mathBlock.slice(2, -2)) + '\\]';
+    });
+  }).join('');
+}
+
+/** Recursively normalizes math-bearing strings in structured generated lesson data. */
+function normalizeNestedMathUnicode(value: unknown): unknown {
+  if (typeof value === 'string') return normalizeMathUnicodeInMarkdown(value);
+  if (Array.isArray(value)) return value.map((item) => normalizeNestedMathUnicode(item));
+
+  if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    const normalized: Record<string, unknown> = {};
+    for (const [key, nestedValue] of Object.entries(value)) {
+      normalized[key] = normalizeNestedMathUnicode(nestedValue);
+    }
+    return normalized;
+  }
+
+  return value;
+}
+
+/**
+ * Normalizes Markdown transport formatting and Unicode math notation without
+ * changing ordinary prose, code blocks, or formula-specific content.
  */
 export function normalizeLessonMarkdownContent(raw: string): string {
   if (!raw || typeof raw !== 'string') return '';
   let text = raw.replace(/\r\n/g, '\n').trim();
 
-  // Unwrap outer markdown fence if the entire string is wrapped in ```markdown ... ```
-  const outerFenceMatch = text.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```\s*$/i);
+  // Unwrap an outer Markdown fence only when it encloses the complete response.
+  const outerFenceMatch = text.match(/^\x60{3}(?:markdown|md)?\s*\n([\s\S]*?)\n\x60{3}\s*$/i);
   if (outerFenceMatch && outerFenceMatch[1]) {
     text = outerFenceMatch[1].trim();
   }
 
-  return text.trim();
+  return normalizeMathUnicodeInMarkdown(text).trim();
 }
 
 /**
@@ -230,7 +408,9 @@ export const InstructionalPracticeItemSchema = z.object({
 });
 export type InstructionalPracticeItem = z.infer<typeof InstructionalPracticeItemSchema>;
 
-export const InstructionalContentSchema = z.object({
+export const InstructionalContentSchema = z.preprocess(
+  (value: unknown) => normalizeNestedMathUnicode(value),
+  z.object({
   frameworkVersion: z.literal('understand-explore-apply-verify-master-v1'),
   disciplineEngine: DisciplinePedagogyTypeEnum,
   learningObjectives: z.array(z.string().min(1)).min(1).max(8),
@@ -286,7 +466,8 @@ export const InstructionalContentSchema = z.object({
     checkedAt: z.string().datetime(),
     policyVersion: z.string().min(1)
   }).optional()
-});
+  })
+);
 export type InstructionalContent = z.infer<typeof InstructionalContentSchema>;
 
 /**
@@ -310,14 +491,17 @@ export type StudentInstructionalContent = Omit<
   knowledgeChecks: StudentKnowledgeCheckPrompt[];
 };
 
-export const StructuredLessonOutputSchema = z.object({
+export const StructuredLessonOutputSchema = z.preprocess(
+  (value: unknown) => normalizeNestedMathUnicode(value),
+  z.object({
   pedagogicalReasoning: z.string().optional(),
   title: z.string().min(1),
   content: z.string().min(800).refine((value) => !isBareDiagramOrFragment(value), {
     message: 'Lesson content must include substantive academic prose, not only a diagram or fragment.'
   }),
   instructionalContent: InstructionalContentSchema
-});
+  })
+);
 export type StructuredLessonOutput = z.infer<typeof StructuredLessonOutputSchema>;
 
 export const CourseProvenanceSchema = z.object({
