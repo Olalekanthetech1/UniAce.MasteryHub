@@ -19,12 +19,16 @@ test('groups consecutive subscripts and superscripts, including signs', () => {
 });
 
 test('preserves Unicode in prose and code spans/fences', () => {
-  const input = 'Plain H₂O and x². Code: \\x60$x₂$\\x60.\n\\x60\\x60\\x60latex\n$x₂$\n\\x60\\x60\\x60\nMath: $x₂$.';
+  const tick = String.fromCharCode(96);
+  const fence = tick.repeat(3);
+  const input = 'Plain H₂O and x². Code: ' + tick + '$x₂$' + tick + '.\n' +
+    fence + 'latex\n$x₂$\n' + fence + '\nMath: $x₂$.';
   const actual = normalizeLessonMarkdownContent(input);
 
   assert.equal(
     actual,
-    'Plain H₂O and x². Code: \\x60$x₂$\\x60.\n\\x60\\x60\\x60latex\n$x₂$\n\\x60\\x60\\x60\nMath: $x_{2}$.'
+    'Plain H₂O and x². Code: ' + tick + '$x₂$' + tick + '.\n' +
+      fence + 'latex\n$x₂$\n' + fence + '\nMath: $x_{2}$.'
   );
 });
 
