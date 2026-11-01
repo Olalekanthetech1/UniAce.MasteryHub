@@ -1,14 +1,13 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { DEPARTMENTS as INITIAL_DEPARTMENTS, FACULTIES as INITIAL_FACULTIES, DEPARTMENT_TO_FACULTY as INITIAL_MAP } from '../constants';
 import { Department } from '../types';
 import { auth } from '../firebase';
-import { safeFetchJson } from '../utils/safeFetch';
 
 interface InstitutionState {
   departments: Department[];
   faculties: string[];
   departmentToFaculty: Record<string, string>;
   isLoading: boolean;
+  error: string | null;
   addDepartment: (dept: string, faculty: string) => Promise<void>;
   removeDepartment: (dept: string) => Promise<void>;
   addFaculty: (faculty: string) => Promise<void>;
@@ -18,23 +17,36 @@ interface InstitutionState {
 const InstitutionContext = createContext<InstitutionState | undefined>(undefined);
 
 export function InstitutionProvider({ children }: { children: ReactNode }) {
-  const [departments, setDepartments] = useState<Department[]>(INITIAL_DEPARTMENTS);
-  const [faculties, setFaculties] = useState<string[]>(INITIAL_FACULTIES);
-  const [departmentToFaculty, setDepartmentToFaculty] = useState<Record<string, string>>(INITIAL_MAP);
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [faculties, setFaculties] = useState<string[]>([]);
+  const [departmentToFaculty, setDepartmentToFaculty] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchInstitution = async (isMounted = true) => {
     try {
-      const res = await safeFetchJson<any>('/api/system/config/institution');
-      if (res.ok && res.data && isMounted) {
-        const json = res.data;
-        const data = json.data || {};
-        if (Array.isArray(data.departments)) setDepartments(data.departments);
-        if (Array.isArray(data.faculties)) setFaculties(data.faculties);
-        if (data.departmentToFaculty) setDepartmentToFaculty(data.departmentToFaculty);
+      const response = await fetch('/api/system/config/institution', { cache: 'no-store' });
+      if (!response.ok) throw new Error(`Institution configuration request failed with HTTP ${response.status}`);
+      const payload = await response.json();
+      const data = payload?.data?.data || payload?.data;
+      if (!data || !Array.isArray(data.departments) || !Array.isArray(data.faculties) ||
+          !data.departmentToFaculty || typeof data.departmentToFaculty !== 'object') {
+        throw new Error('Authoritative institution configuration is missing or malformed.');
+      }
+      if (isMounted) {
+        setDepartments(data.departments);
+        setFaculties(data.faculties);
+        setDepartmentToFaculty(data.departmentToFaculty);
+        setError(null);
       }
     } catch (err) {
-      console.warn('Non-fatal: using default institution config:', err);
+      if (isMounted) {
+        setError(err instanceof Error ? err.message : String(err));
+        setDepartments([]);
+        setFaculties([]);
+        setDepartmentToFaculty({});
+      }
+      console.error('[InstitutionContext] Live institution data unavailable:', err);
     } finally {
       if (isMounted) setIsLoading(false);
     }
@@ -42,11 +54,9 @@ export function InstitutionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let isMounted = true;
-    fetchInstitution(true);
-
-    const onFocus = () => { fetchInstitution(true); };
+    void fetchInstitution(true);
+    const onFocus = () => { void fetchInstitution(true); };
     window.addEventListener('focus', onFocus);
-
     return () => {
       isMounted = false;
       window.removeEventListener('focus', onFocus);
@@ -54,57 +64,52 @@ export function InstitutionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const saveConfig = async (newDepts: Department[], newFaculties: string[], newMap: Record<string, string>) => {
-    try {
-      const user = auth.currentUser;
-      const token = user ? await user.getIdToken() : '';
-      await fetch('/api/admin/system-config/institution', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({
-          departments: newDepts,
-          faculties: newFaculties,
-          departmentToFaculty: newMap
-        })
-      });
-    } catch (err) {
-      console.warn('Failed to save institution config:', err);
-    }
+    const user = auth.currentUser;
+    if (!user) throw new Error('An authenticated administrator session is required to update institution configuration.');
+    const token = await user.getIdToken();
+    const response = await fetch('/api/admin/system-config/institution', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        departments: newDepts,
+        faculties: newFaculties,
+        departmentToFaculty: newMap
+      })
+    });
+    if (!response.ok) throw new Error(`Institution configuration save failed with HTTP ${response.status}`);
   };
 
   const addDepartment = async (dept: string, faculty: string) => {
     if (!departments.includes(dept)) {
-      const newDepts = [...departments, dept].sort();
-      const newMap = { ...departmentToFaculty, [dept]: faculty };
-      setDepartments(newDepts);
-      setDepartmentToFaculty(newMap);
-      await saveConfig(newDepts, faculties, newMap);
+      const nextDepartments = [...departments, dept].sort();
+      const nextMap = { ...departmentToFaculty, [dept]: faculty };
+      await saveConfig(nextDepartments, faculties, nextMap);
+      setDepartments(nextDepartments);
+      setDepartmentToFaculty(nextMap);
     }
   };
 
   const removeDepartment = async (dept: string) => {
-    const newDepts = departments.filter(d => d !== dept);
-    const newMap = { ...departmentToFaculty };
-    delete newMap[dept];
-    setDepartments(newDepts);
-    setDepartmentToFaculty(newMap);
-    await saveConfig(newDepts, faculties, newMap);
+    const nextDepartments = departments.filter(d => d !== dept);
+    const nextMap = { ...departmentToFaculty };
+    delete nextMap[dept];
+    await saveConfig(nextDepartments, faculties, nextMap);
+    setDepartments(nextDepartments);
+    setDepartmentToFaculty(nextMap);
   };
 
   const addFaculty = async (faculty: string) => {
     if (!faculties.includes(faculty)) {
-      const newFaculties = [...faculties, faculty].sort();
-      setFaculties(newFaculties);
-      await saveConfig(departments, newFaculties, departmentToFaculty);
+      const nextFaculties = [...faculties, faculty].sort();
+      await saveConfig(departments, nextFaculties, departmentToFaculty);
+      setFaculties(nextFaculties);
     }
   };
 
   const removeFaculty = async (faculty: string) => {
-    const newFaculties = faculties.filter(f => f !== faculty);
-    setFaculties(newFaculties);
-    await saveConfig(departments, newFaculties, departmentToFaculty);
+    const nextFaculties = faculties.filter(f => f !== faculty);
+    await saveConfig(departments, nextFaculties, departmentToFaculty);
+    setFaculties(nextFaculties);
   };
 
   return (
@@ -113,6 +118,7 @@ export function InstitutionProvider({ children }: { children: ReactNode }) {
       faculties,
       departmentToFaculty,
       isLoading,
+      error,
       addDepartment,
       removeDepartment,
       addFaculty,
@@ -125,8 +131,6 @@ export function InstitutionProvider({ children }: { children: ReactNode }) {
 
 export function useInstitution() {
   const context = useContext(InstitutionContext);
-  if (context === undefined) {
-    throw new Error('useInstitution must be used within an InstitutionProvider');
-  }
+  if (context === undefined) throw new Error('useInstitution must be used within an InstitutionProvider');
   return context;
 }
