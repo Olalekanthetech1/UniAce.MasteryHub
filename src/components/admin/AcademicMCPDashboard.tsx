@@ -475,14 +475,14 @@ export const AcademicMCPDashboard: React.FC = () => {
                         <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-700 text-slate-300">
                           {paper.source}
                         </span>
-                        <span className="text-[11px] text-amber-400 font-mono">
-                          ★ {paper.citationCount} Citations
-                        </span>
+                        {paper.citationCount != null && (
+                          <span className="text-[11px] text-amber-400 font-mono">★ {paper.citationCount} Citations</span>
+                        )}
                       </div>
                     </div>
 
                     <p className="text-xs text-slate-300 line-clamp-3 leading-relaxed">
-                      {paper.abstract}
+                      {paper.abstract || 'The source registry did not supply an abstract for this record.'}
                     </p>
 
                     <div className="pt-2 border-t border-slate-700/50 flex flex-wrap items-center justify-between gap-2 text-xs">
