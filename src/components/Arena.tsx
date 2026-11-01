@@ -42,39 +42,17 @@ interface WaitingLobbyItem {
   createdAt: string;
 }
 
-interface ChallengerTelemetry {
-  calibratedMasteryPct: number;
-  tier: 'beginner' | 'intermediate' | 'advanced';
-  tierLabel: string;
-  pacingRangeLabel: string;
-  minStepMs: number;
-  maxStepMs: number;
-  baseStepMs: number;
-  targetAccuracyPct: number;
-  quizScorePct: number | null;
-  attemptsSampled: number;
-  srsRetentionPct: number | null;
-  srsCardsSampled: number;
-  srsCardsRetained: number;
-  courseWinRatePct: number | null;
-  courseWins: number;
-  courseLosses: number;
-  arenaBattlesSampled: number;
-  lessonsCompleted: number;
-}
-
 interface LobbyTelemetry {
-  serverNow: number;
-  serverIsoTime: string;
-  onlineCount: number;
+  serverNow: number | null;
+  serverIsoTime: string | null;
+  onlineCount: number | null;
   waitingBattles: WaitingLobbyItem[];
-  historicalGhostCount: number;
+  ghostReplayAvailable: boolean | null;
   latestGhostMeta: {
     battleId: string;
     playerName: string;
     recordedAt: string;
   } | null;
-  challengerTelemetry?: ChallengerTelemetry;
 }
 
 interface MissedQuestionBreakdownItem {
@@ -101,7 +79,7 @@ export default function Arena({ activeCourseId }: ArenaProps) {
   const [timeLeft, setTimeLeft] = useState(60);
   const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
   const [submittingAnswer, setSubmittingAnswer] = useState(false);
-  const [launchingSpar, setLaunchingSpar] = useState<'ghost_replay' | 'ai_challenger' | null>(null);
+  const [launchingSpar, setLaunchingSpar] = useState<'ghost_replay' | null>(null);
   const [matchStatus, setMatchStatus] = useState('Searching for opponent...');
   const [matchWaitSeconds, setMatchWaitSeconds] = useState(0);
   const [wsConnected, setWsConnected] = useState(false);
@@ -111,11 +89,11 @@ export default function Arena({ activeCourseId }: ArenaProps) {
   const [schedulingSrs, setSchedulingSrs] = useState(false);
   const [srsScheduled, setSrsScheduled] = useState(false);
   const [lobbyTelemetry, setLobbyTelemetry] = useState<LobbyTelemetry>({
-    serverNow: Date.now(),
-    serverIsoTime: new Date().toISOString(),
-    onlineCount: 1,
+    serverNow: null,
+    serverIsoTime: null,
+    onlineCount: null,
     waitingBattles: [],
-    historicalGhostCount: 0,
+    ghostReplayAvailable: null,
     latestGhostMeta: null
   });
 
@@ -157,23 +135,41 @@ export default function Arena({ activeCourseId }: ArenaProps) {
     if (!user) return;
     try {
       const token = await user.getIdToken();
-      const query = selectedCourseId ? `?topicId=${encodeURIComponent(selectedCourseId)}` : '';
-      const res = await fetch(`/api/arena/lobby-telemetry${query}`, {
-        headers: { Authorization: `Bearer ${token}` }
+      const query = selectedCourseId ? '?topicId=' + encodeURIComponent(selectedCourseId) : '';
+      const res = await fetch('/api/arena/lobby-telemetry' + query, {
+        headers: { Authorization: 'Bearer ' + token }
       });
-      if (res.ok) {
-        const data = await res.json();
-        updateServerClockOffset(data.serverNow);
-        setLobbyTelemetry((prev) => ({
-          ...prev,
-          ...data,
-          waitingBattles: Array.isArray(data.waitingBattles) ? data.waitingBattles : prev.waitingBattles
-        }));
+      if (!res.ok) {
+        throw new Error('Arena telemetry request failed with HTTP ' + res.status + '.');
       }
+
+      const data = await res.json();
+      if (typeof data.serverNow !== 'number' || !Number.isFinite(data.serverNow) ||
+          typeof data.onlineCount !== 'number' || !Number.isFinite(data.onlineCount) ||
+          typeof data.ghostReplayAvailable !== 'boolean' ||
+          !Array.isArray(data.waitingBattles)) {
+        throw new Error('Arena telemetry response is incomplete and cannot be presented as live data.');
+      }
+
+      updateServerClockOffset(data.serverNow);
+      const latest = data.latestGhostMeta;
+      setLobbyTelemetry({
+        serverNow: data.serverNow,
+        serverIsoTime: typeof data.serverIsoTime === 'string' ? data.serverIsoTime : null,
+        onlineCount: data.onlineCount,
+        waitingBattles: data.waitingBattles,
+        ghostReplayAvailable: data.ghostReplayAvailable,
+        latestGhostMeta: latest &&
+          typeof latest.battleId === 'string' &&
+          typeof latest.playerName === 'string' &&
+          typeof latest.recordedAt === 'string'
+          ? latest
+          : null
+      });
     } catch (err) {
-      console.warn('[Arena] Failed to fetch lobby telemetry:', err);
+      console.warn('[Arena] Failed to fetch verified lobby telemetry:', err);
     }
-  }, [user, selectedCourseId, updateServerClockOffset]);
+  }, [user, selectedCourseId, updateServerClockOffset]);  }, [user, selectedCourseId, updateServerClockOffset]);
 
   useEffect(() => {
     void fetchLobbyTelemetry();
