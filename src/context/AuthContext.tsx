@@ -198,7 +198,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               const data = await response.json();
               if (typeof data.role !== 'string' || !data.role.trim() ||
                   typeof data.plan !== 'string' || !data.plan.trim() ||
-                  (data.unlimited === true ? data.sparks !== null : typeof data.sparks !== 'number' || !Number.isFinite(data.sparks))) {
+                  (typeof data.sparks !== 'number' || !Number.isFinite(data.sparks))) {
                 throw new Error('The server returned an incomplete or unverified account quota.');
               }
               ai_sparks = data.sparks;
