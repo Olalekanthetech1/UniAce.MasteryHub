@@ -12364,24 +12364,22 @@ async function startServer() {
         
         // Handle setup message
         if (payload.setup && !sessionPromise) {
-          let voiceModel = "gemini-2.0-flash-exp";
-          try {
-            const config = await getSystemConfigDoc('routing');
-            if (config && config.voice_tutor_model) {
-              voiceModel = config.voice_tutor_model;
-              console.log(`[VoiceTutor] Dynamically routing to configured model: ${voiceModel}`);
-            }
-          } catch (routingErr) {
-            console.error("Error fetching dynamic voice model config, falling back to default:", routingErr);
+          const config = await requireLiveRoutingConfig();
+          const voiceModel = config.voice_tutor_model;
+          const voiceName = config.voice_tutor_voice;
+          const systemInstruction = payload.setup.systemInstruction || config.voice_tutor_system_instruction;
+          if (typeof voiceModel !== 'string' || !voiceModel.trim() || !voiceModel.startsWith('gemini-')) {
+            throw new Error('Voice Tutor is unavailable: no supported Gemini Live model is configured.');
+          }
+          if (typeof voiceName !== 'string' || !voiceName.trim()) {
+            throw new Error('Voice Tutor is unavailable: no voice is configured.');
+          }
+          if (typeof systemInstruction !== 'string' || !systemInstruction.trim()) {
+            throw new Error('Voice Tutor is unavailable: no system instruction was supplied or configured.');
           }
 
-          if (!voiceModel || !voiceModel.startsWith('gemini-')) {
-            console.log(`[VoiceTutor] Configured model ${voiceModel} is not a valid Gemini Live model. Defaulting to gemini-2.0-flash-exp`);
-            voiceModel = "gemini-2.0-flash-exp";
-          }
-
-          const apiKey = await globalGeminiDirectProvider.getApiKey().catch(() => process.env.GEMINI_API_KEY || '');
-          if (!apiKey) throw new Error("Missing GEMINI_API_KEY");
+          const apiKey = await globalGeminiDirectProvider.getApiKey();
+          if (typeof apiKey !== 'string' || !apiKey.trim()) throw new Error("The configured Gemini provider returned no API key.");
           const ai = new GoogleGenAI({ apiKey });
 
           sessionPromise = ai.live.connect({
@@ -12389,9 +12387,9 @@ async function startServer() {
             config: {
               responseModalities: [Modality.AUDIO],
               speechConfig: {
-                voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } },
+                voiceConfig: { prebuiltVoiceConfig: { voiceName } },
               },
-              systemInstruction: payload.setup.systemInstruction || "You are a helpful assistant.",
+              systemInstruction,
             },
             callbacks: {
               onmessage: (message: any) => {
