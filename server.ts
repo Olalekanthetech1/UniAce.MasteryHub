@@ -2395,63 +2395,6 @@ app.post('/api/paystack-webhook', async (req: any, res) => {
 });
 
 /**
- * Helper to dynamically parse numeric sparks from plan data
- */
-function parsePlanSparks(rawSparks: any, defaultSparks: number): number {
-  if (typeof rawSparks === 'number' && !isNaN(rawSparks) && rawSparks > 0) {
-    return rawSparks;
-  }
-  if (typeof rawSparks === 'string') {
-    const parsed = parseInt(rawSparks.replace(/[^0-9]/g, ''), 10);
-    if (!isNaN(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-  return defaultSparks;
-}
-
-/**
- * Helper to dynamically determine duration in days and whether it is a top-up
- */
-function parsePlanDuration(durationStr: string, planId: string): { durationDays: number; isTopUp: boolean } {
-  const normPlanId = (planId || '').toLowerCase().trim();
-  const normDuration = (durationStr || '').toLowerCase().trim();
-
-  if (
-    normPlanId === 'emergency_topup' || 
-    normPlanId.includes('topup') || 
-    normPlanId.includes('top_up') || 
-    normDuration.includes('one-time') || 
-    normDuration.includes('top-up')
-  ) {
-    return { durationDays: 0, isTopUp: true };
-  }
-
-  // Extract explicit number of days if present (e.g., "120 Days", "30 Days", "60 Days")
-  const daysMatch = normDuration.match(/(\d+)\s*(?:day|days)/);
-  if (daysMatch && daysMatch[1]) {
-    const days = parseInt(daysMatch[1], 10);
-    if (!isNaN(days) && days > 0) {
-      return { durationDays: days, isTopUp: false };
-    }
-  }
-
-  if (normPlanId === 'semester' || normDuration.includes('semester')) {
-    return { durationDays: 120, isTopUp: false };
-  }
-
-  if (normPlanId === 'scholar' || normDuration.includes('month') || normDuration.includes('30')) {
-    return { durationDays: 30, isTopUp: false };
-  }
-
-  if (normDuration.includes('year') || normDuration.includes('annual')) {
-    return { durationDays: 365, isTopUp: false };
-  }
-
-  return { durationDays: 30, isTopUp: false };
-}
-
-/**
  * In-Memory TTL Cache for dynamic commission rates (5-minute TTL)
  */
 let commissionRateCache: { rate: number | null; expiry: number } | null = null;
