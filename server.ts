@@ -8350,7 +8350,7 @@ function isExerciseAlreadySeen(ex: any, avoidSet: string[]): boolean {
  * - Strictly excludes all previously seen exercises (avoidPrompts / seenIds) so practicing again NEVER repeats questions.
  * - Dynamically scales Concept Review card count (6-10+ cards) to match the depth of the lesson.
  */
-app.post('/api/skill-session/generate', verifyAuth, async (req, res) => {
+app.post('/api/skill-session/generate', verifyAuth, requireCourseAccessFromBody, async (req, res) => {
   const {
     courseId,
     skillId,
@@ -8610,7 +8610,7 @@ Return STRICT JSON matching:
         `UPDATE course_lessons 
          SET skill_bank = $1::jsonb, updated_at = NOW()
          WHERE course_id = $2 AND (id = $3 OR LOWER(title) = LOWER($4))`,
-        [JSON.stringify(mergedBank), courseId, matchedLessonId, skillTitle]
+        [JSON.stringify(mergedBank), courseId, matchedLessonId, liveSkillTitle]
       );
       if (saveResult.rowCount !== 1) {
         throw new Error('Generated skill exercises were not persisted to the authoritative lesson record.');
@@ -8647,7 +8647,7 @@ Return STRICT JSON matching:
  * and student rolling mastery on the fly, ensuring infinite adaptive practice without hardcoded lengths
  * and zero repeated questions.
  */
-app.post('/api/skill-session/next-exercise', verifyAuth, async (req, res) => {
+app.post('/api/skill-session/next-exercise', verifyAuth, requireCourseAccessFromBody, async (req, res) => {
   const {
     courseId,
     skillId,
