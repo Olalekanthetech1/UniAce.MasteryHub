@@ -6,129 +6,110 @@ import { z } from 'zod';
  * letter-only answers, digit-only answers, partial substrings, and duplicate options.
  */
 export function autoHealQuestion(q: any): any {
-  if (!q || typeof q !== 'object') return q;
+  if (!q || typeof q !== 'object' || Array.isArray(q)) {
+    throw new Error('Quiz question must be an object returned by the live generator.');
+  }
 
-  // Ensure we have a valid question type
-  const type = q.type || 'multiple-choice';
+  const type = q.type;
+  if (type !== 'multiple-choice' && type !== 'fill-in-the-blank') {
+    throw new Error('Quiz question is missing a supported question type.');
+  }
 
-  // Ensure we have an options array
-  let options = Array.isArray(q.options) 
-    ? q.options.map((o: any) => String(o || '').trim()) 
+  const question = typeof q.question === 'string' ? q.question.trim() : '';
+  if (!question) {
+    throw new Error('Quiz question text is missing.');
+  }
+
+  const options = Array.isArray(q.options)
+    ? q.options.map((value: unknown) => typeof value === 'string' ? value.trim() : '')
     : [];
-    
-  let correctAnswer = String(q.correctAnswer || q.answer || '').trim();
-  let explanation = String(q.explanation || '').trim();
-  const isMultipleChoice = type === 'multiple-choice';
+  let correctAnswer = typeof q.correctAnswer === 'string'
+    ? q.correctAnswer.trim()
+    : (typeof q.answer === 'string' ? q.answer.trim() : '');
 
-  if (isMultipleChoice) {
-    // If multiple choice but options are missing, construct options safely
-    if (options.length === 0) {
-      if (correctAnswer) {
-        options = [correctAnswer, "Incorrect Option A", "Incorrect Option B", "Incorrect Option C"];
-      } else {
-        options = ["Option A", "Option B", "Option C", "Option D"];
-        correctAnswer = options[0];
+  if (!correctAnswer) {
+    throw new Error('Quiz question is missing its generated answer or model-answer rubric.');
+  }
+
+  if (type === 'multiple-choice') {
+    if (options.length < 2 || options.some((option: string) => !option)) {
+      throw new Error('Multiple-choice question must contain at least two non-empty generated options.');
+    }
+
+    const normalizedOptions = options.map((option: string) => option.toLocaleLowerCase());
+    if (new Set(normalizedOptions).size !== normalizedOptions.length) {
+      throw new Error('Multiple-choice question contains duplicate options; refusing to invent replacements.');
+    }
+
+    let matchedOption = options.find((option: string) => option === correctAnswer);
+    if (!matchedOption) {
+      matchedOption = options.find(
+        (option: string) => option.toLocaleLowerCase() === correctAnswer.toLocaleLowerCase()
+      );
+    }
+
+    if (!matchedOption) {
+      const cleanedAnswer = correctAnswer
+        .replace(/^(?:Option\\s+)?[A-Da-d1-4][\\).\\s\\-:]+/, '')
+        .trim()
+        .toLocaleLowerCase();
+      matchedOption = options.find((option: string) =>
+        option.replace(/^(?:Option\\s+)?[A-Da-d1-4][\\).\\s\\-:]+/, '')
+          .trim()
+          .toLocaleLowerCase() === cleanedAnswer
+      );
+    }
+
+    if (!matchedOption) {
+      const letterMatch = correctAnswer.match(/^[A-Da-d]$/);
+      const numericMatch = correctAnswer.match(/^[1-4]$/);
+      const zeroBasedMatch = correctAnswer.match(/^[0-3]$/);
+      const optionIndex = letterMatch
+        ? correctAnswer.toUpperCase().charCodeAt(0) - 65
+        : numericMatch
+          ? Number(correctAnswer) - 1
+          : zeroBasedMatch
+            ? Number(correctAnswer)
+            : -1;
+      if (optionIndex >= 0 && optionIndex < options.length) {
+        matchedOption = options[optionIndex];
       }
     }
 
-    // Double-check options are strings and trimmed
-    options = options.map(opt => String(opt || '').trim());
-
-    // Check if correctAnswer is exactly one of the options
-    let exactMatch = options.find(opt => opt === correctAnswer);
-
-    if (!exactMatch) {
-      // 1. Try case-insensitive matching
-      let caseInsensitiveMatch = options.find(opt => opt.toLowerCase() === correctAnswer.toLowerCase());
-      if (caseInsensitiveMatch) {
-        correctAnswer = caseInsensitiveMatch;
-      } else {
-        // 2. Try removing common prefix labels like "A)", "A.", "1.", "Option A:"
-        const cleanStr = (s: string) => s.replace(/^(?:Option\s+)?[A-Da-d1-4][\).\s\-:]+/, '').trim();
-        const cleanAnswer = cleanStr(correctAnswer);
-
-        let prefixMatch = options.find(opt => cleanStr(opt).toLowerCase() === cleanAnswer.toLowerCase());
-        if (prefixMatch) {
-          correctAnswer = prefixMatch;
-        } else {
-          // 3. Try letter/index matching if correctAnswer is just a single option letter/digit
-          let matchIndex = -1;
-          const letterMatch = correctAnswer.match(/^[A-Da-d]$/);
-          if (letterMatch) {
-            matchIndex = letterMatch[0].toUpperCase().charCodeAt(0) - 65;
-          } else {
-            const digitMatch = correctAnswer.match(/^[1-4]$/);
-            if (digitMatch) {
-              matchIndex = parseInt(digitMatch[0], 10) - 1;
-            } else {
-              const zeroDigitMatch = correctAnswer.match(/^[0-3]$/);
-              if (zeroDigitMatch) {
-                matchIndex = parseInt(zeroDigitMatch[0], 10);
-              }
-            }
-          }
-
-          if (matchIndex >= 0 && matchIndex < options.length) {
-            correctAnswer = options[matchIndex];
-          } else {
-            // 4. Try partial search: is correctAnswer inside one of the options, or vice-versa?
-            let partialMatch = options.find(opt => {
-              const optLower = opt.toLowerCase();
-              const ansLower = correctAnswer.toLowerCase();
-              return optLower.includes(ansLower) || ansLower.includes(optLower);
-            });
-            if (partialMatch) {
-              correctAnswer = partialMatch;
-            } else {
-              // 5. Force-align: if still not matched, place correct answer text as options[0]
-              if (options.length > 0) {
-                options[0] = correctAnswer;
-              } else {
-                options.push(correctAnswer);
-              }
-            }
-          }
-        }
-      }
+    if (!matchedOption) {
+      throw new Error('Generated answer does not match any supplied option; refusing to rewrite or fabricate an option.');
     }
+    correctAnswer = matchedOption;
+  }
 
-    // Deduplicate options to prevent duplicate selection/rendering issues
-    const seen = new Set<string>();
-    options = options.map((opt, idx) => {
-      let uniqueOpt = opt;
-      let counter = 1;
-      while (seen.has(uniqueOpt)) {
-        uniqueOpt = `${opt} (${counter})`;
-        counter++;
-      }
-      seen.add(uniqueOpt);
-      if (opt === correctAnswer) {
-        correctAnswer = uniqueOpt;
-      }
-      return uniqueOpt;
-    });
+  const difficulty = q.difficulty;
+  if (typeof difficulty !== 'number' || !Number.isInteger(difficulty) || difficulty < 1 || difficulty > 5) {
+    throw new Error('Quiz question is missing a valid generated difficulty from 1 to 5.');
   }
 
   return {
     ...q,
+    type,
+    question,
     options,
     correctAnswer,
     answer: correctAnswer,
-    explanation: explanation || `The correct answer is: ${correctAnswer}.`,
-    difficulty: Math.max(1, Math.min(5, Math.round(Number(q.difficulty) || 3)))
+    explanation: typeof q.explanation === 'string' ? q.explanation.trim() : '',
+    hint: typeof q.hint === 'string' ? q.hint.trim() : '',
+    difficulty
   };
 }
 
 // 1. Quiz Question Schema
 export const QuizQuestionSchema = z.object({
-  id: z.string().optional().or(z.null()).transform((val) => val || `q-${Math.random().toString(36).substring(2, 11)}`),
-  type: z.enum(['multiple-choice', 'fill-in-the-blank']).default('multiple-choice'),
-  question: z.string().min(1, 'Question text cannot be empty'),
-  options: z.array(z.string()).optional().default([]).transform((opts) => opts || []),
-  correctAnswer: z.string().min(1, 'Correct answer cannot be empty'),
-  explanation: z.string().optional().default(''),
-  hint: z.string().optional().default(''),
-  difficulty: z.number().optional().default(3),
+  id: z.string().min(1).optional().or(z.null()).transform((val) => val || `q-${Math.random().toString(36).substring(2, 11)}`),
+  type: z.enum(['multiple-choice', 'fill-in-the-blank']),
+  question: z.string().trim().min(1, 'Question text cannot be empty'),
+  options: z.array(z.string()).optional().default([]),
+  correctAnswer: z.string().trim().min(1, 'Correct answer or model-answer rubric cannot be empty'),
+  explanation: z.string().optional(),
+  hint: z.string().optional(),
+  difficulty: z.number().int().min(1).max(5),
 }).transform((q) => autoHealQuestion(q));
 
 export const QuizQuestionsResponseSchema = z.object({
@@ -137,9 +118,9 @@ export const QuizQuestionsResponseSchema = z.object({
 
 // 2. Evaluate Written Answer Schema
 export const EvaluateWrittenAnswerSchema = z.object({
-  score: z.number().min(0).max(100).default(0),
-  isCorrect: z.boolean().default(false),
-  feedback: z.string().min(1, 'Feedback cannot be empty').default('Answer reviewed.'),
+  score: z.number().min(0).max(100),
+  isCorrect: z.boolean(),
+  feedback: z.string().trim().min(1, 'Feedback cannot be empty'),
 });
 
 // 3. Quick Check Schema
@@ -147,7 +128,7 @@ export const QuickCheckSchema = z.object({
   id: z.string().optional().or(z.null()).transform((val) => val || `qc-${Math.random().toString(36).substring(2, 11)}`),
   type: z.literal('multiple-choice').default('multiple-choice'),
   question: z.string().min(1, 'Question text cannot be empty'),
-  options: z.array(z.string()).min(2, 'Multiple-choice questions need at least 2 options').default([]),
+  options: z.array(z.string()).min(2, 'Multiple-choice questions need at least 2 options'),
   correctAnswer: z.string().min(1, 'Correct answer cannot be empty'),
   explanation: z.string().optional().default(''),
   hint: z.string().optional().default(''),
@@ -177,34 +158,30 @@ export const RecommendationSchema = z.object({
 
 // 6. Exam Readiness Prediction Schema
 export const ExamReadinessSchema = z.object({
-  probability: z.number().min(0).max(100).default(50),
-  analysis: z.string().min(1, 'Analysis cannot be empty').default('Review your topics to build confidence.'),
-  weakestArea: z.string().optional().default('No major weak areas identified yet.'),
+  probability: z.number().min(0).max(100),
+  analysis: z.string().trim().min(1, 'Analysis cannot be empty'),
+  weakestArea: z.string().trim().min(1, 'Weakest-area evidence is required'),
 });
 
 // 7. Study Plan Schedule Item Schema
 export const StudyPlanTaskSchema = z.object({
   day: z.string().min(1, 'Day field cannot be empty'),
   focus: z.string().min(1, 'Focus field cannot be empty'),
-  tasks: z.array(z.string()).min(1, 'Tasks array must contain at least one task').default([]),
+  tasks: z.array(z.string().trim().min(1)).min(1, 'Tasks array must contain at least one task'),
 });
 
 // 8. Study Plan / Fast-Track Plan Schema
 export const StudyPlanSchema = z.object({
-  title: z.string().min(1, 'Title cannot be empty').default('Personalized Study Plan'),
-  overview: z.string().min(1, 'Overview cannot be empty').default('Your structured academic path.'),
-  dailySchedule: z.array(StudyPlanTaskSchema).default([]),
-  tips: z.array(z.string()).default([]),
+  title: z.string().trim().min(1, 'Title cannot be empty'),
+  overview: z.string().trim().min(1, 'Overview cannot be empty'),
+  dailySchedule: z.array(StudyPlanTaskSchema).min(1, 'A study plan must include source-grounded schedule items'),
+  tips: z.array(z.string().trim().min(1)),
 });
 
 // 9. Booster Lesson Schema
 export const BoosterLessonSchema = z.object({
-  focus: z.string().min(1, 'Focus cannot be empty').default('Foundational Review'),
-  tasks: z.array(z.string()).min(1, 'Tasks cannot be empty').default([
-    'Review foundational concepts',
-    'Attempt a simple practice problem',
-    'Re-assess understanding with a quick concept check'
-  ]),
+  focus: z.string().trim().min(1, 'Focus cannot be empty'),
+  tasks: z.array(z.string().trim().min(1)).min(1, 'Tasks cannot be empty'),
 });
 
 /**
