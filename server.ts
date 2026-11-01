@@ -4776,7 +4776,7 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
   if (typeof scope !== 'string' || !['DEPARTMENT', 'FACULTY', 'GLOBAL', 'PUBLIC', 'ALL'].includes(scope.trim().toUpperCase())) {
     return res.status(400).json({ error: 'A valid course audience scope is required.' });
   }
-  if (typeof creditUnits !== 'number' || !Number.isInteger(creditUnits) || creditUnits <= 0) {
+  if (typeof creditUnits !== 'number' || !Number.isInteger(creditUnits) || creditUnits < 1 || creditUnits > 12) {
     return res.status(400).json({ error: 'Verified course credit units are required.' });
   }
   if ((!outline || typeof outline !== 'string' || !outline.trim()) &&
@@ -4856,6 +4856,9 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
         requestedProvider,
         complexity: 'high'
       });
+      if (skeleton.creditHours !== creditUnits) {
+        throw new Error(`Generated curriculum credit hours (${skeleton.creditHours}) do not match verified course credit units (${creditUnits}).`);
+      }
 
       // 3. STAGE 3: OUTLINE CRITIC AUDIT WITH RUBRIC
       console.log(`[Skeleton Gen] Outline Critic Rubric Pass on Attempt ${attempts}...`);
@@ -4956,8 +4959,8 @@ async function updateCourseGenerationStateInPostgres(courseId: string, patch: Re
     try {
       const statusVal = typeof merged.status === 'string' ? merged.status : 'draft';
       await pool.query(
-`INSERT INTO courses (id, code, title, description, level, department, faculty, semester, scope, faculties, departments, status, version, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 1, NOW(), NOW())
+`INSERT INTO courses (id, code, title, description, level, department, faculty, semester, credit_units, scope, faculties, departments, status, version, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 1, NOW(), NOW())
          ON CONFLICT (id) DO UPDATE SET
            title = COALESCE(EXCLUDED.title, courses.title),
            description = COALESCE(EXCLUDED.description, courses.description),
@@ -4965,6 +4968,7 @@ async function updateCourseGenerationStateInPostgres(courseId: string, patch: Re
            department = COALESCE(EXCLUDED.department, courses.department),
            faculty = COALESCE(EXCLUDED.faculty, courses.faculty),
            semester = COALESCE(EXCLUDED.semester, courses.semester),
+           credit_units = COALESCE(EXCLUDED.credit_units, courses.credit_units),
            scope = COALESCE(EXCLUDED.scope, courses.scope),
            faculties = COALESCE(EXCLUDED.faculties, courses.faculties),
            departments = COALESCE(EXCLUDED.departments, courses.departments),
@@ -4975,11 +4979,12 @@ async function updateCourseGenerationStateInPostgres(courseId: string, patch: Re
           merged.code || courseId,
           merged.title || courseId,
           merged.description || null,
-          merged.level || '100',
+          merged.level,
           merged.department || null,
           (Array.isArray(merged.faculties) && merged.faculties[0]) || merged.faculty || null,
-          merged.semester || '1st Semester',
-          merged.scope || 'DEPARTMENT',
+          merged.semester || null,
+          merged.creditUnits,
+          merged.scope,
           Array.isArray(merged.faculties) ? merged.faculties : null,
           Array.isArray(merged.departments) ? merged.departments : null,
           statusVal
@@ -5035,7 +5040,7 @@ async function executeCoordinatedGenerationJob(
     if (res) return res.status(400).json({ error: 'An explicit academic level is required; no level will be assumed.' });
     return;
   }
-  if (typeof creditUnits !== 'number' || !Number.isInteger(creditUnits) || creditUnits <= 0) {
+  if (typeof creditUnits !== 'number' || !Number.isInteger(creditUnits) || creditUnits < 1 || creditUnits > 12) {
     if (res) return res.status(400).json({ error: 'Verified course credit units are required.' });
     return;
   }
@@ -5229,6 +5234,9 @@ async function executeCoordinatedGenerationJob(
               requestedProvider,
               complexity: 'high'
             });
+            if (skeleton.creditHours !== creditUnits) {
+              throw new Error(`Generated curriculum credit hours (${skeleton.creditHours}) do not match verified course credit units (${creditUnits}).`);
+            }
 
             const criticPrompt = buildOutlineCriticPrompt(domainBrief, skeleton, {
               courseId,
