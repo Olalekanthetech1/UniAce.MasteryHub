@@ -82,9 +82,7 @@ export async function searchTavilyAcademicSources(
   });
 
   if (!response.ok) {
-    const responseBody = await response.text().catch(() => '');
-    const safeDetail = responseBody.slice(0, 500).replace(/tvly-[A-Za-z0-9_-]+/g, '[redacted]');
-    throw new Error(`Tavily Search API returned HTTP ${response.status}: ${safeDetail || response.statusText}`);
+    throw new Error(`Tavily Search API returned HTTP ${response.status}: ${response.statusText}`);
   }
 
   const payload = await response.json() as {
