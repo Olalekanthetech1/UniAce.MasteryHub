@@ -28,7 +28,8 @@ let activeConfig: AcademicConfig = {
 };
 
 export function getAcademicConfig(): AcademicConfig {
-  return activeConfig;
+  // Never return provider credentials to the browser, including administrator clients.
+  return { ...activeConfig, semanticScholarApiKey: undefined };
 }
 
 export function updateAcademicConfig(newConfig: Partial<AcademicConfig>): AcademicConfig {
@@ -39,8 +40,11 @@ export function updateAcademicConfig(newConfig: Partial<AcademicConfig>): Academ
       ...activeConfig.providersEnabled,
       ...(newConfig.providersEnabled || {}),
     },
+    semanticScholarApiKey: typeof newConfig.semanticScholarApiKey === 'string' && newConfig.semanticScholarApiKey.trim()
+      ? newConfig.semanticScholarApiKey.trim()
+      : activeConfig.semanticScholarApiKey,
   };
-  return activeConfig;
+  return getAcademicConfig();
 }
 
 // Levenshtein distance for fuzzy title deduplication
@@ -270,10 +274,9 @@ export async function searchAcademicPapers(
     if (paper.doi) seenDois.add(paper.doi.toLowerCase());
 
     // Tag Course Code Alignment
-    paper.syllabusTags = [
-      activeConfig.defaultCourseAlignment,
-      courseCode || `${(fieldOfStudy || query).slice(0, 3).toUpperCase()} 101`,
-    ];
+    // Only attach a course tag when the caller supplied an actual course code.
+    // Do not manufacture course identifiers or imply institutional alignment.
+    paper.syllabusTags = courseCode ? [courseCode] : [];
 
     uniquePapers.push(paper);
   }
@@ -362,20 +365,7 @@ export async function extractCanonicalDefinitions(
 
   if (concept) return concept;
 
-  return {
-    topic,
-    subject,
-    canonicalDefinition: `Canonical scientific definition and academic theory governing ${topic} within ${subject}.`,
-    sourceTextbooks: [
-      'Standard Benchmark Textbooks (e.g. Halliday & Resnick, Stewart Calculus, Cormen Algorithms)',
-      'Accredited Global University Curricula Guide',
-    ],
-    keyEquations: [topic],
-    courseAlignment: {
-      curriculumBenchmark: `Grounded in accredited global university benchmark standards for ${subject}`,
-      courseCode: courseCode || `${subject.slice(0, 3).toUpperCase()} 101`,
-    },
-  };
+  throw new Error(`No source-backed canonical definition was returned for topic "${topic}" in subject "${subject}". No synthetic definition or textbook references will be supplied.`);
 }
 
 // --- HEALTH CHECK FUNCTION ---
