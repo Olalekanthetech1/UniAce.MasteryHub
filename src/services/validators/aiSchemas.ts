@@ -100,7 +100,7 @@ export const QuizQuestionSchema = z.object({
 }).transform((q) => autoHealQuestion(q));
 
 export const QuizQuestionsResponseSchema = z.object({
-  questions: z.array(QuizQuestionSchema)
+  questions: z.array(QuizQuestionSchema).min(1, 'At least one generated quiz question is required.')
 });
 
 // 2. Evaluate Written Answer Schema
@@ -131,7 +131,7 @@ export const FlashcardSchema = z.object({
 });
 
 export const FlashcardsResponseSchema = z.object({
-  flashcards: z.array(FlashcardSchema)
+  flashcards: z.array(FlashcardSchema).min(1, 'At least one generated flashcard is required.')
 });
 
 // 5. Daily Mission / Smart Recommendation Schema
