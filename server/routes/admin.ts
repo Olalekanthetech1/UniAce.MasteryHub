@@ -1307,7 +1307,7 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
             'Calculations, units and derivations: confirmed',
             'Curriculum coverage: confirmed',
             'Math and lesson rendering: confirmed'
-          ].filter(Boolean).join('\\n')
+          ].filter(Boolean).join('\n')
         : notes || null;
       await client.query(
         "UPDATE courses SET review_status = $1, review_notes = CASE WHEN $2::text IS NULL THEN review_notes ELSE $2 END, " +
