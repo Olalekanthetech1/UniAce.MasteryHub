@@ -1723,10 +1723,28 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
         return res.json({ success: true, battle: data, serverNow: nowMs });
       }
 
-      if (data.expiresAtEpochMs && nowMs >= data.expiresAtEpochMs) {
+      if (data.status !== 'active') {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'The battle is not in an active answerable state.' });
+      }
+
+      const durationSeconds = data.durationSeconds;
+      const startedAtMs = data.startedAtEpochMs;
+      const expiresAtEpochMs = data.expiresAtEpochMs;
+      if (
+        typeof durationSeconds !== 'number' || !Number.isFinite(durationSeconds) || durationSeconds <= 0 ||
+        typeof startedAtMs !== 'number' || !Number.isFinite(startedAtMs) || startedAtMs <= 0 ||
+        typeof expiresAtEpochMs !== 'number' || !Number.isFinite(expiresAtEpochMs) ||
+        expiresAtEpochMs <= startedAtMs || startedAtMs > nowMs
+      ) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'The persisted battle timing data is incomplete or invalid.' });
+      }
+
+      if (nowMs >= expiresAtEpochMs) {
         await client.query('ROLLBACK');
         const settled = await arenaRealtime.settleExpiredBattle(battleId, nowMs);
-        return res.json({ success: true, battle: settled || data, serverNow: nowMs });
+        return res.json({ success: true, battle: settled, serverNow: nowMs });
       }
 
       const isPlayer1 = data.player1?.uid === user.uid;
@@ -1738,18 +1756,55 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
 
       const activePlayer = isPlayer1 ? { ...data.player1 } : { ...data.player2 };
       const opponentPlayer = isPlayer1 ? { ...data.player2 } : { ...data.player1 };
-      const questions: any[] = Array.isArray(data.questions) ? data.questions : [];
-      const qIndex = Number(activePlayer.currentQuestionIndex || 0);
-      const currentQuestion = questions[qIndex];
+      const questions = data.questions;
+      if (!Array.isArray(questions) || questions.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'The battle has no verified question set.' });
+      }
 
-      if (!currentQuestion) {
-        await client.query('COMMIT');
-        return res.json({ success: true, battle: data, serverNow: nowMs });
+      const qIndex = activePlayer.currentQuestionIndex;
+      const opponentQuestionIndex = opponentPlayer.currentQuestionIndex;
+      if (
+        typeof qIndex !== 'number' || !Number.isSafeInteger(qIndex) || qIndex < 0 || qIndex >= questions.length ||
+        typeof opponentQuestionIndex !== 'number' || !Number.isSafeInteger(opponentQuestionIndex) ||
+        opponentQuestionIndex < 0 || opponentQuestionIndex > questions.length
+      ) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'The persisted participant question progress is invalid.' });
+      }
+
+      const currentQuestion = questions[qIndex];
+      if (
+        !currentQuestion || typeof currentQuestion !== 'object' || Array.isArray(currentQuestion) ||
+        !Array.isArray(currentQuestion.options) ||
+        !currentQuestion.options.every((option: unknown) => typeof option === 'string') ||
+        typeof currentQuestion.correctAnswer !== 'string' ||
+        !currentQuestion.options.includes(currentQuestion.correctAnswer)
+      ) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'The current question is not verifiable.' });
+      }
+      if (!currentQuestion.options.includes(selectedOption)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'The selected answer is not one of the verified question options.' });
+      }
+
+      if (
+        typeof activePlayer.score !== 'number' || !Number.isFinite(activePlayer.score) ||
+        typeof opponentPlayer.score !== 'number' || !Number.isFinite(opponentPlayer.score) ||
+        typeof activePlayer.health !== 'number' || !Number.isFinite(activePlayer.health) ||
+        typeof opponentPlayer.health !== 'number' || !Number.isFinite(opponentPlayer.health)
+      ) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'The persisted participant score or health state is invalid.' });
       }
 
       const isCorrect = selectedOption === currentQuestion.correctAnswer;
-      const startedAtMs = Number(data.startedAtEpochMs || nowMs);
-      const elapsedMs = Math.max(100, nowMs - startedAtMs);
+      const elapsedMs = nowMs - startedAtMs;
+      if (!Number.isFinite(elapsedMs) || elapsedMs <= 0 || elapsedMs > durationSeconds * 1000) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'The answer timestamp is outside the verified battle duration.' });
+      }
 
       const actionLog = Array.isArray(activePlayer.actionLog) ? [...activePlayer.actionLog] : [];
       actionLog.push({
@@ -1765,10 +1820,10 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
 
       const DAMAGE_PER_HIT = 20;
       if (isCorrect) {
-        activePlayer.score = Number(activePlayer.score || 0) + 100;
-        opponentPlayer.health = Math.max(0, Number(opponentPlayer.health ?? 100) - DAMAGE_PER_HIT);
+        activePlayer.score = activePlayer.score + 100;
+        opponentPlayer.health = Math.max(0, opponentPlayer.health - DAMAGE_PER_HIT);
       } else {
-        activePlayer.health = Math.max(0, Number(activePlayer.health ?? 100) - DAMAGE_PER_HIT);
+        activePlayer.health = Math.max(0, activePlayer.health - DAMAGE_PER_HIT);
       }
 
       if (isPlayer1) {
@@ -1779,14 +1834,14 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
         data.player1 = opponentPlayer;
       }
 
-      const totalQuestions = questions.length || 5;
+      const totalQuestions = questions.length;
       const bothFinishedQuestions =
-        Number(data.player1?.currentQuestionIndex || 0) >= totalQuestions &&
-        Number(data.player2?.currentQuestionIndex || 0) >= totalQuestions;
+        data.player1.currentQuestionIndex >= totalQuestions &&
+        data.player2.currentQuestionIndex >= totalQuestions;
 
       if (
-        Number(data.player1?.health ?? 100) <= 0 ||
-        Number(data.player2?.health ?? 100) <= 0 ||
+        data.player1.health <= 0 ||
+        data.player2.health <= 0 ||
         bothFinishedQuestions
       ) {
         const p1 = data.player1;
