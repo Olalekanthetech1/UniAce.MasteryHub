@@ -5,6 +5,7 @@ import { useState, useEffect, useRef } from 'react';
 import QuizGenerator from './QuizGenerator';
 import QuickCheck from './QuickCheck';
 import MarkdownRenderer from './MarkdownRenderer';
+import MasteryLessonPanel from './MasteryLessonPanel';
 import PricingModal from './PricingModal';
 import MiniTeacherModal from './MiniTeacherModal';
 import QuickSummaryModal from './QuickSummaryModal';
@@ -16,6 +17,7 @@ import { useCourses } from '../context/CourseContext';
 import { useAuth } from '../context/AuthContext';
 import { usePremiumStatus } from '../hooks/usePremiumStatus';
 import { PipelineMetadata } from '../types';
+import type { InstructionalContent } from '../shared/courseSchemas';
 
 const stripThinkTags = (text: string) => {
   return text.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
@@ -70,7 +72,7 @@ export default function ContentArea({
   const [isProactiveQuiz, setIsProactiveQuiz] = useState(false);
   const hasCheckedInRef = useRef<Set<string>>(new Set());
   const [lockedFeatureName, setLockedFeatureName] = useState('');
-  const [fetchedLesson, setFetchedLesson] = useState<{ id: string; content: string; metadata: PipelineMetadata } | null>(null);
+  const [fetchedLesson, setFetchedLesson] = useState<{ id: string; content: string; metadata: PipelineMetadata; instructionalContent?: InstructionalContent } | null>(null);
   const [isFetchingContent, setIsFetchingContent] = useState(false);
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const { courses, refreshCourses } = useCourses();
@@ -85,7 +87,12 @@ export default function ContentArea({
 
   // Derive active lesson content synchronously on render to guarantee content availability precedes render
   const activeLessonData = (activeSubTopic?.content && activeSubTopic.content.trim().length > 0)
-    ? { id: activeSubTopic.id, content: sanitizeLatex(stripThinkTags(activeSubTopic.content)), metadata: {} as PipelineMetadata }
+    ? {
+        id: activeSubTopic.id,
+        content: sanitizeLatex(stripThinkTags(activeSubTopic.content)),
+        metadata: {} as PipelineMetadata,
+        instructionalContent: activeSubTopic.instructionalContent || (fetchedLesson?.id === activeSubTopic.id ? fetchedLesson.instructionalContent : undefined)
+      }
     : (fetchedLesson?.id === activeSubTopic?.id && fetchedLesson.content && fetchedLesson.content.trim().length > 0 ? fetchedLesson : null);
 
   const isCurrentLessonLoading = isFetchingContent || (!activeLessonData && !isGenerating);
@@ -127,10 +134,11 @@ export default function ContentArea({
     const loadContent = async () => {
       if (!courseId) return;
       
-      // If it already has content (legacy or preloaded courses), use it
-      if (activeSubTopic?.content) {
+      // Skip the network only when both the legacy reader content and structured learning payload are present.
+      // Legacy Markdown-only lessons are fetched once so a migrated structured payload can be loaded.
+      if (activeSubTopic?.content && activeSubTopic.instructionalContent) {
         const sanitized = sanitizeLatex(stripThinkTags(activeSubTopic.content));
-        setFetchedLesson({ id: activeSubTopic.id, content: sanitized, metadata: {} });
+        setFetchedLesson({ id: activeSubTopic.id, content: sanitized, metadata: {}, instructionalContent: activeSubTopic.instructionalContent });
         onLessonContentChange?.(sanitized);
         setIsFetchingContent(false);
         return;
@@ -146,7 +154,7 @@ export default function ContentArea({
         if (targetLesson && targetLesson.content) {
           console.log(`[ContentArea] Lesson found via Neon API! Content length: ${targetLesson.content.length}`);
           const sanitizedContent = sanitizeLatex(stripThinkTags(targetLesson.content));
-          setFetchedLesson({ id: activeSubTopic.id, content: sanitizedContent, metadata: {} });
+          setFetchedLesson({ id: activeSubTopic.id, content: sanitizedContent, metadata: {}, instructionalContent: targetLesson.instructionalContent });
           onLessonContentChange?.(sanitizedContent);
         } else {
           console.log(`[ContentArea] Lesson content not found for ${activeSubTopic?.id}`);
@@ -628,6 +636,9 @@ export default function ContentArea({
                 )}
 
                 <MarkdownRenderer content={activeLessonData.content} />
+                {activeLessonData.instructionalContent && (
+                  <MasteryLessonPanel content={activeLessonData.instructionalContent} />
+                )}
                 
                 {/* Source Citations & Grounding Section */}
                 {module.groundingReferences && module.groundingReferences.length > 0 && (
@@ -645,8 +656,8 @@ export default function ContentArea({
                       ))}
                     </div>
                     <p className="mt-4 text-[10px] text-zinc-400 italic">
-                      This content was dynamically generated and verified against the scholarly references listed above. 
-                      Confidence State: <span className="font-bold text-indigo-500">{module.confidenceState || 'Verified'}</span>
+                      These are the course-generation reference records. Their presence does not by itself establish that every lesson claim has been independently checked.
+                      Academic review state: <span className="font-bold text-indigo-500">{module.confidenceState || 'needs_review'}</span>
                     </p>
                   </div>
                 )}
