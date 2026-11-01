@@ -3635,12 +3635,12 @@ const ModuleQuizSchema = z.preprocess((val: any) => {
   }
   return val;
 }, z.object({
-  pedagogicalReasoning: z.string().optional(),
+  pedagogicalReasoning: z.string().trim().min(1),
   questions: z.array(z.object({
-    question: z.string().min(1),
-    options: z.array(z.string()).min(2),
-    answerIndex: z.number().int().min(0).optional().default(0),
-    explanation: z.string().optional().default('')
+    question: z.string().trim().min(1),
+    options: z.array(z.string().trim().min(1)).min(2),
+    answerIndex: z.number().int().min(0),
+    explanation: z.string().trim().min(1)
   })).min(1)
 }));
 
@@ -3650,26 +3650,29 @@ const CourseFormulaSchema = z.preprocess((val: any) => {
   }
   return val;
 }, z.object({
-  pedagogicalReasoning: z.string().optional(),
+  pedagogicalReasoning: z.string().trim().min(1),
   formulas: z.array(z.object({
-    id: z.string().optional(),
-    title: z.string(),
-    latex: z.string(),
-    description: z.string().optional().default('')
-  })).min(1)
+    id: z.string().trim().min(1),
+    title: z.string().trim().min(1),
+    latex: z.string().trim().min(1),
+    description: z.string().trim().min(1)
+  })).min(1).refine(
+    formulas => new Set(formulas.map(formula => formula.id)).size === formulas.length,
+    'Formula identifiers must be unique.'
+  )
 }));
 
 const VisionToQuizSchema = z.object({
-  summary: z.string().default('No summary provided.'),
+  summary: z.string().trim().min(1),
   quizzes: z.array(z.object({
-    question: z.string(),
-    options: z.array(z.string()),
-    answer: z.string()
-  })).default([]),
+    question: z.string().trim().min(1),
+    options: z.array(z.string().trim().min(1)).min(2),
+    answer: z.string().trim().min(1)
+  })).min(1),
   flashcards: z.array(z.object({
-    front: z.string(),
-    back: z.string()
-  })).default([])
+    front: z.string().trim().min(1),
+    back: z.string().trim().min(1)
+  })).min(1)
 });
 
 const StudySessionSchema = z.object({
@@ -5581,19 +5584,21 @@ async function executeCoordinatedGenerationJob(
           statusMessage: 'Generating mathematical and core concept sheets...'
         });
 
-        const formulaPrompt = `Generate a comprehensive reference sheet of 6 crucial governing equations, quantitative relationships, or core theoretical laws for: "${courseName}".
+        const formulaPrompt = `Using only the verified course material already generated for "${courseName}", identify the governing equations, quantitative relationships, and core theoretical laws actually supported by that material.
 Domain: ${domainBrief.primaryDomain}
 Pedagogy Type: ${domainBrief.pedagogyType}
 
+Do not invent a formula to fill a quota. Include every distinct relationship that is materially required to explain or solve the generated course content; do not duplicate equivalent equations. If the supplied course material does not support a reliable formula, fail this generation step rather than fabricate one.
+
 Return strictly a JSON object:
 {
-  "pedagogicalReasoning": "Rationale for selecting these core equations/principles",
+  "pedagogicalReasoning": "Explain why these relationships are present in the supplied course material",
   "formulas": [
     {
-      "id": "f1",
-      "title": "Law / Equation Name",
-      "latex": "Governing Equation in LaTeX (e.g. \\\\sigma = E \\\\epsilon or J = -D \\\\frac{dC}{dx})",
-      "description": "Definition of all variables, physical interpretation, and domain context"
+      "id": "A unique, stable identifier for this formula within this course",
+      "title": "The exact law or equation name",
+      "latex": "The governing equation in LaTeX",
+      "description": "Define every variable and state the physical or theoretical meaning grounded in the course material"
     }
   ]
 }`;
@@ -5615,7 +5620,7 @@ Return strictly a JSON object:
 
           if (formulaData && Array.isArray(formulaData.formulas)) {
             for (const f of formulaData.formulas) {
-              const fId = `form_${courseId}_${f.id || Math.random().toString(36).substring(7)}`;
+              const fId = `form_${courseId}_${f.id}`;
               await pool.query(
                 `INSERT INTO course_formulas (id, course_id, name, latex_expression, variables_breakdown, derivation_notes, created_at)
                  VALUES ($1, $2, $3, $4, $5::jsonb, $6, NOW())
@@ -5623,12 +5628,13 @@ Return strictly a JSON object:
                    name = EXCLUDED.name,
                    latex_expression = EXCLUDED.latex_expression,
                    derivation_notes = EXCLUDED.derivation_notes`,
-                [fId, courseId, f.title || 'Formula', f.latex || '', JSON.stringify({}), f.description || '']
-              ).catch(() => {});
+                [fId, courseId, f.title, f.latex, JSON.stringify({}), f.description]
+              );
             }
           }
         } catch (fErr) {
-          console.warn('[Coordinated Gen] Formula generation error:', fErr);
+          logger.error({ courseId, error: fErr instanceof Error ? fErr.message : String(fErr) }, '[Coordinated Gen] Formula generation failed');
+          throw new Error('Course generation stopped because its source-grounded formula sheet could not be generated and persisted.');
         }
 
         // STEP 4: Compile Final Syllabus from Neon PostgreSQL
