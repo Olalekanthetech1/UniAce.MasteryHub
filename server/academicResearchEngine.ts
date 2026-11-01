@@ -418,7 +418,7 @@ export async function getCitationAndAbstract(input: GetCitationInput): Promise<C
   const yearPart = typeof paper.year === 'number' ? ` (${paper.year}).` : '';
   const doiStr = paper.doi ? ` https://doi.org/${paper.doi}` : ` ${paper.url}`;
   const venuePart = paper.venue ? ` ${paper.venue}.` : '';
-  const apa = \`${authorPart}\`${yearPart} \`${paper.title}.\`${venuePart}\`${doiStr}\`.replace(/\s+/g, ' ').trim();
+  const apa = `${authorPart}${yearPart} ${paper.title}.${venuePart}${doiStr}`.replace(/\s+/g, ' ').trim();
 
   const titleKey = paper.title.slice(0, 12).toLowerCase().replace(/[^a-z0-9]/g, '');
   const bibtexKey = `${authorLastName.toLowerCase()}${paper.year || ''}${titleKey}` || paper.id.replace(/[^a-zA-Z0-9]/g, '').slice(-24);
@@ -430,7 +430,7 @@ export async function getCitationAndAbstract(input: GetCitationInput): Promise<C
     ...(paper.doi ? [`  doi = {${paper.doi}}`] : []),
     `  url = {${paper.url}}`,
   ];
-  const bibtex = \`@article{\${bibtexKey},\n\${bibtexFields.join(',\n')}\n}\`;
+  const bibtex = `@article{${bibtexKey},\n${bibtexFields.join(',\n')}\n}`;
 
   return {
     identifier,
