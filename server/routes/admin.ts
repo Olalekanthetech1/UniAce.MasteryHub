@@ -46,6 +46,74 @@ export function setupAdminRoutes(
       console.warn('[AdminRoleCheck] Neon lookup error:', err);
     }
     return false;
+  } 
+
+  async function validateCourseForPublication(pool: any, courseId: string): Promise<void> {
+    const courseResult = await pool.query(
+      `SELECT id, title, level, department, semester, scope
+       FROM courses WHERE id = $1 LIMIT 1`,
+      [courseId]
+    );
+    if (courseResult.rows.length === 0) {
+      const error: any = new Error(`Course ${courseId} does not exist.`);
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const course = courseResult.rows[0];
+    const requiredFields = ['id', 'title', 'level', 'department', 'semester', 'scope'];
+    const missingFields = requiredFields.filter(key =>
+      typeof course[key] !== 'string' || !course[key].trim()
+    );
+    if (missingFields.length > 0) {
+      const error: any = new Error(`Course cannot be published because authoritative metadata is missing: ${missingFields.join(', ')}.`);
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const moduleResult = await pool.query(
+      `SELECT id FROM course_modules
+       WHERE course_id = $1 AND COALESCE(is_archived, FALSE) = FALSE
+       ORDER BY order_index ASC`,
+      [courseId]
+    );
+    if (moduleResult.rows.length === 0) {
+      const error: any = new Error('Course cannot be published without stored, non-archived modules.');
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const lessonResult = await pool.query(
+      `SELECT module_id, title, content_markdown
+       FROM course_lessons
+       WHERE course_id = $1
+       ORDER BY module_id, order_index ASC`,
+      [courseId]
+    );
+    const lessonsByModule = new Map<string, any[]>();
+    for (const lesson of lessonResult.rows) {
+      const key = String(lesson.module_id);
+      const current = lessonsByModule.get(key) || [];
+      current.push(lesson);
+      lessonsByModule.set(key, current);
+    }
+
+    for (const module of moduleResult.rows) {
+      const lessons = lessonsByModule.get(String(module.id)) || [];
+      if (lessons.length === 0) {
+        const error: any = new Error(`Course module ${module.id} has no stored lessons and cannot be published.`);
+        error.statusCode = 409;
+        throw error;
+      }
+      for (const lesson of lessons) {
+        if (typeof lesson.title !== 'string' || !lesson.title.trim() ||
+            typeof lesson.content_markdown !== 'string' || lesson.content_markdown.trim().length < 600) {
+          const error: any = new Error(`Course lesson "${lesson.title || lesson.module_id}" is incomplete and cannot be published.`);
+          error.statusCode = 409;
+          throw error;
+        }
+      }
+    }
   }
 
 
@@ -1144,46 +1212,50 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
   app.post('/api/admin/courses/:id/restore', verifyAuth, async (req: any, res: any) => {
     const user = req.user;
     const isAdmin = await checkIsAdmin(user.uid, user.email);
-    if (!isAdmin) {
-      return res.status(403).json({ error: 'Admin privileges required' });
-    }
+    if (!isAdmin) return res.status(403).json({ error: 'Admin privileges required' });
 
     const { id } = req.params;
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
 
     try {
-      await pool.query(
-        `UPDATE courses SET status = 'published', version = COALESCE(version, 1) + 1, updated_at = NOW() WHERE id = $1`,
+      await validateCourseForPublication(pool, id);
+      const result = await pool.query(
+        `UPDATE courses
+         SET status = 'published', version = COALESCE(version, 1) + 1, updated_at = NOW()
+         WHERE id = $1`,
         [id]
       );
+      if ((result.rowCount ?? 0) === 0) return res.status(404).json({ error: 'Course not found.' });
       catalogCache.invalidateAll();
-      res.json({ success: true, courseId: id });
+      return res.json({ success: true, courseId: id, status: 'published' });
     } catch (err: any) {
-      res.status(500).json({ error: 'Failed to restore course', details: err.message });
+      return res.status(err.statusCode || 500).json({ error: err.message || 'Failed to restore course' });
     }
   });
 
   app.post('/api/admin/courses/:id/publish', verifyAuth, async (req: any, res: any) => {
     const user = req.user;
     const isAdmin = await checkIsAdmin(user.uid, user.email);
-    if (!isAdmin) {
-      return res.status(403).json({ error: 'Admin privileges required' });
-    }
+    if (!isAdmin) return res.status(403).json({ error: 'Admin privileges required' });
 
     const { id } = req.params;
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
 
     try {
-      await pool.query(
-        `UPDATE courses SET status = 'published', version = COALESCE(version, 1) + 1, updated_at = NOW() WHERE id = $1`,
+      await validateCourseForPublication(pool, id);
+      const result = await pool.query(
+        `UPDATE courses
+         SET status = 'published', version = COALESCE(version, 1) + 1, updated_at = NOW()
+         WHERE id = $1`,
         [id]
       );
+      if ((result.rowCount ?? 0) === 0) return res.status(404).json({ error: 'Course not found.' });
       catalogCache.invalidateAll();
-      res.json({ success: true, courseId: id });
+      return res.json({ success: true, courseId: id, status: 'published' });
     } catch (err: any) {
-      res.status(500).json({ error: 'Failed to publish course', details: err.message });
+      return res.status(err.statusCode || 500).json({ error: err.message || 'Failed to publish course' });
     }
   });
 
