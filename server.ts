@@ -4854,7 +4854,7 @@ async function updateCourseGenerationStateInPostgres(courseId: string, patch: Re
   const pool = getPostgresPool();
   if (pool && (patch.title || patch.description || patch.generationStatus === 'completed')) {
     try {
-      const statusVal = patch.generationStatus === 'completed' ? 'published' : (merged.status || 'published');
+      const statusVal = typeof merged.status === 'string' ? merged.status : 'draft';
       await pool.query(
         `INSERT INTO courses (id, code, title, description, level, department, faculty, semester, scope, status, version, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1, NOW(), NOW())
@@ -4963,6 +4963,8 @@ async function executeCoordinatedGenerationJob(
       isAIGenerated: true,
       createdAt: existingSnap?.createdAt || new Date().toISOString(),
       generationStatus: 'generating',
+      status: 'draft',
+      published: false,
       generationProgress: isResume ? (existingSnap?.generationProgress || 15) : 5,
       statusMessage: isResume ? 'Resuming course generation from checkpoint...' : 'Coordinating course creation on server...'
     });
@@ -5532,9 +5534,9 @@ Return strictly a JSON object:
           generationProgress: 100,
           confidenceState: 'needs_review',
           academicVerificationState: 'not_independently_verified',
-          statusMessage: 'Course generated; structural checks passed. Academic accuracy and calculations still require independent verification.',
-          published: true,
-          status: 'published'
+          statusMessage: 'Course generated and saved as a draft for academic review. Structural checks passed; factual accuracy and calculations still require independent verification.',
+          published: false,
+          status: 'draft'
         });
 
         catalogCache.invalidateAll();
@@ -7089,7 +7091,7 @@ app.post('/api/telemetry/module-action', verifyAuth, async (req, res) => {
   }
 });
 
-app.post('/api/course/:courseId/publish', verifyAuth, async (req, res) => {
+app.post('/api/course/:courseId/publish', verifyAdmin, async (req, res) => {
   const { courseId } = req.params;
   const pool = getPostgresPool();
   if (!pool) return res.status(500).json({ error: 'Database service unavailable.' });
