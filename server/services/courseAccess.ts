@@ -1,4 +1,5 @@
 import { getPostgresPool } from '../postgresPool';
+import { ensureCourseLearningSchema } from './courseLearningSchema';
 import { UserRepository, type UserRecord } from '../repositories/userRepository';
 import { getSystemConfigDoc } from '../systemConfigStore';
 
@@ -99,6 +100,7 @@ export async function getLiveInstitutionAccessConfig(): Promise<InstitutionAcces
 }
 
 export async function getLiveCourseAccessRecord(courseId: string): Promise<CourseAccessRecord | null> {
+  await ensureCourseLearningSchema();
   const pool = getPostgresPool();
   if (!pool) throw new Error('Course access is unavailable: PostgreSQL is not connected.');
 
@@ -113,6 +115,7 @@ export async function getLiveCourseAccessRecord(courseId: string): Promise<Cours
 }
 
 export async function getLivePublishedCourseAccessRecords(): Promise<CourseAccessRecord[]> {
+  await ensureCourseLearningSchema();
   const pool = getPostgresPool();
   if (!pool) throw new Error('Course access is unavailable: PostgreSQL is not connected.');
 
