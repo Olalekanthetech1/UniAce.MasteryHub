@@ -8947,7 +8947,7 @@ async function analyzeAndUpdateLearningProfile(
   userRefOrUid: admin.firestore.DocumentReference | string | null
 ) {
   const uid = typeof userRefOrUid === 'string' ? userRefOrUid : userRefOrUid?.id;
-  if (!uid || !process.env.GEMINI_API_KEY) return;
+  if (!uid) return;
   const pool = getPostgresPool();
   if (!pool) return;
   try {
@@ -8989,26 +8989,32 @@ async function analyzeAndUpdateLearningProfile(
       "weaknesses": ["...", "..."]
     }`;
 
-    const providers = [
-      globalMistralDirectBreaker,
-      globalGeminiDirectBreaker,
-      globalOpenRouterFreeBreaker,
-      globalGroqBreaker,
-      globalCohereBreaker,
-      globalHuggingFaceBreaker
-    ].filter(Boolean);
-
+    const routingConfig = await requireLiveRoutingConfig();
+    const providerMap: Record<string, any> = {
+      gemini_direct: globalGeminiDirectBreaker,
+      mistral_direct: globalMistralDirectBreaker,
+      groq: globalGroqBreaker,
+      cohere: globalCohereBreaker,
+      huggingface: globalHuggingFaceBreaker,
+      openrouter_free: globalOpenRouterFreeBreaker,
+      nvidia: globalNvidiaBreaker || globalNvidiaProvider
+    };
+    const providerNames = resolveLiveProviderQueue(routingConfig, 'learning_profile', providerMap);
+    const providers = providerNames.map(name => providerMap[name]).filter(Boolean);
     if (providers.length === 0) return;
 
+
     let response;
-    for (const provider of providers) {
+    for (const providerName of providerNames) {
+      const provider = providerMap[providerName];
+      if (!provider) continue;
       try {
         response = await generateWithTelemetry(provider, [
           { role: 'user', content: prompt }
         ], { complexity: 'standard', jsonMode: true });
-        break; // Success
+        if (response?.text) break;
       } catch (error) {
-        console.warn(`Provider failed in Learning Profile update:`, error);
+        console.warn(`Configured provider [${providerName}] failed in Learning Profile update:`, error);
       }
     }
 
