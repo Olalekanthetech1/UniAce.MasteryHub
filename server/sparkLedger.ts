@@ -2619,7 +2619,7 @@ export interface TransactionalPaymentSuccessResult {
 function parsePlanSparksValue(rawSparks: unknown): number {
   const parsed = typeof rawSparks === 'number'
     ? rawSparks
-    : typeof rawSparks === 'string' && /^\\s*[\\d,]+\\s*(?:sparks?)?\\s*$/i.test(rawSparks)
+    : typeof rawSparks === 'string' && /^\s*[\d,]+\s*(?:sparks?)?\s*$/i.test(rawSparks)
       ? Number(rawSparks.replace(/[^0-9]/g, ''))
       : NaN;
 
@@ -2650,7 +2650,7 @@ function parsePlanDurationValue(durationStr: unknown, planId: unknown): { durati
     return { durationDays: 0, isTopUp: true };
   }
 
-  const daysMatch = normDuration.match(/^(\\d+)\\s*days?$/);
+  const daysMatch = normDuration.match(/^(\d+)\s*days?$/);
   const days = daysMatch ? Number(daysMatch[1]) : NaN;
   if (!Number.isSafeInteger(days) || days <= 0) {
     throw new Error('The selected live pricing plan has an unsupported duration. Configure an explicit number of days or a one-time top-up.');
