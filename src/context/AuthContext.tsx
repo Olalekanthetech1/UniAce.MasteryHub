@@ -167,7 +167,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const firestoreData: Record<string, any> = {};
       let backendProfile: Record<string, any> | null = null;
 
-      let userRole: 'student' | 'admin' | 'tutor' | 'moderator' = 'student';
       let plan_type: PlanType = 'free';
       let ai_sparks: number | null = null;
       let unlimited_sparks = false;
@@ -176,7 +175,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       let subscription_start_date: string | undefined = firestoreData.subscription_start_date || cachedProfile?.subscription_start_date;
 
       // Fetch accurate quota and authoritative profile from backend without blocking UI
-      const fetchQuota = async (retries = 1, attempt = 1): Promise<boolean> => {
+      const fetchQuota = async (retries = 1, attempt = 1): Promise<UserProfile['role'] | null> => {
         try {
           const token = await currentUser.getIdToken();
           const controller = new AbortController();
@@ -196,7 +195,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             const contentType = response.headers.get('content-type') || '';
             if (contentType.includes('application/json')) {
               const data = await response.json();
-              if (typeof data.role !== 'string' || !data.role.trim() ||
+              const validRoles: UserProfile['role'][] = ['student', 'admin', 'tutor', 'moderator'];
+              if (typeof data.role !== 'string' || !validRoles.includes(data.role as UserProfile['role']) ||
                   typeof data.plan !== 'string' || !data.plan.trim() ||
                   (typeof data.sparks !== 'number' || !Number.isFinite(data.sparks))) {
                 throw new Error('The server returned an incomplete or unverified account quota.');
@@ -204,31 +204,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               ai_sparks = data.sparks;
               unlimited_sparks = data.unlimited === true;
               plan_type = data.plan as PlanType;
-              userRole = data.role;
               if (data.subscription_expiry) subscription_expiry = data.subscription_expiry;
               if (data.subscription_status) subscription_status = data.subscription_status;
               if (data.subscription_start_date) subscription_start_date = data.subscription_start_date;
               if (data.profile && typeof data.profile === 'object') {
                 backendProfile = data.profile;
               }
-              return true;
+              return data.role as UserProfile['role'];
             }
           } else if (retries > 0) {
             await new Promise(resolve => setTimeout(resolve, 800));
             return fetchQuota(retries - 1, attempt + 1);
           }
-          return false;
+          return null;
         } catch {
           if (retries > 0) {
             await new Promise(resolve => setTimeout(resolve, 800));
             return fetchQuota(retries - 1, attempt + 1);
           }
-          return false;
+          return null;
         }
       };
 
-      const quotaLoaded = await fetchQuota();
-      if (!quotaLoaded) throw new Error('Authoritative account quota could not be verified. Cached balances and role assumptions are not displayed.');
+      const resolvedUserRole = await fetchQuota();
+      if (!resolvedUserRole) throw new Error('Authoritative account quota could not be verified. Cached balances and role assumptions are not displayed.');
 
       // Determine chronological priority among firestoreData, backendProfile, and cachedProfile
       const sources = [
@@ -286,7 +285,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       subscription_start_date = normalizeTimestampIso(subscription_start_date);
 
       // Dynamic runtime verification of subscription expiration
-      if (userRole !== 'admin' && plan_type !== 'free') {
+      if (resolvedUserRole !== 'admin' && plan_type !== 'free') {
         const expDate = normalizedExpIso ? new Date(normalizedExpIso) : null;
         if (subscription_status === 'expired' || (expDate && Date.now() > expDate.getTime()) || !expDate) {
           plan_type = 'free';
@@ -300,7 +299,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         displayName: mergedSource.displayName || currentUser.displayName || "",
         bio: mergedSource.bio,
         photoURL: mergedSource.photoURL || currentUser.photoURL || "",
-        role: userRole,
+        role: resolvedUserRole,
         plan_type,
         subscription_expiry,
         subscription_status,

@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { CreditCard, Plus, Trash2, Edit3, Save, CheckCircle, AlertCircle, RefreshCw, Zap, Shield, Sparkles } from 'lucide-react';
-import { PricingPlan, PricingConfig, PricingService, DEFAULT_PRICING_PLANS } from '../../services/pricingConfig';
+import { PricingPlan, PricingConfig, PricingService } from '../../services/pricingConfig';
 
 export default function PricingManagerTab() {
-  const [config, setConfig] = useState<PricingConfig>({ plans: DEFAULT_PRICING_PLANS });
+  const [config, setConfig] = useState<PricingConfig>({ plans: [] });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle');

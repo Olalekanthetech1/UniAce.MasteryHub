@@ -170,6 +170,29 @@ import { jobStreamManager } from './server/services/jobStreamManager';
 import { getFeatureFlags, initRuntimeFlagsSync } from './server/config/features';
 import { getSystemConfigDoc, setSystemConfigDoc, getSystemSettingsDoc, setSystemSettingsDoc } from './server/systemConfigStore';
 
+const latexInstruction = `
+
+CRITICAL LATEX INSTRUCTIONS:
+1. Use LaTeX for all mathematical formulas and variables.
+2. Wrap inline mathematics in $...$ and display mathematics in $...$.
+3. For JSON output, escape every LaTeX backslash correctly for a JSON string.
+4. Use LaTeX commands rather than Unicode mathematical symbols.
+5. Avoid unescaped double quotes inside JSON string values.
+
+CRITICAL MATHEMATICAL AND SCIENTIFIC RIGOR:
+- Verify mathematical and scientific claims from first principles; do not invent rules, formulas, or theorems.
+- For rational functions, distinguish horizontal, slant, and higher-degree polynomial asymptotes using numerator and denominator degrees.
+- For domains, intersect the conditions imposed by every expression: denominators must be nonzero and even-root radicands must be nonnegative. Do not add restrictions that are not mathematically required.
+- Ensure derivations, worked examples, answer options, and explanations are mutually consistent.
+
+${VISUALIZATION_AND_DIAGRAM_DIRECTIVE}
+`;
+
+async function checkFeatureSwitchEnabled(featureKey: 'arena' | 'tutor_dashboard'): Promise<boolean> {
+  const switches = await getSystemConfigDoc('feature_switches', true);
+  return switches?.[featureKey] === true;
+}
+
 // Initialize Neon PostgreSQL system_runtime_flags in-memory sync engine (5s background poll)
 initRuntimeFlagsSync().catch((err) => {
   logger.warn({ error: err.message }, '[Server] Runtime flags initial sync notice');
@@ -2398,7 +2421,8 @@ const getAndValidateSparks = async (uid: string, email: string | undefined): Pro
   let startDate = row.subscription_start_date ? new Date(row.subscription_start_date).toISOString() : undefined;
 
   const createdAt = row.created_at ? new Date(row.created_at) : null;
-  const configuredTrialDays = Number(systemConfig?.trialDays);
+  const generalConfig = await getSystemConfigDoc('general', true);
+  const configuredTrialDays = Number(generalConfig?.trialDays);
   const isTrialPolicyVerified = Number.isFinite(configuredTrialDays) && configuredTrialDays > 0;
   const trialStartDate = createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt : null;
   const isTrialActive = Boolean(
@@ -2682,7 +2706,15 @@ app.post('/api/admin/send-reminder', verifyAuth, async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields: to, displayName, daysLeft' });
     }
 
-    const resolvedTrialDays = trialDays || systemConfig.trialDays || 7;
+    const generalConfig = await getSystemConfigDoc('general', true);
+    const requestedTrialDays = Number(trialDays);
+    const configuredTrialDays = Number(generalConfig?.trialDays);
+    const resolvedTrialDays = Number.isInteger(requestedTrialDays) && requestedTrialDays > 0
+      ? requestedTrialDays
+      : configuredTrialDays;
+    if (!Number.isInteger(resolvedTrialDays) || resolvedTrialDays <= 0) {
+      return res.status(503).json({ error: 'Trial duration is unavailable: configure a positive whole-number trialDays value in system settings.' });
+    }
     await MailService.sendTrialReminderEmail(to, displayName, daysLeft, resolvedTrialDays);
 
     await recordBackendSystemLog(
@@ -4003,7 +4035,7 @@ async function completeWithProviderJSON<T = any>(opts: CompleteProviderOptions<T
     } catch (err: any) {
       lastError = err;
       console.warn(`[AI Completion] Provider ${prov.name || prov.constructor.name} failed for ${opts.type}:`, err.message || err);
-      if (isStrict) {
+      if (opts.strictMode === true) {
         throw err;
       }
     }
@@ -9754,6 +9786,7 @@ async function startServer() {
     players: { id: string; name: string; score: number }[];
     maxPlayers: number;
     entryFee: number;
+    questionTimeLimitSeconds: number;
     status: 'waiting' | 'playing' | 'finished';
   }>();
 
@@ -10247,11 +10280,18 @@ async function startServer() {
               throw createStreamAbortError('WebSocket closed during pre-authorization');
             }
 
-            // Send welcome email outside the transaction to avoid duplicates on retries
+            // Send welcome email outside the transaction to avoid duplicates on retries.
+            // The duration must come from the persisted general system configuration.
             if (result.isNewUser && user.email) {
-              MailService.sendWelcomeEmail(user.email, user.email.split('@')[0], systemConfig.trialDays || 7).catch(err => {
-                console.error('Failed to send welcome email (WS):', err);
-              });
+              const generalConfig = await getSystemConfigDoc('general', true);
+              const configuredTrialDays = Number(generalConfig?.trialDays);
+              if (Number.isInteger(configuredTrialDays) && configuredTrialDays > 0) {
+                MailService.sendWelcomeEmail(user.email, user.email.split('@')[0], configuredTrialDays).catch(err => {
+                  console.error('Failed to send welcome email (WS):', err);
+                });
+              } else {
+                logger.warn('[WelcomeEmail] Skipped: authoritative trialDays setting is missing or invalid.');
+              }
             }
           } catch (dbError: any) {
             if (isClientAbortError(dbError, wsAbortController.signal)) {

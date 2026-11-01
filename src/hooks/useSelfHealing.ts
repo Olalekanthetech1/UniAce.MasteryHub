@@ -3,27 +3,42 @@ import { useProgressStore } from '../lib/progressStore';
 import { useAuth } from '../context/AuthContext';
 import { useNotifications } from './useNotifications';
 import { LogService } from '../services/logService';
-import { GamificationService, BADGES } from '../services/gamification';
+import { GamificationService, GamificationPolicy } from '../services/gamification';
 import { UserProgress, Achievement } from '../types';
 import { safeFetchJson } from '../utils/safeFetch';
 
-const INITIAL_ACHIEVEMENTS: Achievement[] = BADGES.map(b => ({
-  id: b.id,
-  title: b.title,
-  description: b.description,
-  icon: b.icon,
-  unlockedAt: null
-}));
 
 export function useSelfHealing() {
   const { user, profile } = useAuth();
   const { progress, setProgress, isOnline } = useProgressStore();
   const { sendNotification } = useNotifications();
   const [isHealing, setIsHealing] = useState(false);
+  const [gamificationPolicy, setGamificationPolicy] = useState<GamificationPolicy | null>(null);
   
   // Prevent concurrent or loop healing
   const healingRef = useRef(false);
   const lastCheckRef = useRef<number>(0);
+
+  // Resolve the authoritative gamification policy before evaluating levels or repairing badges.
+  useEffect(() => {
+    let active = true;
+    setGamificationPolicy(null);
+    if (!user || !isOnline) {
+      return () => { active = false; };
+    }
+
+    GamificationService.getPolicy()
+      .then(policy => {
+        if (active) setGamificationPolicy(policy);
+      })
+      .catch(error => {
+        if (active) {
+          console.error('[Self-Healing] Live gamification policy unavailable; level and badge repair is paused.', error);
+        }
+      });
+
+    return () => { active = false; };
+  }, [user?.uid, isOnline]);
 
   // Checks whether the current local progress has any corruption/discrepancies
   const checkStateCorruption = useCallback((currentProgress: UserProgress): { corrupted: boolean; reason: string } => {
@@ -56,10 +71,12 @@ export function useSelfHealing() {
       return { corrupted: true, reason: 'Streak counter is invalid.' };
     }
 
-    // 2. Verify Level calculations match current XP
-    const calculatedLevel = GamificationService.calculateLevel(currentProgress.xp).level;
-    if (calculatedLevel !== currentProgress.level) {
-      return { corrupted: true, reason: `Level mismatch. Expected: ${calculatedLevel}, Current: ${currentProgress.level}` };
+    // 2. Verify level calculations only when the live policy has been loaded.
+    if (gamificationPolicy) {
+      const calculatedLevel = GamificationService.calculateLevel(currentProgress.xp, gamificationPolicy).level;
+      if (calculatedLevel !== currentProgress.level) {
+        return { corrupted: true, reason: `Level mismatch. Expected: ${calculatedLevel}, Current: ${currentProgress.level}` };
+      }
     }
 
     // 3. Check for array structures
@@ -102,11 +119,15 @@ export function useSelfHealing() {
     }
 
     return { corrupted: false, reason: '' };
-  }, []);
+  }, [gamificationPolicy]);
 
-  // Triggers silent healing using authoritative Firestore data combined with robust fallback logic
+  // Triggers silent healing using authoritative server data; no repair occurs without live policy.
   const healState = useCallback(async (reason: string) => {
     if (healingRef.current || !user || !isOnline) return;
+    if (!gamificationPolicy) {
+      console.warn('[Self-Healing] Repair deferred because the authoritative gamification policy is unavailable.');
+      return;
+    }
     
     healingRef.current = true;
     setIsHealing(true);
@@ -123,12 +144,20 @@ export function useSelfHealing() {
       
       // 2. Perform advanced data cleaning & repairs
       const repairedXp = Math.max(0, serverData.xp ?? progress.xp ?? 0);
-      const repairedLevel = GamificationService.calculateLevel(repairedXp).level;
+      const repairedLevel = GamificationService.calculateLevel(repairedXp, gamificationPolicy).level;
       const repairedStreak = Math.max(0, serverData.streak ?? progress.streak ?? 0);
       
       // Repair achievements mapping to ensure no badges are lost or missing
-      const achievementMap = new Map<string, Achievement>();
-      INITIAL_ACHIEVEMENTS.forEach(a => achievementMap.set(a.id, { ...a }));
+      const policyAchievements: Achievement[] = gamificationPolicy.badges.map(badge => ({
+        id: badge.id,
+        title: badge.title,
+        description: badge.description,
+        icon: badge.icon,
+        unlockedAt: null
+      }));
+      const achievementMap = new Map<string, Achievement>(
+        policyAchievements.map(achievement => [achievement.id, { ...achievement }])
+      );
       
       const combinedAchievements = [
         ...(progress.achievements || []),
@@ -136,22 +165,20 @@ export function useSelfHealing() {
       ];
 
       combinedAchievements.forEach(ach => {
-        if (!ach || !ach.id) return;
+        if (!ach || typeof ach.id !== 'string' || !ach.id.trim() ||
+            typeof ach.title !== 'string' || !ach.title.trim() ||
+            typeof ach.description !== 'string' || !ach.description.trim() ||
+            typeof ach.icon !== 'string' || !ach.icon.trim()) return;
         const base = achievementMap.get(ach.id);
-        if (base) {
-          achievementMap.set(ach.id, {
-            ...base,
-            unlockedAt: ach.unlockedAt || base.unlockedAt
-          });
-        } else {
-          achievementMap.set(ach.id, {
-            id: ach.id,
-            title: ach.title || 'Unlocking Scholar',
-            description: ach.description || 'Achievement description',
-            icon: ach.icon || 'Award',
-            unlockedAt: ach.unlockedAt || null
-          });
-        }
+        achievementMap.set(ach.id, {
+          id: ach.id,
+          title: base?.title || ach.title,
+          description: base?.description || ach.description,
+          icon: base?.icon || ach.icon,
+          unlockedAt: typeof ach.unlockedAt === 'string' && ach.unlockedAt
+            ? ach.unlockedAt
+            : (base?.unlockedAt || null)
+        });
       });
       const repairedAchievements = Array.from(achievementMap.values());
 
@@ -257,7 +284,7 @@ export function useSelfHealing() {
       setIsHealing(false);
       healingRef.current = false;
     }
-  }, [user, isOnline, progress, setProgress, sendNotification]);
+  }, [user, isOnline, progress, setProgress, sendNotification, gamificationPolicy]);
 
   // Periodic Watchdog Trigger
   useEffect(() => {

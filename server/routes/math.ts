@@ -7,6 +7,20 @@ import {
   MathCalculationRequest
 } from '../mathEngine';
 
+const SUPPORTED_MATH_OPERATIONS = [
+  'derivative',
+  'integral',
+  'solve_equation',
+  'ode',
+  'matrix_operations',
+  'simplify'
+] as const;
+
+function isSupportedMathOperation(value: unknown): value is MathCalculationRequest['operation'] {
+  return typeof value === 'string' &&
+    (SUPPORTED_MATH_OPERATIONS as readonly string[]).includes(value);
+}
+
 export function setupMathRoutes(
   app: express.Express, 
   verifyAuth: any, 
@@ -36,8 +50,8 @@ export function setupMathRoutes(
         rigorLevel
       } = req.body || {};
 
-      if (typeof operation !== 'string' || !operation.trim()) {
-        return res.status(400).json({ error: 'A calculation operation is required.' });
+      if (!isSupportedMathOperation(operation)) {
+        return res.status(400).json({ error: 'A supported calculation operation is required.' });
       }
       if (operation === 'matrix_operations') {
         if (!Array.isArray(matrixA) || matrixA.length === 0 || !matrixOp) {
@@ -108,8 +122,8 @@ export function setupMathRoutes(
         rigorLevel
       } = req.body || {};
 
-      if (typeof operation !== 'string' || !operation.trim()) {
-        return res.status(400).json({ error: 'A calculation operation is required.' });
+      if (!isSupportedMathOperation(operation)) {
+        return res.status(400).json({ error: 'A supported calculation operation is required.' });
       }
       if (operation === 'matrix_operations') {
         if (!Array.isArray(matrixA) || matrixA.length === 0 || !matrixOp) {

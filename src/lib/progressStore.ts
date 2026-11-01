@@ -1,14 +1,5 @@
 import { create } from 'zustand';
-import { UserProgress, Achievement } from '../types';
-import { BADGES } from '../services/gamification';
-
-const INITIAL_ACHIEVEMENTS: Achievement[] = BADGES.map(b => ({
-  id: b.id,
-  title: b.title,
-  description: b.description,
-  icon: b.icon,
-  unlockedAt: null
-}));
+import { UserProgress } from '../types';
 
 const INITIAL_PROGRESS: UserProgress = {
   xp: 0,
@@ -16,7 +7,7 @@ const INITIAL_PROGRESS: UserProgress = {
   streak: 0,
   lastStudyDate: null,
   mastery: {},
-  achievements: INITIAL_ACHIEVEMENTS,
+  achievements: [],
   studyTime: {},
   topicLastStudied: {},
   bookmarks: [],

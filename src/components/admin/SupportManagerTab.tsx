@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { HelpCircle, Plus, Trash2, Edit3, Save, CheckCircle, AlertCircle, RefreshCw, Video, Mail, MessageSquare } from 'lucide-react';
-import { FaqItem, TutorialItem, SupportConfig, SupportService, DEFAULT_FAQS, DEFAULT_TUTORIALS } from '../../services/supportConfig';
+import { FaqItem, TutorialItem, SupportConfig, SupportService } from '../../services/supportConfig';
 
 export default function SupportManagerTab() {
-  const [config, setConfig] = useState<SupportConfig>({ faqs: DEFAULT_FAQS, tutorials: DEFAULT_TUTORIALS });
+  const [config, setConfig] = useState<SupportConfig>({ faqs: [], tutorials: [] });
   const [activeSubTab, setActiveSubTab] = useState<'faqs' | 'tutorials' | 'settings'>('faqs');
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle');

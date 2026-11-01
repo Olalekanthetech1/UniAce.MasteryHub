@@ -24,6 +24,7 @@ export interface CourseProvenance {
 export interface CourseOffering {
   departmentId: string;
   departmentName?: string;
+  facultyName?: string;
   level: Level;
   semester: Semester;
   type?: 'core' | 'elective' | 'global';
