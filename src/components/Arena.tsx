@@ -169,7 +169,7 @@ export default function Arena({ activeCourseId }: ArenaProps) {
     } catch (err) {
       console.warn('[Arena] Failed to fetch verified lobby telemetry:', err);
     }
-  }, [user, selectedCourseId, updateServerClockOffset]);  }, [user, selectedCourseId, updateServerClockOffset]);
+  }, [user, selectedCourseId, updateServerClockOffset]);
 
   useEffect(() => {
     void fetchLobbyTelemetry();
