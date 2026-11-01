@@ -28,6 +28,7 @@ import { PipelineMetadata } from '../types';
 import { autoHealQuestion } from './validators/aiSchemas';
 import { sanitizeForFirestore } from './courseService';
 import { auth } from '../firebase';
+import { normalizeMathDelimiters } from '../shared/mathText';
 
 const courseMarkedEngine = new Marked({
   gfm: true,
