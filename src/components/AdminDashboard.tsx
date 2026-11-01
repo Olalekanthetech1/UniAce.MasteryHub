@@ -38,6 +38,7 @@ import { usePermissions } from '../hooks/usePermissions';
 import { useInstitution } from '../context/InstitutionContext';
 import AdminAffiliates from './AdminAffiliates';
 import MarkdownRenderer from './MarkdownRenderer';
+import DraftCourseReviewPanel from './admin/DraftCourseReviewPanel';
 
 import { jsonrepair } from 'jsonrepair';
 import { safeFetchJson } from '../utils/safeFetch';
@@ -70,6 +71,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   const { courses, refreshCourses } = useCourses();
   const [archivedCourses, setArchivedCourses] = useState<Record<string, Course>>({});
   const [showArchived, setShowArchived] = useState(false);
+  const [draftReviewRefreshKey, setDraftReviewRefreshKey] = useState(0);
   const [isLoadingArchived, setIsLoadingArchived] = useState(false);
 
   const fetchArchivedCourses = async () => {
@@ -1321,6 +1323,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
           setGenerationProgress(100);
           showToast('Course generated successfully!', 'success');
           refreshCourses();
+          setDraftReviewRefreshKey((value) => value + 1);
 
           setTimeout(() => {
             setGenerationStep('input');
@@ -4061,6 +4064,14 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
         </div>
 
           {/* Existing Courses List */}
+          <DraftCourseReviewPanel
+            refreshKey={draftReviewRefreshKey}
+            onCoursePublished={() => {
+              void refreshCourses();
+              setDraftReviewRefreshKey((value) => value + 1);
+            }}
+          />
+
           <div className="bg-white dark:bg-slate-800 rounded-3xl p-8 shadow-sm border border-slate-200 dark:border-slate-700">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
             <h2 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
