@@ -110,6 +110,8 @@ export const QuizQuestionSchema = z.object({
   explanation: z.string().optional(),
   hint: z.string().optional(),
   difficulty: z.number().int().min(1).max(5),
+  sourceReference: z.string().trim().min(1, 'A source reference is required'),
+  bloomLevel: z.enum(['remembering', 'understanding', 'applying', 'analyzing', 'evaluating', 'creating']),
 }).transform((q) => autoHealQuestion(q));
 
 export const QuizQuestionsResponseSchema = z.object({
