@@ -5492,54 +5492,9 @@ app.post('/api/ai/stream', verifyAuth, async (req, res) => {
     const effectiveTaskType = classified.taskType;
     const effectiveComplexity = complexity || classified.complexity;
 
-    const routingConfig = (await getSystemConfigDoc('routing')) || {
-      chat: 'groq',
-      deep_reasoning: 'nvidia',
-      coding: 'nvidia',
-      quiz: 'groq',
-      lesson: 'nvidia',
-      skeleton: 'cohere',
-      recommendation: 'cohere',
-      flashcard: 'huggingface',
-      rag: 'openrouter_free',
-      vision: 'gemini_direct',
-      past_questions: 'gemini_direct',
-      voice_tutor: 'nvidia',
-      voice_tutor_model: 'nemotron-voicechat',
-      nvidia_text_model: 'nvidia/nemotron-3-super-120b-a12b',
-      nvidia_image_model: 'black-forest-labs/flux.1-dev'
-    };
-    
-    // Fetch Global AI Mode from Neon PostgreSQL
+    const routingConfig = await requireLiveRoutingConfig();
     const aiModeDoc = await getSystemConfigDoc('ai_mode');
-    const globalAiMode = aiModeDoc?.mode || 'normal';
-    
-    let preferredProviderName = req.body.preferredProvider || routingConfig.global_provider || process.env.ACTIVE_AI_PROVIDER || routingConfig[effectiveTaskType] || 'groq';
-    
-    // If Global Fast Mode is enabled, force Groq for all students
-    if (globalAiMode === 'fast') {
-      console.log(`[AI Stream] Global Fast Mode enabled. Forcing Groq for ${uid}`);
-      preferredProviderName = 'groq';
-    }
-    
-    const TASK_ROUTING_TABLE: Record<string, { primary: string, fallbacks: string[] }> = {
-      'chat': { primary: 'groq', fallbacks: ['nvidia', 'cohere', 'openrouter_free'] },
-      'deep_reasoning': { primary: 'nvidia', fallbacks: ['groq', 'gemini_direct', 'cohere'] },
-      'coding': { primary: 'nvidia', fallbacks: ['groq', 'mistral_direct', 'openrouter_free'] },
-      'quiz': { primary: 'groq', fallbacks: ['nvidia', 'openrouter_free'] },
-      'skeleton': { primary: 'cohere', fallbacks: ['nvidia', 'openrouter_free'] },
-      'recommendation': { primary: 'cohere', fallbacks: ['nvidia', 'openrouter_free'] },
-      'lesson': { primary: 'nvidia', fallbacks: ['groq', 'openrouter_free', 'cohere'] },
-      'flashcard': { primary: 'huggingface', fallbacks: ['groq', 'nvidia'] },
-      'rag': { primary: 'openrouter_free', fallbacks: ['nvidia', 'groq'] },
-      'vision': { primary: 'gemini_direct', fallbacks: ['nvidia'] },
-      'past_questions': { primary: 'gemini_direct', fallbacks: ['nvidia', 'groq'] },
-      'voice_tutor': { primary: 'nvidia', fallbacks: ['gemini_direct', 'groq', 'cohere'] },
-      'default': { primary: 'groq', fallbacks: ['nvidia', 'openrouter_free', 'cohere'] }
-    };
-
-    const routeConfig = TASK_ROUTING_TABLE[effectiveTaskType] || TASK_ROUTING_TABLE['default'];
-    
+    const globalAiMode = aiModeDoc?.mode;
     const providerMap: Record<string, any> = {
       gemini_direct: globalGeminiDirectBreaker,
       mistral_direct: globalMistralDirectBreaker,
@@ -5549,6 +5504,16 @@ app.post('/api/ai/stream', verifyAuth, async (req, res) => {
       openrouter_free: globalOpenRouterFreeBreaker,
       nvidia: globalNvidiaBreaker || globalNvidiaProvider
     };
+    const requestedPrimary = globalAiMode === 'fast'
+      ? routingConfig.fast_mode_provider
+      : (req.body.preferredProvider || process.env.ACTIVE_AI_PROVIDER || undefined);
+    const providerNames = resolveLiveProviderQueue(
+      routingConfig,
+      effectiveTaskType,
+      providerMap,
+      requestedPrimary
+    );
+    const preferredProviderName = providerNames[0];
 
     // Inject Role Persona Directive into messages
     const roleDirective = getRolePersonaDirective(preferredProviderName, effectiveTaskType);
@@ -5556,20 +5521,9 @@ app.post('/api/ai/stream', verifyAuth, async (req, res) => {
       messages[0].content += roleDirective;
     }
     
-    const providers = [];
-    if (providerMap[preferredProviderName]) {
-      providers.push(providerMap[preferredProviderName]);
-    }
-    
-    // Add fallbacks
-    const fallbackExclusion = preferredProviderName || "";
-    const dynamicFallbacks = Object.keys(providerMap).filter(p => p !== fallbackExclusion);
-    dynamicFallbacks.sort(() => Math.random() - 0.5);
-    for (const fallbackName of dynamicFallbacks) {
-      if (providerMap[fallbackName]) {
-        providers.push(providerMap[fallbackName]);
-      }
-    }
+    const providers = providerNames
+      .map(name => providerMap[name])
+      .filter((provider: any) => Boolean(provider));
 
     if (providers.length === 0) {
       throw new Error('No AI providers configured');
