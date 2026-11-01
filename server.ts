@@ -10244,54 +10244,40 @@ async function startServer() {
           }
         }
 
-        const geminiDirectBreaker = globalGeminiDirectBreaker;
-        const openRouterFreeBreaker = globalOpenRouterFreeBreaker;
-        const mistralDirectBreaker = globalMistralDirectBreaker;
-        const groqBreaker = globalGroqBreaker;
-        const cohereBreaker = globalCohereBreaker;
-        const huggingFaceBreaker = globalHuggingFaceBreaker;
-
-        // Fetch dynamic task routing config for chat from Neon PostgreSQL cache
-        let routingConfig: any = { chat: 'groq' };
-        try {
-          const routingDoc = await getSystemConfigDoc('routing');
-          if (routingDoc) {
-            routingConfig = routingDoc;
-          }
-        } catch (err) {
-          console.warn("Failed to fetch routing config for WebSocket chat:", err);
-        }
-
-        const preferredProviderName = routingConfig.global_provider || process.env.ACTIVE_AI_PROVIDER || routingConfig.chat || 'groq';
-
+        const routingConfig = await requireLiveRoutingConfig();
         const providerMap: Record<string, any> = {
-          gemini_direct: geminiDirectBreaker,
-          mistral_direct: mistralDirectBreaker,
-          groq: groqBreaker,
-          cohere: cohereBreaker,
-          huggingface: huggingFaceBreaker,
-          openrouter_free: openRouterFreeBreaker,
+          gemini_direct: globalGeminiDirectBreaker,
+          mistral_direct: globalMistralDirectBreaker,
+          groq: globalGroqBreaker,
+          cohere: globalCohereBreaker,
+          huggingface: globalHuggingFaceBreaker,
+          openrouter_free: globalOpenRouterFreeBreaker,
           nvidia: globalNvidiaBreaker || globalNvidiaProvider
         };
-
-        const availableWsProviderKeys = Object.keys(providerMap).filter((k) => Boolean(providerMap[k]));
         const hasWsDocumentOrRag = wsHygiene.hasDocumentAttachment || Boolean(contextFromSearch);
-
-        // Privacy & Accuracy-Tiered Provider Selection for WebSocket Stream
+        const wsTaskType = image ? 'vision' : (hasWsDocumentOrRag ? 'rag' : 'chat');
+        const configuredProviderNames = resolveLiveProviderQueue(
+          routingConfig,
+          wsTaskType,
+          providerMap
+        );
         const selectedProviderNames = selectTieredProviderNames({
-          preferredProvider: preferredProviderName,
-          availableProviderKeys: availableWsProviderKeys,
+          preferredProvider: configuredProviderNames[0],
+          availableProviderKeys: configuredProviderNames,
           hasImage: Boolean(image),
           hasDocumentOrRag: hasWsDocumentOrRag,
           complexity,
-          verifiedTier1Providers: Array.isArray(routingConfig.verifiedTier1Providers) ? routingConfig.verifiedTier1Providers : []
+          verifiedTier1Providers: Array.isArray(routingConfig.verifiedTier1Providers) ? routingConfig.verifiedTier1Providers : [],
+          isStemQuery: wsTaskType === 'chat' && complexity === 'high'
         });
 
         if (selectedProviderNames.length === 0) {
-          throw new Error('Service Unavailable (503): All empirically verified Tier-1 academic providers are currently unreachable. Your Sparks have been refunded in full.');
+          throw new Error('Service Unavailable (503): Configured and verified providers for this WebSocket task are unavailable.');
         }
 
-        const providers = selectedProviderNames.map((name) => providerMap[name]).filter(Boolean);
+        const providers = selectedProviderNames
+          .map(name => providerMap[name])
+          .filter(Boolean);
 
         const validHistory = truncateHistory(history || [])
           .map((m: any) => {
@@ -10349,7 +10335,7 @@ async function startServer() {
               filteredStreamHandler
             );
             if (aiResponse) {
-              successfulProviderName = p.name || 'groq';
+              successfulProviderName = p.name;
               filteredStreamHandler.flush?.();
               break;
             }
