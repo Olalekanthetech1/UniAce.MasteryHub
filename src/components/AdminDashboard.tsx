@@ -42,6 +42,7 @@ import DraftCourseReviewPanel from './admin/DraftCourseReviewPanel';
 
 import { jsonrepair } from 'jsonrepair';
 import { safeFetchJson } from '../utils/safeFetch';
+import { resolveCourseGenerationTarget } from '../utils/courseTargeting';
 
 function parseFirestoreDate(val: any): Date | null {
   if (!val) return null;
@@ -1122,14 +1123,21 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
     }
   };
 
+  const handleCourseScopeChange = (nextScope: CourseScope) => {
+    setCourseScope(nextScope);
+    setSelectedFaculties([]);
+    setSelectedDepartments([]);
+  };
+
   const handleGenerateSkeleton = async () => {
     if (!quickCourseName || !quickCourseCode) {
       showToast('Please provide both course code and name', 'error');
       return;
     }
-    const resolvedDept = quickDepartment || (selectedDepartments.length > 0 ? selectedDepartments[0] : (selectedFaculties.length > 0 ? selectedFaculties[0] : ''));
-    if (!resolvedDept) {
-      showToast('Please select a target Department for course generation', 'error');
+    const target = resolveCourseGenerationTarget(courseScope, selectedFaculties, selectedDepartments);
+    if (!target) {
+      const requiredTarget = courseScope === 'FACULTY' ? 'Faculty' : 'Department';
+      showToast(`Please select at least one target ${requiredTarget} for course generation`, 'error');
       return;
     }
 
@@ -1154,15 +1162,15 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
             [],
             quickLevel,
             quickSemester,
-            resolvedDept,
+            target.department,
             undefined, // curriculumBenchmark
             quickTone,
             quickDepth,
             sourceText,
             activeAcademicStandard,
             courseScope,
-            courseScope === 'FACULTY' ? selectedFaculties : [],
-            courseScope === 'DEPARTMENT' ? selectedDepartments : []
+            target.selectedFaculties,
+            target.selectedDepartments
           );
         } catch (err) {
           retries--;
@@ -1216,9 +1224,10 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
 
   const handleFinalizeGeneration = async (opts?: { resume?: boolean }) => {
     if (!courseSkeleton) return;
-    const resolvedDept = quickDepartment || (selectedDepartments.length > 0 ? selectedDepartments[0] : (selectedFaculties.length > 0 ? selectedFaculties[0] : ''));
-    if (!resolvedDept) {
-      showToast('Please select a target Department before generating full content', 'error');
+    const target = resolveCourseGenerationTarget(courseScope, selectedFaculties, selectedDepartments);
+    if (!target) {
+      const requiredTarget = courseScope === 'FACULTY' ? 'Faculty' : 'Department';
+      showToast(`Please select at least one target ${requiredTarget} before generating full content`, 'error');
       return;
     }
 
@@ -1254,15 +1263,15 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
           provider: aiProvider,
           level: quickLevel,
           semester: quickSemester,
-          department: resolvedDept,
+          department: target.department,
           tone: quickTone,
           depth: quickDepth,
           sourceText,
           academicStandard: activeAcademicStandard,
           subject: quickSubject,
           scope: courseScope,
-          selectedFaculties: courseScope === 'FACULTY' ? selectedFaculties : [],
-          selectedDepartments: courseScope === 'DEPARTMENT' ? selectedDepartments : [],
+          selectedFaculties: target.selectedFaculties,
+          selectedDepartments: target.selectedDepartments,
           approvedModules: courseSkeleton.modules,
           domainBrief: courseSkeleton.domainBrief,
           learningOutcomes: courseSkeleton.learningOutcomes,
@@ -2387,6 +2396,9 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   const handleFastTrackAIBuild = async (req: any) => {
     setActiveTab('courses');
     setQuickDepartment(req.department);
+    setCourseScope('DEPARTMENT');
+    setSelectedFaculties([]);
+    setSelectedDepartments(req.department ? [req.department as Department] : []);
     setQuickLevel(req.level);
     if (req.semester) {
       setQuickSemester(req.semester);
@@ -3485,25 +3497,12 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
                     </p>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-                    <div>
-                      <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Department</label>
-                      <select 
-                        value={quickDepartment}
-                        onChange={(e) => setQuickDepartment(e.target.value as Department)}
-                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      >
-                        <option value="">Select Department...</option>
-                        {DEPARTMENTS.map(dept => (
-                          <option key={dept} value={dept}>{dept}</option>
-                        ))}
-                      </select>
-                    </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
                     <div>
                       <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Course Scope</label>
                       <select 
                         value={courseScope}
-                        onChange={(e) => setCourseScope(e.target.value as CourseScope)}
+                        onChange={(e) => handleCourseScopeChange(e.target.value as CourseScope)}
                         className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                       >
                         <option value="GLOBAL">Global (All Students)</option>
