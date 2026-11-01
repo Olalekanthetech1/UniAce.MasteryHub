@@ -47,8 +47,10 @@ export const CourseService = {
         description: typeof c.description === 'string' ? c.description : '',
         department: typeof c.department === 'string' ? c.department : '',
         faculty: typeof c.faculty === 'string' ? c.faculty : '',
-        faculties: Array.isArray(c.faculties) ? c.faculties : (c.faculty ? [c.faculty] : []),
-        departments: Array.isArray(c.departments) ? c.departments : (c.department ? [c.department] : []),
+        faculties: Array.isArray(c.faculties) && c.faculties.length > 0 ? c.faculties : (c.faculty ? [c.faculty] : []),
+        departments: Array.isArray(c.departments) && c.departments.length > 0
+          ? c.departments
+          : (c.scope === 'DEPARTMENT' && c.department ? [c.department] : []),
         level: c.level as any,
         semester: normalizedSemester as any,
         scope: c.scope,
@@ -76,8 +78,10 @@ export const CourseService = {
       description: typeof c.description === 'string' ? c.description : '',
       department: typeof c.department === 'string' ? c.department : '',
       faculty: typeof c.faculty === 'string' ? c.faculty : '',
-      faculties: c.faculty ? [c.faculty] : [],
-      departments: c.department ? [c.department] : [],
+      faculties: Array.isArray(c.faculties) && c.faculties.length > 0 ? c.faculties : (c.faculty ? [c.faculty] : []),
+      departments: Array.isArray(c.departments) && c.departments.length > 0
+        ? c.departments
+        : (c.scope === 'DEPARTMENT' && c.department ? [c.department] : []),
       level: c.level as any,
       semester: normalizedSemester as any,
       scope: c.scope,
