@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { BookOpen, Plus, Trash2, AlertCircle, Layers, Search, Filter, Copy, CheckSquare, Square, AlertTriangle } from 'lucide-react';
 import { useCourses } from '../context/CourseContext';
-import { LEVELS, SEMESTERS } from '../constants';
+
 import { Course, Department, Level, Semester, CourseScope } from '../types';
 import { useInstitution } from '../context/InstitutionContext';
 
@@ -22,6 +22,16 @@ export const CurriculumManager: React.FC = () => {
   const [confirmModal, setConfirmModal] = useState<{ title: string; message: string; onConfirm: () => void; isAlert?: boolean } | null>(null);
 
   const allCourses = Object.values(courses).filter(c => !c.deleted);
+
+  // Filter choices are derived from actual course records, not a fixed institution-wide list.
+  const availableLevels = useMemo(
+    () => Array.from(new Set(allCourses.map(course => typeof course.level === 'string' ? course.level.trim() : '').filter(Boolean))).sort(),
+    [allCourses]
+  );
+  const availableSemesters = useMemo(
+    () => Array.from(new Set(allCourses.map(course => typeof course.semester === 'string' ? course.semester.trim() : '').filter(Boolean))).sort(),
+    [allCourses]
+  );
 
   // Filter courses that are currently allocated to the selected department
   const allocatedCourses = useMemo(() => {
@@ -277,7 +287,7 @@ export const CurriculumManager: React.FC = () => {
             className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500"
           >
             <option value="">All Levels</option>
-            {LEVELS.map(lvl => (
+            {availableLevels.map(lvl => (
               <option key={lvl} value={lvl}>{lvl} Level</option>
             ))}
           </select>
@@ -291,7 +301,7 @@ export const CurriculumManager: React.FC = () => {
             className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500"
           >
             <option value="">All Semesters</option>
-            {SEMESTERS.map(sem => (
+            {availableSemesters.map(sem => (
               <option key={sem} value={sem}>{sem}</option>
             ))}
           </select>
