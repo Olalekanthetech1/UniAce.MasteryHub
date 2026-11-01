@@ -80,7 +80,6 @@ export interface AcademicProviderHealth {
 export interface AcademicConfig {
   enabled: boolean;
   cacheTtlHours: number;
-  semanticScholarApiKey?: string;
   openAlexEmail?: string;
   researchDepth: 'adaptive';
   adaptiveMaxQueries: number;
@@ -88,7 +87,7 @@ export interface AcademicConfig {
   tavilyApiKeyConfigured: boolean;
   semanticScholarApiKeyConfigured: boolean;
   arxivMaxResults: number;
-  defaultCourseAlignment: string; // e.g. "Global University Benchmark Syllabus (Adaptive)"
+  defaultCourseAlignment: string;
   providersEnabled: {
     arxiv: boolean;
     semanticScholar: boolean;
