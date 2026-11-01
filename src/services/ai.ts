@@ -674,12 +674,16 @@ Return a JSON object containing a "distractors" array of exactly ${count} string
       throw new Error('Adaptive quiz generation requires a verified student skill level from the live mastery record.');
     }
 
-    const sourceMaterial = subTopic
-      ? `Subtopic Title: "${subTopic.title}"\nContent: ${subTopic.content || ''}`
-      : `Module Title: "${module.title}"\n${module.subTopics.map(st => `--- Subtopic: ${st.title} ---\n${st.content || ''}`).join('\n\n')}`;
-    if (!sourceMaterial.replace(/Subtopic Title:|Module Title:|--- Subtopic:|---/g, '').trim()) {
+    const lessonSourceSegments = subTopic
+      ? [subTopic.content]
+      : module.subTopics.map(topic => topic.content);
+    if (!lessonSourceSegments.some(content => typeof content === 'string' && content.trim().length > 0)) {
       throw new Error('Quiz generation requires non-empty lesson source material from the live course record.');
     }
+
+    const sourceMaterial = subTopic
+      ? `Subtopic Title: "${subTopic.title}"\nContent: ${subTopic.content}`
+      : `Module Title: "${module.title}"\n${module.subTopics.map(topic => `--- Subtopic: ${topic.title} ---\n${topic.content}`).join('\n\n')}`;
 
     const isHighMastery = typeof rollingMasteryScore === 'number' && rollingMasteryScore >= 75;
     const isFoundationMastery = typeof rollingMasteryScore === 'number' && rollingMasteryScore < 50;
@@ -758,9 +762,23 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
     const rawData = extractJSON(response.text);
     const validated = QuizQuestionsResponseSchema.parse(rawData);
     const questions = validated.questions;
+    if (!Number.isInteger(numQuestions) || numQuestions < 1 || numQuestions > 100) {
+      throw new Error('Quiz question count must be an integer between 1 and 100.');
+    }
     const requiredQuestionCount = adaptive ? 15 : numQuestions;
     if (questions.length !== requiredQuestionCount) {
       throw new Error(`Quiz generator returned ${questions.length} questions; ${requiredQuestionCount} were required. The incomplete result was rejected.`);
+    }
+    if (adaptive) {
+      const difficultyCounts = new Map<number, number>();
+      for (const question of questions) {
+        difficultyCounts.set(question.difficulty, (difficultyCounts.get(question.difficulty) || 0) + 1);
+      }
+      for (let difficulty = 1; difficulty <= 5; difficulty++) {
+        if (difficultyCounts.get(difficulty) !== 3) {
+          throw new Error(`Adaptive quiz output must contain exactly three questions at difficulty ${difficulty}.`);
+        }
+      }
     }
 
     const sourceText = sourceMaterial.toLocaleLowerCase();
