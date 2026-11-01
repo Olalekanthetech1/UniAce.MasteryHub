@@ -11,9 +11,9 @@ test('normalizes LaTeX inline and display delimiter variants', () => {
 
 test('preserves LaTeX-looking content inside fenced code blocks', () => {
   const fence = String.fromCharCode(96).repeat(3);
-  const source = 'Example source:\n' + fence + 'latex\n\\(x + 1\\)\n' + fence + '\n\nActual: \\(x + 1\\)';
+  const source = 'Example source:\n' + fence + 'typescript\n\\(x + 1\\)\n' + fence + '\n\nActual: \\(x + 1\\)';
   const result = normalizeMathDelimiters(source);
-  assert.ok(result.includes(fence + 'latex\n\\(x + 1\\)\n' + fence));
+  assert.ok(result.includes(fence + 'typescript\n\\(x + 1\\)\n' + fence));
   assert.ok(result.includes('$x + 1$'));
 });
 
