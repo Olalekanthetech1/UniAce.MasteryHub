@@ -60,9 +60,13 @@ export const SRSService = {
    */
   async updateSRS(courseId: string, topicId: string, topicTitle: string, scorePercentage: number) {
     const user = auth.currentUser;
-    if (!user) return;
+    if (!user) throw new Error('An authenticated student session is required to update spaced repetition.');
 
-    // Convert score percentage (0-100) to SM-2 quality (0-5)
+    if (!Number.isFinite(scorePercentage) || scorePercentage < 0 || scorePercentage > 100) {
+      throw new Error('A valid recorded quiz score is required to update spaced repetition.');
+    }
+
+    // Convert the actual quiz score to the configured SM-2 quality scale.
     let quality = 0;
     if (scorePercentage >= 95) quality = 5;
     else if (scorePercentage >= 80) quality = 4;
@@ -70,22 +74,22 @@ export const SRSService = {
     else if (scorePercentage >= 40) quality = 2;
     else if (scorePercentage >= 20) quality = 1;
 
-    try {
-      const token = await user.getIdToken();
-      await fetch('/api/user/srs', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          cardId: topicId,
-          courseId,
-          rating: quality
-        })
-      });
-    } catch (err) {
-      console.warn('[SRSService] Failed to update SRS via API:', err);
+    const token = await user.getIdToken();
+    const response = await fetch('/api/user/srs', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        cardId: topicId,
+        courseId,
+        topicTitle,
+        rating: quality
+      })
+    });
+    if (!response.ok) {
+      throw new Error(`Spaced-repetition update failed with HTTP ${response.status}.`);
     }
   },
 
@@ -93,34 +97,51 @@ export const SRSService = {
    * Fetches an SRS record for a specific user and topic.
    */
   async getSRSRecord(userId: string, courseId: string, topicId: string): Promise<SRSRecord | null> {
-    try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) return null;
-      const res = await safeFetchJson<any>('/api/user/srs', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (res.ok && res.data) {
-        const json = res.data;
-        if (Array.isArray(json.cards)) {
-          const match = json.cards.find((c: any) => c.card_id === topicId || c.id === topicId);
-          if (match) {
-            return {
-              userId,
-              topicId: match.card_id,
-              courseId: match.course_id,
-              easinessFactor: match.ease_factor || 2.5,
-              interval: 1,
-              repetitions: match.review_count || 0,
-              nextReviewDate: match.next_review_at,
-              lastReviewed: match.updated_at || new Date().toISOString()
-            };
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('[SRSService] Failed to fetch SRS record:', err);
+    const currentUser = auth.currentUser;
+    if (!currentUser || currentUser.uid !== userId) {
+      throw new Error('The authenticated user does not match the requested spaced-repetition profile.');
     }
-    return null;
+
+    const token = await currentUser.getIdToken();
+    const res = await safeFetchJson<any>('/api/user/srs', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!res.ok) {
+      throw new Error(`Spaced-repetition lookup failed with HTTP ${res.status}.`);
+    }
+    if (!res.data || !Array.isArray(res.data.cards)) {
+      throw new Error('Spaced-repetition response did not contain a verified cards array.');
+    }
+
+    const match = res.data.cards.find((card: any) =>
+      card.card_id === topicId && card.course_id === courseId
+    );
+    if (!match) return null;
+
+    const repetitions = Number(match.review_count);
+    const easinessFactor = Number(match.ease_factor);
+    const nextReviewDate = match.next_review_at;
+    const lastReviewed = match.updated_at;
+    if (!Number.isFinite(repetitions) || repetitions < 0 ||
+        !Number.isFinite(easinessFactor) || typeof nextReviewDate !== 'string' ||
+        Number.isNaN(Date.parse(nextReviewDate)) || typeof lastReviewed !== 'string' ||
+        Number.isNaN(Date.parse(lastReviewed))) {
+      throw new Error('The persisted spaced-repetition record is incomplete or invalid.');
+    }
+
+    const nextReviewTime = Date.parse(nextReviewDate);
+    const lastReviewedTime = Date.parse(lastReviewed);
+    const interval = Math.max(0, Math.ceil((nextReviewTime - lastReviewedTime) / 86400000));
+    return {
+      userId,
+      topicId: match.card_id,
+      courseId: match.course_id,
+      easinessFactor,
+      interval,
+      repetitions,
+      nextReviewDate,
+      lastReviewed
+    };
   },
 
   /**
