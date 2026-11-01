@@ -494,11 +494,13 @@ export async function executeSparkPreAuth(
         isNewUserPg = true;
         const isUserAdmin = isAdminEmailFn(userEmail);
         const initialRole = isUserAdmin ? 'admin' : 'student';
-        const initialSparks =
-          configuredDailyFreeSparks !== null && configuredDailyFreeSparks > 0
-            ? configuredDailyFreeSparks
-            : 50;
-        const seedDisplayName = userEmail ? userEmail.split('@')[0] : 'Student';
+        if (configuredDailyFreeSparks === null ||
+            !Number.isFinite(configuredDailyFreeSparks) ||
+            configuredDailyFreeSparks < 0) {
+          throw new Error('New-user Spark provisioning is unavailable because the authoritative evaluation_policy.dailyFreeSparks value is missing or invalid.');
+        }
+        const initialSparks = configuredDailyFreeSparks;
+        const seedDisplayName = null;
 
         await client.query(
           `INSERT INTO users (
@@ -507,15 +509,13 @@ export async function executeSparkPreAuth(
            )
            VALUES ($1, $2, $3, $4, 'free', $5, '{}'::jsonb, NOW(), 'none', NOW(), NOW())
            ON CONFLICT (uid) DO NOTHING`,
-          [uid, userEmail || `${uid}@uniace.local`, seedDisplayName, initialRole, initialSparks]
+          [uid, typeof userEmail === 'string' && userEmail.trim() ? userEmail.trim() : null, seedDisplayName, initialRole, initialSparks]
         );
 
         await client.query(
           `INSERT INTO user_sparks_wallets (uid, balance, plan_type, last_spark_reset, updated_at)
            VALUES ($1, $2, 'free', NOW(), NOW())
-           ON CONFLICT (uid) DO UPDATE SET
-             balance = EXCLUDED.balance,
-             updated_at = NOW()`,
+           ON CONFLICT (uid) DO NOTHING`,
           [uid, initialSparks]
         );
 
@@ -573,7 +573,7 @@ export async function executeSparkPreAuth(
           bucketSource: bucketAccountingEnabled ? 'tracked' : 'legacy_off',
           plan,
           role,
-          displayName: userRow.display_name || 'Student',
+          displayName: userRow.display_name,
           learningProfile: userRow.learning_profile || null,
           isFreeUser,
           preAuthDeduction: Number(lockRow.amount_locked ?? 0),
