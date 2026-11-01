@@ -150,7 +150,8 @@ export interface UserProfile {
   referralCode?: string;
   referredBy?: string;
   referral_count?: number;
-  ai_sparks?: number;
+  ai_sparks?: number | null;
+  unlimited_sparks?: boolean;
   has_seen_whatsapp?: boolean;
   onboarding_completed?: boolean;
 }
