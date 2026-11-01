@@ -392,19 +392,26 @@ export default function Arena({ activeCourseId }: ArenaProps) {
     const missed: MissedQuestionBreakdownItem[] = [];
 
     for (const act of actionLog) {
-      if (!act.correct) {
-        const q = questions[act.questionIndex];
-        if (q) {
-          missed.push({
-            questionIndex: act.questionIndex,
-            question: q.question,
-            selectedOption: act.selectedOption || 'No answer selected',
-            correctAnswer: q.correctAnswer,
-            curriculumExplanation: q.explanation || '',
-            elapsedSeconds: typeof act.elapsedMs === 'number' ? Number((act.elapsedMs / 1000).toFixed(1)) : null
-          });
-        }
+      if (act.correct !== false || !Number.isInteger(act.questionIndex) ||
+          typeof act.selectedOption !== 'string' || !act.selectedOption.trim()) {
+        continue;
       }
+
+      const q = questions[act.questionIndex];
+      if (!q || typeof q.question !== 'string' || typeof q.correctAnswer !== 'string') {
+        continue;
+      }
+
+      missed.push({
+        questionIndex: act.questionIndex,
+        question: q.question,
+        selectedOption: act.selectedOption,
+        correctAnswer: q.correctAnswer,
+        curriculumExplanation: typeof q.explanation === 'string' ? q.explanation : '',
+        elapsedSeconds: typeof act.elapsedMs === 'number' && Number.isFinite(act.elapsedMs)
+          ? Number((act.elapsedMs / 1000).toFixed(1))
+          : null
+      });
     }
     return missed;
   }, [user]);
@@ -429,24 +436,24 @@ export default function Arena({ activeCourseId }: ArenaProps) {
 
     const generateLiveTacticalBreakdown = async () => {
       try {
-        const courseId = battleData.topicId || selectedCourseId || 'University Course';
+        const courseId = battleData.topicId || selectedCourseId;
+        if (!courseId) {
+          throw new Error('A verified course reference is required for post-match analysis.');
+        }
         const promptLines = missed.map(
           (m, i) =>
-            `${i + 1}. Question (Q${m.questionIndex + 1}): ${m.question}\n   - Student Selected: ${m.selectedOption}\n   - Correct Answer: ${m.correctAnswer}\n   - Core Explanation: ${m.curriculumExplanation}`
+            `${i + 1}. Question (Q${m.questionIndex + 1}): ${m.question}\n   - Recorded Student Answer: ${m.selectedOption}\n   - Stored Correct Answer: ${m.correctAnswer}\n   - Stored Explanation (if any): ${m.curriculumExplanation || 'No explanation was stored with this question.'}`
         );
-        const prompt = `You are the [AI Challenger] Sparring Partner in the UniAce Academic Arena for ${courseId}.
-The student just completed a timed Arena duel and missed the following ${missed.length} question(s):
+        const prompt = `You are an AI academic coach reviewing recorded answers for ${courseId}.
+The student completed an Arena battle. The following records identify answers marked incorrect by the battle server:
 
 ${promptLines.join('\n\n')}
 
-Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed question:
-1. **Why the Chosen Option Failed**: Briefly explain the misconception or trap in the student's selected answer.
-2. **Core Academic Principle**: State the exact formula, theorem, or concept that proves the correct answer (use valid KaTeX $...$ or $$...$$ where appropriate).
-3. **Speed-Recognition Cue**: Give a 1-sentence tactical shortcut so the student can spot and solve this in under 8 seconds in their next duel.`;
+Produce an AI-generated review. Explain the likely error using only the supplied question, recorded answer, stored correct answer and explanation. Do not claim an external source or independent curriculum verification. If the available evidence is insufficient to establish a concept or derivation, state that limitation. Use valid KaTeX notation where appropriate.`;
 
         const responseText = await AIService.generateContent(
           prompt,
-          'You are the [AI Challenger] Sparring Partner providing a rigorous, encouraging post-match tactical breakdown. Use clean Markdown and valid KaTeX math notation.'
+          'You are an AI academic coach. Analyse only the supplied recorded battle data, distinguish stored data from your own explanation, state uncertainty where appropriate, and do not claim independent verification. Use clean Markdown and valid KaTeX math notation.'
         );
         if (!cancelled) {
           setTacticalDebrief(responseText);
@@ -826,14 +833,31 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
 
   const cancelMatchmaking = async () => {
     if (battleId && user) {
-      const token = await user.getIdToken();
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'battle:unsubscribe', battleId }));
+      try {
+        const token = await user.getIdToken();
+        const response = await fetch(`/api/arena/battles/${encodeURIComponent(battleId)}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!response.ok) {
+          const result = await response.json().catch(() => null);
+          toast.error(
+            typeof result?.error === 'string'
+              ? result.error
+              : 'The server did not confirm cancellation. The current battle state was kept.'
+          );
+          if (response.status === 409) {
+            void syncBattleStateOnce(battleId);
+          }
+          return;
+        }
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'battle:unsubscribe', battleId }));
+        }
+      } catch (error: any) {
+        toast.error(error?.message || 'Cancellation could not be confirmed by the server.');
+        return;
       }
-      await fetch(`/api/arena/battles/${encodeURIComponent(battleId)}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` }
-      }).catch(() => {});
     }
     setBattleId(null);
     setBattleData(null);
@@ -1276,11 +1300,13 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
           <div className="flex items-center gap-4 w-1/3">
             <div className="relative">
               <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-2xl bg-blue-600 border-4 border-slate-800 shadow-xl overflow-hidden">
-                <img
-                  src={me.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${me.uid}`}
-                  alt="Me"
-                  className="w-full h-full object-cover"
-                />
+                {typeof me.avatar === 'string' && me.avatar.trim() ? (
+                  <img src={me.avatar} alt="Your profile" className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-white text-xl font-black">
+                    {typeof me.name === 'string' && me.name.trim() ? me.name.trim().charAt(0).toUpperCase() : <Users size={22} />}
+                  </div>
+                )}
               </div>
               <div className="absolute -bottom-2 -right-2 bg-slate-800 text-white text-xs font-bold px-2 py-0.5 rounded-full border border-slate-700">
                 You
@@ -1339,14 +1365,13 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
             </div>
             <div className="relative">
               <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-2xl bg-red-600 border-4 border-slate-800 shadow-xl overflow-hidden">
-                <img
-                  src={
-                    opponent.avatar ||
-                    `https://api.dicebear.com/7.x/avataaars/svg?seed=${opponent.uid}`
-                  }
-                  alt="Opponent"
-                  className="w-full h-full object-cover"
-                />
+                {typeof opponent.avatar === 'string' && opponent.avatar.trim() ? (
+                  <img src={opponent.avatar} alt="Opponent profile" className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-white text-xl font-black">
+                    {typeof opponent.name === 'string' && opponent.name.trim() ? opponent.name.trim().charAt(0).toUpperCase() : <Users size={22} />}
+                  </div>
+                )}
               </div>
               <div className="absolute -bottom-2 -left-2 bg-slate-800 text-white text-[10px] font-bold px-2 py-0.5 rounded-full border border-slate-700 whitespace-nowrap">
                 {opponentBadge}
@@ -1442,6 +1467,7 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
     const enemyPlayer =
       battleData.player1.uid !== user?.uid ? battleData.player1 : battleData.player2;
     const missedQuestions = getMissedQuestionsFromBattle(battleData);
+    const recordedAttemptCount = Array.isArray(myPlayer?.actionLog) ? myPlayer.actionLog.length : 0;
 
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-start p-4 sm:p-8 pb-24 lg:pb-12 overflow-y-auto">
@@ -1512,7 +1538,7 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
             </button>
           </motion.div>
 
-          {/* POST-MATCH TACTICAL BREAKDOWN ([AI Challenger] Sparring Partner) */}
+          {/* AI-generated analysis based only on the recorded battle answers. */}
           <div className="bg-slate-900 border border-purple-500/30 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="flex items-center gap-3">
@@ -1521,7 +1547,7 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
                 </div>
                 <div>
                   <div className="text-xs font-black uppercase tracking-wider text-purple-400">
-                    [AI Challenger] Post-Match Breakdown
+                    AI-Generated Post-Match Review
                   </div>
                   <h3 className="text-lg font-black text-white">
                     Tactical Debrief of Missed Duel Questions
@@ -1545,14 +1571,25 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
             </div>
 
             {missedQuestions.length === 0 ? (
-              <div className="p-6 rounded-2xl bg-emerald-950/30 border border-emerald-500/40 text-center space-y-1">
-                <div className="text-base font-black text-emerald-300">
-                  Flawless Execution — 0 Missed Questions!
+              recordedAttemptCount > 0 ? (
+                <div className="p-6 rounded-2xl bg-emerald-950/30 border border-emerald-500/40 text-center space-y-1">
+                  <div className="text-base font-black text-emerald-300">
+                    All Recorded Answers Were Correct
+                  </div>
+                  <p className="text-xs text-slate-300">
+                    The server recorded {recordedAttemptCount} answer event(s), and none was marked incorrect. This describes recorded attempts only.
+                  </p>
                 </div>
-                <p className="text-xs text-slate-300">
-                  You answered every question you attempted accurately. Your course mastery telemetry has been updated.
-                </p>
-              </div>
+              ) : (
+                <div className="p-6 rounded-2xl bg-slate-900 border border-slate-700 text-center space-y-1">
+                  <div className="text-base font-black text-slate-200">
+                    No Answer Events Were Recorded
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    The available battle record contains no answer events for this player. Performance cannot be inferred from an empty record.
+                  </p>
+                </div>
+              )
             ) : (
               <div className="space-y-4">
                 {missedQuestions.map((item, idx) => (
@@ -1586,7 +1623,7 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
                     {item.curriculumExplanation && (
                       <div className="text-xs text-slate-300 bg-slate-900/90 p-3.5 rounded-xl border border-slate-800">
                         <span className="font-bold text-purple-300 block mb-1">
-                          Curriculum Verification Note:
+                          Stored Question Explanation (not independently verified):
                         </span>
                         <MarkdownRenderer content={item.curriculumExplanation} />
                       </div>
@@ -1594,11 +1631,11 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
                   </div>
                 ))}
 
-                {/* Live AI Challenger Tactical Synthesis */}
+                {/* Generated analysis, not an independent curriculum verification. */}
                 <div className="p-5 rounded-2xl bg-purple-950/25 border border-purple-500/40 space-y-3">
                   <div className="flex items-center gap-2 text-xs font-black uppercase tracking-wider text-purple-300">
                     <Bot size={15} />
-                    <span>Live [AI Challenger] Tactical Analysis</span>
+                    <span>AI-Generated Tactical Analysis</span>
                   </div>
                   {loadingDebrief ? (
                     <div className="flex items-center gap-2.5 text-xs text-slate-300 py-3">
