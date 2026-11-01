@@ -294,6 +294,27 @@ export const InstructionalContentSchema = z.object({
 });
 export type InstructionalContent = z.infer<typeof InstructionalContentSchema>;
 
+/**
+ * Student API representation: prompts and hints are available up front, while
+ * answer keys and diagnostic rubrics are released only after a persisted attempt.
+ */
+export type StudentPracticePrompt = Omit<
+  InstructionalPracticeItem,
+  'expectedApproach' | 'expectedAnswer' | 'explanation' | 'diagnosticSignals'
+>;
+export type StudentKnowledgeCheckPrompt = Omit<
+  InstructionalContent['knowledgeChecks'][number],
+  'expectedReasoning' | 'answerOrRubric' | 'misconceptionSignals'
+>;
+export type StudentInstructionalContent = Omit<
+  InstructionalContent,
+  'guidedPractice' | 'independentPractice' | 'knowledgeChecks'
+> & {
+  guidedPractice: StudentPracticePrompt[];
+  independentPractice: StudentPracticePrompt[];
+  knowledgeChecks: StudentKnowledgeCheckPrompt[];
+};
+
 export const StructuredLessonOutputSchema = z.object({
   pedagogicalReasoning: z.string().optional(),
   title: z.string().min(1),
