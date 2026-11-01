@@ -11,7 +11,7 @@ export async function fetchFromSemanticScholar(
   )}&limit=${limit}&fields=title,authors,abstract,year,venue,citationCount,externalIds,url,openAccessPdf`;
 
   const headers: Record<string, string> = {
-    'User-Agent': 'UniAce-AcademicGrounding-Bot/1.0 (uniace.support@gmail.com)',
+    'User-Agent': 'UniAce-AcademicGrounding-Bot/1.0',
   };
 
   if (apiKey) {
@@ -93,7 +93,7 @@ export async function lookupPaperSemanticScholar(
   )}?fields=title,authors,abstract,year,venue,citationCount,externalIds,url,openAccessPdf`;
 
   const headers: Record<string, string> = {
-    'User-Agent': 'UniAce-AcademicGrounding-Bot/1.0 (uniace.support@gmail.com)',
+    'User-Agent': 'UniAce-AcademicGrounding-Bot/1.0',
   };
   if (apiKey) headers['x-api-key'] = apiKey;
 
