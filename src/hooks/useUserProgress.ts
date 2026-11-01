@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { UserProgress, Achievement, Bookmark, CourseId, AIPersonality, Department } from '../types';
 import { useAuth } from '../context/AuthContext';
-import { GamificationService, BADGES } from '../services/gamification';
+import { GamificationService, GamificationPolicy } from '../services/gamification';
 import { useCourses } from '../context/CourseContext';
 
 import { CurriculumIntegrityService } from '../services/curriculumIntegrity';
@@ -12,25 +12,17 @@ import { CourseService } from '../services/courseService';
 import { generateCourseContent } from '../services/aiCourseGenerator';
 import { safeFetchJson } from '../utils/safeFetch';
 
-const INITIAL_ACHIEVEMENTS: Achievement[] = BADGES.map(b => ({
-  id: b.id,
-  title: b.title,
-  description: b.description,
-  icon: b.icon,
-  unlockedAt: null
-}));
-
 const INITIAL_PROGRESS: UserProgress = {
   xp: 0,
-  level: 1,
+  level: 0,
   streak: 0,
   lastStudyDate: null,
   mastery: {},
-  achievements: INITIAL_ACHIEVEMENTS,
+  achievements: [],
   studyTime: {},
   topicLastStudied: {},
   bookmarks: [],
-  enrolledCourses: [], // Default enrollment
+  enrolledCourses: [],
   assignments: [],
 };
 
@@ -162,6 +154,8 @@ export function useUserProgress() {
   const { user, profile } = useAuth();
   const { progress, setProgress, isOnline, setIsOnline, integrityIssues, setIntegrityIssues } = useProgressStore();
   const hasInitialSyncRef = useRef(false);
+  const [gamificationPolicy, setGamificationPolicy] = useState<GamificationPolicy | null>(null);
+  const [gamificationPolicyError, setGamificationPolicyError] = useState<string | null>(null);
 
   // Handle online/offline status
   useEffect(() => {
@@ -237,7 +231,9 @@ export function useUserProgress() {
     ])).filter(Boolean);
 
     const mergedXp = Math.max(local.xp || 0, server.xp || 0);
-    const mergedLevel = GamificationService.calculateLevel(mergedXp).level;
+    const mergedLevel = Number.isInteger(server.level) && server.level > 0
+      ? server.level
+      : (Number.isInteger(local.level) && local.level > 0 ? local.level : 0);
 
     return {
       xp: mergedXp,
@@ -279,6 +275,18 @@ export function useUserProgress() {
       let isMounted = true;
       const fetchInitialProgress = async () => {
         try {
+          try {
+            const policy = await GamificationService.getPolicy();
+            if (isMounted) {
+              setGamificationPolicy(policy);
+              setGamificationPolicyError(null);
+            }
+          } catch (policyError) {
+            if (isMounted) {
+              setGamificationPolicy(null);
+              setGamificationPolicyError(policyError instanceof Error ? policyError.message : String(policyError));
+            }
+          }
           const token = await user.getIdToken();
           if (!token) return;
           const res = await safeFetchJson<any>('/api/user/bootstrap', {
@@ -414,81 +422,45 @@ export function useUserProgress() {
   }, [user, isOnline]);
 
   const processNewBadges = (prevAchievements: Achievement[], newBadges: Achievement[]) => {
-    let updatedAchievements = [...prevAchievements];
-    let totalSparksReward = 0;
-    
-    if (newBadges.length > 0) {
-      newBadges.forEach(newBadge => {
-        const index = updatedAchievements.findIndex(a => a.id === newBadge.id);
-        if (index !== -1) {
-          updatedAchievements[index] = newBadge;
-        } else {
-          updatedAchievements.push(newBadge);
-          // Award sparks for new badges (e.g., 50 sparks per badge)
-          totalSparksReward += 50; 
-        }
-      });
+    const updatedAchievements = [...prevAchievements];
+    for (const newBadge of newBadges) {
+      const index = updatedAchievements.findIndex(a => a.id === newBadge.id);
+      if (index !== -1) updatedAchievements[index] = newBadge;
+      else updatedAchievements.push(newBadge);
     }
-
-    return { updatedAchievements, totalSparksReward };
+    return { updatedAchievements };
   };
 
-  const awardBadgeSparks = async (amount: number) => {
-    if (amount > 0 && user && isOnline) {
-      try {
-        const idToken = await user.getIdToken();
-        await fetch('/api/user/reward-badge', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${idToken}`
-          },
-          body: JSON.stringify({ amount })
-        });
-        import('../services/logService').then(({ LogService }) => {
-          LogService.log('success', 'user', `Awarded ${amount} AI Sparks for unlocking badges!`).catch(console.error);
-        });
-      } catch (err) {
-        console.error("Error awarding sparks:", err);
-      }
-    }
-  };
 
-  const addXp = (amount: number) => {
-    let sparksToAward = 0;
+  const addXp = async (amount: number) => {
+    if (!Number.isInteger(amount) || amount <= 0) throw new Error('A positive integer XP amount is required.');
+    if (!user || !isOnline) throw new Error('XP cannot be awarded until the authenticated user is online.');
+    if (!gamificationPolicy) throw new Error(gamificationPolicyError || 'Live gamification policy is unavailable.');
+
+    const idToken = await user.getIdToken();
+    const response = await fetch('/api/user/reward-xp', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${idToken}`
+      },
+      body: JSON.stringify({ amount })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !Number.isFinite(result.xp) || !Number.isInteger(result.level) || result.level < 1) {
+      throw new Error(result.error || 'The server did not confirm the XP award and resulting level.');
+    }
+
     setProgress(prev => {
-      const newXp = prev.xp + amount;
-      const newLevel = GamificationService.calculateLevel(newXp).level;
-      
+      const newXp = result.xp as number;
+      const newLevel = result.level as number;
       const tempProgress = { ...prev, xp: newXp, level: newLevel };
-      const newBadges = GamificationService.checkNewBadges(tempProgress);
-      
-      const { updatedAchievements, totalSparksReward } = processNewBadges(prev.achievements, newBadges);
-      sparksToAward = totalSparksReward;
-
-      const finalProgress = { ...prev, xp: newXp, level: newLevel, achievements: updatedAchievements };
-      if (newLevel > prev.level) {
-        saveImmediately(finalProgress);
-      }
+      const newBadges = GamificationService.checkNewBadges(tempProgress, gamificationPolicy);
+      const { updatedAchievements } = processNewBadges(prev.achievements, newBadges);
+      const finalProgress = { ...tempProgress, achievements: updatedAchievements };
+      saveImmediately(finalProgress);
       return finalProgress;
     });
-
-    if (sparksToAward > 0) {
-      awardBadgeSparks(sparksToAward);
-    }
-
-    if (user && isOnline) {
-      user.getIdToken().then(idToken => {
-        fetch('/api/user/reward-xp', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${idToken}`
-          },
-          body: JSON.stringify({ amount })
-        }).catch(err => console.error("Error rewarding XP on server:", err));
-      });
-    }
   };
 
   const checkAndUpdateStreak = () => {
@@ -525,14 +497,10 @@ export function useUserProgress() {
       }
 
       const tempProgress = { ...prev, streak: newStreak, lastStudyDate: newLastStudyDate };
-      const newBadges = GamificationService.checkNewBadges(tempProgress);
-      
-      const { updatedAchievements, totalSparksReward } = processNewBadges(prev.achievements, newBadges);
-      
-      if (totalSparksReward > 0) {
-        awardBadgeSparks(totalSparksReward);
-      }
-
+      const newBadges = gamificationPolicy
+        ? GamificationService.checkNewBadges(tempProgress, gamificationPolicy)
+        : [];
+      const { updatedAchievements } = processNewBadges(prev.achievements, newBadges);
       const finalProgress = { ...tempProgress, achievements: updatedAchievements };
       saveImmediately(finalProgress);
       return finalProgress;
@@ -540,7 +508,6 @@ export function useUserProgress() {
   };
 
   const updateMastery = async (topicId: string, score: number) => {
-    let sparksToAward = 0;
     setProgress(prev => {
       const currentMastery = prev.mastery[topicId] || 0;
       const newMastery = Math.max(currentMastery, score);
@@ -560,9 +527,10 @@ export function useUserProgress() {
       };
 
       // Check for achievements
-      const newBadges = GamificationService.checkNewBadges(tempProgress);
-      const { updatedAchievements, totalSparksReward } = processNewBadges(prev.achievements, newBadges);
-      sparksToAward = totalSparksReward;
+      const newBadges = gamificationPolicy
+        ? GamificationService.checkNewBadges(tempProgress, gamificationPolicy)
+        : [];
+      const { updatedAchievements } = processNewBadges(prev.achievements, newBadges);
 
       const finalProgress = { 
         ...tempProgress,
@@ -575,10 +543,6 @@ export function useUserProgress() {
       }
       return finalProgress;
     });
-
-    if (sparksToAward > 0) {
-      awardBadgeSparks(sparksToAward);
-    }
 
     if (user && isOnline) {
       user.getIdToken().then(idToken => {
