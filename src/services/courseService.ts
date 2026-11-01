@@ -62,6 +62,7 @@ export const CourseService = {
           : (c.scope === 'DEPARTMENT' && c.department ? [c.department] : []),
         level: c.level as any,
         semester: normalizedSemester as any,
+        ...(Number.isInteger(c.creditUnits ?? c.credit_units) ? { creditUnits: Number(c.creditUnits ?? c.credit_units) } : {}),
         scope: c.scope,
         status: c.status,
         syllabus: Array.isArray(c.syllabus) ? sortCourseSyllabus(c.syllabus) : []
@@ -94,6 +95,7 @@ export const CourseService = {
         : (c.scope === 'DEPARTMENT' && c.department ? [c.department] : []),
       level: c.level as any,
       semester: normalizedSemester as any,
+      ...(Number.isInteger(c.creditUnits ?? c.credit_units) ? { creditUnits: Number(c.creditUnits ?? c.credit_units) } : {}),
       scope: c.scope,
       status: c.status,
       syllabus: Array.isArray(c.syllabus) ? sortCourseSyllabus(c.syllabus) : []
