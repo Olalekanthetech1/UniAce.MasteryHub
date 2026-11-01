@@ -79,7 +79,7 @@ export async function fetchFromArxiv(query: string, limit: number = 5): Promise<
         citationCount: null,
         source: 'arxiv',
         relevanceScore: 0,
-        syllabusTags: [],
+        conceptTags: [],
       });
     }
   }
