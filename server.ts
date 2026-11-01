@@ -100,6 +100,7 @@ import { getPostgresPool } from './server/postgresPool.js';
 import { LogRepository } from './server/repositories/logRepository.js';
 import { MaintenanceSweeps } from './server/services/maintenanceSweeps.js';
 import { getMigrationMode } from './server/services/transitionEngine.js';
+import { ensureCourseReviewSchema } from './server/services/courseReviewSchema.js';
 
 
 // --- ADMIN AUTHORIZATION UTILITY ---
@@ -7113,40 +7114,46 @@ app.post('/api/telemetry/module-action', verifyAuth, async (req, res) => {
 app.post('/api/course/:courseId/publish', verifyAdmin, async (req, res) => {
   const { courseId } = req.params;
   const pool = getPostgresPool();
-  if (!pool) return res.status(500).json({ error: 'Database service unavailable.' });
-
+  if (!pool) return res.status(503).json({ error: 'Database service unavailable.' });
+  const actor = (req as any).user;
+  let client: any;
   try {
-    const courseData = await courseRepository.getCourseById(courseId);
-    if (!courseData) {
-      return res.status(404).json({ error: 'Course not found.' });
-    }
-
-    if ((courseData as any).confidenceState === 'failed' || ((courseData as any).coverageScore && (courseData as any).coverageScore < 70)) {
-      return res.status(400).json({ 
-        error: 'Publishing Blocked: This course has failed quality/drift verification.',
-        reason: `Coverage Score (${(courseData as any).coverageScore}%) is below the required threshold or Confidence State is "failed".`,
-        needsRegeneration: true
-      });
-    }
-
-    await pool.query(
-`UPDATE courses
-       SET published = true,
-           status = 'published',
-           status_message = 'Course published by an administrator after review.',
-           updated_at = NOW()
-       WHERE id = $1`,
+    await ensureCourseReviewSchema();
+    client = await pool.connect();
+    await client.query('BEGIN');
+    const courseResult = await client.query(
+      'SELECT status, review_status FROM courses WHERE id = $1 FOR UPDATE',
       [courseId]
     );
+    if (courseResult.rows.length === 0) {
+      const error: any = new Error('Course not found.');
+      error.statusCode = 404;
+      throw error;
+    }
+    if (courseResult.rows[0].status !== 'draft' || courseResult.rows[0].review_status !== 'approved') {
+      const error: any = new Error('Course must complete the admin review workflow and be approved before publishing.');
+      error.statusCode = 409;
+      throw error;
+    }
+    await client.query(
+      "UPDATE courses SET published = true, status = 'published', status_message = 'Course published after recorded admin review.', updated_at = NOW() WHERE id = $1",
+      [courseId]
+    );
+    await client.query(
+      "INSERT INTO course_review_events (course_id, actor_uid, actor_email, action, from_status, to_status, created_at) VALUES ($1, $2, $3, 'publish_legacy_route', 'approved', 'published', NOW())",
+      [courseId, actor?.uid || 'admin', actor?.email || null]
+    );
+    await client.query('COMMIT');
     catalogCache.invalidateCourse(courseId);
-
-    res.json({ success: true, message: `Course ${courseId} published.` });
+    return res.json({ success: true, message: 'Course ' + courseId + ' published.' });
   } catch (error: any) {
+    if (client) await client.query('ROLLBACK').catch(() => undefined);
     console.error('Publish Error:', error);
-    res.status(500).json({ error: 'Failed to publish course.' });
+    return res.status(error?.statusCode || 500).json({ error: error?.message || 'Failed to publish course.' });
+  } finally {
+    client?.release();
   }
 });
-
 app.post('/api/admin/regression-test', verifyAuth, async (req, res) => {
   const { testCases } = req.body;
   if (!testCases || !Array.isArray(testCases)) {
