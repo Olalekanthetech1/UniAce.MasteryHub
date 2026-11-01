@@ -4878,13 +4878,14 @@ async function executeCoordinatedGenerationJob(
           objectives: normalizedOutcomes.map(o => o.outcome),
           primaryDomain: domainBrief.primaryDomain,
           pedagogyType: domainBrief.pedagogyType,
-          coverageScore: rubricAudit?.coverageScore ?? passedCoverageScore ?? 90,
-          confidenceState: (rubricAudit?.coverageScore ?? 90) >= 90 ? 'verified' : 'needs_review',
+          coverageScore: rubricAudit.coverageScore,
+          confidenceState: 'needs_review',
+          academicVerificationState: 'not_independently_verified',
           rubricAudit,
           canonicalCourseReferences: canonicalRefs,
           groundingReferences: canonicalRefs,
           generationProgress: 20,
-          statusMessage: `Syllabus verified (Score: ${rubricAudit?.coverageScore ?? 90}%). Generating comprehensive lessons in parallel...`
+          statusMessage: `Curriculum structure audit passed (coverage: ${rubricAudit.coverageScore}%). Generating lessons; factual accuracy remains subject to independent verification...`
         });
 
         const totalModules = skeleton.modules.length;
@@ -4985,13 +4986,15 @@ async function executeCoordinatedGenerationJob(
                 elapsedSeconds: startLessonElapsed
               });
 
-              let targetOutcomeText = '';
-              if (moduleSkeleton.learningOutcomeIds && moduleSkeleton.learningOutcomeIds.length > 0) {
-                const targetIdx = parseInt(moduleSkeleton.learningOutcomeIds[0]);
-                if (!isNaN(targetIdx) && normalizedOutcomes[targetIdx]) {
-                  targetOutcomeText = normalizedOutcomes[targetIdx].outcome;
-                }
-              }
+              const targetOutcomeText = (moduleSkeleton.learningOutcomeIds || [])
+                .map((id: string) => {
+                  const targetIndex = Number.parseInt(id, 10);
+                  return Number.isInteger(targetIndex) && normalizedOutcomes[targetIndex]
+                    ? normalizedOutcomes[targetIndex].outcome
+                    : null;
+                })
+                .filter((outcome: string | null): outcome is string => Boolean(outcome))
+                .join('\n');
 
               let lessonAttempts = 0;
               let lessonContent = '';
@@ -5230,9 +5233,10 @@ Return strictly a JSON object:
         const provenance = {
           sources: canonicalRefs,
           modelVersion: requestedProvider || 'dynamic-multi-provider',
-          promptVersion: 'uniace-curriculum-v2.0',
+          promptVersion: 'uniace-mastery-curriculum-v3.0',
           generatedAt: new Date().toISOString(),
-          groundingScore: rubricAudit.coverageScore,
+          sourceStatus: sourceText ? 'admin_supplied_unverified' : 'model_suggested_unverified',
+          academicAccuracy: 'not_independently_verified',
           rubricAudit
         };
 
