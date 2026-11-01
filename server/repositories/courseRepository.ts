@@ -15,6 +15,7 @@ import { catalogCache } from '../cache/catalogCache';
 import { CourseEntity, CourseModuleEntity, CourseLessonEntity, CourseFormulaEntity } from '../../src/types/databaseSchema';
 import { queryPostgres } from '../postgresPool';
 import { logger } from '../logger';
+import { ensureCourseLearningSchema } from '../services/courseLearningSchema';
 import { sortCourseSyllabus, getModuleOrderIndex, getLessonOrderIndex } from '../../src/shared/courseSchemas';
 
 export interface CourseQueryFilter {
@@ -204,6 +205,7 @@ export class CourseRepository {
    * Fetches all lessons for a given course and module
    */
   async getCourseLessons(courseId: string, moduleId: string): Promise<CourseLessonEntity[]> {
+    await ensureCourseLearningSchema();
     const flags = getFeatureFlags();
     const cacheKey = `catalog:lessons:${courseId}:${moduleId}`;
 
@@ -224,7 +226,7 @@ export class CourseRepository {
 
         const sql = `
           SELECT id, course_id, module_id, title, content_markdown, order_index,
-                 key_terms, learning_outcomes, asset_references, created_at, updated_at
+                 key_terms, learning_outcomes, asset_references, instructional_content, created_at, updated_at
           FROM course_lessons
           WHERE course_id = $1 AND module_id = $2
           ORDER BY order_index ASC
