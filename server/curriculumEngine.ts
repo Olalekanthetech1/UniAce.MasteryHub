@@ -230,9 +230,7 @@ Return strictly a JSON object:
   "subDisciplines": ["Sub-discipline 1", "Sub-discipline 2", "Sub-discipline 3"],
   "pedagogyType": "STEM_MATHEMATICAL",
   "courseLevelFramework": "${normalizedLevel} Level University Curriculum Standard",
-  "recommendedCreditHours": 3,
-  "targetModuleCountRange": { "min": 6, "max": 10 },
-  "canonicalCourseReferences": ["Authoritative Textbook 1", "Accredited University Syllabus Benchmark"],
+  "canonicalCourseReferences": ["Only references explicitly present in the supplied source material; return an empty array when none are supplied"],
   "foundationalAxioms": [
     "Foundational Principle 1",
     "Foundational Principle 2",
@@ -288,7 +286,10 @@ export function buildCurriculumSkeletonPrompt(
   const normalizedAcademicStandard = typeof academicStandard === 'string' && academicStandard.trim()
     ? academicStandard.trim()
     : 'not supplied; do not infer an accreditation or university standard';
-  const params = deriveCurriculumParameters(normalizedLevel, semester, creditUnits ?? domainBrief.recommendedCreditHours, depth);
+  if (typeof creditUnits !== 'number' || !Number.isInteger(creditUnits) || creditUnits <= 0) {
+    throw new Error('Verified course credit units are required; curriculum workload will not be inferred from an AI recommendation.');
+  }
+  const params = deriveCurriculumParameters(normalizedLevel, semester, creditUnits, depth);
   const normalizedScope = scope.trim().toUpperCase();
 
   let levelCalibrationDirective = '';
@@ -484,7 +485,7 @@ Audience: ${audience}
 Level: ${level}
 Standard: ${typeof academicStandard === 'string' && academicStandard.trim() ? academicStandard.trim() : 'not supplied; do not infer an accreditation or university standard'}
 Tone/depth: ${tone} / ${depth}
-Scope: ${scope}
+Scope: ${typeof scope === 'string' && scope.trim() ? scope.trim() : 'not supplied; do not infer an audience scope'}
 Target learning outcome: ${learningOutcomeText || 'Derive measurable objectives only from approved course outcomes and this topic.'}
 ${sourceText ? `ADMIN-SUPPLIED SOURCE MATERIAL (primary grounding):\n${sourceText.substring(0, 3500)}` : 'No additional source material was supplied. Do not fabricate quotations, citations, page numbers, textbooks or empirical findings.'}
 
