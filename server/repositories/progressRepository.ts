@@ -326,8 +326,10 @@ export class ProgressRepository {
     if (!app) throw new Error('Database connection unavailable');
     const db = app.firestore();
 
-    const snap = await db.collection('user_course_progress').doc(`${uid}_${courseId}`).get().catch(() => null);
-    if (!snap || !snap.exists) return null;
+    // A missing document is a legitimate empty-progress state; a database
+    // read failure is not. Let Firestore errors propagate to the API boundary.
+    const snap = await db.collection('user_course_progress').doc(`${uid}_${courseId}`).get();
+    if (!snap.exists) return null;
 
     const data = snap.data() || {};
     return {
@@ -361,14 +363,15 @@ export class ProgressRepository {
     }
 
     const app = getAdminApp();
-    if (!app) return [];
+    if (!app) {
+      throw new Error('Lesson-completion data unavailable: no authoritative database connection is available.');
+    }
     const db = app.firestore();
     const snap = await db
       .collection('user_lesson_completions')
       .where('uid', '==', uid)
       .where('course_id', '==', courseId)
-      .get()
-      .catch(() => ({ docs: [] } as any));
+      .get();
 
     return snap.docs.map((d: any) => d.data().lesson_id).filter(Boolean);
   }
