@@ -10,7 +10,7 @@ export const AcademicPaperSchema = z.object({
   doi: z.string().nullable().optional(),
   url: z.string(),
   pdfUrl: z.string().nullable().optional(),
-  citationCount: z.number().default(0),
+  citationCount: z.number().nullable().optional(),
   source: z.enum(['arxiv', 'semantic_scholar', 'openalex']),
   relevanceScore: z.number().default(0),
   syllabusTags: z.array(z.string()).default([]),
@@ -44,14 +44,17 @@ export const CanonicalDefinitionsInputSchema = z.object({
 export type CanonicalDefinitionsInput = z.infer<typeof CanonicalDefinitionsInputSchema>;
 
 export interface CanonicalDefinition {
+  source: 'openalex';
+  sourceId: string;
+  sourceUrl: string;
   topic: string;
   subject: string;
   canonicalDefinition: string;
   sourceTextbooks: string[];
   keyEquations: string[];
-  courseAlignment: {
+  courseAlignment?: {
     curriculumBenchmark: string;
-    courseCode: string;
+    courseCode?: string;
   };
 }
 
@@ -80,15 +83,47 @@ export interface AcademicProviderHealth {
 export interface AcademicConfig {
   enabled: boolean;
   cacheTtlHours: number;
-  semanticScholarApiKey?: string;
   openAlexEmail?: string;
+  researchDepth: 'adaptive';
+  adaptiveMaxQueries: number;
+  minimumUsefulSources: number;
+  minimumRelevanceScore: number;
+  tavilyApiKeyConfigured: boolean;
+  semanticScholarApiKeyConfigured: boolean;
   arxivMaxResults: number;
-  defaultCourseAlignment: string; // e.g. "Global University Benchmark Syllabus (Adaptive)"
+  defaultCourseAlignment: string;
   providersEnabled: {
     arxiv: boolean;
     semanticScholar: boolean;
     openAlex: boolean;
+    tavily: boolean;
   };
+}
+
+export interface AcademicWebSourceSearchResponse {
+  query: string;
+  researchDepth: 'adaptive';
+  status: 'results_found' | 'no_results';
+  escalated: boolean;
+  stages: Array<{
+    searchDepth: 'basic' | 'advanced';
+    resultCount: number;
+    usefulSourceCount: number;
+    creditsUsed: number | null;
+    responseTimeSeconds: number | null;
+  }>;
+  sources: Array<{
+    title: string;
+    url: string;
+    content: string;
+    rawContent?: string;
+    score: number;
+    publishedDate?: string | null;
+    sourceClass: 'institutional_domain_candidate' | 'publisher_or_repository_candidate' | 'general_web_candidate';
+    verificationStatus: 'unverified';
+  }>;
+  creditsUsed: number | null;
+  disclaimer: string;
 }
 
 export interface AcademicSearchResponse {
