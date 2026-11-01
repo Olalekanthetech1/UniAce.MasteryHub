@@ -106,12 +106,14 @@ export async function fetchOpenAlexConceptDefinitions(
   try {
     const response = await fetch(url, {
       headers: {
-        'User-Agent': 'UniAce-AcademicGrounding-Bot/1.0 (mailto:uniace.support@gmail.com)',
+        'User-Agent': 'UniAce-AcademicGrounding-Bot/1.0',
       },
       signal: AbortSignal.timeout(6000),
     });
 
-    if (!response.ok) return null;
+    if (!response.ok) {
+      throw new Error(`OpenAlex concepts API status ${response.status}: ${response.statusText}`);
+    }
 
     const data = (await response.json()) as {
       results?: Array<{
@@ -143,6 +145,6 @@ export async function fetchOpenAlexConceptDefinitions(
     };
   } catch (error) {
     console.error('OpenAlex Concept Fetch Error:', error);
-    return null;
+    throw error;
   }
 }
