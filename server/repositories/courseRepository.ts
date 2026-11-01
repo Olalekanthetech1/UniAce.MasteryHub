@@ -449,7 +449,7 @@ export class CourseRepository {
           modulesByCourse[m.course_id].push({
             id: m.id,
             title: m.title,
-            description: m.description || '',
+            description: typeof m.description === 'string' ? m.description : null,
             order: m.order_index,
             subTopics: []
           });
@@ -483,16 +483,14 @@ export class CourseRepository {
           return {
             id: c.id,
             title: c.title,
-            description: c.description || '',
-            department: c.department || '',
-            faculty: c.faculty || (Array.isArray(c.faculties) ? c.faculties[0] : '') || '',
-            faculties: Array.isArray(c.faculties) && c.faculties.length > 0 ? c.faculties : (c.faculty ? [c.faculty] : []),
-            departments: Array.isArray(c.departments) && c.departments.length > 0
-              ? c.departments
-              : (c.scope === 'DEPARTMENT' && c.department ? [c.department] : []),
+            description: typeof c.description === 'string' ? c.description : null,
+            department: typeof c.department === 'string' ? c.department : null,
+            faculty: typeof c.faculty === 'string' ? c.faculty : null,
+            faculties: Array.isArray(c.faculties) ? c.faculties : null,
+            departments: Array.isArray(c.departments) ? c.departments : null,
             level: c.level ?? null,
             semester: typeof c.semester === 'string' && c.semester.trim() ? ((c.semester.toLowerCase().includes('2') || c.semester.toLowerCase().includes('second')) ? '2nd Semester' : ((c.semester.toLowerCase().includes('1') || c.semester.toLowerCase().includes('first')) ? '1st Semester' : c.semester)) : null,
-            scope: c.scope || null,
+            scope: typeof c.scope === 'string' ? c.scope : null,
             status: c.status,
             syllabus: sortCourseSyllabus(cMods)
           };
