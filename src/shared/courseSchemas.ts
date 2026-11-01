@@ -297,7 +297,7 @@ export type InstructionalContent = z.infer<typeof InstructionalContentSchema>;
 export const StructuredLessonOutputSchema = z.object({
   pedagogicalReasoning: z.string().optional(),
   title: z.string().min(1),
-  content: z.string().min(600).refine((value) => !isBareDiagramOrFragment(value), {
+  content: z.string().min(800).refine((value) => !isBareDiagramOrFragment(value), {
     message: 'Lesson content must include substantive academic prose, not only a diagram or fragment.'
   }),
   instructionalContent: InstructionalContentSchema
@@ -310,6 +310,8 @@ export const CourseProvenanceSchema = z.object({
   promptVersion: z.string().min(1),
   generatedAt: z.string(),
   groundingScore: z.number().min(0).max(100).optional(),
+  sourceStatus: z.enum(['admin_supplied_unverified', 'model_suggested_unverified', 'independently_verified']).optional(),
+  academicAccuracy: z.enum(['not_independently_verified', 'subject_expert_reviewed']).optional(),
   rubricAudit: OutlineCriticRubricSchema.optional()
 });
 export type CourseProvenance = z.infer<typeof CourseProvenanceSchema>;
