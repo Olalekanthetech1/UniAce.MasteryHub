@@ -1256,6 +1256,7 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
     if (!(await checkIsAdmin(user.uid, user.email))) return res.status(403).json({ error: 'Admin privileges required' });
     const action = req.body?.action;
     const notes = typeof req.body?.notes === 'string' ? req.body.notes.trim() : '';
+    const approvalChecks = req.body?.approvalChecks;
     const transitions: Record<string, { from: string[]; to: string }> = {
       start_review: { from: ['pending', 'needs_revision'], to: 'in_review' },
       request_revision: { from: ['in_review'], to: 'needs_revision' },
@@ -1267,6 +1268,9 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
       return res.status(400).json({ error: 'Revision notes must contain between 10 and 5000 characters.' });
     }
     if (notes.length > 5000) return res.status(400).json({ error: 'Reviewer notes cannot exceed 5000 characters.' });
+    if (action === 'approve' && (!approvalChecks || approvalChecks.subjectExpert !== true || approvalChecks.calculations !== true || approvalChecks.curriculum !== true || approvalChecks.rendering !== true)) {
+      return res.status(400).json({ error: 'Approval requires explicit subject-expert, calculation, curriculum-coverage and rendering attestations.' });
+    }
 
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
@@ -1295,15 +1299,25 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
         error.statusCode = 409;
         throw error;
       }
+      const auditNotes = action === 'approve'
+        ? [
+            notes,
+            'Approval attestations:',
+            'Subject-expert review: confirmed',
+            'Calculations, units and derivations: confirmed',
+            'Curriculum coverage: confirmed',
+            'Math and lesson rendering: confirmed'
+          ].filter(Boolean).join('\\n')
+        : notes || null;
       await client.query(
         "UPDATE courses SET review_status = $1, review_notes = CASE WHEN $2::text IS NULL THEN review_notes ELSE $2 END, " +
         "reviewed_by = $3, reviewed_at = NOW(), updated_at = NOW() WHERE id = $4",
-        [transition.to, notes || null, user.uid, req.params.id]
+        [transition.to, auditNotes, user.uid, req.params.id]
       );
       await client.query(
         "INSERT INTO course_review_events (course_id, actor_uid, actor_email, action, from_status, to_status, notes, created_at) " +
         "VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())",
-        [req.params.id, user.uid, user.email || null, action, current.review_status, transition.to, notes || null]
+        [req.params.id, user.uid, user.email || null, action, current.review_status, transition.to, auditNotes]
       );
       await client.query('COMMIT');
       catalogCache.invalidateAll();
