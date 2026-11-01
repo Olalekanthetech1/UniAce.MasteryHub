@@ -3634,23 +3634,19 @@ app.post('/api/chat', verifyAuth, async (req, res) => {
     const effectiveTaskType = classified.taskType;
     const effectiveComplexity = complexity || classified.complexity;
 
-    // Fetch dynamic task routing config for chat from Neon PostgreSQL cache
-    let routingConfig: any = { chat: 'groq' };
-    try {
-      const routingDoc = await getSystemConfigDoc('routing');
-      if (routingDoc) {
-        routingConfig = routingDoc;
-      }
-    } catch (err) {
-      console.warn("Failed to fetch routing config for POST chat route:", err);
+    // Routing is authoritative: absence of a stored task route is an unavailable state.
+    const routingConfig = await requireLiveRoutingConfig();
+    const successfulProviderFallback = routingConfig[effectiveTaskType] || routingConfig.chat;
+    if (typeof successfulProviderFallback !== 'string' || !successfulProviderFallback.trim()) {
+      return res.status(503).json({ error: `No live AI provider is configured for task "${effectiveTaskType}".` });
     }
 
-    let successfulProviderName = 'groq';
+    let successfulProviderName = successfulProviderFallback;
     let aiResponse: any = null;
     const reqStart = Date.now();
 
     try {
-      const preferredProviderName = routingConfig[effectiveTaskType] || routingConfig.chat || 'groq';
+      const preferredProviderName = successfulProviderFallback;
       
       const providerMap: Record<string, { breaker: any, name: string }> = {
         gemini_direct: { breaker: geminiDirectBreaker, name: 'gemini_direct' },
