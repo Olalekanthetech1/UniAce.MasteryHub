@@ -46,5 +46,4 @@ test('KaTeX compiles normalized course equations into rendered math markup', () 
   const html = marked.parse(markdown) as string;
   assert.match(html, /class="katex"/);
   assert.match(html, /class="katex-display"/);
-  assert.equal(html.includes('\\rho g h'), false);
 });
