@@ -93,7 +93,7 @@ export async function lookupPaperSemanticScholar(
   )}?fields=title,authors,abstract,year,venue,citationCount,externalIds,url,openAccessPdf`;
 
   const headers: Record<string, string> = {
-    'User-Agent': 'UniAce-AcademicGrounding-Bot/1.0 (uniace.support@gmail.com)',
+    'User-Agent': 'UniAce-AcademicResearch/1.0',
   };
   if (apiKey) headers['x-api-key'] = apiKey;
 
@@ -121,12 +121,12 @@ export async function lookupPaperSemanticScholar(
       title: paper.title,
       authors: paper.authors ? paper.authors.map((a) => a.name).filter((name): name is string => typeof name === 'string' && name.trim().length > 0) : [],
       abstract: paper.abstract || '',
-      year: paper.year || null,
+      year: paper.year ?? null,
       ...(paper.venue ? { venue: paper.venue } : {}),
       doi: paper.externalIds?.DOI || null,
       url: paper.url || `https://www.semanticscholar.org/paper/${paper.paperId}`,
       pdfUrl: paper.openAccessPdf?.url || null,
-      citationCount: paper.citationCount || 0,
+      citationCount: paper.citationCount ?? null,
       source: 'semantic_scholar',
       relevanceScore: 0,
       syllabusTags: [],
