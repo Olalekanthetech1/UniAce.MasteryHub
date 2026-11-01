@@ -12,9 +12,8 @@ import { getPostgresPool } from '../postgresPool.js';
 
 const router = Router();
 
-// The global populateUser middleware verifies the Firebase ID token before
-// this router is reached. Admin authorization is then resolved from the
-// server-side allow-list or the authoritative Neon users table.
+// populateUser runs globally before this router and verifies the Firebase ID token.
+// Admin privileges are resolved only from the server allow-list or Neon.
 const requireAcademicAdmin: RequestHandler = async (req, res, next) => {
   const user = (req as any).user;
   const uid = typeof user?.uid === 'string' ? user.uid : '';
@@ -51,7 +50,6 @@ const requireAcademicAdmin: RequestHandler = async (req, res, next) => {
 
 router.use(requireAcademicAdmin);
 
-// Search scholarly records from configured live providers.
 router.post('/search', async (req: Request, res: Response) => {
   try {
     const { query, fieldOfStudy, limit, minYear, courseCode } = req.body || {};
@@ -66,7 +64,6 @@ router.post('/search', async (req: Request, res: Response) => {
       ...(limit !== undefined ? { limit: Number(limit) } : {}),
       ...(minYear !== undefined ? { minYear: Number(minYear) } : {}),
     });
-
     return res.json(result);
   } catch (error) {
     console.error('[Academic Research] Search failed:', error);
@@ -77,7 +74,6 @@ router.post('/search', async (req: Request, res: Response) => {
   }
 });
 
-// Resolve an identifier against a live scholarly registry.
 router.post('/citation', async (req: Request, res: Response) => {
   try {
     const { identifier, format } = req.body || {};
@@ -96,7 +92,6 @@ router.post('/citation', async (req: Request, res: Response) => {
   }
 });
 
-// Return a definition only when a live registry supplies a sourced description.
 router.post('/definitions', async (req: Request, res: Response) => {
   try {
     const { subject, topic } = req.body || {};
@@ -118,7 +113,6 @@ router.post('/definitions', async (req: Request, res: Response) => {
   }
 });
 
-// Safe status only: provider credentials are never returned to the dashboard.
 router.get('/stats', async (_req: Request, res: Response) => {
   try {
     await initializeAcademicConfig();
@@ -150,7 +144,6 @@ router.get('/stats', async (_req: Request, res: Response) => {
   }
 });
 
-// Read persisted, non-secret engine configuration.
 router.get('/config', async (_req: Request, res: Response) => {
   try {
     await initializeAcademicConfig();
@@ -161,7 +154,6 @@ router.get('/config', async (_req: Request, res: Response) => {
   }
 });
 
-// Persist allow-listed settings. Provider secrets are configured server-side only.
 router.post('/config', async (req: Request, res: Response) => {
   try {
     const body = req.body || {};
@@ -183,7 +175,6 @@ router.post('/config', async (req: Request, res: Response) => {
   }
 });
 
-// Smoke tests must use a caller-supplied research query.
 router.post('/test', async (req: Request, res: Response) => {
   try {
     const { query, limit } = req.body || {};
