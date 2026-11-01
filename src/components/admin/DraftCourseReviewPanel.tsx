@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { BookOpen, CheckCircle2, Clock3, FileText, RefreshCw, Search, Send, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import MarkdownRenderer from '../MarkdownRenderer';
+import { asDisplayMath } from '../../shared/mathText';
 
 type ReviewStatus = 'pending' | 'in_review' | 'needs_revision' | 'approved';
 type ReviewAction = 'start_review' | 'request_revision' | 'approve';
@@ -486,7 +487,7 @@ export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublish
                 {bundle.formulas.map((formula) => (
                   <div key={formula.id} className="rounded-xl bg-slate-50 dark:bg-slate-900 p-4 space-y-2">
                     <h5 className="font-semibold text-sm">{formula.name}</h5>
-                    <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 p-3"><MarkdownRenderer content={'$$\n' + formula.latex_expression + '\n$$'} /></div>
+                    <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 p-3"><MarkdownRenderer content={asDisplayMath(formula.latex_expression)} /></div>
                     <RichBlock title="Derivation / notes" value={formula.derivation_notes} />
                     {formula.variables_breakdown && <pre className="overflow-x-auto text-xs whitespace-pre-wrap text-slate-500">{JSON.stringify(formula.variables_breakdown, null, 2)}</pre>}
                   </div>
