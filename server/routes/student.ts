@@ -1192,13 +1192,27 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
         return;
       }
       const data = { ...(res.rows[0].data || {}), id: battleId };
-      if (data.status !== 'active' || !data.player2) {
+      if (data.status !== 'active') {
         await client.query('COMMIT');
         return;
       }
+      if (!data.player1 || !data.player2) {
+        throw new Error('Active replay battle is missing a persisted participant.');
+      }
 
       const nowMs = Date.now();
-      if (data.expiresAtEpochMs && nowMs >= data.expiresAtEpochMs) {
+      const durationSeconds = data.durationSeconds;
+      const startedAtEpochMs = data.startedAtEpochMs;
+      const expiresAtEpochMs = data.expiresAtEpochMs;
+      if (
+        typeof durationSeconds !== 'number' || !Number.isFinite(durationSeconds) || durationSeconds <= 0 ||
+        typeof startedAtEpochMs !== 'number' || !Number.isFinite(startedAtEpochMs) || startedAtEpochMs <= 0 ||
+        typeof expiresAtEpochMs !== 'number' || !Number.isFinite(expiresAtEpochMs) ||
+        expiresAtEpochMs <= startedAtEpochMs
+      ) {
+        throw new Error('Active replay battle timing data is incomplete or invalid.');
+      }
+      if (nowMs >= expiresAtEpochMs) {
         await client.query('ROLLBACK');
         await arenaRealtime.settleExpiredBattle(battleId, nowMs);
         return;
@@ -1206,12 +1220,50 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
 
       const p2 = { ...data.player2 };
       const p1 = { ...data.player1 };
-      if (p2.currentQuestionIndex !== questionIndex) {
-        await client.query('COMMIT');
-        return;
+      const questions = data.questions;
+      if (!Array.isArray(questions) || !Number.isSafeInteger(questionIndex) ||
+          questionIndex < 0 || questionIndex >= questions.length) {
+        throw new Error('Scheduled replay question index is outside the verified question set.');
+      }
+      if (
+        typeof p2.currentQuestionIndex !== 'number' ||
+        !Number.isSafeInteger(p2.currentQuestionIndex) ||
+        p2.currentQuestionIndex !== questionIndex ||
+        typeof p1.currentQuestionIndex !== 'number' ||
+        !Number.isSafeInteger(p1.currentQuestionIndex) ||
+        p1.currentQuestionIndex < 0 ||
+        p1.currentQuestionIndex > questions.length
+      ) {
+        throw new Error('Persisted participant question progress does not match the scheduled replay step.');
       }
 
-      const actionLog = Array.isArray(p2.actionLog) ? [...p2.actionLog] : [];
+      const question = questions[questionIndex];
+      if (
+        !question || typeof question !== 'object' || Array.isArray(question) ||
+        !Array.isArray(question.options) ||
+        !question.options.every((option: unknown) => typeof option === 'string') ||
+        typeof question.correctAnswer !== 'string' ||
+        !question.options.includes(question.correctAnswer) ||
+        typeof selectedOption !== 'string' ||
+        !question.options.includes(selectedOption) ||
+        isCorrect !== (selectedOption === question.correctAnswer)
+      ) {
+        throw new Error('Scheduled replay answer does not match the persisted historical question.');
+      }
+      if (
+        typeof elapsedMs !== 'number' || !Number.isFinite(elapsedMs) ||
+        elapsedMs <= 0 || elapsedMs > durationSeconds * 1000 ||
+        typeof p1.score !== 'number' || !Number.isFinite(p1.score) ||
+        typeof p2.score !== 'number' || !Number.isFinite(p2.score) ||
+        typeof p1.health !== 'number' || !Number.isFinite(p1.health) ||
+        typeof p2.health !== 'number' || !Number.isFinite(p2.health) ||
+        !Array.isArray(p2.actionLog) ||
+        p2.actionLog.length !== p2.currentQuestionIndex
+      ) {
+        throw new Error('Persisted participant state or recorded replay timing is invalid.');
+      }
+
+      const actionLog = [...p2.actionLog];
       actionLog.push({
         questionIndex,
         selectedOption,
@@ -1224,10 +1276,10 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
 
       const DAMAGE_PER_HIT = 20;
       if (isCorrect) {
-        p2.score = Number(p2.score || 0) + 100;
-        p1.health = Math.max(0, Number(p1.health ?? 100) - DAMAGE_PER_HIT);
+        p2.score = p2.score + 100;
+        p1.health = Math.max(0, p1.health - DAMAGE_PER_HIT);
       } else {
-        p2.health = Math.max(0, Number(p2.health ?? 100) - DAMAGE_PER_HIT);
+        p2.health = Math.max(0, p2.health - DAMAGE_PER_HIT);
       }
 
       data.player1 = p1;
