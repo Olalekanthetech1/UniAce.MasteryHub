@@ -468,6 +468,8 @@ ${disciplineDirectives[domainBrief.pedagogyType]}
 UNIVERSAL MASTERY FRAMEWORK
 Organise learning around Understand → Explore → Apply → Verify → Master. This is a learning sequence, not ten compulsory long chapters. Keep every component proportionate to the topic.
 
+For the Markdown 'content' field, include at least three meaningful level-2 headings and at least 800 characters of substantive academic prose. Headings should reflect the discipline and topic, not generic filler.
+
 Return BOTH readable Markdown in "content" and structured data in "instructionalContent".
 
 STRUCTURED CONTENT RULES
