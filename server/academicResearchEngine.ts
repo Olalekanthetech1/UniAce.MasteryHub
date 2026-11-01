@@ -110,7 +110,7 @@ export async function searchAcademicWebSources(input: {
   stages.push({
     searchDepth: 'basic',
     resultCount: first.results.length,
-    usefulSourceCount: first.results.filter(source => source.score >= 0.25).length,
+    usefulSourceCount: first.results.filter(source => source.score !== null && source.score >= activeConfig.minimumRelevanceScore).length,
     creditsUsed: first.creditsUsed,
     responseTimeSeconds: first.responseTimeSeconds,
   });
@@ -131,7 +131,7 @@ export async function searchAcademicWebSources(input: {
     stages.push({
       searchDepth: 'advanced',
       resultCount: advanced.results.length,
-      usefulSourceCount: advanced.results.filter(source => source.score >= 0.25).length,
+      usefulSourceCount: advanced.results.filter(source => source.score !== null && source.score >= activeConfig.minimumRelevanceScore).length,
       creditsUsed: advanced.creditsUsed,
       responseTimeSeconds: advanced.responseTimeSeconds,
     });
