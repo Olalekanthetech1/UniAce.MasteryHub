@@ -845,8 +845,7 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
   const otherWaitingMatches = lobbyTelemetry.waitingBattles.filter(
     (b) => b.hostUid && b.hostUid !== user?.uid
   );
-  const challengerCal = lobbyTelemetry.challengerTelemetry;
-  const canLaunchGhostInLobby = lobbyTelemetry.historicalGhostCount > 0;
+  const canLaunchGhostInLobby = lobbyTelemetry.ghostReplayAvailable === true;
 
   // --- RENDERERS ---
 
@@ -876,14 +875,14 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
                 </div>
                 <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-[11px] font-semibold text-emerald-400">
                   <Users size={12} />
-                  <span>{lobbyTelemetry.onlineCount} Online</span>
+                  <span>{lobbyTelemetry.onlineCount === null ? 'Checking presence...' : `${lobbyTelemetry.onlineCount} Online`}</span>
                 </div>
               </div>
               <h1 className="text-3xl sm:text-5xl font-black text-white tracking-tight italic uppercase">
                 The Arena
               </h1>
               <p className="text-slate-400 text-sm sm:text-base font-medium">
-                Battle classmates in real-time WebSocket duels, challenge recorded Ghost Replays, or test your speed against telemetry-calibrated challengers.
+                Battle classmates in live WebSocket duels or challenge a verified replay of an actual human battle.
               </p>
             </div>
 
@@ -907,7 +906,7 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
                   <Trophy size={24} />
                 </div>
                 <div>
-                  <div className="text-2xl font-black text-white">#{profile?.rank || '1'}</div>
+                  <div className="text-2xl font-black text-white">{Number.isInteger(profile?.rank) && profile.rank > 0 ? `#${profile.rank}` : 'Unavailable'}</div>
                   <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
                     Global Rank
                   </div>
@@ -1154,69 +1153,30 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
   }
 
   if (view === 'matching') {
-    const canLaunchGhost = lobbyTelemetry.historicalGhostCount > 0;
+    const canLaunchGhost = lobbyTelemetry.ghostReplayAvailable === true;
     const showFallbackHighlight = matchWaitSeconds >= 8;
 
-    // Dedicated Direct Sparring Initialization Screen (Never shows "Searching for a live classmate" or "Queue Elapsed")
+    // Direct replay initialization is shown while the server verifies recorded human events.
     if (launchingSpar !== null) {
-      const isAiSpar = launchingSpar === 'ai_challenger';
       return (
         <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 sm:p-6 pb-24 lg:pb-6 text-center">
           <motion.div
             animate={{ scale: [1, 1.08, 1] }}
             transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
-            className={`w-20 h-20 rounded-3xl flex items-center justify-center mb-6 border ${
-              isAiSpar
-                ? 'bg-purple-600/20 border-purple-500/50 text-purple-400 shadow-lg shadow-purple-500/20'
-                : 'bg-emerald-600/20 border-emerald-500/50 text-emerald-400 shadow-lg shadow-emerald-500/20'
-            }`}
+            className="w-20 h-20 rounded-3xl flex items-center justify-center mb-6 border bg-emerald-600/20 border-emerald-500/50 text-emerald-400 shadow-lg shadow-emerald-500/20"
           >
-            {isAiSpar ? <Bot size={44} /> : <History size={44} />}
+            <History size={44} />
           </motion.div>
 
-          <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-purple-950/60 border border-purple-500/40 text-xs font-black uppercase tracking-wider text-purple-300 mb-3">
-            <Sparkles size={13} />
-            <span>
-              {isAiSpar
-                ? `Direct Sparring • [AI Challenger] (${selectedCourseId})`
-                : `Direct Sparring • Recorded Ghost Replay (${selectedCourseId})`}
-            </span>
+          <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-emerald-950/60 border border-emerald-500/40 text-xs font-black uppercase tracking-wider text-emerald-300 mb-3">
+            <History size={13} />
+            <span>Recorded Human Replay • {selectedCourseId}</span>
           </div>
 
           <h2 className="text-2xl sm:text-3xl font-black text-white mb-2 max-w-xl">{matchStatus}</h2>
           <p className="text-slate-400 mb-6 max-w-md mx-auto text-sm">
-            {isAiSpar
-              ? `Direct 1v1 sparring mode — calibrating [AI Challenger] response speed and accuracy from your live ${selectedCourseId} telemetry in Neon PostgreSQL.`
-              : `Direct 1v1 sparring mode — loading verified historical moves recorded for ${selectedCourseId}.`}
+            The server checks the original human battle, its question set, answer log, outcomes and recorded timing before replaying any move.
           </p>
-
-          {isAiSpar && (
-            <div className="max-w-md w-full bg-slate-900/90 border border-purple-500/30 rounded-2xl p-4 mb-8 text-left">
-              <div className="text-[10px] font-black uppercase tracking-wider text-purple-400 mb-2">
-                Verified Telemetry Calibration ({selectedCourseId})
-              </div>
-              <div className="grid grid-cols-3 gap-2 text-center">
-                <div className="bg-slate-950 rounded-xl p-2.5 border border-slate-800">
-                  <div className="text-[10px] text-slate-400 uppercase font-bold">Mastery</div>
-                  <div className="text-sm font-black text-white mt-0.5">
-                    {challengerCal?.calibratedMasteryPct ?? 0}%
-                  </div>
-                </div>
-                <div className="bg-slate-950 rounded-xl p-2.5 border border-slate-800">
-                  <div className="text-[10px] text-slate-400 uppercase font-bold">AI Pacing</div>
-                  <div className="text-sm font-black text-amber-300 mt-0.5">
-                    {challengerCal?.pacingRangeLabel || '12–15s / q'}
-                  </div>
-                </div>
-                <div className="bg-slate-950 rounded-xl p-2.5 border border-slate-800">
-                  <div className="text-[10px] text-slate-400 uppercase font-bold">AI Accuracy</div>
-                  <div className="text-sm font-black text-emerald-300 mt-0.5">
-                    {challengerCal?.targetAccuracyPct ?? 65}%
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
 
           <button
             onClick={cancelMatchmaking}
@@ -1247,41 +1207,16 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
         <p className="text-slate-400 mb-8 max-w-md mx-auto text-sm">
           Searching for a live classmate queuing for <strong className="text-white">{selectedCourseId}</strong>.
           {showFallbackHighlight
-            ? ' No classmate joined this course queue yet — launch an instant sparring duel below or keep waiting:'
-            : ' You can wait for a live human or launch an instant sparring match at any time:'}
+            ? ' No classmate has joined yet. A recorded replay is offered only when the server verifies a real human recording.'
+            : ' Keep waiting for a live human opponent. A recorded replay is offered only when its source data is verified.'}
         </p>
 
         {battleId && (
-          <div className="max-w-xl w-full grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
+          <div className="max-w-xl w-full mb-8">
             <button
-              onClick={() => handleLaunchSparring('ai_challenger')}
-              disabled={launchingSpar !== null}
-              className={`p-5 rounded-2xl border text-left transition-all cursor-pointer ${
-                showFallbackHighlight
-                  ? 'bg-purple-950/50 border-purple-500 hover:bg-purple-900/50 shadow-lg shadow-purple-500/10'
-                  : 'bg-slate-900 border-slate-800 hover:border-purple-500/60'
-              }`}
-            >
-              <div className="flex items-center justify-between mb-2">
-                <div className="w-9 h-9 rounded-xl bg-purple-600/20 text-purple-400 flex items-center justify-center">
-                  <Bot size={20} />
-                </div>
-                <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300">
-                  {challengerCal?.pacingRangeLabel || '12–15s / question'}
-                </span>
-              </div>
-              <div className="text-sm font-black text-white mb-1">
-                Spar with Adaptive AI Challenger
-              </div>
-              <p className="text-xs text-slate-400">
-                Calibrated to your {selectedCourseId} mastery ({challengerCal?.calibratedMasteryPct ?? 0}% • {challengerCal?.tierLabel || 'Beginner Tier'}).
-              </p>
-            </button>
-
-            <button
-              onClick={() => handleLaunchSparring('ghost_replay')}
+              onClick={() => handleLaunchSparring()}
               disabled={!canLaunchGhost || launchingSpar !== null}
-              className={`p-5 rounded-2xl border text-left transition-all ${
+              className={`w-full p-5 rounded-2xl border text-left transition-all ${
                 canLaunchGhost
                   ? 'bg-slate-900 border-emerald-500/50 hover:bg-emerald-950/30 cursor-pointer'
                   : 'bg-slate-900/50 border-slate-800/70 opacity-60 cursor-not-allowed'
@@ -1292,20 +1227,20 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
                   <History size={20} />
                 </div>
                 <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300">
-                  {canLaunchGhost
-                    ? `${lobbyTelemetry.historicalGhostCount} Recorded`
-                    : '0 Recordings'}
+                  {lobbyTelemetry.ghostReplayAvailable === null
+                    ? 'Checking source records'
+                    : canLaunchGhost
+                    ? 'Verified source available'
+                    : 'No verified source'}
                 </span>
               </div>
               <div className="text-sm font-black text-white mb-1">
-                Fight Historical Ghost Replay
+                Fight a Recorded Human Replay
               </div>
               <p className="text-xs text-slate-400">
                 {canLaunchGhost && lobbyTelemetry.latestGhostMeta
-                  ? `Replay ${lobbyTelemetry.latestGhostMeta.playerName}'s real recorded match (${new Date(
-                      lobbyTelemetry.latestGhostMeta.recordedAt
-                    ).toLocaleDateString()}).`
-                  : `No recorded human battle exists for ${selectedCourseId} in PostgreSQL yet.`}
+                  ? `Replay ${lobbyTelemetry.latestGhostMeta.playerName}'s recorded match (${new Date(lobbyTelemetry.latestGhostMeta.recordedAt).toLocaleDateString()}).`
+                  : 'This option stays disabled until a complete historical human recording is verified.'}
               </p>
             </button>
           </div>
@@ -1328,10 +1263,10 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
     const currentQ = battleData.questions[me.currentQuestionIndex];
     const opponentBadge =
       battleData.opponentType === 'ghost_replay'
-        ? 'Ghost Replay'
-        : battleData.opponentType === 'ai_challenger'
-        ? '[AI Challenger]'
-        : 'Live Player';
+        ? 'Recorded Human Replay'
+        : battleData.opponentType === 'human'
+        ? 'Live Human Player'
+        : 'Unverified Legacy Opponent';
 
     return (
       <div className="min-h-screen bg-slate-900 flex flex-col relative overflow-hidden pb-24 lg:pb-0">
