@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useRef, useCallb
 import { Course, CourseId } from '../types';
 import { useAuth } from './AuthContext';
 import { CourseService } from '../services/courseService';
+import { auth } from '../firebase';
 
 interface CourseContextType {
   courses: Record<string, Course>;
@@ -16,21 +17,36 @@ export function CourseProvider({ children }: { children: React.ReactNode }) {
   const [courses, setCourses] = useState<Record<string, Course>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
 
   const coursesRef = useRef<Record<string, Course>>({});
   coursesRef.current = courses;
 
   const inFlightRef = useRef(false);
   const lastFetchTimeRef = useRef(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fetchCatalogRef = useRef<(isManualRetry?: boolean) => Promise<void>>(async () => {});
 
   const fetchCatalog = useCallback(async (isManualRetry = false) => {
-    if (inFlightRef.current) return;
+    if (authLoading) return;
+
+    const activeUser = user || auth.currentUser;
+    if (!activeUser) {
+      setLoading(false);
+      return;
+    }
+
+    if (inFlightRef.current && !isManualRetry) return;
 
     const now = Date.now();
     // Enforce 60s minimum interval for automatic background refetches
     if (!isManualRetry && now - lastFetchTimeRef.current < 60000 && Object.keys(coursesRef.current).length > 0) {
       return;
+    }
+
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
     }
 
     inFlightRef.current = true;
@@ -42,15 +58,7 @@ export function CourseProvider({ children }: { children: React.ReactNode }) {
     setError(null);
 
     try {
-      let token: string | undefined;
-      if (user) {
-        try {
-          token = await user.getIdToken();
-        } catch {
-          // Token fetch error handled gracefully
-        }
-      }
-
+      const token = await activeUser.getIdToken();
       const catalogList = await CourseService.getFullCatalog(token);
       const courseMap: Record<string, Course> = {};
       for (const c of catalogList) {
@@ -60,33 +68,50 @@ export function CourseProvider({ children }: { children: React.ReactNode }) {
       setCourses(courseMap);
       setError(null);
       lastFetchTimeRef.current = Date.now();
+      setLoading(false);
     } catch (err: any) {
       console.warn('[CourseContext] Notice loading catalog, scheduling retry:', err?.message || err);
       if (Object.keys(coursesRef.current).length === 0) {
-        setTimeout(() => {
+        retryTimerRef.current = setTimeout(() => {
           inFlightRef.current = false;
-          fetchCatalog(true);
-        }, 1800);
+          void fetchCatalogRef.current(true);
+        }, 2000);
+      } else {
+        setLoading(false);
       }
     } finally {
       inFlightRef.current = false;
+    }
+  }, [user, authLoading]);
+
+  fetchCatalogRef.current = fetchCatalog;
+
+  // Initial fetch on mount or when auth finishes resolving user
+  useEffect(() => {
+    if (!authLoading && user?.uid) {
+      inFlightRef.current = false;
+      void fetchCatalog(true);
+    } else if (!authLoading && !user) {
       setLoading(false);
     }
-  }, [user]);
-
-  // Initial fetch on mount or user/auth change
-  useEffect(() => {
-    fetchCatalog();
-  }, [user?.uid, fetchCatalog]);
+    return () => {
+      if (retryTimerRef.current) {
+        clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+    };
+  }, [authLoading, user?.uid, fetchCatalog]);
 
   // Window focus refetch with 60s throttling
   useEffect(() => {
     const handleFocus = () => {
-      fetchCatalog();
+      if (!authLoading && user?.uid) {
+        void fetchCatalog();
+      }
     };
     window.addEventListener('focus', handleFocus);
     return () => window.removeEventListener('focus', handleFocus);
-  }, [fetchCatalog]);
+  }, [authLoading, user?.uid, fetchCatalog]);
 
   return (
     <CourseContext.Provider value={{ courses, loading, error, refreshCourses: () => fetchCatalog(true) }}>

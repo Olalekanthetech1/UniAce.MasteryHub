@@ -87,7 +87,8 @@ export const LogService = {
       const res = await fetch(url, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.toLowerCase().includes('application/json')) {
         const json = await res.json();
         if (Array.isArray(json.logs)) {
           return json.logs;
@@ -95,7 +96,7 @@ export const LogService = {
       }
       return clientMemoryLogs.slice(0, count);
     } catch (error) {
-      console.error('Failed to fetch system logs:', error);
+      console.warn('Notice fetching system logs:', error);
       return clientMemoryLogs.slice(0, count);
     }
   },

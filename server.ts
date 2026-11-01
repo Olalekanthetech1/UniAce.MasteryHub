@@ -925,15 +925,19 @@ ${isHintRequest ? `\n- Hint Mode (Mastery: ${masteryLevel || 50}%): Provide a gu
 }
 
 // Global Error Handlers for the process
-process.on('uncaughtException', (err) => {
+process.on('uncaughtException', (err: any) => {
+  const code = err?.code || '';
+  if (code === 'ECONNRESET' || code === 'EPIPE' || code === 'ETIMEDOUT') {
+    logger.warn({ err }, 'Non-fatal socket exception caught');
+    return;
+  }
   logger.fatal({ err }, 'CRITICAL: UNCAUGHT EXCEPTION');
   // Give it a moment to flush logs then exit cleanly to allow supervisor to restart
   setTimeout(() => process.exit(1), 1000);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  logger.fatal({ promise, reason }, 'CRITICAL: UNHANDLED REJECTION');
-  setTimeout(() => process.exit(1), 1000);
+  logger.error({ promise, reason }, 'Unhandled promise rejection caught (server staying alive)');
 });
 
 app.use(cors({
@@ -4401,7 +4405,7 @@ app.get('/api/logs', verifyAuth, async (req: any, res: any) => {
     const category = req.query.category;
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'DB unavailable' });
-    let queryText = 'SELECT log_id as id, level, category, message, details, user_id as "userId", user_email as "userEmail", created_at as timestamp FROM system_logs';
+    let queryText = `SELECT log_id as id, level, category, message, details, user_id as "userId", COALESCE(details->>'userEmail', details->>'email', 'system') as "userEmail", created_at as timestamp FROM system_logs`;
     const params: any[] = [];
     if (category && category !== 'all') {
       queryText += ' WHERE category = $1';

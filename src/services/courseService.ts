@@ -2,6 +2,7 @@ import { Course, Module, SubTopic, Quiz, Formula, CourseId } from '../types';
 import { getModuleOrderIndex, getLessonOrderIndex, sortCourseSyllabus } from '../shared/courseSchemas';
 import { normalizeSemester } from '../utils/normalization';
 import { safeFetchJson } from '../utils/safeFetch';
+import { auth } from '../firebase';
 
 export const sanitizeForFirestore = (obj: any): any => {
   if (obj === undefined) return null;
@@ -21,14 +22,22 @@ export const sanitizeForFirestore = (obj: any): any => {
   return sanitized;
 };
 
+async function buildAuthHeaders(explicitToken?: string, extraHeaders?: Record<string, string>): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { ...(extraHeaders || {}) };
+  const token = explicitToken || (await auth.currentUser?.getIdToken().catch(() => undefined));
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
+}
+
 export const CourseService = {
   async getFullCatalog(idToken?: string, retries = 2): Promise<Course[]> {
-    const headers: Record<string, string> = {};
-    if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+    const headers = await buildAuthHeaders(idToken);
     const baseUrl = typeof window !== 'undefined' ? '' : (process.env.APP_URL || 'http://localhost:3000');
     const res = await safeFetchJson<any>(`${baseUrl}/api/catalog/full`, { headers });
     if (!res.ok || !res.data) {
-      if (retries > 0) {
+      if (retries > 0 && res.status !== 401 && res.status !== 403) {
         await new Promise(resolve => setTimeout(resolve, 1000));
         return this.getFullCatalog(idToken, retries - 1);
       }
@@ -61,7 +70,8 @@ export const CourseService = {
   },
 
   async getCourse(courseId: string): Promise<Course | null> {
-    const res = await safeFetchJson<any>(`/api/courses/${encodeURIComponent(courseId)}`);
+    const headers = await buildAuthHeaders();
+    const res = await safeFetchJson<any>(`/api/courses/${encodeURIComponent(courseId)}`, { headers });
     if (!res.ok) {
       if (res.status === 404) return null;
       throw new Error(`Failed to fetch course ${courseId} (${res.error || `HTTP ${res.status}`})`);
@@ -91,7 +101,8 @@ export const CourseService = {
   },
 
   async getModules(courseId: string): Promise<Module[]> {
-    const res = await safeFetchJson<any>(`/api/courses/${encodeURIComponent(courseId)}/modules`);
+    const headers = await buildAuthHeaders();
+    const res = await safeFetchJson<any>(`/api/courses/${encodeURIComponent(courseId)}/modules`, { headers });
     if (!res.ok || !res.data) {
       throw new Error(`Failed to fetch modules for course ${courseId} (${res.error || `HTTP ${res.status}`})`);
     }
@@ -108,7 +119,8 @@ export const CourseService = {
   },
 
   async getLessons(courseId: string, moduleId: string): Promise<SubTopic[]> {
-    const res = await safeFetchJson<any>(`/api/courses/${encodeURIComponent(courseId)}/modules/${encodeURIComponent(moduleId)}/lessons`);
+    const headers = await buildAuthHeaders();
+    const res = await safeFetchJson<any>(`/api/courses/${encodeURIComponent(courseId)}/modules/${encodeURIComponent(moduleId)}/lessons`, { headers });
     if (!res.ok || !res.data) {
       throw new Error(`Failed to fetch lessons for ${courseId}/${moduleId} (${res.error || `HTTP ${res.status}`})`);
     }
@@ -126,7 +138,8 @@ export const CourseService = {
   },
 
   async getQuiz(courseId: string, moduleId: string): Promise<Quiz | null> {
-    const res = await safeFetchJson<any>(`/api/courses/${encodeURIComponent(courseId)}/modules/${encodeURIComponent(moduleId)}/quiz`);
+    const headers = await buildAuthHeaders();
+    const res = await safeFetchJson<any>(`/api/courses/${encodeURIComponent(courseId)}/modules/${encodeURIComponent(moduleId)}/quiz`, { headers });
     if (!res.ok || !res.data || !Object.prototype.hasOwnProperty.call(res.data, 'quiz')) {
       throw new Error(`Live quiz retrieval is unavailable for ${courseId}/${moduleId}.`);
     }
@@ -134,11 +147,12 @@ export const CourseService = {
   },
 
   async getFormulas(courseId: string): Promise<Formula[]> {
-    const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}/formulas`);
-    if (!res.ok) {
-      throw new Error(`Failed to fetch formulas for ${courseId} (HTTP ${res.status}: ${res.statusText})`);
+    const headers = await buildAuthHeaders();
+    const res = await safeFetchJson<any>(`/api/courses/${encodeURIComponent(courseId)}/formulas`, { headers });
+    if (!res.ok || !res.data) {
+      throw new Error(`Failed to fetch formulas for ${courseId} (${res.error || `HTTP ${res.status}`})`);
     }
-    const data = await res.json();
+    const data = res.data;
     if (!Array.isArray(data.formulas)) {
       throw new Error(`Formula response for ${courseId} did not include a verified formulas array.`);
     }
@@ -153,13 +167,10 @@ export const CourseService = {
   },
 
   async saveFormulas(courseId: string, formulas: Formula[]): Promise<void> {
-    const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+    const headers = await buildAuthHeaders(undefined, { 'Content-Type': 'application/json' });
     const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}/formulas`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-      },
+      headers,
       body: JSON.stringify({ formulas })
     });
     if (!res.ok) {
@@ -168,13 +179,10 @@ export const CourseService = {
   },
 
   async saveGeneratedCourse(courseId: string, data: any): Promise<void> {
-    const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+    const headers = await buildAuthHeaders(undefined, { 'Content-Type': 'application/json' });
     const res = await fetch('/api/admin/courses', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-      },
+      headers,
       body: JSON.stringify({
         id: courseId,
         code: courseId,
@@ -199,13 +207,10 @@ export const CourseService = {
   },
 
   async updateCourse(courseId: string, data: Partial<Course>): Promise<void> {
-    const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+    const headers = await buildAuthHeaders(undefined, { 'Content-Type': 'application/json' });
     const res = await fetch(`/api/admin/courses/${encodeURIComponent(courseId)}`, {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-      },
+      headers,
       body: JSON.stringify(data)
     });
     if (!res.ok) {
@@ -214,10 +219,10 @@ export const CourseService = {
   },
 
   async archiveCourse(courseId: string): Promise<void> {
-    const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+    const headers = await buildAuthHeaders();
     const res = await fetch(`/api/admin/courses/${encodeURIComponent(courseId)}`, {
       method: 'DELETE',
-      headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      headers
     });
     if (!res.ok) {
       throw new Error(`Failed to archive course ${courseId} via Neon`);
@@ -225,22 +230,19 @@ export const CourseService = {
   },
 
   async getArchivedCourses(): Promise<Course[]> {
-    const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
-    const res = await fetch('/api/admin/courses/archived', {
-      headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-    });
-    if (!res.ok) {
-      throw new Error('Failed to fetch archived courses via Neon');
+    const headers = await buildAuthHeaders();
+    const res = await safeFetchJson<any>('/api/admin/courses/archived', { headers });
+    if (!res.ok || !res.data) {
+      throw new Error(res.error || 'Failed to fetch archived courses via Neon');
     }
-    const data = await res.json();
-    return Array.isArray(data.courses) ? data.courses : [];
+    return Array.isArray(res.data.courses) ? res.data.courses : [];
   },
 
   async restoreCourse(courseId: string): Promise<void> {
-    const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+    const headers = await buildAuthHeaders();
     const res = await fetch(`/api/admin/courses/${encodeURIComponent(courseId)}/restore`, {
       method: 'POST',
-      headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      headers
     });
     if (!res.ok) {
       throw new Error(`Failed to restore course ${courseId} via Neon`);
@@ -248,10 +250,10 @@ export const CourseService = {
   },
 
   async publishCourse(courseId: string): Promise<void> {
-    const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+    const headers = await buildAuthHeaders();
     const res = await fetch(`/api/admin/courses/${encodeURIComponent(courseId)}/publish`, {
       method: 'POST',
-      headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      headers
     });
     if (!res.ok) {
       throw new Error(`Failed to publish course ${courseId} via Neon`);
@@ -259,10 +261,10 @@ export const CourseService = {
   },
 
   async permanentDeleteCourse(courseId: string): Promise<void> {
-    const token = await (await import('firebase/auth')).getAuth().currentUser?.getIdToken();
+    const headers = await buildAuthHeaders();
     const res = await fetch(`/api/admin/courses/${encodeURIComponent(courseId)}/permanent`, {
       method: 'DELETE',
-      headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      headers
     });
     if (!res.ok) {
       throw new Error(`Failed to permanently delete course ${courseId} via Neon`);

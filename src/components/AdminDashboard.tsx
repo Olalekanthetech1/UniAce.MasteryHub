@@ -83,11 +83,13 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
         setArchivedCourses({});
         return;
       }
-      const res = await fetch('/api/admin/courses/archived', {
+      const res = await safeFetchJson<any>('/api/admin/courses/archived', {
         headers: { 'Authorization': `Bearer ${idToken}` }
       });
-      if (!res.ok) throw new Error('Failed to fetch archived courses');
-      const data = await res.json();
+      if (!res.ok || !res.data) {
+        throw new Error(res.error || 'Failed to fetch archived courses');
+      }
+      const data = res.data;
       const archivedMap: Record<string, Course> = {};
       if (Array.isArray(data?.courses)) {
         data.courses.forEach((c: any) => {
@@ -98,7 +100,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
       }
       setArchivedCourses(archivedMap);
     } catch (error) {
-      console.error("Error fetching archived courses:", error);
+      console.warn("Notice fetching archived courses:", error);
     } finally {
       setIsLoadingArchived(false);
     }
