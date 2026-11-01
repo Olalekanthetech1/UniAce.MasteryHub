@@ -4875,8 +4875,8 @@ async function updateCourseGenerationStateInPostgres(courseId: string, patch: Re
     try {
       const statusVal = typeof merged.status === 'string' ? merged.status : 'draft';
       await pool.query(
-        `INSERT INTO courses (id, code, title, description, level, department, faculty, semester, scope, status, version, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1, NOW(), NOW())
+`INSERT INTO courses (id, code, title, description, level, department, faculty, semester, scope, faculties, departments, status, version, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 1, NOW(), NOW())
          ON CONFLICT (id) DO UPDATE SET
            title = COALESCE(EXCLUDED.title, courses.title),
            description = COALESCE(EXCLUDED.description, courses.description),
@@ -4885,6 +4885,8 @@ async function updateCourseGenerationStateInPostgres(courseId: string, patch: Re
            faculty = COALESCE(EXCLUDED.faculty, courses.faculty),
            semester = COALESCE(EXCLUDED.semester, courses.semester),
            scope = COALESCE(EXCLUDED.scope, courses.scope),
+           faculties = COALESCE(EXCLUDED.faculties, courses.faculties),
+           departments = COALESCE(EXCLUDED.departments, courses.departments),
            status = EXCLUDED.status,
            updated_at = NOW()`,
         [
@@ -4897,6 +4899,8 @@ async function updateCourseGenerationStateInPostgres(courseId: string, patch: Re
           (Array.isArray(merged.faculties) && merged.faculties[0]) || merged.faculty || null,
           merged.semester || '1st Semester',
           merged.scope || 'DEPARTMENT',
+          Array.isArray(merged.faculties) ? merged.faculties : null,
+          Array.isArray(merged.departments) ? merged.departments : null,
           statusVal
         ]
       );
@@ -4955,6 +4959,7 @@ async function executeCoordinatedGenerationJob(
   }
 
   try {
+    await ensureCourseLearningSchema();
     const existingSnap = activeCoordinatedJobSnapshots.get(courseId);
     if (activeRunningCourseJobs.has(courseId) && existingSnap?.generationStatus === 'generating') {
       if (res && !res.headersSent) {
