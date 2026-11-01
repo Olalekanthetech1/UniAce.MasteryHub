@@ -9972,35 +9972,57 @@ app.post('/api/user/reward-sparks', verifyAuth, async (req, res) => {
   }
 });
 
-// 4b. Badge Reward Endpoint (Neon PostgreSQL)
+// Badge Spark rewards are resolved from the persisted gamification policy, never caller-supplied amounts.
 app.post('/api/user/reward-badge', verifyAuth, async (req, res) => {
-  const { amount, badgeId } = req.body || {};
+  const { badgeId } = req.body || {};
   const uid = (req as any).user.uid;
   const app = getAdminApp();
-
-  if (!uid) {
-    return res.status(503).json({ error: 'Service unavailable' });
-  }
-
-  const numAmount = parseInt(amount, 10);
-  if (isNaN(numAmount) || numAmount <= 0 || numAmount > 1000) {
-    return res.status(400).json({ error: 'Invalid reward amount' });
+  if (!uid) return res.status(503).json({ error: 'Authenticated user identity is unavailable.' });
+  if (typeof badgeId !== 'string' || !badgeId.trim()) {
+    return res.status(400).json({ error: 'A persisted badge identifier is required.' });
   }
 
   try {
+    const policy = await getSystemConfigDoc('gamification', true);
+    if (!policy || !Array.isArray(policy.badges)) {
+      return res.status(503).json({ error: 'No authoritative badge reward policy is configured.' });
+    }
+    const badge = policy.badges.find((item: any) => item?.id === badgeId);
+    if (!badge || !Number.isInteger(badge.sparkReward) || badge.sparkReward <= 0) {
+      return res.status(409).json({ error: 'The requested badge has no configured Spark reward.' });
+    }
+
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Authoritative badge profile service is unavailable.' });
+    const profileRes = await pool.query(
+      'SELECT learning_profile FROM users WHERE uid = $1',
+      [uid]
+    );
+    if (profileRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Authoritative user profile not found.' });
+    }
+    const profile = profileRes.rows[0].learning_profile;
+    const unlockedBadges = Array.isArray(profile?.achievements) ? profile.achievements : [];
+    const unlocked = unlockedBadges.some((item: any) =>
+      item?.id === badgeId && typeof item.unlockedAt === 'string' && item.unlockedAt.trim()
+    );
+    if (!unlocked) {
+      return res.status(409).json({ error: 'The badge is not recorded as unlocked for this user.' });
+    }
+
     const rewardRes = await executeBucketAwareSparkDelta({
       app,
       uid,
-      delta: numAmount,
+      delta: badge.sparkReward,
       action: 'REWARD',
       endpoint: 'reward',
-      idempotencyToken: badgeId ? `badge_${badgeId}` : undefined,
-      reason: `Achievement badge reward (+${numAmount} sparks)`
+      idempotencyToken: `badge_${badgeId}`,
+      reason: `Persisted badge reward: ${String(badge.title)}`
     });
-    res.json({ success: true, newBalance: rewardRes.newBalance });
+    return res.json({ success: true, badgeId, newBalance: rewardRes.newBalance });
   } catch (error: any) {
     console.error('Badge Reward Error:', error.message);
-    res.status(400).json({ error: error.message });
+    return res.status(503).json({ error: 'Badge reward could not be verified.', message: error.message });
   }
 });
 
