@@ -4729,23 +4729,46 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
     courseName,
     courseCode,
     department,
-    scope = 'DEPARTMENT',
-    level = 'Undergraduate',
-    semester = 'Semester 1',
+    scope,
+    level,
+    semester,
     creditUnits,
     tone = 'academic',
     depth = 'standard',
     outline,
     sourceText,
-    academicStandard = 'Globally Adaptive (Universal University Standard)',
+    academicStandard,
     provider: requestedProvider,
     selectedFaculties = [],
-    selectedDepartments = []
+    selectedDepartments
   } = req.body;
 
   if (!courseName || typeof courseName !== 'string' || !courseName.trim()) {
     return res.status(400).json({ error: 'Valid courseName is required.' });
   }
+  if (typeof department !== 'string' || !department.trim()) {
+    return res.status(400).json({ error: 'A verified department is required.' });
+  }
+  if (typeof level !== 'string' || !level.trim()) {
+    return res.status(400).json({ error: 'An explicit academic level is required; no level will be assumed.' });
+  }
+  if (typeof scope !== 'string' || !['DEPARTMENT', 'FACULTY', 'GLOBAL', 'PUBLIC', 'ALL'].includes(scope.trim().toUpperCase())) {
+    return res.status(400).json({ error: 'A valid course audience scope is required.' });
+  }
+  if (typeof creditUnits !== 'number' || !Number.isInteger(creditUnits) || creditUnits <= 0) {
+    return res.status(400).json({ error: 'Verified course credit units are required.' });
+  }
+  if ((!outline || typeof outline !== 'string' || !outline.trim()) &&
+      (!sourceText || typeof sourceText !== 'string' || !sourceText.trim())) {
+    return res.status(400).json({ error: 'An admin-approved syllabus outline or source material is required for source-grounded course generation.' });
+  }
+  if (scope.trim().toUpperCase() === 'FACULTY' &&
+      (!Array.isArray(selectedFaculties) || selectedFaculties.length === 0)) {
+    return res.status(400).json({ error: 'At least one faculty must be selected for faculty-scoped generation.' });
+  }
+  const effectiveDepartments = Array.isArray(selectedDepartments) && selectedDepartments.length > 0
+    ? selectedDepartments
+    : [department.trim()];
 
   try {
     // 1. STAGE 1: INFER AUTHORITATIVE ACADEMIC DOMAIN & GROUNDING BRIEF
@@ -4793,7 +4816,7 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
         depth,
         scope,
         selectedFaculties,
-        selectedDepartments,
+        selectedDepartments: effectiveDepartments,
         outline,
         sourceText,
         academicStandard
@@ -4967,7 +4990,7 @@ async function executeCoordinatedGenerationJob(
     tone = 'academic',
     depth = 'standard',
     sourceText,
-    academicStandard = 'Globally Adaptive (Universal University Standard)',
+    academicStandard,
     subject,
     scope,
     selectedFaculties = [],
@@ -4987,8 +5010,33 @@ async function executeCoordinatedGenerationJob(
     if (res) return res.status(400).json({ error: 'Department is required for course generation.' });
     return;
   }
+  if (typeof level !== 'string' || !level.trim()) {
+    if (res) return res.status(400).json({ error: 'An explicit academic level is required; no level will be assumed.' });
+    return;
+  }
+  if (typeof creditUnits !== 'number' || !Number.isInteger(creditUnits) || creditUnits <= 0) {
+    if (res) return res.status(400).json({ error: 'Verified course credit units are required.' });
+    return;
+  }
+  if (typeof scope !== 'string' || !['DEPARTMENT', 'FACULTY', 'GLOBAL', 'PUBLIC', 'ALL'].includes(scope.trim().toUpperCase())) {
+    if (res) return res.status(400).json({ error: 'A valid course audience scope is required.' });
+    return;
+  }
+  if ((!outline || typeof outline !== 'string' || !outline.trim()) &&
+      (!sourceText || typeof sourceText !== 'string' || !sourceText.trim())) {
+    if (res) return res.status(400).json({ error: 'An admin-approved syllabus outline or source material is required for source-grounded course generation.' });
+    return;
+  }
+  if (scope.trim().toUpperCase() === 'FACULTY' &&
+      (!Array.isArray(selectedFaculties) || selectedFaculties.length === 0)) {
+    if (res) return res.status(400).json({ error: 'At least one faculty must be selected for faculty-scoped generation.' });
+    return;
+  }
 
-  const rawDept = (department || '').trim();
+  const rawDept = department.trim();
+  const effectiveDepartments = Array.isArray(selectedDepartments) && selectedDepartments.length > 0
+    ? selectedDepartments
+    : [rawDept];
   const pool = getPostgresPool();
   if (!pool) {
     if (res) return res.status(503).json({ error: 'Neon PostgreSQL database service unavailable.' });
@@ -5011,17 +5059,19 @@ async function executeCoordinatedGenerationJob(
       id: courseId,
       code: courseId,
       title: courseName,
-      description: courseDescription || `A comprehensive university course on ${courseName}.`,
-      department: rawDept || 'Academic Studies',
-      subject: subject || 'General',
-      level: level || '100',
-      semester: semester || '1st Semester',
-      creditUnits: creditUnits || 3,
-      prerequisites: [],
-      scope: scope || 'DEPARTMENT',
+      description: typeof courseDescription === 'string' && courseDescription.trim()
+        ? courseDescription.trim()
+        : null,
+      department: rawDept,
+      subject: typeof subject === 'string' && subject.trim() ? subject.trim() : null,
+      level: level.trim(),
+      semester: typeof semester === 'string' && semester.trim() ? semester.trim() : null,
+      creditUnits,
+      prerequisites: Array.isArray(req.body.prerequisites) ? req.body.prerequisites : null,
+      scope: scope.trim().toUpperCase(),
       academicStandard,
       faculties: selectedFaculties,
-      departments: selectedDepartments,
+      departments: effectiveDepartments,
       isAIGenerated: true,
       createdAt: existingSnap?.createdAt || new Date().toISOString(),
       generationStatus: 'generating',
@@ -5084,9 +5134,11 @@ async function executeCoordinatedGenerationJob(
 
         if (Array.isArray(approvedModules) && approvedModules.length > 0) {
           skeleton = {
-            description: courseDescription || `A comprehensive university course on ${courseName} (${domainBrief.primaryDomain}).`,
+            description: typeof courseDescription === 'string' && courseDescription.trim()
+              ? courseDescription.trim()
+              : null,
             modules: approvedModules,
-            learningOutcomes: normalizeLearningOutcomes(req.body.learningOutcomes || []),
+            learningOutcomes: normalizeLearningOutcomes(req.body.learningOutcomes),
             pedagogyType: domainBrief.pedagogyType,
             creditHours: creditUnits
           };
@@ -5137,7 +5189,7 @@ async function executeCoordinatedGenerationJob(
               depth,
               scope,
               selectedFaculties,
-              selectedDepartments,
+              selectedDepartments: effectiveDepartments,
               outline,
               sourceText,
               academicStandard
@@ -5380,7 +5432,7 @@ async function executeCoordinatedGenerationJob(
                     courseName,
                     department: rawDept,
                     selectedFaculties,
-                    selectedDepartments,
+                    selectedDepartments: effectiveDepartments,
                     level,
                     tone,
                     depth,
