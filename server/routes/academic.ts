@@ -109,11 +109,19 @@ router.get('/stats', async (req: Request, res: Response) => {
 
 // 5. Admin Config GET
 router.get('/config', (req: Request, res: Response) => {
+  if (!req.baseUrl.startsWith('/api/admin/')) {
+    res.status(404).json({ error: 'Not found' });
+    return;
+  }
   res.json(getAcademicConfig());
 });
 
 // 6. Admin Config POST
 router.post('/config', (req: Request, res: Response) => {
+  if (!req.baseUrl.startsWith('/api/admin/')) {
+    res.status(404).json({ error: 'Not found' });
+    return;
+  }
   try {
     const updated = updateAcademicConfig(req.body);
     res.json({ message: 'Academic Config updated successfully', config: updated });
@@ -124,6 +132,10 @@ router.post('/config', (req: Request, res: Response) => {
 
 // 7. Admin Live Smoke Test Sandbox
 router.post('/test', async (req: Request, res: Response) => {
+  if (!req.baseUrl.startsWith('/api/admin/')) {
+    res.status(404).json({ error: 'Not found' });
+    return;
+  }
   try {
     const { query = 'quantum computing', limit = 3 } = req.body;
     const searchRes = await searchAcademicPapers({ query, limit: Number(limit) });
