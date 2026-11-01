@@ -8,39 +8,158 @@ import {
   CanonicalDefinition,
   AcademicConfig,
   AcademicProviderHealth,
+  AcademicWebSourceSearchResponse,
 } from './academic/types.js';
 import { fetchFromArxiv } from './academic/arxivAdapter.js';
 import { fetchFromSemanticScholar, lookupPaperSemanticScholar } from './academic/semanticScholarAdapter.js';
 import { fetchFromOpenAlex, fetchOpenAlexConceptDefinitions } from './academic/openAlexAdapter.js';
 import { getPostgresPool } from './postgresPool.js';
+import { createHash } from 'crypto';
+import {
+  DEFAULT_ACADEMIC_RESEARCH_SETTINGS,
+  loadAcademicResearchConfig,
+  saveAcademicResearchConfig,
+  AcademicResearchConfigRecord,
+} from './academic/academicConfigStore.js';
+import { searchTavilyAcademicSources } from './academic/tavilyAdapter.js';
 
-// Default Admin Configuration
-let activeConfig: AcademicConfig = {
-  enabled: true,
-  cacheTtlHours: 24,
-  arxivMaxResults: 5,
-  defaultCourseAlignment: 'Global University Benchmark Syllabus (Adaptive)',
-  providersEnabled: {
-    arxiv: true,
-    semanticScholar: true,
-    openAlex: true,
-  },
+type ActiveAcademicConfig = AcademicResearchConfigRecord['settings'] & {
+  semanticScholarApiKey?: string;
+  tavilyApiKey?: string;
 };
 
-export function getAcademicConfig(): AcademicConfig {
-  return activeConfig;
+let activeConfig: ActiveAcademicConfig = {
+  ...DEFAULT_ACADEMIC_RESEARCH_SETTINGS,
+  providersEnabled: { ...DEFAULT_ACADEMIC_RESEARCH_SETTINGS.providersEnabled },
+};
+let configLoadedAt = 0;
+let configLoadPromise: Promise<void> | null = null;
+const CONFIG_REFRESH_MS = 60_000;
+
+async function ensureAcademicConfig(forceRefresh = false): Promise<void> {
+  if (!forceRefresh && configLoadedAt && Date.now() - configLoadedAt < CONFIG_REFRESH_MS) return;
+  if (configLoadPromise) {
+    await configLoadPromise;
+    return;
+  }
+  configLoadPromise = (async () => {
+    const record = await loadAcademicResearchConfig(forceRefresh);
+    activeConfig = {
+      ...record.settings,
+      semanticScholarApiKey: record.secrets.semanticScholarApiKey,
+      tavilyApiKey: record.secrets.tavilyApiKey,
+    };
+    configLoadedAt = Date.now();
+  })();
+  try {
+    await configLoadPromise;
+  } finally {
+    configLoadPromise = null;
+  }
 }
 
-export function updateAcademicConfig(newConfig: Partial<AcademicConfig>): AcademicConfig {
-  activeConfig = {
-    ...activeConfig,
-    ...newConfig,
-    providersEnabled: {
-      ...activeConfig.providersEnabled,
-      ...(newConfig.providersEnabled || {}),
-    },
+export async function getAcademicConfig(): Promise<AcademicConfig> {
+  await ensureAcademicConfig();
+  return {
+    enabled: activeConfig.enabled,
+    cacheTtlHours: activeConfig.cacheTtlHours,
+    openAlexEmail: activeConfig.openAlexEmail,
+    arxivMaxResults: activeConfig.arxivMaxResults,
+    defaultCourseAlignment: activeConfig.defaultCourseAlignment,
+    providersEnabled: { ...activeConfig.providersEnabled },
+    researchDepth: 'adaptive',
+    adaptiveMaxQueries: activeConfig.adaptiveMaxQueries,
+    minimumUsefulSources: activeConfig.minimumUsefulSources,
+    minimumRelevanceScore: activeConfig.minimumRelevanceScore,
+    tavilyApiKeyConfigured: Boolean(activeConfig.tavilyApiKey),
+    semanticScholarApiKeyConfigured: Boolean(activeConfig.semanticScholarApiKey),
   };
-  return activeConfig;
+}
+
+export async function updateAcademicConfig(
+  newConfig: Partial<AcademicConfig> & { tavilyApiKey?: string; semanticScholarApiKey?: string }
+): Promise<AcademicConfig> {
+  await ensureAcademicConfig();
+  const record = await saveAcademicResearchConfig(newConfig);
+  activeConfig = {
+    ...record.settings,
+    semanticScholarApiKey: record.secrets.semanticScholarApiKey,
+    tavilyApiKey: record.secrets.tavilyApiKey,
+  };
+  configLoadedAt = Date.now();
+  return getAcademicConfig();
+}
+
+export async function searchAcademicWebSources(input: {
+  query: string;
+  maxResults?: number;
+}): Promise<AcademicWebSourceSearchResponse> {
+  await ensureAcademicConfig();
+  if (!activeConfig.enabled) throw new Error('Academic research is disabled in system settings.');
+  if (!activeConfig.providersEnabled.tavily) throw new Error('Tavily search is disabled. Enable it in Academic Research settings.');
+  if (!activeConfig.tavilyApiKey) throw new Error('Tavily is enabled but no API key is configured.');
+  const query = input.query.trim();
+  if (query.length < 4) throw new Error('Research query must contain at least four characters.');
+
+  const maxResults = Math.min(20, Math.max(1, Math.floor(input.maxResults ?? 10)));
+  const stages: AcademicWebSourceSearchResponse['stages'] = [];
+  const first = await searchTavilyAcademicSources({
+    query,
+    searchDepth: 'basic',
+    maxResults,
+  }, activeConfig.tavilyApiKey);
+  stages.push({
+    searchDepth: 'basic',
+    resultCount: first.results.length,
+    usefulSourceCount: first.results.filter(source => source.score !== null && source.score >= activeConfig.minimumRelevanceScore).length,
+    creditsUsed: first.creditsUsed,
+    responseTimeSeconds: first.responseTimeSeconds,
+  });
+
+  let sources = [...first.results];
+  let escalated = false;
+  if (
+    activeConfig.researchDepth === 'adaptive' &&
+    activeConfig.adaptiveMaxQueries > 1 &&
+    stages[0].usefulSourceCount < activeConfig.minimumUsefulSources
+  ) {
+    escalated = true;
+    const advanced = await searchTavilyAcademicSources({
+      query,
+      searchDepth: 'advanced',
+      maxResults,
+    }, activeConfig.tavilyApiKey);
+    stages.push({
+      searchDepth: 'advanced',
+      resultCount: advanced.results.length,
+      usefulSourceCount: advanced.results.filter(source => source.score !== null && source.score >= activeConfig.minimumRelevanceScore).length,
+      creditsUsed: advanced.creditsUsed,
+      responseTimeSeconds: advanced.responseTimeSeconds,
+    });
+    const byUrl = new Map<string, typeof sources[number]>();
+    for (const source of [...sources, ...advanced.results]) {
+      const key = source.url.replace(/#.*$/, '').replace(/\/$/, '').toLowerCase();
+      const previous = byUrl.get(key);
+      const sourceScore = source.score ?? -1;
+      const previousScore = previous?.score ?? -1;
+      if (!previous || sourceScore > previousScore) byUrl.set(key, source);
+    }
+    sources = Array.from(byUrl.values()).sort((a, b) => (b.score ?? -1) - (a.score ?? -1)).slice(0, maxResults);
+  }
+
+  const measuredCredits = stages.every(stage => stage.creditsUsed !== null)
+    ? stages.reduce((total, stage) => total + (stage.creditsUsed || 0), 0)
+    : null;
+  return {
+    query,
+    researchDepth: 'adaptive',
+    status: sources.length > 0 ? 'results_found' : 'no_results',
+    escalated,
+    stages,
+    sources,
+    creditsUsed: measuredCredits,
+    disclaimer: 'Search results are source candidates, not verified institutional syllabi or approved curriculum evidence. Review the original sources and establish their authority before using them as curriculum requirements.',
+  };
 }
 
 // Levenshtein distance for fuzzy title deduplication
@@ -91,12 +210,12 @@ function calculateRelevanceScore(paper: AcademicPaper, queryTerms: string[]): nu
   }
 
   // Logarithmic citation weight
-  const citationBonus = Math.log(1 + (paper.citationCount || 0)) * 0.4;
+  const citationBonus = paper.citationCount != null ? Math.log(1 + paper.citationCount) * 0.4 : 0;
 
   // Exponential recency decay
   const currentYear = new Date().getFullYear();
-  const age = paper.year ? Math.max(0, currentYear - paper.year) : 10;
-  const recencyBonus = Math.exp(-0.05 * age) * 2.0;
+  const age = paper.year != null ? Math.max(0, currentYear - paper.year) : null;
+  const recencyBonus = age !== null ? Math.exp(-0.05 * age) * 2.0 : 0;
 
   // DOI verified paper bonus
   const doiBonus = paper.doi ? 0.5 : 0;
@@ -185,12 +304,14 @@ async function logAcademicTelemetry(
 export async function searchAcademicPapers(
   input: SearchAcademicPapersInput
 ): Promise<AcademicSearchResponse> {
+  await ensureAcademicConfig();
   const startTime = Date.now();
   const parsed = SearchAcademicPapersInputSchema.parse(input);
-  const { query, fieldOfStudy, limit, courseCode } = parsed;
+  const { query, fieldOfStudy, limit, minYear, courseCode } = parsed;
+  if (!activeConfig.enabled) throw new Error('Academic research is disabled in system settings.');
 
   const normalizedQuery = `${query} ${fieldOfStudy || ''}`.trim().toLowerCase();
-  const cacheKey = Buffer.from(normalizedQuery).toString('base64').slice(0, 64);
+  const cacheKey = createHash('sha256').update(JSON.stringify({ normalizedQuery, limit, minYear, courseCode })).digest('hex');
 
   // Check Cache
   const cached = await getCachedSearch(cacheKey);
@@ -204,7 +325,7 @@ export async function searchAcademicPapers(
 
   if (activeConfig.providersEnabled.arxiv) {
     tasks.push(
-      fetchFromArxiv(normalizedQuery, limit)
+      fetchFromArxiv(normalizedQuery, Math.min(limit, activeConfig.arxivMaxResults))
         .then(({ papers, latencyMs }) => {
           providerBreakdown.arxiv = { count: papers.length, latencyMs, status: 'ok' };
           allPapers.push(...papers);
@@ -244,12 +365,14 @@ export async function searchAcademicPapers(
     );
   }
 
+  if (tasks.length === 0) {
+    throw new Error('No academic search providers are enabled. Enable at least one live provider in Academic Research settings.');
+  }
   await Promise.allSettled(tasks);
 
-  // If ALL providers failed, throw clean status
-  if (allPapers.length === 0) {
-    const errorMsg = 'Academic Research APIs currently unavailable or query returned 0 matches across arXiv, Semantic Scholar, and OpenAlex.';
-    throw new Error(errorMsg);
+  const successfulProviders = Object.values(providerBreakdown).filter(provider => provider.status === 'ok').length;
+  if (allPapers.length === 0 && successfulProviders === 0) {
+    throw new Error('All enabled academic search providers failed. No results were fabricated or substituted.');
   }
 
   // Deduplication by DOI and Title similarity
@@ -257,6 +380,7 @@ export async function searchAcademicPapers(
   const seenDois = new Set<string>();
 
   for (const paper of allPapers) {
+    if (minYear !== undefined && (paper.year == null || paper.year < minYear)) continue;
     if (paper.doi && seenDois.has(paper.doi.toLowerCase())) {
       continue;
     }
@@ -270,10 +394,9 @@ export async function searchAcademicPapers(
     if (paper.doi) seenDois.add(paper.doi.toLowerCase());
 
     // Tag Course Code Alignment
-    paper.syllabusTags = [
-      activeConfig.defaultCourseAlignment,
-      courseCode || `${(fieldOfStudy || query).slice(0, 3).toUpperCase()} 101`,
-    ];
+    // Only attach a course tag when the caller supplied an actual course code.
+    // Do not manufacture course identifiers or imply institutional alignment.
+    paper.syllabusTags = courseCode ? [courseCode] : [];
 
     uniquePapers.push(paper);
   }
@@ -308,6 +431,7 @@ export async function searchAcademicPapers(
 
 // --- CITATION GENERATOR ---
 export async function getCitationAndAbstract(input: GetCitationInput): Promise<CitationResult> {
+  await ensureAcademicConfig();
   const { identifier } = input;
   let paper: AcademicPaper | null = null;
 
@@ -326,16 +450,27 @@ export async function getCitationAndAbstract(input: GetCitationInput): Promise<C
     throw new Error(`Academic paper with identifier '${identifier}' could not be located in live registries.`);
   }
 
-  const primaryAuthor = paper.authors[0] || 'Author';
-  const authorLastName = primaryAuthor.split(' ').pop() || primaryAuthor;
+  const primaryAuthor = paper.authors[0] || '';
+  const authorLastName = primaryAuthor ? primaryAuthor.split(' ').pop() || primaryAuthor : 'entry';
   const etAl = paper.authors.length > 1 ? ' et al.' : '';
-  const yearStr = paper.year ? ` (${paper.year}).` : ' (n.d.).';
-  const doiStr = paper.doi ? ` https://doi.org/${paper.doi}` : ` ${paper.url}`;
+  const yearStr = paper.year != null ? `(${paper.year})` : '(n.d.)';
+  const sourcePart = paper.venue ? ` ${paper.venue}.` : '';
+  const doiStr = paper.doi ? ` https://doi.org/${paper.doi}` : paper.url ? ` ${paper.url}` : '';
 
-  const apa = `${primaryAuthor}${etAl}${yearStr} ${paper.title}. ${paper.venue || 'Academic Journal'}.${doiStr}`;
+  const apa = paper.authors.length
+    ? `${primaryAuthor}${etAl} ${yearStr}. ${paper.title}.${sourcePart}${doiStr}`
+    : `${paper.title}. ${yearStr}.${sourcePart}${doiStr}`;
 
-  const bibtexKey = `${authorLastName.toLowerCase()}${paper.year || 'nd'}${paper.title.slice(0, 8).toLowerCase().replace(/[^a-z]/g, '')}`;
-  const bibtex = `@article{${bibtexKey},\n  author = {${paper.authors.join(' and ')}},\n  title = {${paper.title}},\n  journal = {${paper.venue || 'Academic Repository'}},\n  year = {${paper.year || 'n.d.'}},\n  doi = {${paper.doi || ''}},\n  url = {${paper.url}}\n}`;
+  const bibtexKey = `${authorLastName.toLowerCase()}${paper.year ?? 'nd'}${paper.title.slice(0, 8).toLowerCase().replace(/[^a-z]/g, '')}`;
+  const bibtexFields = [
+    ...(paper.authors.length ? [`  author = {${paper.authors.join(' and ')}},`] : []),
+    `  title = {${paper.title}},`,
+    ...(paper.venue ? [`  howpublished = {${paper.venue}},`] : []),
+    ...(paper.year != null ? [`  year = {${paper.year}},`] : []),
+    ...(paper.doi ? [`  doi = {${paper.doi}},`] : []),
+    ...(paper.url ? [`  url = {${paper.url}},`] : []),
+  ];
+  const bibtex = `@misc{${bibtexKey},\n${bibtexFields.join('\n')}\n}`;
 
   return {
     identifier,
@@ -362,24 +497,12 @@ export async function extractCanonicalDefinitions(
 
   if (concept) return concept;
 
-  return {
-    topic,
-    subject,
-    canonicalDefinition: `Canonical scientific definition and academic theory governing ${topic} within ${subject}.`,
-    sourceTextbooks: [
-      'Standard Benchmark Textbooks (e.g. Halliday & Resnick, Stewart Calculus, Cormen Algorithms)',
-      'Accredited Global University Curricula Guide',
-    ],
-    keyEquations: [topic],
-    courseAlignment: {
-      curriculumBenchmark: `Grounded in accredited global university benchmark standards for ${subject}`,
-      courseCode: courseCode || `${subject.slice(0, 3).toUpperCase()} 101`,
-    },
-  };
+  throw new Error(`No source-backed canonical definition was returned for topic "${topic}" in subject "${subject}". No synthetic definition or textbook references will be supplied.`);
 }
 
 // --- HEALTH CHECK FUNCTION ---
 export async function checkAcademicProvidersHealth(): Promise<AcademicProviderHealth[]> {
+  await ensureAcademicConfig();
   const providers: Array<'arxiv' | 'semantic_scholar' | 'openalex'> = ['arxiv', 'semantic_scholar', 'openalex'];
   const results: AcademicProviderHealth[] = [];
 
