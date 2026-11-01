@@ -131,7 +131,9 @@ router.post('/config', async (req: Request, res: Response) => {
     const updated = await updateAcademicConfig(req.body);
     res.json({ message: 'Academic Config updated successfully', config: updated });
   } catch (error) {
-    res.status(400).json({ error: 'Failed to update academic config', details: (error as Error).message });
+    const message = (error as Error).message || 'Failed to update academic config';
+    const status = /DATABASE|PostgreSQL|ACADEMIC_CONFIG_ENCRYPTION_KEY|configuration could not be persisted/i.test(message) ? 503 : 400;
+    res.status(status).json({ error: 'Failed to update academic config', details: message });
   }
 });
 
@@ -154,7 +156,7 @@ router.post('/sources/search', async (req: Request, res: Response) => {
     res.json(result);
   } catch (error) {
     const message = (error as Error).message || 'Academic web research failed.';
-    const status = /not configured|disabled|DATABASE|configuration/i.test(message) ? 503 : 502;
+    const status = /not configured|disabled|DATABASE|configuration|ACADEMIC_CONFIG_ENCRYPTION_KEY|PostgreSQL/i.test(message) ? 503 : 502;
     res.status(status).json({ error: message });
   }
 });
