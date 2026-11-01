@@ -18,6 +18,7 @@ import {
   Code2,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { auth } from '../../firebase';
 
 interface Paper {
   id: string;
@@ -70,7 +71,7 @@ interface WebSource {
   url: string;
   content: string;
   rawContent?: string;
-  score: number;
+  score: number | null;
   publishedDate?: string | null;
   sourceClass: 'institutional_domain_candidate' | 'publisher_or_repository_candidate' | 'general_web_candidate';
   verificationStatus: 'unverified';
@@ -193,9 +194,11 @@ export const AcademicMCPDashboard: React.FC = () => {
     setWebResearchLoading(true);
     setWebResearchResult(null);
     try {
+      const idToken = await auth.currentUser?.getIdToken();
+      if (!idToken) throw new Error('An authenticated administrator session is required.');
       const res = await fetch('/api/admin/academic/sources/search', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
         body: JSON.stringify({ query: webResearchQuery.trim(), maxResults: 10 }),
       });
       const data = await res.json();
@@ -244,9 +247,11 @@ export const AcademicMCPDashboard: React.FC = () => {
   // Save Config
   const handleSaveConfig = async () => {
     try {
+      const idToken = await auth.currentUser?.getIdToken();
+      if (!idToken) throw new Error('An authenticated administrator session is required.');
       const res = await fetch('/api/admin/academic/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
         body: JSON.stringify(config),
       });
 
@@ -254,10 +259,11 @@ export const AcademicMCPDashboard: React.FC = () => {
         toast.success('Academic Engine Configuration updated live!');
         fetchStatsAndConfig();
       } else {
-        toast.error('Failed to save configuration');
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.details || data.error || 'Failed to save configuration');
       }
     } catch (err) {
-      toast.error('Error saving academic config');
+      toast.error((err as Error).message || 'Error saving academic config');
     }
   };
 
