@@ -393,7 +393,7 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
     if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
 
     try {
-      const id = customId ? customId.trim() : `notif_${Date.now()}_${crypto.randomUUID()}`;
+      const id = customId ? customId.trim() : 'notif_' + Date.now().toString() + '_' + crypto.randomUUID();
       await pool.query(
         `INSERT INTO user_notifications (id, uid, title, message, type, read, created_at)
          VALUES ($1, $2, $3, $4, $5, FALSE, NOW())
