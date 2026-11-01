@@ -30,6 +30,7 @@ export class CourseRepository {
    * Fetches published courses list with caching & resilient routing
    */
   async listPublishedCourses(filter: CourseQueryFilter = {}): Promise<CourseEntity[]> {
+    await ensureCourseLearningSchema();
     const flags = getFeatureFlags();
     const cacheKey = `catalog:list:${filter.department || 'all'}:${filter.level || 'all'}`;
 
@@ -43,7 +44,7 @@ export class CourseRepository {
     if (flags.ENABLE_POSTGRES_CATALOG) {
       try {
         let sql = `
-          SELECT id, code, title, description, level, department, faculty, semester,
+          SELECT id, code, title, description, level, department, faculty, semester, faculties, departments,
                  thumbnail_url, author_id, status, version, created_at, updated_at
           FROM courses
           WHERE 1=1
@@ -78,6 +79,8 @@ export class CourseRepository {
           level: r.level || 'undergraduate',
           department: r.department || null,
           faculty: r.faculty || null,
+          faculties: Array.isArray(r.faculties) && r.faculties.length ? r.faculties : (r.faculty ? [r.faculty] : []),
+          departments: Array.isArray(r.departments) && r.departments.length ? r.departments : (r.department ? [r.department] : []),
           semester: r.semester || null,
           thumbnail_url: r.thumbnail_url || null,
           author_id: r.author_id || '',
@@ -110,6 +113,7 @@ export class CourseRepository {
    * Fetches single course metadata
    */
   async getCourseById(courseId: string): Promise<CourseEntity | null> {
+    await ensureCourseLearningSchema();
     const flags = getFeatureFlags();
     const cacheKey = `catalog:course:${courseId}`;
 
@@ -121,7 +125,7 @@ export class CourseRepository {
     if (flags.ENABLE_POSTGRES_CATALOG) {
       try {
         const sql = `
-          SELECT id, code, title, description, level, department, faculty, semester,
+          SELECT id, code, title, description, level, department, faculty, semester, faculties, departments,
                  thumbnail_url, author_id, status, version, created_at, updated_at
           FROM courses
           WHERE id = $1
@@ -138,6 +142,8 @@ export class CourseRepository {
             level: r.level || 'undergraduate',
             department: r.department || null,
             faculty: r.faculty || null,
+            faculties: Array.isArray(r.faculties) && r.faculties.length ? r.faculties : (r.faculty ? [r.faculty] : []),
+            departments: Array.isArray(r.departments) && r.departments.length ? r.departments : (r.department ? [r.department] : []),
             semester: r.semester || null,
             thumbnail_url: r.thumbnail_url || null,
             author_id: r.author_id || '',
@@ -376,6 +382,7 @@ export class CourseRepository {
    * Enforces status = 'published' and filters out archived modules.
    */
   async getFullCatalogWithSyllabus(): Promise<{ courses: any[]; etag: string; maxUpdatedAt: string }> {
+    await ensureCourseLearningSchema();
     const flags = getFeatureFlags();
     const cacheKey = 'catalog:full:published';
 
@@ -387,7 +394,7 @@ export class CourseRepository {
     if (flags.ENABLE_POSTGRES_CATALOG) {
       try {
         const coursesRes = await queryPostgres<any>(
-          `SELECT id, title, description, department, faculty, level, semester, status, scope, updated_at
+          `SELECT id, title, description, department, faculty, faculties, departments, level, semester, status, scope, updated_at
            FROM courses
            WHERE status = 'published'
            ORDER BY id ASC`
@@ -448,9 +455,11 @@ export class CourseRepository {
             title: c.title,
             description: c.description || '',
             department: c.department || '',
-            faculty: c.faculty || '',
-            faculties: c.faculty ? [c.faculty] : [],
-            departments: c.department ? [c.department] : [],
+            faculty: c.faculty || (Array.isArray(c.faculties) ? c.faculties[0] : '') || '',
+            faculties: Array.isArray(c.faculties) && c.faculties.length > 0 ? c.faculties : (c.faculty ? [c.faculty] : []),
+            departments: Array.isArray(c.departments) && c.departments.length > 0
+              ? c.departments
+              : (c.scope === 'DEPARTMENT' && c.department ? [c.department] : []),
             level: c.level || '100',
             semester: (String(c.semester || '').toLowerCase().includes('2') || String(c.semester || '').toLowerCase().includes('second')) ? '2nd Semester' : '1st Semester',
             scope: c.scope || 'DEPARTMENT',
