@@ -1732,58 +1732,12 @@ app.get('/api/progress/:courseId', verifyAuth, requireCourseAccess, async (req: 
   }
 });
 
-app.post('/api/progress/quiz-attempt', verifyAuth, requireCourseAccessFromBody, async (req: any, res: any) => {
-  const t0 = Date.now();
-  try {
-    const user = req.user;
-    const {
-      courseId,
-      moduleId,
-      quizId,
-      attemptIdempotencyKey,
-      timeSpentSeconds,
-      answers,
-      canonicalQuestions,
-      passingScorePct
-    } = req.body || {};
-
-    if (!courseId || !quizId || !attemptIdempotencyKey) {
-      return res.status(400).json({ error: 'Missing required quiz attempt fields' });
-    }
-
-    // Use submitted canonicalQuestions or load from Neon PostgreSQL course syllabus
-    let questions = Array.isArray(canonicalQuestions) ? canonicalQuestions : [];
-    if (questions.length === 0) {
-      const courseData = await courseRepository.getCourseById(courseId).catch(() => null);
-      if (courseData && Array.isArray((courseData as any).modules)) {
-        const targetMod = (courseData as any).modules.find((m: any) => m.id === (moduleId || 'm1')) || (courseData as any).modules[0];
-        if (targetMod && Array.isArray(targetMod.quizzes) && targetMod.quizzes.length > 0) {
-          questions = targetMod.quizzes[0]?.questions || [];
-        } else if (targetMod && Array.isArray(targetMod.questions)) {
-          questions = targetMod.questions;
-        }
-      }
-    }
-
-    const attempt = await progressRepository.recordQuizAttempt({
-      uid: user.uid,
-      courseId,
-      moduleId: moduleId || 'general',
-      quizId,
-      attemptIdempotencyKey,
-      timeSpentSeconds: Number(timeSpentSeconds) || 0,
-      answers: Array.isArray(answers) ? answers : [],
-      canonicalQuestions: questions,
-      passingScorePct: typeof passingScorePct === 'number' ? passingScorePct : 70
-    });
-
-    const latencyMs = Date.now() - t0;
-    res.json({ attempt, latencyMs });
-  } catch (err: any) {
-    const statusCode = err?.statusCode || 500;
-    logger.error({ err: err.message, uid: req.user?.uid }, '[POST /api/progress/quiz-attempt] Failed');
-    res.status(statusCode).json({ error: err.message || 'Failed to record quiz attempt' });
-  }
+// This legacy endpoint accepted client-supplied answer keys and passing thresholds.
+// There is no server-owned persisted quiz definition for this route yet, so it fails closed.
+app.post('/api/progress/quiz-attempt', verifyAuth, requireCourseAccessFromBody, async (_req: any, res: any) => {
+  return res.status(503).json({
+    error: 'Server-authoritative quiz grading is unavailable because a persisted quiz definition and grading policy are not configured. No attempt was recorded.'
+  });
 });
 
 // Paystack Public Key Config Endpoint
