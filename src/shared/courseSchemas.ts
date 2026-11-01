@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import katex from 'katex';
 
 /**
  * UniAce Shared Course Schema & Pedagogical Architecture
@@ -88,148 +87,17 @@ export const OutlineCriticRubricSchema = z.object({
 export type OutlineCriticRubric = z.infer<typeof OutlineCriticRubricSchema>;
 
 /**
- * Validates and deterministically repairs a single LaTeX math block using katex.renderToString({ throwOnError: true }).
- */
-export function repairLatexMathBlock(expr: string, displayMode: boolean): string {
-  const trimmed = expr.trim();
-  if (!trimmed) return expr;
-
-  const canRender = (candidate: string): boolean => {
-    try {
-      katex.renderToString(candidate, { throwOnError: true, displayMode, strict: false });
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  if (canRender(trimmed)) {
-    return expr;
-  }
-
-  let repaired = trimmed;
-
-  // 1. Escape unescaped %, &, # inside \text{...}, \mathrm{...}, \textbf{...}
-  repaired = repaired.replace(/\\(text|mathrm|textbf|textit)\{([^{}]*?)\}/g, (_m, cmd: string, inner: string) => {
-    const fixedInner = inner
-      .replace(/(?<!\\)&/g, '\\&')
-      .replace(/(?<!\\)%/g, '\\%')
-      .replace(/(?<!\\)#/g, '\\#');
-    return `\\${cmd}{${fixedInner}}`;
-  });
-
-  // 2. Escape unescaped % outside comments
-  repaired = repaired.replace(/(?<!\\)%/g, '\\%');
-
-  // 3. Balance \{ ... } where \{ was escaped but closing } was not escaped
-  if (repaired.includes('\\{') && !repaired.includes('\\}')) {
-    repaired = repaired.replace(/(?<!\\)\}(\s*)$/, '\\}$1');
-  }
-
-  // 4. Balance unescaped { and } braces
-  const openBraces = (repaired.match(/(?<!\\)\{/g) || []).length;
-  const closeBraces = (repaired.match(/(?<!\\)\}/g) || []).length;
-  if (openBraces > closeBraces) {
-    repaired = repaired + '}'.repeat(openBraces - closeBraces);
-  } else if (closeBraces > openBraces) {
-    let diff = closeBraces - openBraces;
-    repaired = repaired.replace(/(?<!\\)\}/g, (m) => {
-      if (diff > 0) {
-        diff--;
-        return '';
-      }
-      return m;
-    });
-  }
-
-  // 5. Balance \left and \right
-  const leftCount = (repaired.match(/\\left\b/g) || []).length;
-  const rightCount = (repaired.match(/\\right\b/g) || []).length;
-  if (leftCount > rightCount) {
-    repaired = repaired + ' \\right.'.repeat(leftCount - rightCount);
-  } else if (rightCount > leftCount) {
-    repaired = repaired.replace(/\\right\b/g, '');
-    repaired = repaired.replace(/\\left\b/g, '');
-  }
-
-  // 6. Strip trailing standalone backslash at the very end of a math block (e.g., "... = \mu\n\")
-  repaired = repaired.replace(/(?<!\\)\\\s*$/, '').trim();
-
-  if (canRender(repaired)) {
-    return displayMode && expr.includes('\n') ? `\n${repaired}\n` : repaired;
-  }
-
-  return expr;
-}
-
-/**
- * Normalizes transport-level JSON escape artifacts, auto-wraps naked diagram blocks
- * (svg, function-plot) into proper code fences, and runs katex.renderToString auto-repair.
+ * Normalizes transport-level markdown formatting without hardcoding or mutating math formulas.
  */
 export function normalizeLessonMarkdownContent(raw: string): string {
   if (!raw || typeof raw !== 'string') return '';
   let text = raw.replace(/\r\n/g, '\n').trim();
-
-  // Restore control characters accidentally created when unescaped \frac (\f), \text/\theta/\times/\tau (\t), or \begin/\beta/\bar (\b) were JSON-parsed
-  text = text
-    .replace(/\x0c(rac|orall)\b/g, '\\f$1')
-    .replace(/\x09(ext|extbf|extit|heta|au|imes|o|op|anh|riangle)\b/g, '\\t$1')
-    .replace(/\x08(egin|eta|ar|inom|ig|igg|oxed|ullet)\b/g, '\\b$1');
-
-  // Strip trailing standalone backslash immediately preceding closing $$ (e.g., "\n\\$$")
-  text = text.replace(/\\\s*\$\$/g, '\n$$');
 
   // Unwrap outer markdown fence if the entire string is wrapped in ```markdown ... ```
   const outerFenceMatch = text.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```\s*$/i);
   if (outerFenceMatch && outerFenceMatch[1]) {
     text = outerFenceMatch[1].trim();
   }
-
-  // If the text still contains raw JSON-escaped quotes (e.g., viewBox=\"0 0 500 250\") or literal \n sequences
-  // from partial JSON extraction, unescape them cleanly without corrupting LaTeX commands (\nabla, \nu, \neq, \tau, \theta, \times, \text, \to, \top)
-  if (text.includes('\\"')) {
-    text = text.replace(/\\"/g, '"');
-  }
-  if (text.includes('\\n')) {
-    text = text.replace(/\\n(?![a-zA-Z])/g, '\n');
-  }
-
-  // Ensure any bare "svg\n<svg ...>...</svg>" block not already inside ```svg fences is wrapped in ```svg
-  text = text.replace(/(^|\n)(?!```)svg\s*\n(<svg[\s\S]*?<\/svg>)(?!\s*\n```)/gi, '$1```svg\n$2\n```');
-
-  // Ensure any bare "function-plot\n{...}" block not already inside ```function-plot fences is wrapped in ```function-plot
-  text = text.replace(/(^|\n)(?!```)function-plot\s*\n(\{[\s\S]*?\n\})(?!\s*\n```)/gi, '$1```function-plot\n$2\n```');
-
-  // Normalize double-escaped LaTeX commands produced by JSON string serialization
-  text = text.replace(/\\\\(frac|dfd|begin|end|text|textbf|textit|mathrm|mathbf|left|right|cdot|times|div|pm|mp|leq|geq|neq|approx|equiv|propto|infty|partial|nabla|int|oint|sum|prod|sqrt|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|kappa|lambda|mu|nu|xi|pi|rho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega)\b/g, '\\$1');
-
-  // Escape raw '&' inside \text{...}, \mathrm{...}, \textbf{...} so KaTeX does not treat it as an alignment tab
-  text = text.replace(/\\(text|mathrm|textbf|textit)\{([^{}]*?)\}/g, (_match, cmd: string, inner: string) => {
-    const fixedInner = inner.replace(/(?<!\\)&/g, '\\&');
-    return `\\${cmd}{${fixedInner}}`;
-  });
-
-  // Balance \{ ... } inside inline math where \{ was escaped but the closing } before $ was not escaped
-  text = text.replace(/(\$[^$\n]*?\\\{[^$\n{}]*?)(?<!\\)\}(\$)/g, '$1\\}$2');
-
-  // Fix mismatched $$ ... $ on a single line where opening is unescaped $$ and closing is a single unescaped $
-  text = text.replace(/(?<!\\)\$\$([^\n$]+?)(?<!\\|\$)\$(?!\$)/g, (_m, inner: string) => {
-    return `$$${inner.trim()}$$`;
-  });
-
-  // Run katex.renderToString verification & auto-repair on all unescaped $$ ... $$ display math blocks
-  text = text.replace(/(?<!\\)\$\$([\s\S]*?)(?<!\\)\$\$/g, (_m, inner: string) => {
-    return `$$${repairLatexMathBlock(inner, true)}$$`;
-  });
-
-  // Run katex.renderToString verification & auto-repair on inline $ ... $ math blocks (ignoring escaped \$ currency)
-  text = text.replace(/(?<!\\|\$)\$(?!\$)((?:\\\$|[^$\n])+?)(?<!\\|\$)\$(?!\$)/g, (fullMatch, inner: string) => {
-    // Skip if it looks like two unescaped currency values on the same line (e.g., "$100 and $200")
-    if (/^\d[\d,.]*\s+[a-zA-Z]/.test(inner.trim()) && !/[\\^_{}=]/.test(inner)) {
-      return fullMatch;
-    }
-    return `$${repairLatexMathBlock(inner, false)}$`;
-  });
 
   return text.trim();
 }

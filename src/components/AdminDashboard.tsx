@@ -323,33 +323,6 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   const [quickDepth, setQuickDepth] = useState('standard');
   const [quickAcademicStandard, setQuickAcademicStandard] = useState<string>('Globally Adaptive (Universal University Standard)');
   const [customAcademicStandard, setCustomAcademicStandard] = useState<string>('');
-
-  useEffect(() => {
-    if (!quickCourseCode) return;
-    const trimmed = quickCourseCode.trim().toUpperCase();
-    if (/^(GET|ENG|MEE|CVE|CHE|EEE|MCE|PET|AGE|ARC)/i.test(trimmed)) {
-      if (!selectedFaculties.includes('Engineering')) {
-        setSelectedFaculties(prev => Array.from(new Set([...prev, 'Engineering'])));
-      }
-      if (!quickDepartment || quickDepartment === 'Mathematics') {
-        setQuickDepartment('General Engineering');
-      }
-    } else if (/^(MAT|MTH|STA)/i.test(trimmed)) {
-      if (!selectedFaculties.includes('Science')) {
-        setSelectedFaculties(prev => Array.from(new Set([...prev, 'Science'])));
-      }
-      if (!quickDepartment) {
-        setQuickDepartment('Mathematics');
-      }
-    } else if (/^(PHY)/i.test(trimmed)) {
-      if (!selectedFaculties.includes('Science')) {
-        setSelectedFaculties(prev => Array.from(new Set([...prev, 'Science'])));
-      }
-      if (!quickDepartment) {
-        setQuickDepartment('Physics');
-      }
-    }
-  }, [quickCourseCode]);
   const [sourceFile, setSourceFile] = useState<File | null>(null);
   const [sourceText, setSourceText] = useState('');
   const [isReadingFile, setIsReadingFile] = useState(false);
@@ -1158,7 +1131,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
       showToast('Please provide both course code and name', 'error');
       return;
     }
-    const resolvedDept = quickDepartment || (selectedDepartments.length > 0 ? selectedDepartments[0] : (selectedFaculties.includes('Engineering') ? 'General Engineering' : ''));
+    const resolvedDept = quickDepartment || (selectedDepartments.length > 0 ? selectedDepartments[0] : (selectedFaculties.length > 0 ? selectedFaculties[0] : ''));
     if (!resolvedDept) {
       showToast('Please select a target Department for course generation', 'error');
       return;
@@ -1247,7 +1220,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
 
   const handleFinalizeGeneration = async (opts?: { resume?: boolean }) => {
     if (!courseSkeleton) return;
-    const resolvedDept = quickDepartment || (selectedDepartments.length > 0 ? selectedDepartments[0] : (selectedFaculties.includes('Engineering') ? 'General Engineering' : ''));
+    const resolvedDept = quickDepartment || (selectedDepartments.length > 0 ? selectedDepartments[0] : (selectedFaculties.length > 0 ? selectedFaculties[0] : ''));
     if (!resolvedDept) {
       showToast('Please select a target Department before generating full content', 'error');
       return;

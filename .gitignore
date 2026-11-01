@@ -11,13 +11,13 @@ public/assets/aistudio/
 .tempmediaStorage/
 *.mp4
 
-# Temporary script files & scratchpads
-scripts/temp*
-scripts/tmp*
-scripts/*tmp*
-scripts/*scratch*
-scripts/*realign*
-scripts/*populate*
-scripts/*refine*
+# Temporary script files, telemetry checkpoints & scratchpads
+.db-telemetry-checkpoints.ndjson
+*.ndjson
 *.tmp
 *.temp
+scripts/*
+!scripts/check-zero-fallback.js
+!scripts/test-prompt-shield.ts
+!scripts/runGoldenSetEval.ts
+!scripts/deploy-firestore-rules.ts
