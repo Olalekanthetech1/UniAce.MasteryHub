@@ -10,14 +10,14 @@ import PricingModal from './PricingModal';
 import MiniTeacherModal from './MiniTeacherModal';
 import QuickSummaryModal from './QuickSummaryModal';
 import { AIService } from '../services/ai';
-import { generateLessonContent, sanitizeLatex } from '../services/aiCourseGenerator';
+import { sanitizeLatex } from '../services/aiCourseGenerator';
 import { sanitizeForFirestore } from '../services/courseService';
 import { LogService } from '../services/logService';
 import { useCourses } from '../context/CourseContext';
 import { useAuth } from '../context/AuthContext';
 import { usePremiumStatus } from '../hooks/usePremiumStatus';
 import { PipelineMetadata } from '../types';
-import type { InstructionalContent } from '../shared/courseSchemas';
+import type { StudentInstructionalContent } from '../shared/courseSchemas';
 
 const stripThinkTags = (text: string) => {
   return text.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
@@ -72,7 +72,7 @@ export default function ContentArea({
   const [isProactiveQuiz, setIsProactiveQuiz] = useState(false);
   const hasCheckedInRef = useRef<Set<string>>(new Set());
   const [lockedFeatureName, setLockedFeatureName] = useState('');
-  const [fetchedLesson, setFetchedLesson] = useState<{ id: string; content: string; metadata: PipelineMetadata; instructionalContent?: InstructionalContent } | null>(null);
+  const [fetchedLesson, setFetchedLesson] = useState<{ id: string; content: string; metadata: PipelineMetadata; instructionalContent?: StudentInstructionalContent } | null>(null);
   const [isFetchingContent, setIsFetchingContent] = useState(false);
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const { courses, refreshCourses } = useCourses();
@@ -327,67 +327,67 @@ export default function ContentArea({
   };
 
   const handleGenerateLesson = async () => {
-    if (!isAdmin || !courseId) return;
-    
+    if (!isAdmin || !courseId || !activeSubTopic) return;
+
     setIsGenerating(true);
     setGenerationStep(0);
 
-    // Track regeneration telemetry
     try {
       const idToken = await user?.getIdToken();
-      fetch('/api/telemetry/module-action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
-        body: JSON.stringify({ courseId, moduleId: module.id, action: 'regenerate' })
-      }).catch(err => console.warn('Failed to track regeneration telemetry:', err));
-    } catch (e) {}
+      if (!idToken) throw new Error('Administrator authentication is required to regenerate a lesson.');
 
-    // Progress animation
-    const interval = setInterval(() => {
-      setGenerationStep(prev => (prev + 1) % generationSteps.length);
-    }, 3000);
-
-    try {
-      const currentCourse = courseId ? courses[courseId] : null;
-      const courseInput = currentCourse || { id: courseId, title: courseTitle };
-
-      const lesson = await generateLessonContent(
-        courseInput,
-        module.title,
-        activeSubTopic.title,
-        undefined
-      );
-
-      // Save via Neon API
-      try {
-        const idToken = await user?.getIdToken();
-        await fetch(`/api/courses/${encodeURIComponent(courseId)}/modules/${encodeURIComponent(module.id)}/lessons/${encodeURIComponent(activeSubTopic.id)}`, {
+      // Regeneration now runs on the server and uses the same structured lesson
+      // contract and validation as coordinated course generation.
+      const response = await fetch(
+        `/api/admin/courses/${encodeURIComponent(courseId)}/modules/${encodeURIComponent(module.id)}/lessons/${encodeURIComponent(activeSubTopic.id)}/regenerate`,
+        {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${idToken}`
+            Authorization: `Bearer ${idToken}`
           },
-          body: JSON.stringify({
-            title: activeSubTopic.title,
-            content: lesson.content || ''
-          })
-        });
-      } catch (saveErr) {
-        console.warn('Failed to save lesson content via API:', saveErr);
+          body: JSON.stringify({})
+        }
+      );
+
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.success || !payload?.lesson?.content) {
+        throw new Error(payload?.error || 'Structured lesson regeneration failed.');
       }
 
-      LogService.log('success', 'ai', `Generated lesson content for ${activeSubTopic.title}`, { courseId, moduleId: module.id, lessonId: activeSubTopic.id, audience: (lesson.metadata as any)?.audience });
+      const generatedContent = String(payload.lesson.content);
+      const instructionalContent = payload.lesson.instructionalContent as StudentInstructionalContent | undefined;
 
-      // Update local state
-      setFetchedLesson({ id: activeSubTopic.id, content: lesson.content, metadata: (lesson.metadata as PipelineMetadata) || {} });
-      onLessonContentChange?.(lesson.content);
+      setFetchedLesson({
+        id: activeSubTopic.id,
+        content: generatedContent,
+        metadata: {} as PipelineMetadata,
+        instructionalContent
+      });
+      onLessonContentChange?.(generatedContent);
 
-      // Update global state to reflect new content
+      LogService.log(
+        'success',
+        'ai',
+        `Regenerated structured lesson for ${activeSubTopic.title}`,
+        {
+          courseId,
+          moduleId: module.id,
+          lessonId: activeSubTopic.id,
+          academicAccuracy: payload.verification?.academicAccuracy || 'not_independently_verified'
+        }
+      );
+
       await refreshCourses();
     } catch (error: any) {
-      console.error('Lesson Generation Error:', error);
+      console.error('Structured Lesson Regeneration Error:', error);
+      LogService.log('error', 'ai', `Lesson regeneration failed for ${activeSubTopic.title}`, {
+        courseId,
+        moduleId: module.id,
+        lessonId: activeSubTopic.id,
+        error: error?.message || String(error)
+      });
     } finally {
-      clearInterval(interval);
       setIsGenerating(false);
     }
   };
@@ -637,7 +637,12 @@ export default function ContentArea({
 
                 <MarkdownRenderer content={activeLessonData.content} />
                 {activeLessonData.instructionalContent && (
-                  <MasteryLessonPanel content={activeLessonData.instructionalContent} />
+                  <MasteryLessonPanel
+                    content={activeLessonData.instructionalContent}
+                    courseId={courseId || ''}
+                    moduleId={module.id}
+                    lessonId={activeSubTopic.id}
+                  />
                 )}
                 
                 {/* Source Citations & Grounding Section */}
