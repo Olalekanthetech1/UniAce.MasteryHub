@@ -245,15 +245,22 @@ export function syncAllProvidersFromSettings(apiKeysData: any) {
   }
 }
 
-// Synchronize API keys from Neon PostgreSQL system_config (settings_api_keys)
-const initApiKeysListener = async () => {
-  try {
-    const apiKeysData = await getSystemSettingsDoc('api_keys');
-    if (apiKeysData) {
-      syncAllProvidersFromSettings(apiKeysData);
+// Synchronize API keys and telemetry from Neon PostgreSQL system_config
+const initApiKeysListener = async (retries = 3) => {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const apiKeysData = await getSystemSettingsDoc('api_keys');
+      if (apiKeysData) {
+        syncAllProvidersFromSettings(apiKeysData);
+      }
+      await telemetry.initialize();
+      return;
+    } catch (err: any) {
+      console.warn(`[Sync] Attempt ${attempt}/${retries} to load initial api_keys from Neon PostgreSQL failed:`, err.message);
+      if (attempt < retries) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 2000));
+      }
     }
-  } catch (err: any) {
-    console.warn('[Sync] Could not load initial api_keys from Neon PostgreSQL:', err.message);
   }
 };
 void initApiKeysListener();
@@ -3703,62 +3710,320 @@ app.post('/api/chat', verifyAuth, async (req, res) => {
     const preferredProviderName = providerQueue[0];
     const providers = providerQueue.map(name => providerMap[name]).filter(Boolean);
 
-    // Set headers for Server-Sent Events (SSE)
+    let aiResponse: any = null;
+    let successfulProviderName = 'unknown';
+    let lastError: any = null;
+    const t0 = Date.now();
+
+    for (const provider of providers) {
+      if (httpAbortController.signal.aborted || req.aborted || res.destroyed) {
+        throw createStreamAbortError('HTTP client disconnected before provider call');
+      }
+      try {
+        aiResponse = await generateWithTelemetry(provider, messages, {
+          complexity,
+          signal: httpAbortController.signal
+        });
+        if (aiResponse && aiResponse.text) {
+          successfulProviderName = provider.name || (provider as any).provider?.name || 'unknown';
+          break;
+        }
+      } catch (err: any) {
+        if (isClientAbortError(err, httpAbortController.signal)) {
+          throw err;
+        }
+        lastError = err;
+        console.warn(`[HTTP Chat] Provider ${provider.name || 'unknown'} failed, trying next:`, err.message);
+      }
+    }
+
+    if (!aiResponse || !aiResponse.text) {
+      throw lastError || new Error('All configured AI providers failed');
+    }
+
+    const cleanedResponse = sanitizeAIResponse(aiResponse.text);
+    if (!chatHygiene.hasDocumentAttachment && cleanedResponse.length > 50) {
+      void setCachedResponse(chatHygiene.cleanQuestion, cleanedResponse);
+    }
+
+    void analyzeAndUpdateLearningProfile(chatHygiene.cleanQuestion, cleanedResponse, uid);
+
+    const rawTotalTokens = aiResponse.usage?.totalTokens;
+    const verifiedTokens = typeof rawTotalTokens === 'number' && rawTotalTokens > 0 ? rawTotalTokens : null;
+    const estimatedTokens = Math.ceil((tutorSystemPrompt.length + userContent.length + cleanedResponse.length) / 4);
+    const billingTokens = verifiedTokens ?? estimatedTokens;
+    const actualCost = Math.ceil(C_base + (billingTokens / K_constant) * W_model);
+
+    const settleRes = await executeSparkSettle({
+      app,
+      uid,
+      userEmail: user?.email,
+      idempotencyToken: scopedIdempotencyToken,
+      isFreeUser,
+      fallbackPreAuthDeduction: preAuthResult.preAuthDeduction ?? MAX_PRE_AUTH,
+      actualCost,
+      totalTokens: verifiedTokens,
+      complexity,
+      endpoint: 'http_chat',
+      providerUsed: successfulProviderName,
+      planType: preAuthResult.plan || 'free',
+      role: preAuthResult.role || 'student'
+    });
+    isHttpSettledOrCompleted = true;
+
+    return res.json({
+      response: cleanedResponse,
+      sparksRemaining: isFreeUser ? settleRes.finalSparks : null,
+      unlimitedSparks: !isFreeUser,
+      sparksCost: isFreeUser ? settleRes.actualCost : 0,
+      meta: {
+        providerUsed: successfulProviderName,
+        latencyMs: Date.now() - t0,
+        idempotency_token: scopedIdempotencyToken,
+        scrubbedPassagesCount: chatHygiene.totalScrubbedPassages,
+        estimatedCostUsd: settleRes.estimatedCostUsd,
+        grossMarginUsd: settleRes.grossMarginUsd
+      }
+    });
+  } catch (error: any) {
+    await triggerImmediateHttpRefund(error?.message || 'HTTP chat execution error');
+    isHttpSettledOrCompleted = true;
+    if (!res.headersSent) {
+      const status = error?.message?.includes('Insufficient') ? 402 : error?.message?.includes('Rate limit') ? 429 : 503;
+      return res.status(status).json({ error: error.message || 'Failed to generate chat response.' });
+    }
+  }
+});
+
+// --- Dynamic AI Generation Endpoint (/api/ai/generate) ---
+app.post('/api/ai/generate', verifyAuth, async (req, res) => {
+  const {
+    prompt,
+    systemInstruction,
+    responseFormat,
+    complexity = 'standard',
+    taskType = 'chat',
+    preferredProvider
+  } = req.body || {};
+
+  if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
+    return res.status(400).json({ error: 'A non-empty prompt is required.' });
+  }
+
+  try {
+    const routingConfig = await requireLiveRoutingConfig();
+    const providerMap: Record<string, any> = {
+      gemini_direct: globalGeminiDirectBreaker,
+      gemini: globalGeminiDirectBreaker,
+      mistral_direct: globalMistralDirectBreaker,
+      mistral: globalMistralDirectBreaker,
+      groq: globalGroqBreaker,
+      cohere: globalCohereBreaker,
+      huggingface: globalHuggingFaceBreaker,
+      openrouter_free: globalOpenRouterFreeBreaker,
+      nvidia: globalNvidiaBreaker || globalNvidiaProvider
+    };
+
+    const normalizedTask = String(taskType || 'chat').trim().toLowerCase();
+    const effectiveTask = routingConfig[normalizedTask] ? normalizedTask : 'chat';
+    const providerNames = resolveLiveProviderQueue(
+      routingConfig,
+      effectiveTask,
+      providerMap,
+      preferredProvider ? String(preferredProvider).trim().toLowerCase() : undefined
+    );
+
+    const providers = providerNames.map(name => providerMap[name]).filter(Boolean);
+    if (providers.length === 0) {
+      return res.status(503).json({ error: `No configured AI provider is available for task "${effectiveTask}".` });
+    }
+
+    const sanitizedPrompt = redactPII(prompt);
+    const messages: Array<{ role: string; content: string }> = [];
+    if (systemInstruction && typeof systemInstruction === 'string' && systemInstruction.trim()) {
+      messages.push({ role: 'system', content: systemInstruction.trim() });
+    }
+    messages.push({ role: 'user', content: sanitizedPrompt });
+
+    const normalizedComplexity = complexity === 'high' ? 'high' : 'standard';
+    const t0 = Date.now();
+    let lastError: any = null;
+
+    for (const provider of providers) {
+      if (typeof provider.isOpen === 'function' && provider.isOpen()) {
+        continue;
+      }
+      try {
+        const isNvidia = (provider as any).provider?.name === 'nvidia' || (provider as any).name === 'nvidia';
+        const configuredModel = effectiveTask === 'voice_tutor'
+          ? routingConfig.voice_tutor_model
+          : (isNvidia ? routingConfig.nvidia_text_model : undefined);
+
+        const result = await generateWithTelemetry(provider, messages, {
+          complexity: normalizedComplexity,
+          jsonMode: responseFormat === 'json',
+          ...(configuredModel ? { model: configuredModel } : {})
+        });
+
+        if (result && result.text) {
+          const cleanedText = responseFormat === 'json' ? result.text : sanitizeAIResponse(result.text);
+          const providerUsed = provider.name || (provider as any).provider?.name || 'unknown';
+          return res.json({
+            text: cleanedText,
+            meta: {
+              providerUsed,
+              latencyMs: Date.now() - t0,
+              upstreamModel: result.upstreamModel || null,
+              usage: result.usage || null
+            }
+          });
+        }
+      } catch (err: any) {
+        lastError = err;
+        console.warn(`[/api/ai/generate] Provider ${provider.name || 'unknown'} failed:`, err.message);
+      }
+    }
+
+    return res.status(503).json({
+      error: lastError?.message || 'All configured AI providers failed to complete the request.'
+    });
+  } catch (error: any) {
+    return res.status(503).json({
+      error: error?.message || 'AI generation service unavailable.'
+    });
+  }
+});
+
+// --- Dynamic AI Streaming Endpoint (/api/ai/stream) ---
+app.post('/api/ai/stream', verifyAuth, async (req, res) => {
+  const {
+    prompt,
+    systemInstruction,
+    complexity = 'standard',
+    taskType = 'lesson',
+    preferredProvider
+  } = req.body || {};
+
+  if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
+    return res.status(400).json({ error: 'A non-empty prompt is required.' });
+  }
+
+  try {
+    const routingConfig = await requireLiveRoutingConfig();
+    const providerMap: Record<string, any> = {
+      gemini_direct: globalGeminiDirectBreaker,
+      gemini: globalGeminiDirectBreaker,
+      mistral_direct: globalMistralDirectBreaker,
+      mistral: globalMistralDirectBreaker,
+      groq: globalGroqBreaker,
+      cohere: globalCohereBreaker,
+      huggingface: globalHuggingFaceBreaker,
+      openrouter_free: globalOpenRouterFreeBreaker,
+      nvidia: globalNvidiaBreaker || globalNvidiaProvider
+    };
+
+    const normalizedTask = String(taskType || 'lesson').trim().toLowerCase();
+    const effectiveTask = routingConfig[normalizedTask] ? normalizedTask : 'lesson';
+    const providerNames = resolveLiveProviderQueue(
+      routingConfig,
+      effectiveTask,
+      providerMap,
+      preferredProvider ? String(preferredProvider).trim().toLowerCase() : undefined
+    );
+    const providers = providerNames.map(name => providerMap[name]).filter(Boolean);
+    if (providers.length === 0) {
+      return res.status(503).json({ error: `No configured streaming provider is available for task "${effectiveTask}".` });
+    }
+
+    const sanitizedPrompt = redactPII(prompt);
+    const messages: Array<{ role: string; content: string }> = [];
+    if (systemInstruction && typeof systemInstruction === 'string' && systemInstruction.trim()) {
+      messages.push({ role: 'system', content: systemInstruction.trim() });
+    }
+    messages.push({ role: 'user', content: sanitizedPrompt });
+
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
     let success = false;
-    let successfulProviderName: string | null = null;
-    let lastError;
-
-    console.log(`[AI Stream] Starting generation for ${uid}. Task: ${taskType}, Preferred: ${preferredProviderName}`);
+    let lastError: any = null;
 
     for (const provider of providers) {
       try {
-        const providerName = (provider as any).provider?.constructor.name || 'Unknown';
-        console.log(`[AI Stream] Trying provider: ${providerName}`);
-        
-        // Add a timeout for the entire stream to prevent hanging
         const isNvidia = (provider as any).provider?.name === 'nvidia' || (provider as any).name === 'nvidia';
-        const streamPromise = provider.stream(messages, { 
-          complexity,
-          model: effectiveTaskType === 'voice_tutor' ? routingConfig.voice_tutor_model : (isNvidia ? (routingConfig.nvidia_text_model || 'nvidia/nemotron-3-super-120b-a12b') : undefined)
-        }, (chunk) => {
-          res.write(`data: ${JSON.stringify({ text: chunk })}\n\n`);
-        });
+        const configuredModel = effectiveTask === 'voice_tutor'
+          ? routingConfig.voice_tutor_model
+          : (isNvidia ? routingConfig.nvidia_text_model : undefined);
+
+        const filteredHandler = createThinkFilter(
+          (chunk: string) => {
+            res.write(`data: ${JSON.stringify({ text: chunk })}\n\n`);
+          },
+          () => {},
+          complexity === 'high'
+        );
+
+        const streamPromise = provider.stream(messages, {
+          complexity: complexity === 'high' ? 'high' : 'standard',
+          ...(configuredModel ? { model: configuredModel } : {})
+        }, filteredHandler);
 
         let timeoutId: any;
-        const timeoutPromise = new Promise((_, reject) => 
-          timeoutId = setTimeout(() => reject(new Error('AI Provider stream timeout')), 45000)
-        );
+        const timeoutPromise = new Promise((_, reject) => {
+          timeoutId = setTimeout(() => reject(new Error('AI Provider stream timeout')), 45000);
+        });
 
         await Promise.race([streamPromise, timeoutPromise]);
         clearTimeout(timeoutId);
-        
+        filteredHandler.flush?.();
+
         success = true;
-        console.log(`[AI Stream] Success with provider: ${providerName}`);
         break;
       } catch (err: any) {
         lastError = err;
-        console.warn(`[AI Stream] Provider failed, trying next... Error: ${err.message}`);
+        console.warn(`[/api/ai/stream] Provider failed, trying next: ${err.message}`);
       }
     }
 
     if (!success) {
-      throw lastError || new Error('All streaming providers failed');
+      throw lastError || new Error('All configured streaming providers failed');
     }
-    
+
     res.write('data: [DONE]\n\n');
     res.end();
-
   } catch (error: any) {
-    logger.error({ err: error }, 'OpenRouter Stream Error');
+    logger.error({ err: error }, 'AI Stream Error');
     if (!res.headersSent) {
-      res.status(500).json({ error: 'Failed to stream response due to an internal error.' });
+      res.status(503).json({ error: error?.message || 'Failed to stream response.' });
     } else {
       res.end();
     }
+  }
+});
+
+// --- Dynamic AI Image Generation Endpoint (/api/ai/generate-image) ---
+app.post('/api/ai/generate-image', verifyAuth, async (req, res) => {
+  const { prompt, aspectRatio = '1:1' } = req.body || {};
+  if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
+    return res.status(400).json({ error: 'A non-empty image prompt is required.' });
+  }
+
+  try {
+    const routingConfig = await requireLiveRoutingConfig();
+    const configuredImageModel = typeof routingConfig.nvidia_image_model === 'string'
+      ? routingConfig.nvidia_image_model.trim()
+      : '';
+    if (!configuredImageModel) {
+      return res.status(503).json({ error: 'Image generation is unavailable: no image model is configured in system routing settings.' });
+    }
+    if (!globalNvidiaProvider || typeof (globalNvidiaProvider as any).generateImage !== 'function') {
+      return res.status(503).json({ error: 'Image generation provider is not configured.' });
+    }
+    const imageUrl = await (globalNvidiaProvider as any).generateImage(redactPII(prompt), configuredImageModel, aspectRatio);
+    return res.json({ imageUrl });
+  } catch (error: any) {
+    return res.status(503).json({ error: error?.message || 'Image generation failed.' });
   }
 });
 
@@ -5940,37 +6205,380 @@ app.post('/api/admin/validate-model', verifyAuth, async (req, res) => {
   }
 });
 
+// --- Live AI Status, Provider Key Rotator State, Telemetry & System Stats (Neon PostgreSQL) ---
+app.get('/api/admin/ai-status', verifyAuth, async (req, res) => {
+  try {
+    const [apiKeysData] = await Promise.all([
+      getSystemSettingsDoc('api_keys'),
+      telemetry.initialize()
+    ]);
+
+    if (apiKeysData) {
+      syncAllProvidersFromSettings(apiKeysData);
+    }
+
+    const providersList: Array<{ key: string; provider: any; breaker: CircuitBreaker }> = [
+      { key: 'groq', provider: globalGroqProvider, breaker: globalGroqBreaker },
+      { key: 'mistral_direct', provider: globalMistralDirectProvider, breaker: globalMistralDirectBreaker },
+      { key: 'openrouter_free', provider: globalOpenRouterFreeProvider, breaker: globalOpenRouterFreeBreaker },
+      { key: 'gemini_direct', provider: globalGeminiDirectProvider, breaker: globalGeminiDirectBreaker },
+      { key: 'cohere', provider: globalCohereProvider, breaker: globalCohereBreaker },
+      { key: 'huggingface', provider: globalHuggingFaceProvider, breaker: globalHuggingFaceBreaker },
+      { key: 'nvidia', provider: globalNvidiaProvider, breaker: globalNvidiaBreaker }
+    ];
+
+    const status: Record<string, any> = {};
+    for (const item of providersList) {
+      const rotatorStatus = (item.provider as any)?.rotator?.getStatus?.() || {
+        active: false,
+        totalKeys: 0,
+        exhaustedKeys: 0,
+        usingDb: false,
+        usingEnv: false,
+        configuredModel: null
+      };
+      const isBreakerOpen = item.breaker.isOpen();
+      status[item.key] = {
+        ...rotatorStatus,
+        active: Boolean(rotatorStatus.active && !isBreakerOpen),
+        circuitOpen: isBreakerOpen
+      };
+    }
+
+    const stats: Record<string, any> = {
+      totalSparksConsumed: 0,
+      totalQuestions: 0,
+      averageMastery: 0,
+      popularCourse: 'N/A'
+    };
+
+    const pool = getPostgresPool();
+    if (pool) {
+      try {
+        const [sparksRes, questionsRes, masteryRes, popularRes] = await Promise.all([
+          pool.query(`SELECT COALESCE(SUM(ABS(delta)), 0)::bigint AS consumed FROM spark_transactions_ledger WHERE delta < 0 AND type = 'SETTLE'`).catch(() => ({ rows: [{ consumed: 0 }] })),
+          pool.query(`SELECT COUNT(*)::int AS count FROM chat_analytics`).catch(() => ({ rows: [{ count: 0 }] })),
+          pool.query(`SELECT COALESCE(ROUND(AVG(score_pct)), 0)::int AS avg_score FROM user_quiz_attempts`).catch(() => ({ rows: [{ avg_score: 0 }] })),
+          pool.query(`SELECT course_id, COUNT(*)::int AS cnt FROM user_course_progress GROUP BY course_id ORDER BY cnt DESC LIMIT 1`).catch(() => ({ rows: [] }))
+        ]);
+        stats.totalSparksConsumed = Number(sparksRes.rows[0]?.consumed || 0);
+        stats.totalQuestions = Number(questionsRes.rows[0]?.count || 0);
+        stats.averageMastery = Number(masteryRes.rows[0]?.avg_score || 0);
+        if (popularRes.rows[0]?.course_id) {
+          stats.popularCourse = String(popularRes.rows[0].course_id);
+        }
+      } catch (statsErr: any) {
+        console.warn('[ai-status] Live stats query warning:', statsErr.message);
+      }
+    }
+
+    res.json({
+      status,
+      metrics: telemetry.getMetrics(),
+      chartData: telemetry.getChartData(),
+      stats
+    });
+  } catch (err: any) {
+    console.error('[ai-status] Error computing live AI status:', err);
+    res.status(500).json({ error: err.message || 'Failed to compute AI status' });
+  }
+});
+
+// --- Live Provider Endpoint Ping Probe (Neon PostgreSQL + Live Provider Execution) ---
+app.post('/api/admin/ping-providers', verifyAuth, async (req, res) => {
+  try {
+    const requestedProvider = typeof req.body?.provider === 'string' ? req.body.provider.trim().toLowerCase() : '';
+    const apiKeysData = await getSystemSettingsDoc('api_keys');
+    if (apiKeysData) {
+      syncAllProvidersFromSettings(apiKeysData);
+    }
+
+    const allTargets: Array<{ id: string; provider: any; breaker: CircuitBreaker }> = [
+      { id: 'nvidia', provider: globalNvidiaProvider, breaker: globalNvidiaBreaker },
+      { id: 'gemini_direct', provider: globalGeminiDirectProvider, breaker: globalGeminiDirectBreaker },
+      { id: 'groq', provider: globalGroqProvider, breaker: globalGroqBreaker },
+      { id: 'mistral_direct', provider: globalMistralDirectProvider, breaker: globalMistralDirectBreaker },
+      { id: 'openrouter_free', provider: globalOpenRouterFreeProvider, breaker: globalOpenRouterFreeBreaker },
+      { id: 'cohere', provider: globalCohereProvider, breaker: globalCohereBreaker },
+      { id: 'huggingface', provider: globalHuggingFaceProvider, breaker: globalHuggingFaceBreaker }
+    ];
+
+    const targets = requestedProvider
+      ? allTargets.filter(t => t.id === requestedProvider)
+      : allTargets;
+
+    const results: Record<string, any> = {};
+
+    await Promise.all(
+      targets.map(async (target) => {
+        const rotatorStatus = (target.provider as any)?.rotator?.getStatus?.();
+        if (!rotatorStatus || rotatorStatus.totalKeys === 0) {
+          results[target.id] = {
+            provider: target.id,
+            status: 'offline',
+            latencyMs: null,
+            error: 'No API keys configured',
+            timestamp: Date.now()
+          };
+          return;
+        }
+        const t0 = Date.now();
+        try {
+          const resp = await target.provider.generate(
+            [{ role: 'user', content: 'Respond with one word: Ready.' }],
+            { complexity: 'standard', temperature: 0 }
+          );
+          const latencyMs = Date.now() - t0;
+          telemetry.record(target.id, resp.usage?.totalTokens || 0, latencyMs, false);
+          if (target.breaker.isOpen()) {
+            target.breaker.reset();
+          }
+          results[target.id] = {
+            provider: target.id,
+            status: latencyMs > 5000 ? 'degraded' : 'online',
+            latencyMs,
+            textSample: (resp.text || 'Ready').trim().slice(0, 60),
+            model: resp.upstreamModel || rotatorStatus.configuredModel || null,
+            timestamp: Date.now()
+          };
+        } catch (err: any) {
+          const latencyMs = Date.now() - t0;
+          telemetry.record(target.id, 0, latencyMs, true);
+          results[target.id] = {
+            provider: target.id,
+            status: 'offline',
+            latencyMs,
+            error: err?.message || 'Ping failed',
+            timestamp: Date.now()
+          };
+        }
+      })
+    );
+
+    res.json({ success: true, results });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to ping providers' });
+  }
+});
+
+// --- Admin User Management & Diagnostic Email Routes ---
+app.post('/api/admin/create-user', verifyAuth, async (req, res) => {
+  try {
+    const authInfo = await verifyAdminOrTutorRole(req);
+    if (!authInfo.isAdmin) return res.status(403).json({ error: 'Admin privileges required' });
+
+    const { email, password, displayName, role = 'student', department = '', academic_level = '100', plan_type = 'free', ai_sparks = 0 } = req.body || {};
+    if (!email || !password || !displayName) {
+      return res.status(400).json({ error: 'Name, email, and password are required' });
+    }
+
+    const adminApp = getAdminApp();
+    if (!adminApp) return res.status(503).json({ error: 'Firebase Admin not initialized' });
+
+    const userRecord = await adminApp.auth().createUser({
+      email: String(email).trim(),
+      password: String(password),
+      displayName: String(displayName).trim()
+    });
+
+    const pool = getPostgresPool();
+    if (pool) {
+      const learningProfile = { department, academic_level };
+      await pool.query(
+        `INSERT INTO users (uid, email, display_name, role, plan_type, ai_sparks, learning_profile, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, NOW(), NOW())
+         ON CONFLICT (uid) DO UPDATE SET
+           email = EXCLUDED.email,
+           display_name = EXCLUDED.display_name,
+           role = EXCLUDED.role,
+           plan_type = EXCLUDED.plan_type,
+           ai_sparks = EXCLUDED.ai_sparks,
+           learning_profile = COALESCE(users.learning_profile, '{}'::jsonb) || EXCLUDED.learning_profile,
+           updated_at = NOW()`,
+        [userRecord.uid, String(email).trim(), String(displayName).trim(), role, plan_type, Number(ai_sparks) || 0, JSON.stringify(learningProfile)]
+      );
+    }
+
+    res.json({ success: true, uid: userRecord.uid });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to create user' });
+  }
+});
+
+app.post('/api/admin/update-user', verifyAuth, async (req, res) => {
+  try {
+    const authInfo = await verifyAdminOrTutorRole(req);
+    if (!authInfo.isAdmin) return res.status(403).json({ error: 'Admin privileges required' });
+
+    const { targetUserId, displayName, email, password, role, department, academic_level, plan_type, ai_sparks } = req.body || {};
+    if (!targetUserId) return res.status(400).json({ error: 'targetUserId is required' });
+
+    const adminApp = getAdminApp();
+    if (adminApp) {
+      const authUpdates: any = {};
+      if (displayName) authUpdates.displayName = String(displayName).trim();
+      if (email) authUpdates.email = String(email).trim();
+      if (password && String(password).length >= 6) authUpdates.password = String(password);
+      if (Object.keys(authUpdates).length > 0) {
+        await adminApp.auth().updateUser(targetUserId, authUpdates).catch((e) => console.warn('[update-user] Auth update notice:', e.message));
+      }
+    }
+
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+    const profilePatch: Record<string, any> = {};
+    if (department !== undefined) profilePatch.department = department;
+    if (academic_level !== undefined) profilePatch.academic_level = academic_level;
+
+    await pool.query(
+      `UPDATE users
+       SET display_name = COALESCE($1, display_name),
+           email = COALESCE($2, email),
+           role = COALESCE($3, role),
+           plan_type = COALESCE($4, plan_type),
+           ai_sparks = COALESCE($5, ai_sparks),
+           learning_profile = COALESCE(learning_profile, '{}'::jsonb) || $6::jsonb,
+           updated_at = NOW()
+       WHERE uid = $7`,
+      [
+        displayName || null,
+        email || null,
+        role || null,
+        plan_type || null,
+        ai_sparks !== undefined ? Number(ai_sparks) : null,
+        JSON.stringify(profilePatch),
+        targetUserId
+      ]
+    );
+
+    res.json({ success: true, targetUserId });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to update user' });
+  }
+});
+
+app.post('/api/admin/delete-user', verifyAuth, async (req, res) => {
+  try {
+    const authInfo = await verifyAdminOrTutorRole(req);
+    if (!authInfo.isAdmin) return res.status(403).json({ error: 'Admin privileges required' });
+
+    const { targetUserId } = req.body || {};
+    if (!targetUserId) return res.status(400).json({ error: 'targetUserId is required' });
+
+    const adminApp = getAdminApp();
+    if (adminApp) {
+      await adminApp.auth().deleteUser(targetUserId).catch((e) => console.warn('[delete-user] Auth delete notice:', e.message));
+    }
+
+    const pool = getPostgresPool();
+    if (pool) {
+      await pool.query(`DELETE FROM users WHERE uid = $1`, [targetUserId]);
+    }
+
+    res.json({ success: true, targetUserId });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to delete user' });
+  }
+});
+
+app.post('/api/admin/prune-orphans', verifyAuth, async (req, res) => {
+  try {
+    const authInfo = await verifyAdminOrTutorRole(req);
+    if (!authInfo.isAdmin) return res.status(403).json({ error: 'Admin privileges required' });
+
+    const adminApp = getAdminApp();
+    const pool = getPostgresPool();
+    if (!adminApp || !pool) return res.status(503).json({ error: 'Auth or database service unavailable' });
+
+    const usersRes = await pool.query(`SELECT uid FROM users`);
+    let prunedCount = 0;
+    for (const row of usersRes.rows) {
+      try {
+        await adminApp.auth().getUser(row.uid);
+      } catch (e: any) {
+        if (e?.code === 'auth/user-not-found') {
+          await pool.query(`DELETE FROM users WHERE uid = $1`, [row.uid]);
+          prunedCount++;
+        }
+      }
+    }
+
+    res.json({ success: true, prunedCount, message: `Prune complete. Removed ${prunedCount} orphaned records.` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to prune orphaned users' });
+  }
+});
+
+app.post('/api/admin/test-email', verifyAuth, async (req, res) => {
+  try {
+    const authInfo = await verifyAdminOrTutorRole(req);
+    if (!authInfo.isAdmin) return res.status(403).json({ error: 'Admin privileges required' });
+
+    const { to, template, trialDays } = req.body || {};
+    if (!to) return res.status(400).json({ error: 'Recipient email (to) is required' });
+
+    if (template === 'welcome') {
+      const generalConfig = await getSystemConfigDoc('general', true);
+      const resolvedTrialDays = Number(trialDays) || Number(generalConfig?.trialDays) || 7;
+      await MailService.sendWelcomeEmail(to, 'Scholar', resolvedTrialDays);
+    } else {
+      await MailService.sendDiagnosticTestEmail(to);
+    }
+
+    res.json({ success: true, message: `Test email sent to ${to}` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to send test email' });
+  }
+});
+
+app.get('/api/admin/debug-email', verifyAuth, async (req, res) => {
+  try {
+    const authInfo = await verifyAdminOrTutorRole(req);
+    if (!authInfo.isAdmin) return res.status(403).json({ error: 'Admin privileges required' });
+
+    const connection = await MailService.verifyConnection();
+    res.json({
+      success: connection.success,
+      connection,
+      config: {
+        host: process.env.SMTP_HOST || 'smtp.gmail.com',
+        port: process.env.SMTP_PORT || '465',
+        hasUser: Boolean(process.env.SMTP_USER || process.env.SMTP_FROM_EMAIL),
+        hasPass: Boolean(process.env.SMTP_PASS)
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to debug email' });
+  }
+});
+
 // --- Real-time Provider Health & Circuit Breaker Status (Neon PostgreSQL) ---
 app.get('/api/admin/provider-health', verifyAuth, async (req, res) => {
   try {
     const apiKeysData = (await getSystemSettingsDoc('api_keys')) || {};
+    syncAllProvidersFromSettings(apiKeysData);
     const routingData = (await getSystemConfigDoc('routing')) || {};
 
+    const buildHealthEntry = (key: string, provider: any, breaker: CircuitBreaker) => {
+      const rot = (provider as any)?.rotator?.getStatus?.();
+      return {
+        circuitBreaker: breaker.getStatus(),
+        configuredModel: rot?.configuredModel || apiKeysData[key]?.model || null,
+        keyCount: rot?.totalKeys ?? 0,
+        exhaustedKeys: rot?.exhaustedKeys ?? 0,
+        taskRoutes: Object.entries(routingData).filter(([_, v]) => v === key).map(([k]) => k)
+      };
+    };
+
     const health = {
-      gemini_direct: {
-        circuitBreaker: globalGeminiDirectBreaker.getStatus(),
-        configuredModel: apiKeysData.gemini_direct?.model || (globalGeminiDirectProvider as any)?.defaultModel || null,
-        keyCount: apiKeysData.gemini_direct?.keys?.length || (process.env.GEMINI_API_KEY ? 1 : 0),
-        taskRoutes: Object.entries(routingData).filter(([_, v]) => v === 'gemini_direct').map(([k]) => k)
-      },
-      groq: {
-        circuitBreaker: globalGroqBreaker.getStatus(),
-        configuredModel: apiKeysData.groq?.model || (globalGroqProvider as any)?.defaultModel || null,
-        keyCount: apiKeysData.groq?.keys?.length || (process.env.GROQ_API_KEY ? 1 : 0),
-        taskRoutes: Object.entries(routingData).filter(([_, v]) => v === 'groq').map(([k]) => k)
-      },
-      nvidia: {
-        circuitBreaker: globalNvidiaBreaker.getStatus(),
-        configuredModel: apiKeysData.nvidia?.model || (globalNvidiaProvider as any)?.defaultModel || null,
-        keyCount: apiKeysData.nvidia?.keys?.length || (process.env.NVIDIA_API_KEY ? 1 : 0),
-        taskRoutes: Object.entries(routingData).filter(([_, v]) => v === 'nvidia').map(([k]) => k)
-      },
-      mistral_direct: {
-        circuitBreaker: globalMistralDirectBreaker.getStatus(),
-        configuredModel: apiKeysData.mistral_direct?.model || (globalMistralDirectProvider as any)?.defaultModel || null,
-        keyCount: apiKeysData.mistral_direct?.keys?.length || (process.env.MISTRAL_API_KEY ? 1 : 0),
-        taskRoutes: Object.entries(routingData).filter(([_, v]) => v === 'mistral_direct').map(([k]) => k)
-      }
+      gemini_direct: buildHealthEntry('gemini_direct', globalGeminiDirectProvider, globalGeminiDirectBreaker),
+      groq: buildHealthEntry('groq', globalGroqProvider, globalGroqBreaker),
+      nvidia: buildHealthEntry('nvidia', globalNvidiaProvider, globalNvidiaBreaker),
+      mistral_direct: buildHealthEntry('mistral_direct', globalMistralDirectProvider, globalMistralDirectBreaker),
+      openrouter_free: buildHealthEntry('openrouter_free', globalOpenRouterFreeProvider, globalOpenRouterFreeBreaker),
+      cohere: buildHealthEntry('cohere', globalCohereProvider, globalCohereBreaker),
+      huggingface: buildHealthEntry('huggingface', globalHuggingFaceProvider, globalHuggingFaceBreaker)
     };
 
     res.json({ success: true, timestamp: new Date().toISOString(), health });

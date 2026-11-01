@@ -7809,12 +7809,12 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
 
               <div className="divide-y divide-slate-100 dark:divide-slate-700/60">
                 {[
-                  { task: 'Voice Tutor Engine', provider: routingConfig.voice_tutor || 'nvidia', desc: 'Real-time interactive study audio & chat', recommended: 'NVIDIA NIM' },
-                  { task: 'Deep STEM & Proofs', provider: 'nvidia', desc: 'Calculus, Physics proofs & step-by-step logic', recommended: 'NVIDIA NIM' },
-                  { task: 'Interactive Q&A Chat', provider: routingConfig.chat || 'groq', desc: 'Ultra-fast conversational tutor responses', recommended: 'Groq Llama 3' },
-                  { task: 'Lesson Brainstorming', provider: routingConfig.lesson || 'nvidia', desc: 'Curriculum development and topic outlines', recommended: 'NVIDIA NIM' },
-                  { task: 'Vision & Image OCR', provider: routingConfig.vision || 'gemini_direct', desc: 'Extracting text and diagram analytics', recommended: 'Google Gemini' },
-                  { task: 'Knowledge Base (RAG)', provider: routingConfig.rag || 'openrouter_free', desc: 'Retrieving and summarizing uploaded PDFs', recommended: 'OpenRouter' }
+                  { task: 'Voice Tutor Engine', provider: routingConfig.voice_tutor || 'Unconfigured', desc: 'Real-time interactive study audio & chat' },
+                  { task: 'Deep STEM & Proofs', provider: routingConfig.deep_reasoning || 'Unconfigured', desc: 'Calculus, Physics proofs & step-by-step logic' },
+                  { task: 'Interactive Q&A Chat', provider: routingConfig.chat || 'Unconfigured', desc: 'Ultra-fast conversational tutor responses' },
+                  { task: 'Lesson Brainstorming', provider: routingConfig.lesson || 'Unconfigured', desc: 'Curriculum development and topic outlines' },
+                  { task: 'Vision & Image OCR', provider: routingConfig.vision || 'Unconfigured', desc: 'Extracting text and diagram analytics' },
+                  { task: 'Knowledge Base (RAG)', provider: routingConfig.rag || 'Unconfigured', desc: 'Retrieving and summarizing uploaded PDFs' }
                 ].map((item, idx) => (
                   <div key={idx} className="py-3 flex items-center justify-between gap-4">
                     <div>

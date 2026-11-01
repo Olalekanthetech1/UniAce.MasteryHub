@@ -33,7 +33,7 @@ export function useSelfHealing() {
       })
       .catch(error => {
         if (active) {
-          console.error('[Self-Healing] Live gamification policy unavailable; level and badge repair is paused.', error);
+          console.warn('[Self-Healing] Live gamification policy unavailable; level and badge repair is paused.', error);
         }
       });
 

@@ -17,18 +17,34 @@ let lastKnownHealth: { connected: boolean; checkedAt: number; error?: string } =
   checkedAt: 0
 };
 
+function normalizePostgresConnectionString(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    const sslMode = parsed.searchParams.get('sslmode');
+    if (sslMode && ['prefer', 'require', 'verify-ca'].includes(sslMode.toLowerCase())) {
+      if (!parsed.searchParams.has('uselibpqcompat')) {
+        parsed.searchParams.set('uselibpqcompat', 'true');
+      }
+    }
+    return parsed.toString();
+  } catch {
+    return rawUrl;
+  }
+}
+
 export function getPostgresPool(): pg.Pool | null {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
+  const rawConnectionString = process.env.DATABASE_URL;
+  if (!rawConnectionString) {
     return null;
   }
 
   if (!pool) {
     try {
+      const connectionString = normalizePostgresConnectionString(rawConnectionString);
       pool = new pg.Pool({
         connectionString,
         ssl: { rejectUnauthorized: false },
-        connectionTimeoutMillis: 5000,
+        connectionTimeoutMillis: 15000,
         max: 10,
         idleTimeoutMillis: 30000
       });

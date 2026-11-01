@@ -570,6 +570,37 @@ export class DynamicKeyRotator {
       console.error(`Failed to update exhausted state for ${this.providerName}`, e);
     }
   }
+
+  public getStatus() {
+    const isValidKey = (k: string) =>
+      Boolean(
+        k &&
+        k.length > 5 &&
+        !k.includes('TODO') &&
+        !k.includes('YOUR_') &&
+        !k.includes('MY_GEMINI_API_KEY') &&
+        !k.includes('PLACEHOLDER') &&
+        !k.includes('<') &&
+        !k.includes('>')
+      );
+
+    const validDbKeys = this.dbKeys.filter(isValidKey);
+    const validEnvKeys = this.fallbackKeys.filter(isValidKey);
+    const allValidKeys = Array.from(new Set([...validDbKeys, ...validEnvKeys]));
+    const exhaustedCount = allValidKeys.filter(k => this.exhaustedKeys.has(k)).length;
+    const totalKeys = allValidKeys.length;
+    const active = totalKeys > 0 && exhaustedCount < totalKeys;
+
+    return {
+      active,
+      totalKeys,
+      exhaustedKeys: exhaustedCount,
+      usingDb: validDbKeys.length > 0,
+      usingEnv: validEnvKeys.length > 0,
+      configuredModel: this.configuredModel || getEnvConfiguredModelForProvider(this.providerName) || null,
+      fallbackModel: this.configuredFallbackModel || null
+    };
+  }
 }
 
 export class GeminiDirectProvider implements ModelProvider {

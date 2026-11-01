@@ -1,5 +1,5 @@
 import { dbTelemetry } from './dbTelemetry';
-import { getSystemSettingsDoc, setSystemSettingsDoc } from './systemConfigStore';
+import { getSystemConfigDoc, getSystemSettingsDoc, setSystemSettingsDoc } from './systemConfigStore';
 
 interface ProviderMetrics {
   requests: number;
@@ -44,12 +44,31 @@ class TelemetryService {
   async initialize() {
     if (this.isInitialized) return;
     try {
-      const data = await getSystemSettingsDoc('ai_telemetry');
-      if (data && data.metrics) {
-        this.metrics = { ...this.metrics, ...data.metrics };
-        console.log('[Telemetry] Initialized from Neon PostgreSQL');
-      }
+      const [settingsTelemetry, statsTelemetry] = await Promise.all([
+        getSystemSettingsDoc('ai_telemetry'),
+        getSystemConfigDoc('stats_ai_telemetry')
+      ]);
+      const combinedMetrics: Record<string, ProviderMetrics> = { ...this.metrics };
+      const mergeSource = (source?: Record<string, ProviderMetrics>) => {
+        if (!source || typeof source !== 'object') return;
+        for (const [prov, m] of Object.entries(source)) {
+          if (!m || typeof m !== 'object') continue;
+          const existing = combinedMetrics[prov] || { requests: 0, tokens: 0, latencySum: 0, errors: 0 };
+          if ((m.requests || 0) >= (existing.requests || 0)) {
+            combinedMetrics[prov] = {
+              requests: Number(m.requests || 0),
+              tokens: Number(m.tokens || 0),
+              latencySum: Number(m.latencySum || 0),
+              errors: Number(m.errors || 0)
+            };
+          }
+        }
+      };
+      mergeSource(statsTelemetry?.metrics);
+      mergeSource(settingsTelemetry?.metrics);
+      this.metrics = combinedMetrics;
       this.isInitialized = true;
+      console.log('[Telemetry] Initialized from Neon PostgreSQL');
       this.startFlushing();
     } catch (e) {
       console.error('[Telemetry] Initialization failed:', e);
@@ -88,8 +107,8 @@ class TelemetryService {
   getMetrics() {
     const result: any = {};
     for (const [provider, data] of Object.entries(this.metrics)) {
-      const avgLatency = data.requests > 0 ? (data.latencySum / data.requests / 1000).toFixed(1) + 's' : '0s';
-      const uptime = data.requests > 0 ? ((1 - data.errors / data.requests) * 100).toFixed(1) + '%' : '100%';
+      const avgLatency = data.requests > 0 ? (data.latencySum / data.requests / 1000).toFixed(1) + 's' : 'N/A';
+      const uptime = data.requests > 0 ? ((1 - data.errors / data.requests) * 100).toFixed(1) + '%' : 'N/A';
       result[provider] = {
         requests: data.requests,
         tokens: this.formatTokens(data.tokens),

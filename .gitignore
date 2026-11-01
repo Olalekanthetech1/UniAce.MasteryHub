@@ -16,8 +16,4 @@ public/assets/aistudio/
 *.ndjson
 *.tmp
 *.temp
-scripts/*
-!scripts/check-zero-fallback.js
-!scripts/test-prompt-shield.ts
-!scripts/runGoldenSetEval.ts
-!scripts/deploy-firestore-rules.ts
+scripts/

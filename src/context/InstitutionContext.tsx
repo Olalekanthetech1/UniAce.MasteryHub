@@ -25,9 +25,31 @@ export function InstitutionProvider({ children }: { children: ReactNode }) {
 
   const fetchInstitution = async (isMounted = true) => {
     try {
-      const response = await fetch('/api/system/config/institution', { cache: 'no-store' });
-      if (!response.ok) throw new Error(`Institution configuration request failed with HTTP ${response.status}`);
-      const payload = await response.json();
+      let payload: any = null;
+      let lastErr: Error | null = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const response = await fetch('/api/system/config/institution', { cache: 'no-store' });
+          const contentType = response.headers.get('content-type') || '';
+          if (!response.ok || !contentType.includes('application/json')) {
+            throw new Error(
+              !contentType.includes('application/json')
+                ? `Institution configuration endpoint returned non-JSON response (HTTP ${response.status})`
+                : `Institution configuration request failed with HTTP ${response.status}`
+            );
+          }
+          payload = await response.json();
+          lastErr = null;
+          break;
+        } catch (attemptErr: any) {
+          lastErr = attemptErr instanceof Error ? attemptErr : new Error(String(attemptErr));
+          if (attempt < 3) {
+            await new Promise((resolve) => setTimeout(resolve, attempt * 1200));
+          }
+        }
+      }
+      if (lastErr) throw lastErr;
+
       const data = payload?.data?.data || payload?.data;
       if (!data || !Array.isArray(data.departments) || !Array.isArray(data.faculties) ||
           !data.departmentToFaculty || typeof data.departmentToFaculty !== 'object') {
@@ -46,7 +68,7 @@ export function InstitutionProvider({ children }: { children: ReactNode }) {
         setFaculties([]);
         setDepartmentToFaculty({});
       }
-      console.error('[InstitutionContext] Live institution data unavailable:', err);
+      console.warn('[InstitutionContext] Live institution data unavailable:', err instanceof Error ? err.message : String(err));
     } finally {
       if (isMounted) setIsLoading(false);
     }
