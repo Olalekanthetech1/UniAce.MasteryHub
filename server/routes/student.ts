@@ -817,75 +817,95 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
    * Tutor/Affiliate personal metrics & payout history from Neon PostgreSQL
    */
   app.get('/api/affiliate/me', verifyAuth, async (req, res) => {
+    const user = (req as any).user;
+    const pool = getPostgresPool();
+    if (!pool) {
+      return res.status(503).json({ error: 'Affiliate data unavailable: PostgreSQL is not connected.' });
+    }
+
+    const optionalNumeric = (value: unknown, field: string): number | null => {
+      if (value === null || value === undefined) return null;
+      const parsed = typeof value === 'number' ? value : (typeof value === 'string' && value.trim() ? Number(value) : NaN);
+      if (!Number.isFinite(parsed)) throw new Error(`Persisted affiliate field ${field} is not a valid number.`);
+      return parsed;
+    };
+    const optionalIso = (value: unknown, field: string): string | null => {
+      if (value === null || value === undefined) return null;
+      const date = value instanceof Date ? value : (typeof value === 'string' && value.trim() ? new Date(value) : null);
+      if (!date || Number.isNaN(date.getTime())) throw new Error(`Persisted affiliate field ${field} is not a valid timestamp.`);
+      return date.toISOString();
+    };
+
     try {
-      const user = (req as any).user;
-      const pool = getPostgresPool();
-      const defaultCode = String(user.uid || '').substring(0, 6).toUpperCase();
-      if (!pool) {
-        return res.json({
-          affiliate: { id: defaultCode, signups: 0, clicks: 0, paidConversions: 0, totalEarned: 0, pendingBalance: 0 },
-          payouts: []
-        });
-      }
+      const [affiliateResult, payoutsResult] = await Promise.all([
+        pool.query(
+          `SELECT code, user_id, email, display_name, total_earned, pending_payout, referral_count, bank_details, status, data
+           FROM affiliates
+           WHERE user_id = $1
+           LIMIT 1`,
+          [user.uid]
+        ),
+        pool.query(
+          `SELECT id, amount, status, bank_details, data, created_at
+           FROM payout_requests
+           WHERE user_id = $1
+           ORDER BY created_at DESC`,
+          [user.uid]
+        )
+      ]);
 
-      const affRes = await pool.query(
-        `SELECT code, user_id, email, display_name, total_earned, pending_payout, referral_count, bank_details, status, data
-         FROM affiliates
-         WHERE user_id = $1 OR code = $2
-         LIMIT 1`,
-        [user.uid, defaultCode]
-      );
+      let affiliate: any = null;
+      if (affiliateResult.rows.length > 0) {
+        const row = affiliateResult.rows[0];
+        const rawData = row.data && typeof row.data === 'object' && !Array.isArray(row.data) ? row.data : {};
+        if (typeof row.code !== 'string' || !row.code.trim() ||
+            typeof row.user_id !== 'string' || row.user_id !== user.uid) {
+          throw new Error('Persisted affiliate identity is incomplete or inconsistent.');
+        }
+        const displayName = typeof row.display_name === 'string' && row.display_name.trim()
+          ? row.display_name
+          : (typeof rawData.name === 'string' && rawData.name.trim() ? rawData.name : null);
+        const email = typeof row.email === 'string' && row.email.trim()
+          ? row.email
+          : (typeof rawData.email === 'string' && rawData.email.trim() ? rawData.email : (typeof user.email === 'string' ? user.email : null));
 
-      let affiliate: any;
-      if ((affRes.rowCount ?? 0) > 0) {
-        const row = affRes.rows[0];
-        const rawData = row.data || {};
         affiliate = {
           ...rawData,
           id: row.code,
           userId: row.user_id,
-          name: row.display_name || rawData.name || 'Partner',
-          email: row.email || rawData.email || user.email,
-          totalEarned: Number(row.total_earned ?? rawData.totalEarned ?? 0),
-          pendingBalance: Number(row.pending_payout ?? rawData.pendingBalance ?? 0),
-          signups: Number(rawData.signups ?? row.referral_count ?? 0),
-          clicks: Number(rawData.clicks ?? 0),
-          paidConversions: Number(rawData.paidConversions ?? row.referral_count ?? 0),
-          payoutDetails: row.bank_details && Object.keys(row.bank_details).length > 0
+          name: displayName,
+          email,
+          totalEarned: optionalNumeric(row.total_earned ?? rawData.totalEarned, 'totalEarned'),
+          pendingBalance: optionalNumeric(row.pending_payout ?? rawData.pendingBalance, 'pendingBalance'),
+          signups: optionalNumeric(rawData.signups ?? row.referral_count, 'signups'),
+          clicks: optionalNumeric(rawData.clicks, 'clicks'),
+          paidConversions: optionalNumeric(rawData.paidConversions ?? row.referral_count, 'paidConversions'),
+          status: typeof row.status === 'string' ? row.status : (typeof rawData.status === 'string' ? rawData.status : null),
+          payoutDetails: row.bank_details && typeof row.bank_details === 'object' && Object.keys(row.bank_details).length > 0
             ? row.bank_details
-            : rawData.payoutDetails || null
-        };
-      } else {
-        affiliate = {
-          id: defaultCode,
-          signups: 0,
-          clicks: 0,
-          paidConversions: 0,
-          totalEarned: 0,
-          pendingBalance: 0
+            : (rawData.payoutDetails && typeof rawData.payoutDetails === 'object' ? rawData.payoutDetails : null)
         };
       }
 
-      const payoutsRes = await pool.query(
-        `SELECT id, amount, status, bank_details, data, created_at
-         FROM payout_requests
-         WHERE user_id = $1
-         ORDER BY created_at DESC`,
-        [user.uid]
-      );
-
-      const payouts = payoutsRes.rows.map((r) => ({
-        ...(r.data || {}),
-        id: r.id,
-        amount: Number(r.amount ?? 0),
-        status: r.status || 'pending',
-        bankDetails: r.bank_details || r.data?.bankDetails || {},
-        createdAt: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString()
-      }));
+      const payouts = payoutsResult.rows.map((row: any, index: number) => {
+        if (typeof row.id !== 'string' || !row.id.trim()) {
+          throw new Error(`Persisted payout record ${index + 1} is missing its identifier.`);
+        }
+        const rawData = row.data && typeof row.data === 'object' && !Array.isArray(row.data) ? row.data : {};
+        return {
+          ...rawData,
+          id: row.id,
+          amount: optionalNumeric(row.amount, `payout[${index}].amount`),
+          status: typeof row.status === 'string' ? row.status : null,
+          bankDetails: row.bank_details && typeof row.bank_details === 'object' ? row.bank_details : null,
+          createdAt: optionalIso(row.created_at, `payout[${index}].created_at`)
+        };
+      });
 
       return res.json({ affiliate, payouts });
     } catch (err: any) {
-      return res.status(500).json({ error: err.message || 'Failed to load affiliate data' });
+      logger.error({ uid: user.uid, error: err?.message || String(err) }, '[StudentRoutes] Affiliate data could not be verified');
+      return res.status(503).json({ error: 'Affiliate and payout data could not be verified from the authoritative database.' });
     }
   });
 
