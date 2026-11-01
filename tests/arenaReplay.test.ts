@@ -5,9 +5,12 @@ import { validateRecordedHumanReplay } from '../server/services/arenaReplay';
 const validRow = () => ({
   id: 'battle-real-001',
   updated_at: '2026-10-31T12:01:00.000Z',
+  verified_player1_uid: 'firebase-user-001',
+  verified_player2_uid: 'firebase-user-002',
   data: {
     status: 'finished',
     opponentType: 'human',
+    startedAtEpochMs: Date.parse('2026-10-31T12:00:00.000Z'),
     durationSeconds: 60,
     questions: [
       { question: 'What is 2 + 2?', options: ['3', '4'], correctAnswer: '4' },
@@ -107,4 +110,14 @@ test('uses another independently valid human recording when the first candidate 
   assert.ok(replay);
   assert.equal(replay.sourcePlayer.uid, 'firebase-user-002');
   assert.equal(replay.actions.length, 1);
+});
+
+test('rejects historical rows without database-verified participant identities', () => {
+  const missingParticipantProof = validRow();
+  delete (missingParticipantProof as any).verified_player2_uid;
+  assert.equal(validateRecordedHumanReplay(missingParticipantProof), null);
+
+  const mismatchedParticipantProof = validRow();
+  (mismatchedParticipantProof as any).verified_player2_uid = 'another-account';
+  assert.equal(validateRecordedHumanReplay(mismatchedParticipantProof), null);
 });
