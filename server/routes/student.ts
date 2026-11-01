@@ -1281,13 +1281,6 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
     }
   };
 
-  /**
-   * Helper: Dynamically compute Adaptive AI Challenger ([AI Challenger] Sparring Partner) calibration
-   * from the student's actual Neon PostgreSQL telemetry:
-   * 1. user_course_progress & user_quiz_attempts (course quiz scores & completed lessons)
-   * 2. user_spaced_repetition (SRS retention rate for that course)
-   * 3. arena_battles (past win/loss ratio for that course)
-   */
   const findVerifiedGhostRecording = async (db: any, topicId: string, excludedBattleId?: string) => {
     const candidates = await db.query(
       `SELECT id, updated_at, data
@@ -1298,16 +1291,19 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
          AND data->>'opponentType' = 'human'
          AND data->'player1'->>'opponentType' = 'human'
          AND data->'player2'->>'opponentType' = 'human'
-         AND CASE
-           WHEN jsonb_typeof(data->'player1'->'actionLog') = 'array'
-           THEN jsonb_array_length(data->'player1'->'actionLog') > 0
-           ELSE FALSE
-         END OR FALSE
-         AND CASE
-           WHEN jsonb_typeof(data->'player2'->'actionLog') = 'array'
-           THEN jsonb_array_length(data->'player2'->'actionLog') > 0
-           ELSE FALSE
-         END OR FALSE
+         AND (
+           CASE
+             WHEN jsonb_typeof(data->'player1'->'actionLog') = 'array'
+             THEN jsonb_array_length(data->'player1'->'actionLog') > 0
+             ELSE FALSE
+           END
+           OR
+           CASE
+             WHEN jsonb_typeof(data->'player2'->'actionLog') = 'array'
+             THEN jsonb_array_length(data->'player2'->'actionLog') > 0
+             ELSE FALSE
+           END
+         )
        ORDER BY updated_at DESC`,
       [topicId, excludedBattleId || null]
     );
@@ -1319,11 +1315,6 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
     return null;
   };
 
-  /**
-   * GET /api/arena/lobby-telemetry
-   * Real-time Arena lobby presence, open waiting queues across courses, recorded historical battle availability,
-   * and live Adaptive AI Challenger ([AI Challenger]) telemetry calibration for the selected course
-   */
   /**
    * GET /api/arena/lobby-telemetry
    * Returns live presence, valid waiting human matches, and verified historical replay availability.
