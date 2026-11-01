@@ -14,7 +14,7 @@ const router = Router();
 // 1. Search Academic Papers
 router.post('/search', async (req: Request, res: Response) => {
   try {
-    const { query, fieldOfStudy, limit, minYear, courseCode } = req.body;
+    const { query, fieldOfStudy, limit, minYear, courseCode, syllabusText } = req.body;
     if (!query || typeof query !== 'string') {
       res.status(400).json({ error: 'Valid query parameter is required' });
       return;
@@ -26,6 +26,7 @@ router.post('/search', async (req: Request, res: Response) => {
       limit: limit ? Number(limit) : 5,
       minYear: minYear ? Number(minYear) : undefined,
       courseCode,
+      syllabusText
     });
 
     res.json(result);
@@ -67,7 +68,13 @@ router.post('/definitions', async (req: Request, res: Response) => {
       return;
     }
 
-    const definition = await extractCanonicalDefinitions(subject, topic, courseCode);
+    const definition = await extractCanonicalDefinitions(subject, topic);
+    if (!definition) {
+      return res.status(404).json({
+        error: 'No source-provided definition is available.',
+        message: 'OpenAlex did not return a concept record with a source-provided description. No definition was generated as a substitute.'
+      });
+    }
     res.json(definition);
   } catch (error) {
     console.error('Academic Definition Endpoint Error:', error);
@@ -84,19 +91,24 @@ router.get('/stats', async (req: Request, res: Response) => {
     const health = await checkAcademicProvidersHealth();
     const config = await getAcademicConfig();
 
-    let totalLogCount = 0;
+    let totalLogCount: number | null = null;
     const pool = getPostgresPool();
     if (pool) {
       try {
         const countRes = await pool.query(`SELECT COUNT(*)::int AS cnt FROM system_logs WHERE category = 'academic_research'`);
-        totalLogCount = Number(countRes.rows[0]?.cnt || 0);
+        totalLogCount = Number(countRes.rows[0]?.cnt);
       } catch (err) {
         console.warn('Log count error:', err);
       }
     }
 
+    const enabledHealth = health.filter((provider) => provider.status !== 'disabled');
+    const status = enabledHealth.length > 0 && enabledHealth.every((provider) => provider.status === 'healthy')
+      ? 'operational'
+      : 'degraded';
+
     res.json({
-      status: 'operational',
+      status,
       config,
       providerHealth: health,
       totalQueriesLogged: totalLogCount,
@@ -139,8 +151,11 @@ router.post('/config', async (req: Request, res: Response) => {
 // 7. Admin Live Smoke Test Sandbox
 router.post('/test', async (req: Request, res: Response) => {
   try {
-    const { query = 'quantum computing', limit = 3 } = req.body;
-    const searchRes = await searchAcademicPapers({ query, limit: Number(limit) });
+    const { query, limit = 3 } = req.body || {};
+    if (typeof query !== 'string' || query.trim().length < 2) {
+      return res.status(400).json({ error: 'A real research query is required for the live smoke test.' });
+    }
+    const searchRes = await searchAcademicPapers({ query: query.trim(), limit: Number(limit) });
     const health = await checkAcademicProvidersHealth();
 
     res.json({

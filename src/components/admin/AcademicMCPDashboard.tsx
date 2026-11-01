@@ -23,21 +23,21 @@ interface Paper {
   id: string;
   title: string;
   authors: string[];
-  abstract: string;
-  year?: number;
-  venue?: string;
-  doi?: string;
+  abstract: string | null;
+  year?: number | null;
+  venue?: string | null;
+  doi?: string | null;
   url: string;
-  pdfUrl?: string;
-  citationCount: number;
+  pdfUrl?: string | null;
+  citationCount: number | null;
   source: 'arxiv' | 'semantic_scholar' | 'openalex';
   relevanceScore: number;
   syllabusTags: string[];
 }
 
 interface ProviderHealth {
-  provider: 'arxiv' | 'semantic_scholar' | 'openalex';
-  status: 'healthy' | 'degraded' | 'offline';
+  provider: 'arxiv' | 'semantic_scholar' | 'openalex' | 'tavily';
+  status: 'healthy' | 'degraded' | 'offline' | 'disabled' | 'not_configured';
   latencyMs: number;
   lastChecked: string;
   errorMessage?: string;
@@ -47,13 +47,40 @@ interface AcademicConfig {
   enabled: boolean;
   cacheTtlHours: number;
   semanticScholarApiKeyConfigured: boolean;
+  tavilyApiKeyConfigured: boolean;
   openAlexEmail?: string;
   arxivMaxResults: number;
+  researchDepth: 'adaptive' | 'basic' | 'advanced';
+  maxExpansionRounds: number;
+  minimumEvidenceCount: number;
+  maxWebResults: number;
   providersEnabled: {
     arxiv: boolean;
     semanticScholar: boolean;
     openAlex: boolean;
+    tavily: boolean;
   };
+}
+
+interface WebSource {
+  id: string;
+  title: string;
+  url: string;
+  domain: string;
+  content: string | null;
+  score: number | null;
+  searchDepth: 'basic' | 'advanced';
+  authorityClass: string;
+  verificationStatus: 'unverified';
+}
+
+interface EvidenceAssessment {
+  status: 'candidate_evidence_found' | 'insufficient_candidate_evidence' | 'no_evidence';
+  evidenceCount: number;
+  relevantEvidenceCount: number;
+  queryTermCoverage: number;
+  minimumEvidenceCount: number;
+  expansionReasons: string[];
 }
 
 export const AcademicMCPDashboard: React.FC = () => {
@@ -61,10 +88,14 @@ export const AcademicMCPDashboard: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(false);
 
   // Search Sandbox State
-  const [searchQuery, setSearchQuery] = useState<string>('quantum computing optimization');
-  const [fieldOfStudy, setFieldOfStudy] = useState<string>('Computer Science');
-  const [courseCode, setCourseCode] = useState<string>('CSC 401');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [fieldOfStudy, setFieldOfStudy] = useState<string>('');
+  const [courseCode, setCourseCode] = useState<string>('');
   const [papers, setPapers] = useState<Paper[]>([]);
+  const [webSources, setWebSources] = useState<WebSource[]>([]);
+  const [evidenceAssessment, setEvidenceAssessment] = useState<EvidenceAssessment | null>(null);
+  const [researchStatus, setResearchStatus] = useState<string | null>(null);
+  const [researchPasses, setResearchPasses] = useState<Array<{ pass: number; searchDepth: string; reason: string }>>([]);
   const [selectedPaper, setSelectedPaper] = useState<Paper | null>(null);
   const [citationFormat, setCitationFormat] = useState<'apa' | 'bibtex'>('apa');
   const [citationResult, setCitationResult] = useState<{ apa: string; bibtex: string } | null>(null);
@@ -74,8 +105,10 @@ export const AcademicMCPDashboard: React.FC = () => {
   const [config, setConfig] = useState<AcademicConfig | null>(null);
   const [configLoading, setConfigLoading] = useState<boolean>(true);
   const [configLoadError, setConfigLoadError] = useState<string | null>(null);
-  const [totalQueries, setTotalQueries] = useState<number>(0);
+  const [totalQueries, setTotalQueries] = useState<number | null>(null);
   const [semanticScholarApiKeyInput, setSemanticScholarApiKeyInput] = useState<string>('');
+  const [tavilyApiKeyInput, setTavilyApiKeyInput] = useState<string>('');
+  const [clearTavilyApiKey, setClearTavilyApiKey] = useState<boolean>(false);
 
   const getAuthHeaders = async (): Promise<Record<string, string>> => {
     const currentUser = auth.currentUser;
@@ -118,7 +151,9 @@ export const AcademicMCPDashboard: React.FC = () => {
       }
       const statsData = await statsResponse.json();
       if (statsData.providerHealth) setProviderHealth(statsData.providerHealth);
-      if (statsData.totalQueriesLogged !== undefined) setTotalQueries(statsData.totalQueriesLogged);
+      if (statsData.totalQueriesLogged !== undefined) {
+        setTotalQueries(typeof statsData.totalQueriesLogged === 'number' ? statsData.totalQueriesLogged : null);
+      }
     } catch (err) {
       console.error('Failed to fetch academic provider stats:', err);
       setProviderHealth([]);
@@ -135,6 +170,11 @@ export const AcademicMCPDashboard: React.FC = () => {
     setLoading(true);
     setCitationResult(null);
     setSelectedPaper(null);
+    setPapers([]);
+    setWebSources([]);
+    setEvidenceAssessment(null);
+    setResearchStatus(null);
+    setResearchPasses([]);
 
     try {
       const res = await fetch('/api/admin/academic/search', {
@@ -154,8 +194,14 @@ export const AcademicMCPDashboard: React.FC = () => {
       }
 
       const data = await res.json();
-      setPapers(data.papers || []);
-      toast.success(`Found ${data.papers?.length || 0} academic records in ${data.latencyMs}ms`);
+      setPapers(Array.isArray(data.papers) ? data.papers : []);
+      setWebSources(Array.isArray(data.webSources) ? data.webSources : []);
+      setEvidenceAssessment(data.evidenceAssessment || null);
+      setResearchStatus(typeof data.researchStatus === 'string' ? data.researchStatus : null);
+      setResearchPasses(Array.isArray(data.researchPasses) ? data.researchPasses : []);
+      toast.success(
+        `Research completed: ${data.papers?.length || 0} scholarly records and ${data.webSources?.length || 0} web leads in ${data.latencyMs}ms`
+      );
     } catch (err) {
       toast.error((err as Error).message || 'Failed to query academic registries');
     } finally {
@@ -210,7 +256,13 @@ export const AcademicMCPDashboard: React.FC = () => {
         arxivMaxResults: config.arxivMaxResults,
         openAlexEmail: config.openAlexEmail || '',
         providersEnabled: config.providersEnabled,
-        ...(apiKey ? { semanticScholarApiKey: apiKey } : {})
+        researchDepth: config.researchDepth,
+        maxExpansionRounds: config.maxExpansionRounds,
+        minimumEvidenceCount: config.minimumEvidenceCount,
+        maxWebResults: config.maxWebResults,
+        ...(apiKey ? { semanticScholarApiKey: apiKey } : {}),
+        ...(tavilyApiKeyInput.trim() ? { tavilyApiKey: tavilyApiKeyInput.trim() } : {}),
+        ...(clearTavilyApiKey ? { clearTavilyApiKey: true } : {})
       };
       const res = await fetch('/api/admin/academic/config', {
         method: 'POST',
@@ -225,6 +277,8 @@ export const AcademicMCPDashboard: React.FC = () => {
 
       setConfig(data.config);
       setSemanticScholarApiKeyInput('');
+      setTavilyApiKeyInput('');
+      setClearTavilyApiKey(false);
       toast.success('Academic research configuration saved to Neon.');
       await fetchStatsAndConfig();
     } catch (err) {
@@ -242,13 +296,10 @@ export const AcademicMCPDashboard: React.FC = () => {
           </div>
           <div>
             <div className="flex items-center space-x-2">
-              <h2 className="text-xl font-bold tracking-tight text-white">Academic Research & Syllabus Grounding MCP</h2>
-              <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
-                Live Open-Source MCP
-              </span>
+              <h2 className="text-xl font-bold tracking-tight text-white">Academic Research Engine</h2>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              Zero-Mock Scholarly Intelligence Layer (arXiv • Semantic Scholar • OpenAlex • Dynamic Global Syllabi)
+              Adaptive research across arXiv, Semantic Scholar, OpenAlex and optional Tavily discovery. Retrieved web sources remain unverified until reviewed.
             </p>
           </div>
         </div>
@@ -357,7 +408,7 @@ export const AcademicMCPDashboard: React.FC = () => {
           {papers.length > 0 && (
             <div className="space-y-4">
               <div className="flex items-center justify-between text-xs text-slate-400">
-                <span>Returned {papers.length} academic records from configured scholarly registries:</span>
+                <span>Returned {papers.length} scholarly records and {webSources.length} web discovery leads.</span>
               </div>
 
               <div className="space-y-3">
@@ -378,7 +429,7 @@ export const AcademicMCPDashboard: React.FC = () => {
                           <ExternalLink className="w-3.5 h-3.5 text-slate-400 inline" />
                         </a>
                         <p className="text-xs text-slate-400 mt-1">
-                          By <span className="text-slate-300">{paper.authors.slice(0, 3).join(', ')}{paper.authors.length > 3 ? ' et al.' : ''}</span> • {paper.venue || 'Academic Journal'} ({paper.year || 'N/A'})
+                          {paper.authors.length > 0 ? <>By <span className="text-slate-300">{paper.authors.slice(0, 3).join(', ')}{paper.authors.length > 3 ? ' et al.' : ''}</span></> : <span>Author metadata not supplied</span>} • {paper.venue || 'Venue not supplied'} ({paper.year ?? 'Year unavailable'})
                         </p>
                       </div>
 
@@ -387,13 +438,13 @@ export const AcademicMCPDashboard: React.FC = () => {
                           {paper.source}
                         </span>
                         <span className="text-[11px] text-amber-400 font-mono">
-                          ★ {paper.citationCount} Citations
+                          {paper.citationCount === null ? 'Citation count unavailable' : `★ ${paper.citationCount} Citations`}
                         </span>
                       </div>
                     </div>
 
                     <p className="text-xs text-slate-300 line-clamp-3 leading-relaxed">
-                      {paper.abstract}
+                      {paper.abstract || 'Abstract not supplied by the source registry.'}
                     </p>
 
                     <div className="pt-2 border-t border-slate-700/50 flex flex-wrap items-center justify-between gap-2 text-xs">
@@ -433,6 +484,51 @@ export const AcademicMCPDashboard: React.FC = () => {
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {(researchStatus || evidenceAssessment) && (
+            <div className="rounded-xl border border-slate-700 bg-slate-800/50 p-4 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-white">Research assessment</h3>
+                <span className="text-xs rounded-md border border-slate-600 px-2 py-1 text-slate-200">
+                  {researchStatus || evidenceAssessment?.status || 'Assessment unavailable'}
+                </span>
+              </div>
+              {evidenceAssessment && (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                  <div><p className="text-slate-400">Evidence records</p><p className="text-white font-semibold">{evidenceAssessment.evidenceCount}</p></div>
+                  <div><p className="text-slate-400">Relevant records</p><p className="text-white font-semibold">{evidenceAssessment.relevantEvidenceCount}</p></div>
+                  <div><p className="text-slate-400">Query-term coverage</p><p className="text-white font-semibold">{Math.round(evidenceAssessment.queryTermCoverage * 100)}%</p></div>
+                  <div><p className="text-slate-400">Minimum evidence target</p><p className="text-white font-semibold">{evidenceAssessment.minimumEvidenceCount}</p></div>
+                </div>
+              )}
+              <p className="text-[11px] text-amber-300">
+                Candidate evidence is not an academic validation or contradiction check. Web discovery results are unverified and require administrator review before course use.
+              </p>
+              {researchPasses.length > 0 && (
+                <div className="text-xs text-slate-400">
+                  {researchPasses.map((pass) => (
+                    <p key={pass.pass}>Pass {pass.pass}: {pass.searchDepth} — {pass.reason}</p>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {webSources.length > 0 && (
+            <div className="space-y-3">
+              <h3 className="text-sm font-semibold text-white">Web discovery leads — unverified</h3>
+              {webSources.map((source) => (
+                <div key={source.id} className="rounded-lg border border-amber-700/40 bg-slate-800/50 p-3 space-y-1">
+                  <a href={source.url} target="_blank" rel="noopener noreferrer" className="text-sm font-medium text-cyan-300 hover:underline">
+                    {source.title}
+                  </a>
+                  <p className="text-[11px] text-slate-400">{source.domain} • {source.authorityClass.replace(/_/g, ' ')} • {source.searchDepth} search</p>
+                  {source.content && <p className="text-xs text-slate-300 whitespace-pre-wrap">{source.content.slice(0, 900)}{source.content.length > 900 ? '…' : ''}</p>}
+                  <p className="text-[11px] text-amber-300">Not verified; do not treat as approved course evidence.</p>
+                </div>
+              ))}
             </div>
           )}
 
@@ -511,7 +607,7 @@ export const AcademicMCPDashboard: React.FC = () => {
           </div>
 
           <div className="p-4 bg-slate-800/40 border border-slate-800 rounded-xl flex items-center justify-between text-xs text-slate-400">
-            <span>Total Logged Academic Searches in Database: <strong className="text-white">{totalQueries}</strong></span>
+            <span>Total Logged Academic Searches in Database: <strong className="text-white">{totalQueries === null ? 'Unavailable' : totalQueries}</strong></span>
             <span>Cache TTL: <strong className="text-cyan-400">{config ? `${config.cacheTtlHours} Hours` : configLoading ? 'Loading persisted setting…' : 'Unavailable'}</strong></span>
           </div>
         </div>
@@ -557,6 +653,27 @@ export const AcademicMCPDashboard: React.FC = () => {
             </div>
 
             <div className="space-y-1">
+              <label className="text-slate-400">Tavily API Key</label>
+              <input
+                type="password"
+                autoComplete="new-password"
+                value={tavilyApiKeyInput}
+                onChange={(e) => { setTavilyApiKeyInput(e.target.value); setClearTavilyApiKey(false); }}
+                placeholder={config.tavilyApiKeyConfigured ? 'Enter a replacement key' : 'Enter Tavily API key'}
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white"
+              />
+              <p className="text-[11px] text-slate-500">
+                {config.tavilyApiKeyConfigured ? 'A key is stored encrypted on the server; it is never returned to this dashboard.' : 'No Tavily key is stored. Web search remains unavailable until a key is saved.'}
+              </p>
+              {config.tavilyApiKeyConfigured && (
+                <label className="flex items-center gap-2 text-[11px] text-rose-300">
+                  <input type="checkbox" checked={clearTavilyApiKey} onChange={(e) => setClearTavilyApiKey(e.target.checked)} />
+                  Remove stored Tavily key
+                </label>
+              )}
+            </div>
+
+            <div className="space-y-1">
               <label className="text-slate-400">OpenAlex Polite User Agent Email</label>
               <input
                 type="email"
@@ -564,6 +681,40 @@ export const AcademicMCPDashboard: React.FC = () => {
                 onChange={(e) => setConfig({ ...config, openAlexEmail: e.target.value })}
                 className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white"
               />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-slate-400">Research Depth</label>
+              <select
+                value={config.researchDepth}
+                onChange={(e) => setConfig({ ...config, researchDepth: e.target.value as AcademicConfig['researchDepth'] })}
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white"
+              >
+                <option value="adaptive">Adaptive (default)</option>
+                <option value="basic">Basic</option>
+                <option value="advanced">Advanced</option>
+              </select>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-slate-400">Maximum Adaptive Expansion Rounds (0–2)</label>
+              <input type="number" min={0} max={2} value={config.maxExpansionRounds}
+                onChange={(e) => setConfig({ ...config, maxExpansionRounds: Number(e.target.value) })}
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white" />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-slate-400">Minimum Evidence Count</label>
+              <input type="number" min={1} max={20} value={config.minimumEvidenceCount}
+                onChange={(e) => setConfig({ ...config, minimumEvidenceCount: Number(e.target.value) })}
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white" />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-slate-400">Maximum Tavily Results per Pass</label>
+              <input type="number" min={1} max={20} value={config.maxWebResults}
+                onChange={(e) => setConfig({ ...config, maxWebResults: Number(e.target.value) })}
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white" />
             </div>
 
             <div className="space-y-1">
@@ -576,6 +727,32 @@ export const AcademicMCPDashboard: React.FC = () => {
               />
             </div>
 
+            <div className="md:col-span-2 border-t border-slate-700 pt-3">
+              <p className="text-slate-300 font-semibold mb-2">Enabled research providers</p>
+              <div className="grid grid-cols-2 gap-2">
+                {([
+                  ['arxiv', 'arXiv'],
+                  ['semanticScholar', 'Semantic Scholar'],
+                  ['openAlex', 'OpenAlex'],
+                  ['tavily', 'Tavily web discovery']
+                ] as const).map(([key, label]) => (
+                  <label key={key} className="flex items-center gap-2 text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={config.providersEnabled[key]}
+                      onChange={(e) => setConfig({
+                        ...config,
+                        providersEnabled: { ...config.providersEnabled, [key]: e.target.checked }
+                      })}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+              {config.providersEnabled.tavily && !config.tavilyApiKeyConfigured && !tavilyApiKeyInput.trim() && (
+                <p className="text-amber-300 mt-2">Tavily cannot run until a key is saved.</p>
+              )}
+            </div>
           </div>
 
           <div className="pt-3 flex justify-end">
