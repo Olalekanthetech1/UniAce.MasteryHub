@@ -36,7 +36,7 @@ CRITICAL FORMATTING INSTRUCTIONS FOR MATH AND SCIENTIFIC NOTATION:
   $$
   x^2 + y^2 = 25
   $$
-- KATEX TEXT MODE RULE: In KaTeX, \\text{...} switches to plain text mode where math-mode macros (Greek letters, operators) and superscripts/subscripts (^, _) are invalid. Keep all math commands, Greek symbols, and exponents in math mode outside \\text{...}.
+- KATEX TEXT MODE RULE: Keep \\text{...} for plain words and units only. Put mathematical scripts outside text groups, e.g. \\text{H}_{2}\\text{O} and \\log_{2}(x). NEVER emit raw Unicode subscript/superscript glyphs (₀–₉, ⁰–⁹, ⁺, ⁻, ₊, ₋, and related forms) inside any math delimiter; always use standard LaTeX _{...} and ^{...} syntax.
 - DOUBLE-ESCAPING IN JSON: When outputting JSON, you MUST double-escape ALL LaTeX backslashes (e.g. "\\\\frac", "\\\\sqrt", "\\\\begin{aligned}").
 - NEVER output plain-text equivalents side-by-side with LaTeX formulas (e.g., do NOT write "x^2 + y^2 = 25 x2 + y2 = 25").
 
