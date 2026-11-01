@@ -120,11 +120,18 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
 
         const lp = u.learning_profile || {};
         const userXp = Number(lp.xp ?? 0);
-        const rankRes = await pool.query(
-          `SELECT COUNT(*)::int + 1 AS rank
-           FROM users
-           WHERE (role = 'student' OR role IS NULL)
-             AND learning_profile->>'xp' ~ '^[0-9]+
+        const rankSql = [
+          "SELECT COUNT(*)::int + 1 AS rank",
+          "FROM users",
+          "WHERE (role = 'student' OR role IS NULL)",
+          "AND learning_profile->>'xp' ~ '^[0-9]+$'",
+          "AND (learning_profile->>'xp')::int > $1"
+        ].join(' ');
+        const rankRes = await pool.query(rankSql, [userXp]);
+        const rank = Number(rankRes.rows[0]?.rank);
+        if (!Number.isInteger(rank) || rank < 1) {
+          throw new Error('The persisted student rank could not be verified.');
+        }
 
         profile = {
           uid: u.uid,
