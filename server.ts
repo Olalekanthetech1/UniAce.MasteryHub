@@ -7119,7 +7119,7 @@ app.get('/api/admin/system-health', verifyAuth, async (req, res) => {
     const dbStart = Date.now();
     const [apiKeysData, kbRes] = await Promise.all([
       getSystemSettingsDoc('api_keys'),
-      pool.query('SELECT COUNT(*)::int as count FROM course_knowledge_chunks').catch(() => ({ rows: [{ count: 0 }] }))
+      pool.query('SELECT COUNT(*)::int as count FROM course_knowledge_chunks')
     ]);
     const dbLatencyMs = Date.now() - dbStart;
     const keysObj = apiKeysData || {};
