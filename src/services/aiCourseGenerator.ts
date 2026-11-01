@@ -44,12 +44,17 @@ courseMarkedEngine.use(
   })
 );
 
-const getAuthToken = async () => {
-  try {
-    return await auth?.currentUser?.getIdToken(true);
-  } catch (e) {
-    return null;
+const getAuthToken = async (): Promise<string> => {
+  const currentUser = auth?.currentUser;
+  if (!currentUser) {
+    throw new Error('Authentication is required before requesting course generation services.');
   }
+
+  const token = await currentUser.getIdToken(true);
+  if (typeof token !== 'string' || !token.trim()) {
+    throw new Error('The authenticated session did not provide a valid access token.');
+  }
+  return token;
 };
 
 export function flagOffTopicDrift(content: string, courseName: string, department?: string): { hasDrift: boolean; hits: string[] } {
