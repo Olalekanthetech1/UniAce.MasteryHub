@@ -130,10 +130,6 @@ export async function fetchOpenAlexConceptDefinitions(
     const canonicalDef = typeof primaryConcept.description === 'string' ? primaryConcept.description.trim() : '';
     if (!canonicalDef) return null;
 
-    const related = primaryConcept.related_concepts
-      ? primaryConcept.related_concepts.slice(0, 3).map((c) => c.display_name)
-      : [];
-
     return {
       source: 'openalex',
       sourceId: primaryConcept.id,
