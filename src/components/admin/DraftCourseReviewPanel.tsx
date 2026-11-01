@@ -352,6 +352,7 @@ export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublish
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new Error(data?.error || 'The review decision could not be saved.');
       setReviewNote('');
+      setApprovalChecks({ subjectExpert: false, calculations: false, curriculum: false, rendering: false });
       await loadQueue();
       setReloadDetail((value) => value + 1);
     } catch (error: any) {
