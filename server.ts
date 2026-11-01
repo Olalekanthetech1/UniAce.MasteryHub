@@ -3268,92 +3268,83 @@ function truncateHistory(history: any[], maxTokens: number = 12000): any[] {
   return truncated;
 }
 
-// 1. AI Chat with Sparks System (Nudge via Neon PostgreSQL)
+// Live, database-backed proactive study nudge. Never substitute canned text for failed generation.
 app.get('/api/chat/nudge', verifyAuth, async (req, res) => {
   const uid = (req as any).user.uid;
   try {
     const pool = getPostgresPool();
-    if (!pool) {
-      return res.json({ message: "Hello! I'm UniAce AI. How can I help you study today?" });
-    }
+    if (!pool) return res.status(503).json({ error: 'Live nudge generation is unavailable: PostgreSQL is not connected.' });
 
     const userRes = await pool.query(
       `SELECT display_name, learning_profile FROM users WHERE uid = $1`,
       [uid]
     );
     if ((userRes.rowCount ?? 0) === 0) {
-      return res.json({ message: "Hello! I'm UniAce AI. How can I help you study today?" });
+      return res.status(404).json({ error: 'No authoritative student profile exists for this account.' });
     }
 
     const row = userRes.rows[0];
-    const studentName = row.display_name || "Student";
-    const profile = (row.learning_profile && typeof row.learning_profile === 'object') ? row.learning_profile : {};
+    const profile = row.learning_profile && typeof row.learning_profile === 'object' ? row.learning_profile : {};
     const todayStr = new Date().toISOString().split('T')[0];
 
-    if (profile.last_nudge_date === todayStr && profile.last_nudge_message) {
-      const cachedMessage = String(profile.last_nudge_message);
-      const hasPlaceholder = cachedMessage.includes("[Student's Name]") ||
-                            cachedMessage.includes("[Name]") ||
-                            cachedMessage.includes("[student name]");
-      if (!hasPlaceholder) {
-        return res.json({ message: cachedMessage });
-      }
+    if (profile.last_nudge_date === todayStr && typeof profile.last_nudge_message === 'string' && profile.last_nudge_message.trim()) {
+      return res.json({
+        message: profile.last_nudge_message,
+        source: 'previous_verified_generation',
+        generatedAt: profile.last_nudge_generated_at || null
+      });
     }
 
-    const prompt = `You are UniAce AI, a proactive academic tutor.
-    The student just logged in.
-    Student Name: ${studentName}
-    Their strengths: ${Array.isArray(profile.strengths) ? profile.strengths.join(', ') : 'None recorded yet'}
-    Their weaknesses: ${Array.isArray(profile.weaknesses) ? profile.weaknesses.join(', ') : 'None recorded yet'}
-    Streak: ${profile.streak || 0} days.
-    
-    Write a short, engaging, and highly personalized 1-2 sentence welcome message. 
-    If they have a weakness, gently suggest tackling it. If they have a streak, congratulate them.
-    
-    CRITICAL: Use the student's actual name (${studentName}) in the greeting. 
-    NEVER use placeholders like "[Student's Name]" or "[Name]".
-    Do NOT be overly verbose. Use emojis.`;
+    const facts: string[] = [];
+    if (typeof row.display_name === 'string' && row.display_name.trim()) facts.push(`Student name: ${row.display_name.trim()}`);
+    if (Array.isArray(profile.strengths) && profile.strengths.length) facts.push(`Recorded strengths: ${profile.strengths.join(', ')}`);
+    if (Array.isArray(profile.weaknesses) && profile.weaknesses.length) facts.push(`Recorded learning gaps: ${profile.weaknesses.join(', ')}`);
+    if (typeof profile.streak === 'number' && Number.isFinite(profile.streak)) facts.push(`Recorded study streak: ${profile.streak} days`);
 
-    const providers = [
-      globalMistralDirectBreaker,
-      globalGroqBreaker,
-      globalGeminiDirectBreaker
-    ].filter(Boolean) as CircuitBreaker[];
+    const prompt = `You are UniAce AI, a proactive academic tutor. Generate a concise study nudge using only the supplied profile facts. Do not invent the student's name, progress, strengths, weaknesses, streak, or academic activity. If no relevant facts are supplied, provide a general study suggestion without describing it as personalized.\n\nVerified profile facts:\n${facts.length ? facts.join('\n') : 'No personalization facts are currently available.'}`;
 
-    let message = `Hello ${studentName}! I'm UniAce AI. Ready to study today? 🚀`;
-
-    if (providers.length > 0) {
-      for (const provider of providers) {
-        try {
-          const response = await generateWithTelemetry(provider, [{ role: 'user', content: prompt }], { complexity: 'standard' });
-          if (response.text) {
-            message = response.text;
-            break;
-          }
-        } catch (err) {
-          console.warn(`Nudge generation failed with provider, trying next...`, err);
-        }
-      }
+    const routing = await getSystemConfigDoc('routing');
+    const providerName = routing?.proactive_nudge || routing?.chat;
+    if (typeof providerName !== 'string' || !providerName.trim()) {
+      return res.status(503).json({ error: 'No live AI provider is configured for proactive study nudges.' });
     }
 
-    try {
-      const updatedProfile = {
-        ...profile,
-        last_nudge_date: todayStr,
-        last_nudge_message: message
-      };
-      await pool.query(
-        `UPDATE users SET learning_profile = $1::jsonb, updated_at = NOW() WHERE uid = $2`,
-        [JSON.stringify(updatedProfile), uid]
-      );
-    } catch (dbErr) {
-      console.warn("Could not save nudge cache to Neon PostgreSQL:", dbErr);
+    const providerMap: Record<string, CircuitBreaker | undefined> = {
+      groq: globalGroqBreaker,
+      gemini_direct: globalGeminiDirectBreaker,
+      mistral_direct: globalMistralDirectBreaker
+    };
+    const provider = providerMap[providerName];
+    if (!provider) {
+      return res.status(503).json({ error: 'The configured nudge provider is not available in the active runtime.' });
     }
 
-    res.json({ message });
-  } catch (e) {
-    console.error("Failed to generate nudge:", e);
-    res.json({ message: "Hello! I'm UniAce AI. How can I help you study today?" });
+    const response = await generateWithTelemetry(provider, [{ role: 'user', content: prompt }], { complexity: 'standard' });
+    const message = typeof response.text === 'string' ? response.text.trim() : '';
+    if (!message) {
+      return res.status(503).json({ error: 'The configured AI provider returned no nudge content.' });
+    }
+
+    const updatedProfile = {
+      ...profile,
+      last_nudge_date: todayStr,
+      last_nudge_message: message,
+      last_nudge_generated_at: new Date().toISOString()
+    };
+    await pool.query(
+      `UPDATE users SET learning_profile = $1::jsonb, updated_at = NOW() WHERE uid = $2`,
+      [JSON.stringify(updatedProfile), uid]
+    );
+
+    return res.json({
+      message,
+      source: 'live_provider',
+      providerUsed: providerName,
+      generatedAt: updatedProfile.last_nudge_generated_at
+    });
+  } catch (error: any) {
+    console.error('Failed to generate live study nudge:', error);
+    return res.status(503).json({ error: 'Live study nudge generation is unavailable.', message: error.message });
   }
 });
 
