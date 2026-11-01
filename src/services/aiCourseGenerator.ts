@@ -505,7 +505,6 @@ export async function generateCourseSkeleton(
 }
 
 import { z } from 'zod';
-import { normalizeMathDelimiters } from '../shared/mathText';
 
 export const RelevanceSchema = z.object({
   department: z.string(),
