@@ -77,19 +77,26 @@ export interface AcademicProviderHealth {
   errorMessage?: string;
 }
 
+/**
+ * Runtime configuration. Provider credentials are server-only and must never
+ * be returned by an administrative configuration response.
+ */
 export interface AcademicConfig {
   enabled: boolean;
   cacheTtlHours: number;
   semanticScholarApiKey?: string;
   openAlexEmail?: string;
   arxivMaxResults: number;
-  defaultCourseAlignment: string; // e.g. "Global University Benchmark Syllabus (Adaptive)"
   providersEnabled: {
     arxiv: boolean;
     semanticScholar: boolean;
     openAlex: boolean;
   };
 }
+
+export type AcademicConfigView = Omit<AcademicConfig, 'semanticScholarApiKey'> & {
+  semanticScholarApiKeyConfigured: boolean;
+};
 
 export interface AcademicSearchResponse {
   query: string;

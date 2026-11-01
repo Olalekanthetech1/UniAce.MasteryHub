@@ -7,40 +7,183 @@ import {
   CitationResult,
   CanonicalDefinition,
   AcademicConfig,
+  AcademicConfigView,
   AcademicProviderHealth,
 } from './academic/types.js';
 import { fetchFromArxiv } from './academic/arxivAdapter.js';
 import { fetchFromSemanticScholar, lookupPaperSemanticScholar } from './academic/semanticScholarAdapter.js';
 import { fetchFromOpenAlex, fetchOpenAlexConceptDefinitions } from './academic/openAlexAdapter.js';
 import { getPostgresPool } from './postgresPool.js';
+import { getSystemSettingsDoc, setSystemSettingsDoc } from './systemConfigStore.js';
+import {
+  decryptAcademicCredential,
+  encryptAcademicCredential
+} from './academic/credentialVault.js';
+import { z } from 'zod';
 
-// Default Admin Configuration
-let activeConfig: AcademicConfig = {
+const ACADEMIC_RESEARCH_CONFIG_DOC = 'academic_research';
+
+const EncryptedCredentialSchema = z.object({
+  version: z.literal(1),
+  algorithm: z.literal('aes-256-gcm'),
+  iv: z.string().min(1),
+  authTag: z.string().min(1),
+  ciphertext: z.string().min(1)
+}).strict();
+
+const StoredAcademicConfigSchema = z.object({
+  schemaVersion: z.literal(1),
+  enabled: z.boolean(),
+  cacheTtlHours: z.number().int().min(1).max(720),
+  arxivMaxResults: z.number().int().min(1).max(20),
+  openAlexEmail: z.string().email().nullable(),
+  providersEnabled: z.object({
+    arxiv: z.boolean(),
+    semanticScholar: z.boolean(),
+    openAlex: z.boolean()
+  }).strict(),
+  credentials: z.object({
+    semanticScholarApiKey: EncryptedCredentialSchema.optional()
+  }).strict().default({})
+}).strict();
+
+type StoredAcademicConfig = z.infer<typeof StoredAcademicConfigSchema>;
+
+const AcademicConfigUpdateSchema = z.object({
+  enabled: z.boolean().optional(),
+  cacheTtlHours: z.number().int().min(1).max(720).optional(),
+  arxivMaxResults: z.number().int().min(1).max(20).optional(),
+  openAlexEmail: z.string().trim().email().or(z.literal('')).optional(),
+  providersEnabled: z.object({
+    arxiv: z.boolean().optional(),
+    semanticScholar: z.boolean().optional(),
+    openAlex: z.boolean().optional()
+  }).strict().optional(),
+  semanticScholarApiKey: z.string().max(4096).optional(),
+  clearSemanticScholarApiKey: z.boolean().optional()
+}).strict();
+
+const DEFAULT_STORED_ACADEMIC_CONFIG: StoredAcademicConfig = {
+  schemaVersion: 1,
   enabled: true,
   cacheTtlHours: 24,
   arxivMaxResults: 5,
-  defaultCourseAlignment: 'Global University Benchmark Syllabus (Adaptive)',
+  openAlexEmail: null,
   providersEnabled: {
     arxiv: true,
     semanticScholar: true,
-    openAlex: true,
+    openAlex: true
   },
+  credentials: {}
 };
 
-export function getAcademicConfig(): AcademicConfig {
-  return activeConfig;
+async function readStoredAcademicConfig(): Promise<StoredAcademicConfig> {
+  const persisted = await getSystemSettingsDoc(ACADEMIC_RESEARCH_CONFIG_DOC, true);
+
+  if (!persisted) {
+    // Persist the declared initial operating configuration. No in-memory
+    // fallback is used when Neon is unavailable.
+    await setSystemSettingsDoc(
+      ACADEMIC_RESEARCH_CONFIG_DOC,
+      DEFAULT_STORED_ACADEMIC_CONFIG,
+      false
+    );
+    return DEFAULT_STORED_ACADEMIC_CONFIG;
+  }
+
+  const parsed = StoredAcademicConfigSchema.safeParse(persisted);
+  if (!parsed.success) {
+    const invalidFields = parsed.error.issues
+      .map((issue) => issue.path.join('.'))
+      .filter(Boolean)
+      .join(', ');
+    throw new Error(
+      `Persisted academic research configuration is invalid. Invalid fields: ${invalidFields || 'document shape'}.`
+    );
+  }
+
+  return parsed.data;
 }
 
-export function updateAcademicConfig(newConfig: Partial<AcademicConfig>): AcademicConfig {
-  activeConfig = {
-    ...activeConfig,
-    ...newConfig,
-    providersEnabled: {
-      ...activeConfig.providersEnabled,
-      ...(newConfig.providersEnabled || {}),
-    },
+function toPublicAcademicConfig(stored: StoredAcademicConfig): AcademicConfigView {
+  return {
+    enabled: stored.enabled,
+    cacheTtlHours: stored.cacheTtlHours,
+    openAlexEmail: stored.openAlexEmail || undefined,
+    arxivMaxResults: stored.arxivMaxResults,
+    providersEnabled: { ...stored.providersEnabled },
+    semanticScholarApiKeyConfigured: Boolean(stored.credentials.semanticScholarApiKey)
   };
-  return activeConfig;
+}
+
+async function loadRuntimeAcademicConfig(): Promise<AcademicConfig> {
+  const stored = await readStoredAcademicConfig();
+  const encryptedKey = stored.credentials.semanticScholarApiKey;
+
+  return {
+    enabled: stored.enabled,
+    cacheTtlHours: stored.cacheTtlHours,
+    semanticScholarApiKey: encryptedKey
+      ? decryptAcademicCredential(encryptedKey)
+      : undefined,
+    openAlexEmail: stored.openAlexEmail || undefined,
+    arxivMaxResults: stored.arxivMaxResults,
+    providersEnabled: { ...stored.providersEnabled }
+  };
+}
+
+/** Reads the authoritative, persisted research configuration without exposing credentials. */
+export async function getAcademicConfig(): Promise<AcademicConfigView> {
+  return toPublicAcademicConfig(await readStoredAcademicConfig());
+}
+
+/** Validates and persists administrator changes to the authoritative Neon configuration. */
+export async function updateAcademicConfig(
+  newConfig: unknown
+): Promise<AcademicConfigView> {
+  const parsed = AcademicConfigUpdateSchema.safeParse(newConfig);
+  if (!parsed.success) {
+    const details = parsed.error.issues
+      .map((issue) => `${issue.path.join('.') || 'config'}: ${issue.message}`)
+      .join('; ');
+    throw new Error(`Invalid academic research configuration: ${details}`);
+  }
+
+  const updates = parsed.data;
+  if (updates.semanticScholarApiKey?.trim() && updates.clearSemanticScholarApiKey) {
+    throw new Error('A Semantic Scholar API key cannot be replaced and cleared in the same update.');
+  }
+
+  const current = await readStoredAcademicConfig();
+  const next: StoredAcademicConfig = {
+    ...current,
+    enabled: updates.enabled ?? current.enabled,
+    cacheTtlHours: updates.cacheTtlHours ?? current.cacheTtlHours,
+    arxivMaxResults: updates.arxivMaxResults ?? current.arxivMaxResults,
+    openAlexEmail: updates.openAlexEmail === undefined
+      ? current.openAlexEmail
+      : (updates.openAlexEmail || null),
+    providersEnabled: {
+      ...current.providersEnabled,
+      ...(updates.providersEnabled || {})
+    },
+    credentials: { ...current.credentials }
+  };
+
+  if (!Object.values(next.providersEnabled).some(Boolean)) {
+    throw new Error('At least one academic research provider must remain enabled.');
+  }
+
+  if (updates.clearSemanticScholarApiKey) {
+    delete next.credentials.semanticScholarApiKey;
+  } else if (updates.semanticScholarApiKey?.trim()) {
+    next.credentials.semanticScholarApiKey = encryptAcademicCredential(
+      updates.semanticScholarApiKey.trim()
+    );
+  }
+
+  await setSystemSettingsDoc(ACADEMIC_RESEARCH_CONFIG_DOC, next, false);
+  return toPublicAcademicConfig(next);
 }
 
 // Levenshtein distance for fuzzy title deduplication
@@ -105,7 +248,7 @@ function calculateRelevanceScore(paper: AcademicPaper, queryTerms: string[]): nu
 }
 
 // Check Neon PostgreSQL Cache (`system_config` key `academic_cache_${cacheKey}`)
-async function getCachedSearch(cacheKey: string): Promise<AcademicSearchResponse | null> {
+async function getCachedSearch(cacheKey: string, config: AcademicConfig): Promise<AcademicSearchResponse | null> {
   const pool = getPostgresPool();
   if (!pool) return null;
 
@@ -116,7 +259,7 @@ async function getCachedSearch(cacheKey: string): Promise<AcademicSearchResponse
       const cachedTime = new Date(data.cachedAt).getTime();
       const ageHours = (Date.now() - cachedTime) / (1000 * 60 * 60);
 
-      if (ageHours < activeConfig.cacheTtlHours) {
+      if (ageHours < config.cacheTtlHours) {
         return {
           ...data,
           cached: true,
@@ -187,13 +330,17 @@ export async function searchAcademicPapers(
 ): Promise<AcademicSearchResponse> {
   const startTime = Date.now();
   const parsed = SearchAcademicPapersInputSchema.parse(input);
-  const { query, fieldOfStudy, limit, courseCode } = parsed;
+  const { query, fieldOfStudy, limit } = parsed;
+  const config = await loadRuntimeAcademicConfig();
+  if (!config.enabled) {
+    throw new Error('Academic research is disabled in the persisted administrator configuration.');
+  }
 
   const normalizedQuery = `${query} ${fieldOfStudy || ''}`.trim().toLowerCase();
   const cacheKey = Buffer.from(normalizedQuery).toString('base64').slice(0, 64);
 
   // Check Cache
-  const cached = await getCachedSearch(cacheKey);
+  const cached = await getCachedSearch(cacheKey, config);
   if (cached) return cached;
 
   const providerBreakdown: Record<string, { count: number; latencyMs: number; status: 'ok' | 'error' }> = {};
@@ -202,7 +349,7 @@ export async function searchAcademicPapers(
   // Parallel Adapter Execution
   const tasks: Promise<void>[] = [];
 
-  if (activeConfig.providersEnabled.arxiv) {
+  if (config.providersEnabled.arxiv) {
     tasks.push(
       fetchFromArxiv(normalizedQuery, limit)
         .then(({ papers, latencyMs }) => {
@@ -216,9 +363,9 @@ export async function searchAcademicPapers(
     );
   }
 
-  if (activeConfig.providersEnabled.semanticScholar) {
+  if (config.providersEnabled.semanticScholar) {
     tasks.push(
-      fetchFromSemanticScholar(normalizedQuery, limit, activeConfig.semanticScholarApiKey)
+      fetchFromSemanticScholar(normalizedQuery, limit, config.semanticScholarApiKey)
         .then(({ papers, latencyMs }) => {
           providerBreakdown.semantic_scholar = { count: papers.length, latencyMs, status: 'ok' };
           allPapers.push(...papers);
@@ -230,9 +377,9 @@ export async function searchAcademicPapers(
     );
   }
 
-  if (activeConfig.providersEnabled.openAlex) {
+  if (config.providersEnabled.openAlex) {
     tasks.push(
-      fetchFromOpenAlex(normalizedQuery, limit, activeConfig.openAlexEmail)
+      fetchFromOpenAlex(normalizedQuery, limit, config.openAlexEmail)
         .then(({ papers, latencyMs }) => {
           providerBreakdown.openalex = { count: papers.length, latencyMs, status: 'ok' };
           allPapers.push(...papers);
@@ -269,12 +416,6 @@ export async function searchAcademicPapers(
 
     if (paper.doi) seenDois.add(paper.doi.toLowerCase());
 
-    // Tag Course Code Alignment
-    paper.syllabusTags = [
-      activeConfig.defaultCourseAlignment,
-      courseCode || `${(fieldOfStudy || query).slice(0, 3).toUpperCase()} 101`,
-    ];
-
     uniquePapers.push(paper);
   }
 
@@ -309,10 +450,11 @@ export async function searchAcademicPapers(
 // --- CITATION GENERATOR ---
 export async function getCitationAndAbstract(input: GetCitationInput): Promise<CitationResult> {
   const { identifier } = input;
+  const config = await loadRuntimeAcademicConfig();
   let paper: AcademicPaper | null = null;
 
   // Try direct lookup via Semantic Scholar
-  paper = await lookupPaperSemanticScholar(identifier, activeConfig.semanticScholarApiKey);
+  paper = await lookupPaperSemanticScholar(identifier, config.semanticScholarApiKey);
 
   // If not found, run live search
   if (!paper) {
@@ -380,6 +522,7 @@ export async function extractCanonicalDefinitions(
 
 // --- HEALTH CHECK FUNCTION ---
 export async function checkAcademicProvidersHealth(): Promise<AcademicProviderHealth[]> {
+  const config = await loadRuntimeAcademicConfig();
   const providers: Array<'arxiv' | 'semantic_scholar' | 'openalex'> = ['arxiv', 'semantic_scholar', 'openalex'];
   const results: AcademicProviderHealth[] = [];
 
@@ -389,9 +532,9 @@ export async function checkAcademicProvidersHealth(): Promise<AcademicProviderHe
       if (provider === 'arxiv') {
         await fetchFromArxiv('physics', 1);
       } else if (provider === 'semantic_scholar') {
-        await fetchFromSemanticScholar('mathematics', 1, activeConfig.semanticScholarApiKey);
+        await fetchFromSemanticScholar('mathematics', 1, config.semanticScholarApiKey);
       } else if (provider === 'openalex') {
-        await fetchFromOpenAlex('computer science', 1, activeConfig.openAlexEmail);
+        await fetchFromOpenAlex('computer science', 1, config.openAlexEmail);
       }
 
       results.push({

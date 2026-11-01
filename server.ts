@@ -10191,7 +10191,6 @@ app.post('/api/admin/broadcast-whatsapp', verifyAuth, async (req, res) => {
 
 
 // Academic Research & Syllabus Grounding MCP
-app.use('/api/academic', academicRouter);
 app.use('/api/admin/academic', academicRouter);
 
 // --- Vite Middleware (Dev) or Static Serving (Prod) ---
