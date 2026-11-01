@@ -139,7 +139,7 @@ const extractJSON = (text: string) => {
   }
 };
 
-const ensureArray = (data: any, fallback: any[] = []): any[] => {
+const ensureArray = (data: any): any[] => {
   if (Array.isArray(data)) return data;
   if (data && typeof data === 'object') {
     // Look for common keys like 'questions', 'quiz', 'data', 'flashcards', 'formulas'
@@ -165,7 +165,7 @@ const ensureArray = (data: any, fallback: any[] = []): any[] => {
        }
     }
   }
-  return fallback;
+  throw new Error('AI response did not contain a usable array of generated records.');
 };
 
 import { sanitizeLatex } from './aiCourseGenerator';
@@ -867,11 +867,13 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
 
     const response = await callAI(prompt, undefined, 'json', 1000, 'quiz', 'quiz');
     try {
-      const rawData = extractJSON(response.text || "{}");
+      if (typeof response?.text !== 'string' || !response.text.trim()) {
+        throw new Error('Quick-check generation returned no provider content.');
+      }
+      const rawData = extractJSON(response.text);
       const validated = safeParseAIResponse(QuickCheckSchema, rawData);
       return {
         ...validated,
-        id: validated.id || `quick-check-${subTopic.id}`,
         question: sanitizeLatex(validated.question),
         options: validated.options.map((opt: any) => sanitizeLatex(opt)),
         correctAnswer: sanitizeLatex(validated.correctAnswer),
@@ -891,7 +893,10 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
     Focus on the logic or a specific formula they should use. Be encouraging.`;
 
     const response = await callAI(prompt, undefined, undefined, undefined, 'standard', 'chat');
-    return response.text || "Try breaking the problem into smaller parts.";
+    if (typeof response?.text !== 'string' || !response.text.trim()) {
+      throw new Error('Hint generation returned no provider content.');
+    }
+    return response.text;
   },
 
   generateFlashcards: async (module: Module, subTopic?: SubTopic, numCards: number = 10, level?: string, department?: string): Promise<Flashcard[]> => {
@@ -931,7 +936,10 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
 
     const response = await callAI(prompt, undefined, 'json', 2000, 'standard', 'flashcard');
     try {
-      const rawData = extractJSON(response.text || "[]");
+      if (typeof response?.text !== 'string' || !response.text.trim()) {
+        throw new Error('Flashcard generation returned no provider content.');
+      }
+      const rawData = extractJSON(response.text);
       let dataToValidate: any = rawData;
       if (rawData && typeof rawData === 'object' && !Array.isArray(rawData) && rawData.flashcards) {
         // Already structured correctly
@@ -940,11 +948,7 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
         dataToValidate = { flashcards: arr };
       }
 
-      const validated = safeParseAIResponse(
-        FlashcardsResponseSchema,
-        dataToValidate,
-        { flashcards: [] }
-      );
+      const validated = safeParseAIResponse(FlashcardsResponseSchema, dataToValidate);
 
       const cards = validated.flashcards;
       
@@ -990,7 +994,10 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
 
     const response = await callAI(prompt, undefined, 'json', 2000, 'standard', 'flashcard');
     try {
-      const rawData = extractJSON(response.text || "[]");
+      if (typeof response?.text !== 'string' || !response.text.trim()) {
+        throw new Error('Flashcard generation returned no provider content.');
+      }
+      const rawData = extractJSON(response.text);
       let dataToValidate: any = rawData;
       if (rawData && typeof rawData === 'object' && !Array.isArray(rawData) && rawData.flashcards) {
         // Already structured correctly
@@ -999,11 +1006,7 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
         dataToValidate = { flashcards: arr };
       }
 
-      const validated = safeParseAIResponse(
-        FlashcardsResponseSchema,
-        dataToValidate,
-        { flashcards: [] }
-      );
+      const validated = safeParseAIResponse(FlashcardsResponseSchema, dataToValidate);
 
       const cards = validated.flashcards;
       
