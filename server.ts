@@ -6704,29 +6704,50 @@ app.get('/api/admin/ai-status', verifyAuth, async (req, res) => {
     }
 
     const stats: Record<string, any> = {
-      totalSparksConsumed: 0,
-      totalQuestions: 0,
-      averageMastery: 0,
-      popularCourse: 'N/A'
+      sourceStatus: 'unavailable',
+      totalSparksConsumed: null,
+      totalInteractions: null,
+      averageMastery: null,
+      popularCourse: null
     };
 
     const pool = getPostgresPool();
     if (pool) {
       try {
-        const [sparksRes, questionsRes, masteryRes, popularRes] = await Promise.all([
-          pool.query(`SELECT COALESCE(SUM(ABS(delta)), 0)::bigint AS consumed FROM spark_transactions_ledger WHERE delta < 0 AND type = 'SETTLE'`).catch(() => ({ rows: [{ consumed: 0 }] })),
-          pool.query(`SELECT COUNT(*)::int AS count FROM chat_analytics`).catch(() => ({ rows: [{ count: 0 }] })),
-          pool.query(`SELECT COALESCE(ROUND(AVG(score_pct)), 0)::int AS avg_score FROM user_quiz_attempts`).catch(() => ({ rows: [{ avg_score: 0 }] })),
-          pool.query(`SELECT course_id, COUNT(*)::int AS cnt FROM user_course_progress GROUP BY course_id ORDER BY cnt DESC LIMIT 1`).catch(() => ({ rows: [] }))
+        const [sparksRes, interactionsRes, masteryRes, popularRes] = await Promise.all([
+          pool.query(`SELECT COALESCE(SUM(ABS(delta)), 0)::bigint AS consumed
+                      FROM spark_transactions_ledger
+                      WHERE delta < 0 AND type = 'SETTLE'`),
+          pool.query(`SELECT COUNT(*)::int AS count FROM chat_analytics`),
+          pool.query(`SELECT ROUND(AVG(score_pct))::int AS avg_score FROM user_quiz_attempts`),
+          pool.query(`SELECT course_id, COUNT(*)::int AS cnt
+                      FROM user_course_progress
+                      GROUP BY course_id
+                      ORDER BY cnt DESC
+                      LIMIT 1`)
         ]);
-        stats.totalSparksConsumed = Number(sparksRes.rows[0]?.consumed || 0);
-        stats.totalQuestions = Number(questionsRes.rows[0]?.count || 0);
-        stats.averageMastery = Number(masteryRes.rows[0]?.avg_score || 0);
-        if (popularRes.rows[0]?.course_id) {
-          stats.popularCourse = String(popularRes.rows[0].course_id);
+
+        const consumed = sparksRes.rows[0]?.consumed;
+        const interactions = interactionsRes.rows[0]?.count;
+        const averageScore = masteryRes.rows[0]?.avg_score;
+        const popularCourse = popularRes.rows[0]?.course_id;
+
+        if (consumed === null || consumed === undefined ||
+            interactions === null || interactions === undefined) {
+          throw new Error('Required aggregate rows were not returned by the live analytics queries.');
         }
+
+        stats.sourceStatus = 'verified';
+        stats.totalSparksConsumed = Number(consumed);
+        stats.totalInteractions = Number(interactions);
+        stats.averageMastery = averageScore === null || averageScore === undefined
+          ? null
+          : Number(averageScore);
+        stats.popularCourse = typeof popularCourse === 'string' && popularCourse.trim()
+          ? popularCourse
+          : null;
       } catch (statsErr: any) {
-        console.warn('[ai-status] Live stats query warning:', statsErr.message);
+        logger.error({ error: statsErr?.message || String(statsErr) }, '[ai-status] Live stats could not be verified');
       }
     }
 
