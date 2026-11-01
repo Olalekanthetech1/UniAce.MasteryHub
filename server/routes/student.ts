@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { getPostgresPool } from '../postgresPool';
 import { logger } from '../logger';
 import { arenaRealtime } from '../arenaRealtime';
+import { validateRecordedHumanReplay } from '../services/arenaReplay';
 
 // In-memory UID-keyed cache for bootstrap payloads (60-second TTL)
 interface BootstrapCacheEntry {
@@ -1121,27 +1122,56 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
   const fetchWaitingArenaBattles = async (pool: any) => {
     await pool.query(
       `DELETE FROM arena_battles WHERE status = 'waiting' AND created_at < NOW() - INTERVAL '10 minutes'`
-    ).catch(() => {});
+    );
 
     const waitingRes = await pool.query(
       `SELECT id, topic, created_at, data
        FROM arena_battles
        WHERE status = 'waiting'
+         AND data->'player1'->>'opponentType' = 'human'
+         AND jsonb_typeof(data->'questions') = 'array'
+         AND jsonb_array_length(data->'questions') > 0
        ORDER BY created_at ASC
        LIMIT 20`
     );
-    return waitingRes.rows.map((r: any) => ({
-      id: r.id,
-      topicId: r.topic,
-      hostUid: r.data?.player1?.uid || '',
-      hostName: r.data?.player1?.name || 'Scholar',
-      hostAvatar: r.data?.player1?.avatar || '',
-      questionCount: Array.isArray(r.data?.questions) ? r.data.questions.length : 5,
-      createdAt: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString()
-    }));
+
+    return waitingRes.rows.flatMap((row: any) => {
+      const host = row.data?.player1;
+      const questions = row.data?.questions;
+      const createdAt = row.created_at ? new Date(row.created_at) : null;
+      const hostName = typeof host?.name === 'string' ? host.name.trim() : '';
+      const hostUid = typeof host?.uid === 'string' ? host.uid.trim() : '';
+      const topicId = typeof row.topic === 'string' ? row.topic.trim() : '';
+
+      if (
+        typeof row.id !== 'string' ||
+        !topicId ||
+        !hostUid ||
+        !hostName ||
+        ['gladiator', 'scholar'].includes(hostName.toLowerCase()) ||
+        !createdAt ||
+        !Number.isFinite(createdAt.getTime()) ||
+        !Array.isArray(questions) ||
+        questions.length === 0
+      ) {
+        return [];
+      }
+
+      return [{
+        id: row.id,
+        topicId,
+        hostUid,
+        hostName,
+        hostAvatar: typeof host.avatar === 'string' && host.avatar.trim() ? host.avatar : '',
+        questionCount: questions.length,
+        createdAt: createdAt.toISOString()
+      }];
+    });
   };
 
   /**
+   * Helper: Execute a server-scheduled opponent step from a validated recorded human replay.
+   */  /**
    * Helper: Execute a server-scheduled opponent step (for recorded Ghost Replay or Telemetry-Calibrated Challenger)
    */
   const executeServerScheduledOpponentMove = async (
@@ -1152,7 +1182,7 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
     elapsedMs: number
   ) => {
     const pool = getPostgresPool();
-    if (!pool) return;
+    if (!pool) throw new Error('PostgreSQL is unavailable; recorded replay step was not executed.');
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -1203,7 +1233,8 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
       data.player1 = p1;
       data.player2 = p2;
 
-      const totalQuestions = Array.isArray(data.questions) ? data.questions.length : 5;
+      const totalQuestions = Array.isArray(data.questions) ? data.questions.length : 0;
+      if (totalQuestions === 0) throw new Error('Recorded replay has no verified question set.');
       const bothFinishedQuestions =
         p1.currentQuestionIndex >= totalQuestions && p2.currentQuestionIndex >= totalQuestions;
 
@@ -1257,170 +1288,45 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
    * 2. user_spaced_repetition (SRS retention rate for that course)
    * 3. arena_battles (past win/loss ratio for that course)
    */
-  const computeAdaptiveChallengerTelemetry = async (db: any, uid: string, topicId: string) => {
-    const cleanTopic = String(topicId || '').trim();
-    const [quizStatsRes, progressStatsRes, srsStatsRes, courseBattlesRes, userStatsRes] = await Promise.all([
-      db.query(
-        `SELECT COUNT(*)::int AS attempts_count,
-                AVG(score_pct)::float AS avg_score,
-                COALESCE(AVG(time_spent_seconds), 0)::float AS avg_time_sec
-         FROM user_quiz_attempts
-         WHERE uid = $1 AND ($2 = '' OR course_id = $2)`,
-        [uid, cleanTopic]
-      ),
-      db.query(
-        `SELECT COALESCE(completed_lessons_count, 0)::int AS lessons_done,
-                COALESCE(completed_modules_count, 0)::int AS modules_done,
-                COALESCE(total_study_seconds, 0)::int AS study_sec
-         FROM user_course_progress
-         WHERE uid = $1 AND course_id = $2`,
-        [uid, cleanTopic]
-      ),
-      db.query(
-        `SELECT COUNT(*)::int AS total_cards,
-                COUNT(*) FILTER (WHERE box >= 2 OR (review_count > 0 AND ease_factor >= 2.3))::int AS retained_cards,
-                COALESCE(AVG(ease_factor), 2.5)::float AS avg_ease
-         FROM user_spaced_repetition
-         WHERE uid = $1 AND ($2 = '' OR course_id = $2)`,
-        [uid, cleanTopic]
-      ),
-      db.query(
-        `SELECT COUNT(*)::int AS total_battles,
-                COUNT(*) FILTER (WHERE winner_id = $1)::int AS wins,
-                COUNT(*) FILTER (WHERE winner_id IS NOT NULL AND winner_id != 'draw' AND winner_id != $1)::int AS losses
-         FROM arena_battles
-         WHERE status = 'finished'
-           AND ($2 = '' OR topic = $2)
-           AND (data->'player1'->>'uid' = $1 OR data->'player2'->>'uid' = $1)`,
-        [uid, cleanTopic]
-      ),
-      db.query(`SELECT learning_profile FROM users WHERE uid = $1`, [uid])
-    ]);
+  const findVerifiedGhostRecording = async (db: any, topicId: string, excludedBattleId?: string) => {
+    const candidates = await db.query(
+      `SELECT id, updated_at, data
+       FROM arena_battles
+       WHERE status = 'finished'
+         AND topic = $1
+         AND ($2::text IS NULL OR id <> $2)
+         AND data->>'opponentType' = 'human'
+         AND data->'player1'->>'opponentType' = 'human'
+         AND data->'player2'->>'opponentType' = 'human'
+         AND CASE
+           WHEN jsonb_typeof(data->'player1'->'actionLog') = 'array'
+           THEN jsonb_array_length(data->'player1'->'actionLog') > 0
+           ELSE FALSE
+         END OR FALSE
+         AND CASE
+           WHEN jsonb_typeof(data->'player2'->'actionLog') = 'array'
+           THEN jsonb_array_length(data->'player2'->'actionLog') > 0
+           ELSE FALSE
+         END OR FALSE
+       ORDER BY updated_at DESC`,
+      [topicId, excludedBattleId || null]
+    );
 
-    const attemptsCount = Number(quizStatsRes.rows[0]?.attempts_count ?? 0);
-    const rawQuizAvg = quizStatsRes.rows[0]?.avg_score;
-    const lp = userStatsRes.rows[0]?.learning_profile || {};
-    const profileCourseMastery =
-      cleanTopic && lp.mastery && typeof lp.mastery[cleanTopic] === 'number'
-        ? Number(lp.mastery[cleanTopic])
-        : null;
-
-    const quizScorePct: number | null =
-      attemptsCount > 0 && rawQuizAvg !== null && rawQuizAvg !== undefined
-        ? Math.round(Number(rawQuizAvg))
-        : profileCourseMastery !== null
-        ? Math.round(profileCourseMastery)
-        : null;
-
-    const lessonsDone = Number(progressStatsRes.rows[0]?.lessons_done ?? 0);
-    const studySeconds = Number(progressStatsRes.rows[0]?.study_sec ?? 0);
-
-    const srsCardsSampled = Number(srsStatsRes.rows[0]?.total_cards ?? 0);
-    const srsCardsRetained = Number(srsStatsRes.rows[0]?.retained_cards ?? 0);
-    const srsRetentionPct: number | null =
-      srsCardsSampled > 0 ? Math.round((srsCardsRetained / srsCardsSampled) * 100) : null;
-
-    const courseWins = Number(courseBattlesRes.rows[0]?.wins ?? 0);
-    const courseLosses = Number(courseBattlesRes.rows[0]?.losses ?? 0);
-    const courseBattlesSampled = Number(courseBattlesRes.rows[0]?.total_battles ?? 0);
-    const courseWinLossDecided = courseWins + courseLosses;
-    const courseWinRatePct: number | null =
-      courseWinLossDecided > 0 ? Math.round((courseWins / courseWinLossDecided) * 100) : null;
-
-    // Combine verified empirical signals dynamically
-    let weightedSum = 0;
-    let totalWeight = 0;
-    if (quizScorePct !== null) {
-      weightedSum += quizScorePct * 0.45;
-      totalWeight += 0.45;
+    for (const row of candidates.rows) {
+      const verified = validateRecordedHumanReplay(row);
+      if (verified) return verified;
     }
-    if (srsRetentionPct !== null) {
-      weightedSum += srsRetentionPct * 0.30;
-      totalWeight += 0.30;
-    }
-    if (courseWinRatePct !== null) {
-      weightedSum += courseWinRatePct * 0.25;
-      totalWeight += 0.25;
-    }
-
-    let calibratedMasteryPct = 0;
-    if (totalWeight > 0) {
-      calibratedMasteryPct = Math.round(weightedSum / totalWeight);
-    } else if (lessonsDone > 0) {
-      calibratedMasteryPct = Math.min(45, lessonsDone * 10);
-    } else {
-      calibratedMasteryPct = 0;
-    }
-    calibratedMasteryPct = Math.max(0, Math.min(100, calibratedMasteryPct));
-
-    // Calibrate response speed & accuracy strictly by Course Mastery Tier:
-    // - Beginner (<50% course mastery): ~12–15 seconds per question (12000–15000ms)
-    // - Intermediate (50–80% course mastery): ~9–11.5 seconds per question (9000–11500ms)
-    // - Advanced (>80% course mastery): ~6–8 seconds per question (6000–8000ms) with high accuracy
-    let tier: 'beginner' | 'intermediate' | 'advanced' = 'beginner';
-    let tierLabel = 'Beginner (<50% Course Mastery)';
-    let pacingRangeLabel = '12–15s / question';
-    let minStepMs = 12000;
-    let maxStepMs = 15000;
-    let baseStepMs = 13500;
-    let targetAccuracyPct = 58;
-
-    if (calibratedMasteryPct > 80) {
-      tier = 'advanced';
-      tierLabel = 'Advanced (>80% Course Mastery)';
-      pacingRangeLabel = '6–8s / question';
-      minStepMs = 6000;
-      maxStepMs = 8000;
-      const ratio = Math.min(1, Math.max(0, (calibratedMasteryPct - 80) / 20));
-      baseStepMs = Math.round(8000 - ratio * 2000);
-      targetAccuracyPct = 88;
-    } else if (calibratedMasteryPct >= 50) {
-      tier = 'intermediate';
-      tierLabel = 'Intermediate (50–80% Course Mastery)';
-      pacingRangeLabel = '9–11.5s / question';
-      minStepMs = 9000;
-      maxStepMs = 11500;
-      const ratio = Math.min(1, Math.max(0, (calibratedMasteryPct - 50) / 30));
-      baseStepMs = Math.round(11500 - ratio * 2500);
-      targetAccuracyPct = 74;
-    } else {
-      tier = 'beginner';
-      tierLabel = 'Beginner (<50% Course Mastery)';
-      pacingRangeLabel = '12–15s / question';
-      minStepMs = 12000;
-      maxStepMs = 15000;
-      const ratio = Math.min(1, Math.max(0, calibratedMasteryPct / 49));
-      baseStepMs = Math.round(15000 - ratio * 3000);
-      targetAccuracyPct = 58;
-    }
-
-    return {
-      calibratedMasteryPct,
-      tier,
-      tierLabel,
-      pacingRangeLabel,
-      minStepMs,
-      maxStepMs,
-      baseStepMs,
-      targetAccuracyPct,
-      quizScorePct,
-      attemptsSampled: attemptsCount,
-      srsRetentionPct,
-      srsCardsSampled,
-      srsCardsRetained,
-      courseWinRatePct,
-      courseWins,
-      courseLosses,
-      arenaBattlesSampled: courseBattlesSampled,
-      lessonsCompleted: lessonsDone,
-      studySeconds
-    };
+    return null;
   };
 
   /**
    * GET /api/arena/lobby-telemetry
    * Real-time Arena lobby presence, open waiting queues across courses, recorded historical battle availability,
    * and live Adaptive AI Challenger ([AI Challenger]) telemetry calibration for the selected course
+   */
+  /**
+   * GET /api/arena/lobby-telemetry
+   * Returns live presence, valid waiting human matches, and verified historical replay availability.
    */
   app.get('/api/arena/lobby-telemetry', verifyAuth, async (req, res) => {
     try {
@@ -1429,41 +1335,9 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
 
       const user = (req as any).user;
       const topicId = typeof req.query.topicId === 'string' ? req.query.topicId.trim() : '';
-      const [waitingBattles, challengerTelemetry] = await Promise.all([
-        fetchWaitingArenaBattles(pool),
-        computeAdaptiveChallengerTelemetry(pool, user.uid, topicId)
-      ]);
+      const waitingBattles = await fetchWaitingArenaBattles(pool);
       const presence = arenaRealtime.getOnlinePresenceSummary();
-
-      let historicalGhostCount = 0;
-      let latestGhostMeta: { recordedAt: string; playerName: string; battleId: string } | null = null;
-
-      if (topicId) {
-        const ghostRes = await pool.query(
-          `SELECT id, updated_at, data
-           FROM arena_battles
-           WHERE status = 'finished'
-             AND topic = $1
-             AND (
-               jsonb_array_length(COALESCE(data->'player1'->'actionLog', '[]'::jsonb)) > 0
-               OR jsonb_array_length(COALESCE(data->'player2'->'actionLog', '[]'::jsonb)) > 0
-             )
-           ORDER BY updated_at DESC
-           LIMIT 10`,
-          [topicId]
-        );
-        historicalGhostCount = ghostRes.rowCount ?? 0;
-        if (historicalGhostCount > 0) {
-          const top = ghostRes.rows[0];
-          const p1Log = Array.isArray(top.data?.player1?.actionLog) ? top.data.player1.actionLog : [];
-          const recordedPlayer = p1Log.length > 0 ? top.data.player1 : top.data?.player2;
-          latestGhostMeta = {
-            battleId: top.id,
-            playerName: recordedPlayer?.name || 'Scholar',
-            recordedAt: top.updated_at ? new Date(top.updated_at).toISOString() : new Date().toISOString()
-          };
-        }
-      }
+      const latestGhost = topicId ? await findVerifiedGhostRecording(pool, topicId) : null;
 
       return res.json({
         serverNow: Date.now(),
@@ -1471,19 +1345,21 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
         onlineCount: presence.onlineCount,
         onlineUsers: presence.users,
         waitingBattles,
-        historicalGhostCount,
-        latestGhostMeta,
-        challengerTelemetry
+        ghostReplayAvailable: Boolean(latestGhost),
+        latestGhostMeta: latestGhost
+          ? {
+              battleId: latestGhost.id,
+              playerName: latestGhost.sourcePlayer.name,
+              recordedAt: latestGhost.recordedAt
+            }
+          : null
       });
     } catch (err: any) {
-      return res.status(500).json({ error: err.message || 'Failed to fetch lobby telemetry' });
+      logger.error({ uid: (req as any).user?.uid, error: err?.message || String(err) }, '[Arena] Failed to resolve live lobby telemetry');
+      return res.status(503).json({ error: 'Arena lobby telemetry could not be verified from live records.' });
     }
   });
 
-  /**
-   * POST /api/arena/matchmake
-   * Atomic matchmaking in Neon PostgreSQL with real-time WebSocket room broadcast and server clock initialization
-   */
   app.post('/api/arena/matchmake', verifyAuth, async (req, res) => {
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database unavailable' });
@@ -1642,15 +1518,26 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
    * - mode === 'ghost_replay': Replays a real historical student recording from Neon PostgreSQL at exact recorded timestamps.
    * - mode === 'ai_challenger': Launches a transparent Adaptive AI Challenger ([AI Challenger]) calibrated from the student's live PostgreSQL telemetry.
    */
+  /**
+   * POST /api/arena/battles/:battleId/spar
+   * Starts only a validated replay of real historical human answers.
+   * Synthetic or algorithmically simulated challengers are not available.
+   */
   app.post('/api/arena/battles/:battleId/spar', verifyAuth, async (req, res) => {
+    if (req.body?.mode !== 'ghost_replay') {
+      return res.status(409).json({
+        error: 'Only verified historical human replays are available. Synthetic challenger responses are disabled.',
+        code: 'SYNTHETIC_CHALLENGER_DISABLED'
+      });
+    }
+
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database unavailable' });
 
     const user = (req as any).user;
     const { battleId } = req.params;
-    const { mode = 'ai_challenger' } = req.body || {};
-
     const client = await pool.connect();
+
     try {
       await client.query('BEGIN');
       const existingRes = await client.query(
@@ -1663,176 +1550,75 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
       }
 
       const battleData = { ...(existingRes.rows[0].data || {}), id: battleId };
+      if (battleData.player1?.uid !== user.uid) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ error: 'Only the owner of this waiting battle can launch its replay.' });
+      }
+
       if (battleData.status !== 'waiting') {
         await client.query('COMMIT');
         return res.json({ success: true, battle: battleData, serverNow: Date.now() });
       }
 
-      const topicId = existingRes.rows[0].topic || battleData.topicId;
-      const nowMs = Date.now();
-      const nowIso = new Date(nowMs).toISOString();
-      let durationSeconds = 60;
+      const topicId = typeof existingRes.rows[0].topic === 'string'
+        ? existingRes.rows[0].topic.trim()
+        : '';
+      if (!topicId) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'The waiting battle has no verified course reference.' });
+      }
 
-      const scheduledActions: Array<{ delayMs: number; execute: () => Promise<void> }> = [];
-
-      if (mode === 'ghost_replay') {
-        // Query Neon PostgreSQL for a genuine recorded human battle with a non-empty actionLog
-        const ghostRes = await client.query(
-          `SELECT id, updated_at, data
-           FROM arena_battles
-           WHERE status = 'finished'
-             AND topic = $1
-             AND id != $2
-             AND (
-               jsonb_array_length(COALESCE(data->'player1'->'actionLog', '[]'::jsonb)) > 0
-               OR jsonb_array_length(COALESCE(data->'player2'->'actionLog', '[]'::jsonb)) > 0
-             )
-           ORDER BY updated_at DESC
-           LIMIT 5`,
-          [topicId, battleId]
-        );
-
-        if ((ghostRes.rowCount ?? 0) === 0) {
-          await client.query('ROLLBACK');
-          return res.status(404).json({
-            error: 'No recorded human battle replay exists for this course yet in Neon PostgreSQL.',
-            code: 'NO_GHOST_RECORDING'
-          });
-        }
-
-        const chosenRow = ghostRes.rows[0];
-        const histData = chosenRow.data || {};
-        const p1Log = Array.isArray(histData.player1?.actionLog) ? histData.player1.actionLog : [];
-        const p2Log = Array.isArray(histData.player2?.actionLog) ? histData.player2.actionLog : [];
-        const recordedSource = p1Log.length >= p2Log.length ? histData.player1 : histData.player2;
-        const recordedActions: any[] = Array.isArray(recordedSource?.actionLog) ? recordedSource.actionLog : [];
-        const recordedQuestions = Array.isArray(histData.questions) && histData.questions.length > 0
-          ? histData.questions
-          : battleData.questions;
-
-        battleData.questions = recordedQuestions;
-        battleData.opponentType = 'ghost_replay';
-        battleData.recordedFromBattleId = chosenRow.id;
-        battleData.recordedBattleTimestamp = chosenRow.updated_at
-          ? new Date(chosenRow.updated_at).toISOString()
-          : histData.finishedAt || nowIso;
-
-        battleData.player2 = {
-          uid: `ghost_${recordedSource?.uid || 'scholar'}_${chosenRow.id.slice(-4)}`,
-          name: `${recordedSource?.name || 'Scholar'} [Ghost Replay]`,
-          avatar: recordedSource?.avatar || '',
-          score: 0,
-          currentQuestionIndex: 0,
-          health: 100,
-          status: 'playing',
-          opponentType: 'ghost_replay',
-          recordedFromBattleId: chosenRow.id,
-          recordedAt: battleData.recordedBattleTimestamp,
-          actionLog: []
-        };
-
-        let cumulativeFallbackMs = 0;
-        recordedActions.forEach((act: any, idx: number) => {
-          const rawElapsed = Number(act.elapsedMs);
-          const delayMs = Number.isFinite(rawElapsed) && rawElapsed > 500
-            ? Math.min(durationSeconds * 1000 - 1000, rawElapsed)
-            : (cumulativeFallbackMs += 8000);
-
-          scheduledActions.push({
-            delayMs,
-            execute: async () => {
-              await executeServerScheduledOpponentMove(
-                battleId,
-                typeof act.questionIndex === 'number' ? act.questionIndex : idx,
-                String(act.selectedOption || ''),
-                Boolean(act.correct),
-                delayMs
-              );
-            }
-          });
-        });
-      } else {
-        // mode === 'ai_challenger': Calibrate strictly from the student's live PostgreSQL telemetry
-        // (user_course_progress/user_quiz_attempts, user_spaced_repetition SRS retention, and arena_battles course W/L)
-        const telemetry = await computeAdaptiveChallengerTelemetry(client, user.uid, topicId);
-
-        const questions: any[] = Array.isArray(battleData.questions) ? battleData.questions : [];
-        // Ensure Beginner matches (12–15s per question) have sufficient timer headroom (90s)
-        durationSeconds = telemetry.tier === 'beginner'
-          ? Math.max(85, Math.ceil((questions.length * telemetry.maxStepMs) / 1000) + 10)
-          : telemetry.tier === 'intermediate'
-          ? 70
-          : 60;
-
-        battleData.opponentType = 'ai_challenger';
-        battleData.calibrationTelemetry = telemetry;
-
-        battleData.player2 = {
-          uid: `ai_challenger_${topicId}`,
-          name: `[AI Challenger] Sparring Partner (${telemetry.calibratedMasteryPct}% Mastery)`,
-          avatar: '',
-          score: 0,
-          currentQuestionIndex: 0,
-          health: 100,
-          status: 'playing',
-          opponentType: 'ai_challenger',
-          calibratedMasteryPct: telemetry.calibratedMasteryPct,
-          actionLog: []
-        };
-
-        let cumulativeMs = 0;
-        questions.forEach((q: any, idx: number) => {
-          const difficulty = Number(q?.difficulty ?? 3);
-          // Clamp per-question delay strictly within the calibrated tier bounds:
-          // Beginner (<50%): 12000–15000ms (12–15s)
-          // Intermediate (50–80%): 9000–11500ms (9–11.5s)
-          // Advanced (>80%): 6000–8000ms (6–8s)
-          const rawStepMs = telemetry.baseStepMs + (difficulty - 3) * 500 + ((idx % 2 === 0) ? -400 : 400);
-          const stepDelayMs = Math.max(
-            telemetry.minStepMs,
-            Math.min(telemetry.maxStepMs, rawStepMs)
-          );
-          cumulativeMs += stepDelayMs;
-
-          // Deterministic accuracy calibrated to tier targetAccuracyPct & question difficulty
-          const effectiveThreshold = 100 - telemetry.targetAccuracyPct + (difficulty - 3) * 6;
-          const deterministicScore = ((idx * 37 + difficulty * 19 + telemetry.calibratedMasteryPct) % 100);
-          const willAnswerCorrectly =
-            telemetry.tier === 'advanced'
-              ? idx !== 3 || telemetry.calibratedMasteryPct >= 92 // ~80-100% accuracy on 5 questions
-              : telemetry.tier === 'intermediate'
-              ? idx % 3 !== 2 // ~67-80% accuracy
-              : deterministicScore >= effectiveThreshold; // ~60% accuracy for beginner
-
-          const options: string[] = Array.isArray(q?.options) ? q.options : [];
-          const wrongOption = options.find((opt) => opt !== q?.correctAnswer) || '';
-          const chosenOption = willAnswerCorrectly ? String(q?.correctAnswer || '') : wrongOption;
-          const scheduledElapsed = cumulativeMs;
-
-          if (scheduledElapsed < durationSeconds * 1000 - 500) {
-            scheduledActions.push({
-              delayMs: scheduledElapsed,
-              execute: async () => {
-                await executeServerScheduledOpponentMove(
-                  battleId,
-                  idx,
-                  chosenOption,
-                  willAnswerCorrectly,
-                  scheduledElapsed
-                );
-              }
-            });
-          }
+      const replay = await findVerifiedGhostRecording(client, topicId, battleId);
+      if (!replay) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({
+          error: 'No complete, internally consistent human recording is available for this course.',
+          code: 'NO_VERIFIED_GHOST_RECORDING'
         });
       }
 
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+      const durationSeconds = replay.durationSeconds;
       const expiresAtEpochMs = nowMs + durationSeconds * 1000;
       const expiresAt = new Date(expiresAtEpochMs).toISOString();
+
+      const scheduledActions: Array<{ delayMs: number; execute: () => Promise<void> }> =
+        replay.actions.map(action => ({
+          delayMs: action.elapsedMs,
+          execute: async () => {
+            await executeServerScheduledOpponentMove(
+              battleId,
+              action.questionIndex,
+              action.selectedOption,
+              action.correct,
+              action.elapsedMs
+            );
+          }
+        }));
+
+      battleData.questions = replay.questions;
+      battleData.opponentType = 'ghost_replay';
+      battleData.recordedFromBattleId = replay.id;
+      battleData.recordedBattleTimestamp = replay.recordedAt;
+      battleData.player2 = {
+        uid: `ghost_replay:${replay.id}:${replay.sourcePlayer.uid}`,
+        name: `${replay.sourcePlayer.name} (Recorded Replay)`,
+        avatar: replay.sourcePlayer.avatar || '',
+        score: 0,
+        currentQuestionIndex: 0,
+        health: 100,
+        status: 'playing',
+        opponentType: 'ghost_replay',
+        recordedFromBattleId: replay.id,
+        recordedAt: replay.recordedAt,
+        actionLog: []
+      };
 
       battleData.player1 = {
         ...battleData.player1,
         status: 'playing',
-        actionLog: Array.isArray(battleData.player1?.actionLog) ? battleData.player1.actionLog : []
+        actionLog: Array.isArray(battleData.player1.actionLog) ? battleData.player1.actionLog : []
       };
       battleData.status = 'active';
       battleData.startedAt = nowIso;
@@ -1845,7 +1631,7 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
         `UPDATE arena_battles
          SET status = 'active', questions = $1::jsonb, data = $2::jsonb, updated_at = NOW()
          WHERE id = $3`,
-        [JSON.stringify(battleData.questions || []), JSON.stringify(battleData), battleId]
+        [JSON.stringify(replay.questions), JSON.stringify(battleData), battleId]
       );
       await client.query('COMMIT');
 
@@ -1854,23 +1640,16 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
       const remainingWaiting = await fetchWaitingArenaBattles(pool);
       arenaRealtime.broadcastLobbyQueueUpdate(remainingWaiting);
 
-      return res.json({
-        success: true,
-        battle: battleData,
-        serverNow: Date.now()
-      });
+      return res.json({ success: true, battle: battleData, serverNow: Date.now() });
     } catch (err: any) {
       await client.query('ROLLBACK').catch(() => {});
-      return res.status(500).json({ error: err.message || 'Failed to launch sparring match' });
+      logger.error({ battleId, uid: user.uid, error: err?.message || String(err) }, '[Arena] Failed to launch verified replay');
+      return res.status(500).json({ error: 'The verified replay could not be started.' });
     } finally {
       client.release();
     }
   });
 
-  /**
-   * POST /api/arena/battles/:battleId/answer
-   * Server-authoritative answer submission & real-time timestamped combat resolution
-   */
   app.post('/api/arena/battles/:battleId/answer', verifyAuth, async (req, res) => {
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database unavailable' });
@@ -2021,16 +1800,23 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
     }
   });
 
-  app.get('/api/arena/battles/:battleId', verifyAuth, async (req, res) => {
+  app.get('/api/arena/battles/:battleId', verifyAuth, async (req: any, res) => {
     try {
       const pool = getPostgresPool();
-      if (!pool) return res.status(404).json({ error: 'Battle not found' });
+      if (!pool) return res.status(503).json({ error: 'Database unavailable' });
       const battleId = req.params.battleId;
       const result = await pool.query(`SELECT id, data FROM arena_battles WHERE id = $1`, [battleId]);
       if ((result.rowCount ?? 0) === 0) {
         return res.status(404).json({ error: 'Battle not found' });
       }
-      let battle = { ...result.rows[0].data, id: result.rows[0].id };
+
+      const stored = result.rows[0].data || {};
+      const uid = req.user?.uid;
+      if (stored.player1?.uid !== uid && stored.player2?.uid !== uid) {
+        return res.status(403).json({ error: 'Only battle participants can read this battle.' });
+      }
+
+      let battle = { ...stored, id: result.rows[0].id };
       const nowMs = Date.now();
       if (battle.status === 'active' && battle.expiresAtEpochMs && nowMs >= battle.expiresAtEpochMs) {
         const settled = await arenaRealtime.settleExpiredBattle(battleId, nowMs);
@@ -2038,81 +1824,57 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
       }
       return res.json({ battle, serverNow: nowMs });
     } catch (err: any) {
-      return res.status(500).json({ error: err.message || 'Failed to load battle' });
+      logger.error({ uid: req.user?.uid, battleId: req.params.battleId, error: err?.message || String(err) }, '[Arena] Failed to load battle');
+      return res.status(500).json({ error: 'Failed to load battle.' });
     }
   });
 
-  app.patch('/api/arena/battles/:battleId', verifyAuth, async (req, res) => {
+  app.patch('/api/arena/battles/:battleId', verifyAuth, async (_req, res) => {
+    return res.status(405).json({
+      error: 'Battle state is server-owned. Submit answers through the authenticated answer endpoint.',
+      code: 'BATTLE_STATE_SERVER_OWNED'
+    });
+  });
+
+  app.delete('/api/arena/battles/:battleId', verifyAuth, async (req: any, res) => {
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database unavailable' });
-    const battleId = req.params.battleId;
-    const user = (req as any).user;
 
-    const client = await pool.connect();
+    const battleId = req.params.battleId;
+    const uid = req.user?.uid;
+
     try {
-      await client.query('BEGIN');
-      const existing = await client.query(`SELECT data FROM arena_battles WHERE id = $1 FOR UPDATE`, [battleId]);
+      const existing = await pool.query(
+        `SELECT status, data FROM arena_battles WHERE id = $1`,
+        [battleId]
+      );
       if ((existing.rowCount ?? 0) === 0) {
-        await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Battle not found' });
       }
 
-      const data = { ...(existing.rows[0].data || {}), id: battleId };
-      const updates = req.body || {};
-      for (const [k, v] of Object.entries(updates)) {
-        if (k.includes('.')) {
-          const [parentKey, childKey] = k.split('.');
-          data[parentKey] = { ...(data[parentKey] || {}), [childKey]: v };
-        } else {
-          data[k] = v;
-        }
+      const data = existing.rows[0].data || {};
+      if (data.player1?.uid !== uid && data.player2?.uid !== uid) {
+        return res.status(403).json({ error: 'Only battle participants can delete this battle.' });
+      }
+      if (existing.rows[0].status !== 'waiting') {
+        return res.status(409).json({ error: 'Only a waiting battle can be cancelled.' });
       }
 
-      if (data.status === 'finished' && !data.statsSettled) {
-        data.finishedAt = data.finishedAt || new Date().toISOString();
-        data.finishedAtEpochMs = data.finishedAtEpochMs || Date.now();
-        arenaRealtime.clearBattleSchedule(battleId);
-        await arenaRealtime.settlePlayersArenaStatsInTx(client, data);
-        data.statsSettled = true;
-        invalidateBootstrapCache(user.uid);
+      const deleted = await pool.query(
+        `DELETE FROM arena_battles WHERE id = $1 AND status = 'waiting' RETURNING id`,
+        [battleId]
+      );
+      if ((deleted.rowCount ?? 0) !== 1) {
+        return res.status(409).json({ error: 'Battle state changed before cancellation completed.' });
       }
 
-      await client.query(
-        `UPDATE arena_battles
-         SET status = $1, winner_id = $2, data = $3::jsonb, updated_at = NOW()
-         WHERE id = $4`,
-        [data.status || 'active', data.winner || null, JSON.stringify(data), battleId]
-      );
-      await client.query('COMMIT');
-
-      arenaRealtime.broadcastToBattle(
-        battleId,
-        data.status === 'finished' ? 'battle:finished' : 'battle:state',
-        data
-      );
-
-      return res.json({ success: true, battle: data, serverNow: Date.now() });
-    } catch (err: any) {
-      await client.query('ROLLBACK').catch(() => {});
-      return res.status(500).json({ error: err.message || 'Failed to update battle' });
-    } finally {
-      client.release();
-    }
-  });
-
-  app.delete('/api/arena/battles/:battleId', verifyAuth, async (req, res) => {
-    try {
-      const pool = getPostgresPool();
-      const battleId = req.params.battleId;
       arenaRealtime.clearBattleSchedule(battleId);
-      if (pool) {
-        await pool.query(`DELETE FROM arena_battles WHERE id = $1`, [battleId]);
-        const waitingBattles = await fetchWaitingArenaBattles(pool);
-        arenaRealtime.broadcastLobbyQueueUpdate(waitingBattles);
-      }
+      const waitingBattles = await fetchWaitingArenaBattles(pool);
+      arenaRealtime.broadcastLobbyQueueUpdate(waitingBattles);
       return res.json({ success: true, serverNow: Date.now() });
     } catch (err: any) {
-      return res.status(500).json({ error: err.message || 'Failed to delete battle' });
+      logger.error({ uid, battleId, error: err?.message || String(err) }, '[Arena] Failed to cancel waiting battle');
+      return res.status(500).json({ error: 'Failed to cancel waiting battle.' });
     }
   });
 
