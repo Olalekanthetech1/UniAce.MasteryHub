@@ -332,7 +332,7 @@ export default function QuizHub({
                       {attempt.score}%
                     </span>
                     <span className="block text-[10px] text-emerald-500 font-semibold uppercase">
-                      {attempt.passed === true ? 'Passed' : attempt.passed === false ? 'Not passed' : 'Pass status unavailable'}
+                      {attempt.gradingSource === 'client_computed_practice' ? 'Client-computed practice' : 'Verification source unavailable'}
                     </span>
                   </div>
                 </div>
