@@ -3,7 +3,7 @@ import { UserProgress, Achievement, Bookmark, CourseId, AIPersonality, Departmen
 import { useAuth } from '../context/AuthContext';
 import { GamificationService, BADGES } from '../services/gamification';
 import { useCourses } from '../context/CourseContext';
-import { DEPARTMENT_TO_FACULTY } from '../constants';
+
 import { CurriculumIntegrityService } from '../services/curriculumIntegrity';
 import { useProgressStore } from '../lib/progressStore';
 import { LogService } from '../services/logService';
