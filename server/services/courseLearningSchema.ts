@@ -14,6 +14,9 @@ export async function ensureCourseLearningSchema(): Promise<void> {
       ),
       queryPostgres(
         'ALTER TABLE courses ADD COLUMN IF NOT EXISTS departments TEXT[] NULL'
+      ),
+      queryPostgres(
+        'ALTER TABLE courses ADD COLUMN IF NOT EXISTS credit_units INTEGER NULL'
       )
     ]).then(() => undefined).catch((error: any) => {
       migrationPromise = null;
