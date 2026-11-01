@@ -418,6 +418,13 @@ export default function ChatBot({
     const rawSparks = sparksRemaining ?? (profile || authProfile)?.ai_sparks;
     const knownSparks: number | null =
       typeof rawSparks === 'number' && Number.isFinite(rawSparks) ? rawSparks : null;
+    if (isFreeUser && knownSparks === null) {
+      setMessages(prev => [...prev, {
+        role: 'model',
+        text: 'Your Spark balance could not be verified. Refresh your account profile before sending this request.'
+      }]);
+      return;
+    }
     const hasNoSparks = knownSparks !== null && knownSparks <= 0;
     if (isFreeUser && hasNoSparks) {
       setShowPricingModal(true);
@@ -432,7 +439,7 @@ export default function ChatBot({
       textToSend = `[Attached Document Context]:\n${pdfText}\n\n[Student Question]:\n${textToSend}`;
     }
 
-    const idempotencyToken = `chat_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+    const idempotencyToken = `chat_${crypto.randomUUID()}`;
     activeIdempotencyTokenRef.current = idempotencyToken;
     const balanceBeforeSend: number | null = knownSparks;
 

@@ -74,6 +74,110 @@ function scanDir(dir) {
 ROOT_FILES.forEach(f => scanFileContent(f));
 SCAN_DIRS.forEach(d => scanDir(d));
 
+// Repository-wide ZeroMock architecture guards.
+// These are narrow, high-confidence checks for known production data fabrication paths.
+// UI input hints and deterministic engineering constants are intentionally not treated as mock data.
+const ARCHITECTURAL_GUARDS = [
+  {
+    path: 'src/services/pricingConfig.ts',
+    regex: /DEFAULT_PRICING_PLANS|return\s*\{\s*plans:\s*\w+DEFAULT\w*\s*\}/,
+    reason: 'Pricing must come from persisted pricing configuration.'
+  },
+  {
+    path: 'src/services/supportConfig.ts',
+    regex: /DEFAULT_FAQS|DEFAULT_TUTORIALS|uniace\.support@gmail\.com|picsum\.photos/,
+    reason: 'Support content and contact details must come from persisted support configuration.'
+  },
+  {
+    path: 'src/context/InstitutionContext.tsx',
+    regex: /INITIAL_DEPARTMENTS|INITIAL_FACULTIES|INITIAL_MAP|from\s+['"]\.\.\/constants['"]/,
+    reason: 'Institution catalogues must be loaded from the authoritative institution record.'
+  },
+  {
+    path: 'src/constants.ts',
+    regex: /DEPARTMENTS|FACULTIES|DEPARTMENT_TO_FACULTY|LEVELS|SEMESTERS/,
+    reason: 'Institution catalogue values must not be source-code constants.'
+  },
+  {
+    path: 'src/context/AuthContext.tsx',
+    regex: /999999|ai_sparks[^\n]*(?:\?\?\s*50|\|\|\s*50)|VITE_ADMIN_EMAILS/,
+    reason: 'Balances and administrator access must never be inferred from frontend defaults.'
+  },
+  {
+    path: 'src/shared/courseSchemas.ts',
+    regex: /groundingScore[^\n]*default\(\s*95\s*\)|confidenceState[^\n]*default\(\s*['"]verified['"]\s*\)|consistencyScore[^\n]*default\(\s*90\s*\)/,
+    reason: 'Academic verification and provenance require evidence from executed checks.'
+  },
+  {
+    path: 'src/components/LandingPage.tsx',
+    regex: /20\+ universities|12 Days Active|84%|dicebear\.com/,
+    reason: 'Public adoption and performance claims must be backed by live verified metrics.'
+  },
+  {
+    path: 'src/components/Leaderboard.tsx',
+    regex: /dicebear\.com|Scholar['"]|Season 1|Top 10 Gladiators|Trend.{0,100}>2</,
+    reason: 'Leaderboard identities, scores, season labels and trends must be sourced from records.'
+  },
+  {
+    path: 'src/services/gamification.ts',
+    regex: /export const LEVELS\s*=|export const BADGES\s*=|xpReward\s*:\s*\d+/,
+    reason: 'Gamification thresholds and badge definitions must come from persisted policy.'
+  },
+  {
+    path: 'src/hooks/useUserProgress.ts',
+    regex: /BADGES|totalSparksReward|sparksToAward|Awarded \$\{amount\} AI Sparks/,
+    reason: 'Client progress hooks must not contain fixed badge catalogues or reward amounts.'
+  },
+  {
+    path: 'src/components/admin/MathEngineTab.tsx',
+    regex: /x\^3\s*-\s*6\*x\^2\s*\+\s*11\*x\s*-\s*6|\?\?\s*18|\?\?\s*100|PRESET_QUERIES|Deterministic Solver Active/,
+    reason: 'Math Engine sandbox inputs, configuration and telemetry must not use sample/fabricated values.'
+  },
+  {
+    path: 'server/mathEngine.ts',
+    regex: /DEFAULT_MATH_CONFIG|userId\s*:\s*userId\s*\|\|\s*['"]anonymous['"]/,
+    reason: 'Math Engine settings and calculation identities must not be synthesized.'
+  },
+  {
+    path: 'server/routes/math.ts',
+    regex: /avgLatencyMs\s*=\s*[^;]*:\s*18|successRate\s*=\s*[^;]*:\s*100|x\^3\s*-\s*6\*x\^2/,
+    reason: 'Math Engine telemetry and sandbox payloads must reflect actual execution.'
+  },
+  {
+    path: 'server/config/features.ts',
+    regex: /updated_by\s*:\s*['"]system_default['"]/,
+    reason: 'Runtime feature flag metadata must come from persisted records.'
+  },
+  {
+    path: 'server/systemConfigStore.ts',
+    regex: /Failed to write system_config[\s\S]{0,180}?console\.warn\([\s\S]{0,80}?\n\s*\}/,
+    reason: 'Configuration persistence failures must propagate to callers.'
+  },
+  {
+    path: 'server/routes/student.ts',
+    regex: /completed_lessons_count\s*\)\s*\*\s*50|streak\s*:\s*1|Math\.sqrt\(\s*\(?r\.xp/,
+    reason: 'Leaderboard XP, level and streak must come from recorded profile metrics.'
+  },
+  {
+    path: 'server/routes/admin.ts',
+    regex: /email\.toLowerCase\(\)\s*===\s*['"][^'"]+@gmail\.com['"]/,
+    reason: 'Administrator access must not depend on a hardcoded personal email.'
+  }
+];
+
+for (const guard of ARCHITECTURAL_GUARDS) {
+  if (!fs.existsSync(guard.path)) {
+    console.error(`[ZERO-MOCK CONFIGURATION ERROR] Required guarded file is missing: ${guard.path}`);
+    violations++;
+    continue;
+  }
+  const content = fs.readFileSync(guard.path, 'utf8');
+  if (guard.regex.test(content)) {
+    console.error(`[ZERO-MOCK VIOLATION] ${guard.reason} File: ${guard.path}; pattern: ${guard.regex}`);
+    violations++;
+  }
+}
+
 // Additional architectural guards on core trust & evaluation modules
 for (const relPath of STRICT_SERVER_FILES) {
   if (!fs.existsSync(relPath)) continue;

@@ -27,7 +27,8 @@ interface UserProfile {
   subscription_expiry?: string;
   subscription_start_date?: string;
   subscription_status?: 'active' | 'expired' | 'none';
-  ai_sparks: number;
+  ai_sparks: number | null;
+  unlimited_sparks?: boolean;
   xp: number;
   level: number;
   streak: number;
@@ -158,61 +159,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     console.log("AuthContext: Syncing user profile for", currentUser.uid);
     const cachedProfile = loadCachedProfile(currentUser.uid);
 
-    // Resolve immediate admin role if applicable
-    const adminEmails = (import.meta.env.VITE_ADMIN_EMAILS || '').split(',').map((e: string) => e.trim().toLowerCase()).filter(Boolean);
-    const isUserAdmin = Boolean(currentUser.email && adminEmails.includes(currentUser.email.toLowerCase()));
-
-    const cachedExpIso = normalizeTimestampIso(cachedProfile?.subscription_expiry);
-    const cachedExp = cachedExpIso ? new Date(cachedExpIso) : null;
-    const isCachedExpired = Boolean(
-      cachedProfile?.subscription_status === 'expired' ||
-      (cachedExp && Date.now() > cachedExp.getTime()) ||
-      (cachedProfile?.plan_type && cachedProfile.plan_type !== 'free' && !cachedExp)
-    );
-    const resolvedInitialPlan = isUserAdmin ? 'scholar' : (isCachedExpired ? 'free' : (cachedProfile?.plan_type || 'free'));
     const authCreationIso = normalizeTimestampIso(currentUser.metadata?.creationTime);
-
-    // Instant optimistic hydration from cache or user object to prevent blank-screen blocking
-    const initialProfile: UserProfile = {
-      uid: currentUser.uid,
-      email: currentUser.email || cachedProfile?.email || "",
-      displayName: cachedProfile?.displayName || currentUser.displayName || "Scholar",
-      bio: cachedProfile?.bio,
-      photoURL: cachedProfile?.photoURL || currentUser.photoURL || "",
-      role: isUserAdmin ? 'admin' : (cachedProfile?.role || 'student'),
-      plan_type: resolvedInitialPlan,
-      subscription_expiry: cachedExpIso,
-      subscription_status: isCachedExpired ? 'expired' : (cachedProfile?.subscription_status || 'none'),
-      subscription_start_date: normalizeTimestampIso(cachedProfile?.subscription_start_date),
-      ai_sparks: cachedProfile?.ai_sparks ?? (isUserAdmin ? 999999 : 50),
-      xp: cachedProfile?.xp ?? 0,
-      level: cachedProfile?.level ?? 1,
-      streak: cachedProfile?.streak ?? 0,
-      themeColor: cachedProfile?.themeColor,
-      rank: cachedProfile?.rank,
-      created_at: normalizeTimestampIso(cachedProfile?.created_at) || authCreationIso,
-      sessionId: currentSessionId,
-      department: cachedProfile?.department || (typeof window !== 'undefined' ? localStorage.getItem('activeDepartment') || undefined : undefined),
-      faculty: cachedProfile?.faculty,
-      academic_level: cachedProfile?.academic_level,
-      semester: cachedProfile?.semester || (typeof window !== 'undefined' ? localStorage.getItem('activeSemester') || undefined : undefined),
-      learningProfile: cachedProfile?.learningProfile,
-      has_seen_whatsapp: cachedProfile?.has_seen_whatsapp ?? false,
-      onboarding_completed: cachedProfile?.onboarding_completed ?? false,
-      referralCode: cachedProfile?.referralCode || currentUser.uid.substring(0, 6).toUpperCase(),
-      referredBy: cachedProfile?.referredBy
-    };
-
-    setProfile(initialProfile);
-    setLoading(false);
+    setProfile(null);
+    setLoading(true);
 
     try {
       const firestoreData: Record<string, any> = {};
       let backendProfile: Record<string, any> | null = null;
 
-      let userRole: 'student' | 'admin' | 'tutor' | 'moderator' = isUserAdmin ? 'admin' : (firestoreData.role || cachedProfile?.role || 'student');
-      let plan_type: PlanType = firestoreData.plan_type || cachedProfile?.plan_type || (userRole === 'admin' ? 'scholar' : 'free');
-      let ai_sparks: number = firestoreData.ai_sparks ?? cachedProfile?.ai_sparks ?? (userRole === 'admin' ? 999999 : 50);
+      let userRole: 'student' | 'admin' | 'tutor' | 'moderator' = 'student';
+      let plan_type: PlanType = 'free';
+      let ai_sparks: number | null = null;
+      let unlimited_sparks = false;
       let subscription_expiry: string | undefined = firestoreData.subscription_expiry || cachedProfile?.subscription_expiry;
       let subscription_status: 'active' | 'expired' | 'none' = firestoreData.subscription_status || cachedProfile?.subscription_status || 'none';
       let subscription_start_date: string | undefined = firestoreData.subscription_start_date || cachedProfile?.subscription_start_date;
@@ -238,8 +196,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             const contentType = response.headers.get('content-type') || '';
             if (contentType.includes('application/json')) {
               const data = await response.json();
+              if (typeof data.role !== 'string' || !data.role.trim() ||
+                  typeof data.plan !== 'string' || !data.plan.trim() ||
+                  (typeof data.sparks !== 'number' || !Number.isFinite(data.sparks))) {
+                throw new Error('The server returned an incomplete or unverified account quota.');
+              }
               ai_sparks = data.sparks;
-              plan_type = data.plan;
+              unlimited_sparks = data.unlimited === true;
+              plan_type = data.plan as PlanType;
               userRole = data.role;
               if (data.subscription_expiry) subscription_expiry = data.subscription_expiry;
               if (data.subscription_status) subscription_status = data.subscription_status;
@@ -263,7 +227,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       };
 
-      await fetchQuota();
+      const quotaLoaded = await fetchQuota();
+      if (!quotaLoaded) throw new Error('Authoritative account quota could not be verified. Cached balances and role assumptions are not displayed.');
 
       // Determine chronological priority among firestoreData, backendProfile, and cachedProfile
       const sources = [
@@ -273,8 +238,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       ].sort((a, b) => a.time - b.time);
 
       const mergedSource: Record<string, any> = {};
+      const nonAuthoritativeFields = new Set(['role', 'plan_type', 'ai_sparks', 'subscription_expiry', 'subscription_status', 'subscription_start_date']);
       for (const src of sources) {
         for (const [k, v] of Object.entries(src.data)) {
+          if (nonAuthoritativeFields.has(k)) continue;
           if (v !== undefined && v !== null && v !== '') {
             mergedSource[k] = v;
           } else if (mergedSource[k] === undefined && v !== undefined) {
@@ -330,7 +297,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const profileData: UserProfile = {
         uid: currentUser.uid,
         email: currentUser.email || mergedSource.email || "",
-        displayName: mergedSource.displayName || currentUser.displayName || "Scholar",
+        displayName: mergedSource.displayName || currentUser.displayName || "",
         bio: mergedSource.bio,
         photoURL: mergedSource.photoURL || currentUser.photoURL || "",
         role: userRole,
@@ -339,6 +306,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         subscription_status,
         subscription_start_date,
         ai_sparks,
+        unlimited_sparks,
         xp: Math.max(Number(firestoreData.xp || 0), Number(mergedSource.xp || 0)),
         level: Math.max(Number(firestoreData.level || 1), Number(mergedSource.level || 1)),
         streak: Math.max(Number(firestoreData.streak || 0), Number(mergedSource.streak || 0)),
@@ -424,33 +392,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       saveCachedProfile(currentUser.uid, profileData);
       setProfile(profileData);
+      setLoading(false);
       console.log("AuthContext: Profile synced successfully");
     } catch (error) {
       console.error("Error syncing user profile:", error);
-      if (!profile) {
-        const fallbackProfile: UserProfile = {
-          uid: currentUser.uid,
-          email: currentUser.email || cachedProfile?.email || "",
-          displayName: cachedProfile?.displayName || currentUser.displayName || "Scholar",
-          bio: cachedProfile?.bio,
-          photoURL: cachedProfile?.photoURL || currentUser.photoURL || "",
-          role: cachedProfile?.role || 'student',
-          plan_type: cachedProfile?.plan_type || 'free',
-          ai_sparks: cachedProfile?.ai_sparks ?? 0,
-          xp: cachedProfile?.xp ?? 0,
-          level: cachedProfile?.level ?? 1,
-          streak: cachedProfile?.streak ?? 0,
-          themeColor: cachedProfile?.themeColor,
-          department: cachedProfile?.department || localStorage.getItem('activeDepartment') || undefined,
-          faculty: cachedProfile?.faculty,
-          academic_level: cachedProfile?.academic_level,
-          semester: cachedProfile?.semester || localStorage.getItem('activeSemester') || undefined,
-          onboarding_completed: cachedProfile?.onboarding_completed ?? Boolean(cachedProfile?.department && cachedProfile?.academic_level && cachedProfile?.semester),
-          has_seen_whatsapp: cachedProfile?.has_seen_whatsapp,
-          updatedAt: cachedProfile?.updatedAt
-        };
-        setProfile(fallbackProfile);
-      }
+      setProfile(null);
+      setLoading(false);
     }
   };
 

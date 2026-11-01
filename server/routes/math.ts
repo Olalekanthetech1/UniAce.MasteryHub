@@ -4,8 +4,7 @@ import {
   executeMathComputation, 
   getMathEngineConfig, 
   saveMathEngineConfig, 
-  MathCalculationRequest,
-  DEFAULT_MATH_CONFIG 
+  MathCalculationRequest
 } from '../mathEngine';
 
 export function setupMathRoutes(
@@ -14,36 +13,52 @@ export function setupMathRoutes(
   getAdminApp: any, 
   isAdminEmail: any
 ) {
+  const requireMathAdmin = async (user: any): Promise<boolean> => {
+    if (!user?.uid) return false;
+    if (typeof user.email === 'string' && isAdminEmail(user.email)) return true;
+    const pool = getPostgresPool();
+    if (!pool) return false;
+    const result = await pool.query('SELECT role FROM users WHERE uid = $1 LIMIT 1', [user.uid]);
+    return result.rows[0]?.role === 'admin';
+  };
+
   // 1. Primary Math Computation Endpoint (Used by Student AI Chat & Interactive Solvers)
-  app.post('/api/math/compute', async (req: express.Request, res: express.Response) => {
+  app.post('/api/math/compute', verifyAuth, async (req: express.Request, res: express.Response) => {
     try {
-      const { 
-        operation = 'simplify', 
-        expression, 
-        variable = 'x', 
-        bounds, 
-        matrixA, 
-        matrixB, 
-        matrixOp, 
-        rigorLevel = 'granular' 
-      } = req.body;
-
-      if (!expression && !matrixA) {
-        return res.status(400).json({ 
-          error: 'Missing mathematical expression or matrix payload.' 
-        });
-      }
-
-      const userId = (req as any).user?.uid || 'anonymous';
-      const calcReq: MathCalculationRequest = {
+      const {
         operation,
-        expression: String(expression || ''),
-        variable: String(variable || 'x'),
+        expression,
+        variable,
         bounds,
         matrixA,
         matrixB,
         matrixOp,
-        rigorLevel,
+        rigorLevel
+      } = req.body || {};
+
+      if (typeof operation !== 'string' || !operation.trim()) {
+        return res.status(400).json({ error: 'A calculation operation is required.' });
+      }
+      if (operation === 'matrix_operations') {
+        if (!Array.isArray(matrixA) || matrixA.length === 0 || !matrixOp) {
+          return res.status(400).json({ error: 'A source-supplied matrix and matrix operation are required.' });
+        }
+      } else if (typeof expression !== 'string' || !expression.trim() || typeof variable !== 'string' || !variable.trim()) {
+        return res.status(400).json({ error: 'A mathematical expression and independent variable are required.' });
+      }
+
+      const engineConfig = await getMathEngineConfig();
+      const effectiveRigor = rigorLevel || engineConfig.defaultRigor;
+      const userId = (req as any).user?.uid;
+      const calcReq: MathCalculationRequest = {
+        operation,
+        expression: typeof expression === 'string' ? expression : '',
+        variable: typeof variable === 'string' ? variable : undefined,
+        bounds,
+        matrixA,
+        matrixB,
+        matrixOp,
+        rigorLevel: effectiveRigor,
       };
 
       const result = await executeMathComputation(calcReq, userId);
@@ -82,26 +97,38 @@ export function setupMathRoutes(
       }
 
 
-      const { 
-        operation = 'derivative', 
-        expression = 'x^3 - 6*x^2 + 11*x - 6', 
-        variable = 'x', 
-        bounds, 
-        matrixA, 
-        matrixB, 
-        matrixOp = 'determinant',
-        rigorLevel = 'granular' 
-      } = req.body;
-
-      const calcReq: MathCalculationRequest = {
+      const {
         operation,
-        expression: String(expression || ''),
-        variable: String(variable || 'x'),
+        expression,
+        variable,
         bounds,
         matrixA,
         matrixB,
         matrixOp,
         rigorLevel
+      } = req.body || {};
+
+      if (typeof operation !== 'string' || !operation.trim()) {
+        return res.status(400).json({ error: 'A calculation operation is required.' });
+      }
+      if (operation === 'matrix_operations') {
+        if (!Array.isArray(matrixA) || matrixA.length === 0 || !matrixOp) {
+          return res.status(400).json({ error: 'A source-supplied matrix and matrix operation are required.' });
+        }
+      } else if (typeof expression !== 'string' || !expression.trim() || typeof variable !== 'string' || !variable.trim()) {
+        return res.status(400).json({ error: 'A mathematical expression and independent variable are required.' });
+      }
+
+      const engineConfig = await getMathEngineConfig();
+      const calcReq: MathCalculationRequest = {
+        operation,
+        expression: typeof expression === 'string' ? expression : '',
+        variable: typeof variable === 'string' ? variable : undefined,
+        bounds,
+        matrixA,
+        matrixB,
+        matrixOp,
+        rigorLevel: rigorLevel || engineConfig.defaultRigor
       };
 
       const result = await executeMathComputation(calcReq, user.uid);
@@ -122,6 +149,7 @@ export function setupMathRoutes(
   // 3. Telemetry & Analytics Endpoint (Real-Time Stats for Admin Dashboard)
   app.get('/api/math/stats', verifyAuth, async (req: express.Request, res: express.Response) => {
     try {
+      if (!(await requireMathAdmin((req as any).user))) return res.status(403).json({ error: 'Admin access required.' });
       const pool = getPostgresPool();
       if (!pool) return res.status(503).json({ error: 'Neon PostgreSQL not initialized' });
 
@@ -154,8 +182,11 @@ export function setupMathRoutes(
       }
 
       const totalCount = recentLogs.length;
-      const avgLatencyMs = totalCount > 0 ? Math.round(totalLatency / totalCount) : 18;
-      const successRate = totalCount > 0 ? Number(((successCount / totalCount) * 100).toFixed(1)) : 100.0;
+      const avgLatencyMs = totalCount > 0 ? Math.round(totalLatency / totalCount) : null;
+      const successRate = totalCount > 0 ? Number(((successCount / totalCount) * 100).toFixed(1)) : null;
+      const observedOperations = Object.fromEntries(
+        Object.entries(opCounts).filter(([, count]) => count > 0)
+      );
 
       const currentConfig = await getMathEngineConfig();
 
@@ -163,20 +194,15 @@ export function setupMathRoutes(
         totalComputations: totalCount,
         avgLatencyMs,
         successRate,
-        operationDistribution: opCounts,
+        operationDistribution: observedOperations,
         activeEngine: currentConfig.defaultEngine,
         recentEvents: recentLogs
       });
     } catch (error: any) {
       console.error('[MathRoute] Stats Fetch Error:', error);
-      return res.status(500).json({ 
-        totalComputations: 0,
-        avgLatencyMs: 0,
-        successRate: 100,
-        operationDistribution: {},
-        activeEngine: 'SymPy / MathJS Symbolic',
-        recentEvents: [],
-        error: error.message 
+      return res.status(503).json({
+        error: 'Math Engine telemetry or configuration is unavailable.',
+        message: error.message
       });
     }
   });
@@ -184,6 +210,7 @@ export function setupMathRoutes(
   // 4. Get Math Engine Config
   app.get('/api/admin/math-config', verifyAuth, async (req: express.Request, res: express.Response) => {
     try {
+      if (!(await requireMathAdmin((req as any).user))) return res.status(403).json({ error: 'Admin access required.' });
       const config = await getMathEngineConfig();
       return res.json(config);
     } catch (error: any) {
@@ -195,31 +222,15 @@ export function setupMathRoutes(
   app.post('/api/admin/math-config', verifyAuth, async (req: express.Request, res: express.Response) => {
     try {
       const user = (req as any).user;
-      const adminApp = getAdminApp();
-      if (!adminApp) return res.status(503).json({ error: 'Firebase not initialized' });
-
-      let isAdmin = false;
-      if (isAdminEmail(user.email)) {
-        isAdmin = true;
-      } else {
-        const pool = getPostgresPool();
-        if (pool) {
-          const res = await pool.query('SELECT role FROM users WHERE uid = $1', [user.uid]);
-          if (res.rows.length > 0 && res.rows[0].role === 'admin') {
-            isAdmin = true;
-          }
-        }
-      }
-      if (!isAdmin) {
-        return res.status(403).json({ error: 'Forbidden: Admin access required' });
+      if (!(await requireMathAdmin(user))) {
+        return res.status(403).json({ error: 'Admin access required.' });
       }
 
-
-      const updated = await saveMathEngineConfig(req.body);
+      const updated = await saveMathEngineConfig(req.body || {});
       return res.json({ success: true, config: updated });
     } catch (error: any) {
       console.error('[MathRoute] Save Config Error:', error);
-      return res.status(500).json({ error: error.message || 'Failed to save math config' });
+      return res.status(400).json({ error: error.message || 'Failed to save math config' });
     }
   });
 }

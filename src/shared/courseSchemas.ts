@@ -10,7 +10,7 @@ export type BloomLevel = z.infer<typeof BloomLevelEnum>;
 
 export const LearningOutcomeSchema = z.object({
   outcome: z.string().min(1, 'Outcome text cannot be empty'),
-  bloomLevel: BloomLevelEnum.optional().default('Understand')
+  bloomLevel: BloomLevelEnum
 });
 export type LearningOutcome = z.infer<typeof LearningOutcomeSchema>;
 
@@ -26,13 +26,13 @@ export type DisciplinePedagogyType = z.infer<typeof DisciplinePedagogyTypeEnum>;
 export const DomainBriefSchema = z.object({
   primaryDomain: z.string().min(1),
   subDisciplines: z.array(z.string()).min(1),
-  pedagogyType: DisciplinePedagogyTypeEnum.default('STEM_MATHEMATICAL'),
-  courseLevelFramework: z.string().default('Undergraduate University Standard'),
-  recommendedCreditHours: z.number().int().min(1).max(12).default(3),
+  pedagogyType: DisciplinePedagogyTypeEnum,
+  courseLevelFramework: z.string().min(1),
+  recommendedCreditHours: z.number().int().min(1).max(12),
   targetModuleCountRange: z.object({
     min: z.number().int().min(4),
     max: z.number().int().max(16)
-  }).default({ min: 6, max: 10 }),
+  }),
   canonicalCourseReferences: z.array(z.string()).min(1),
   foundationalAxioms: z.array(z.string()).min(1),
   coreCourseTopics: z.array(z.string()).min(6)
@@ -73,15 +73,15 @@ export type CourseSkeleton = z.infer<typeof CourseSkeletonSchema>;
 export const OutlineCriticRubricSchema = z.object({
   isValid: z.boolean(),
   coverageScore: z.number().min(0).max(100),
-  consistencyScore: z.number().min(0).max(100).default(90),
+  consistencyScore: z.number().min(0).max(100),
   foundationsScore: z.number().min(0).max(100),
   workloadBalanceScore: z.number().min(0).max(100),
   sequencingScore: z.number().min(0).max(100),
   coveredTopics: z.array(z.string()),
-  missingTopics: z.array(z.string()).default([]),
-  sequencingErrors: z.array(z.string()).default([]),
-  genericFillerDetected: z.boolean().default(false),
-  confidenceState: z.enum(['verified', 'needs_review', 'failed']).default('verified'),
+  missingTopics: z.array(z.string()),
+  sequencingErrors: z.array(z.string()),
+  genericFillerDetected: z.boolean(),
+  confidenceState: z.enum(['verified', 'needs_review', 'failed']),
   reasoning: z.string()
 });
 export type OutlineCriticRubric = z.infer<typeof OutlineCriticRubricSchema>;
@@ -222,11 +222,11 @@ export const LessonContentSchema = z.preprocess((val: any) => {
 export type LessonContent = z.infer<typeof LessonContentSchema>;
 
 export const CourseProvenanceSchema = z.object({
-  sources: z.array(z.string()).default([]),
-  modelVersion: z.string().default('gemini-2.5-pro'),
-  promptVersion: z.string().default('uniace-curriculum-v2.0'),
+  sources: z.array(z.string().min(1)).min(1),
+  modelVersion: z.string().min(1),
+  promptVersion: z.string().min(1),
   generatedAt: z.string(),
-  groundingScore: z.number().optional().default(95),
+  groundingScore: z.number().min(0).max(100).optional(),
   rubricAudit: OutlineCriticRubricSchema.optional()
 });
 export type CourseProvenance = z.infer<typeof CourseProvenanceSchema>;
@@ -257,7 +257,9 @@ export function normalizeLearningOutcomes(raw: any): LearningOutcome[] {
  * Helper to derive curriculum parameters based on level, term, and credits
  */
 export function deriveCurriculumParameters(level?: string, semester?: string, creditUnits?: number, depth?: string) {
-  const credits = creditUnits && creditUnits > 0 ? creditUnits : 3;
+  if (!creditUnits || !Number.isInteger(creditUnits) || creditUnits <= 0) throw new Error('Verified course credit units are required to derive curriculum parameters.');
+  if (!level?.trim()) throw new Error('Verified academic level is required to derive curriculum parameters.');
+  const credits = creditUnits;
   let minModules = 6;
   let maxModules = 10;
   let targetLessonsPerModule = 4;

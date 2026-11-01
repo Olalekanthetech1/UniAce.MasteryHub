@@ -3,7 +3,7 @@ import { motion } from 'motion/react';
 import { Trophy, Zap, Flame, Target, Clock, Award, ChevronRight, Activity, Loader2, Star, BookOpen, ArrowRight } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { AIService } from '../services/ai';
-import { GamificationService, LEVELS } from '../services/gamification';
+import { GamificationService, GamificationPolicy } from '../services/gamification';
 import Badges from './Gamification/Badges';
 import Leaderboard from './Gamification/Leaderboard';
 import AnalyticsCharts from './Analytics/AnalyticsCharts';
@@ -46,6 +46,8 @@ export default function MasteryCenter({
   const [readiness, setReadiness] = useState<ReadinessPrediction | null>(null);
   const [isLoadingReadiness, setIsLoadingReadiness] = useState(false);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [gamificationPolicy, setGamificationPolicy] = useState<GamificationPolicy | null>(null);
+  const [gamificationPolicyError, setGamificationPolicyError] = useState<string | null>(null);
 
   const activeCourse = activeCourseId ? courses[activeCourseId] : null;
 
@@ -61,10 +63,34 @@ export default function MasteryCenter({
   const hours = Math.floor(totalStudyTime / 3600);
   const minutes = Math.floor((totalStudyTime % 3600) / 60);
 
-  const xpValue = progress?.xp || 0;
-  const currentLevel = GamificationService.calculateLevel(xpValue);
-  const nextLevel = GamificationService.getNextLevel(xpValue);
-  const progressToNextLevel = nextLevel ? ((xpValue - currentLevel.xp) / (nextLevel.xp - currentLevel.xp)) * 100 : 100;
+  const xpValue = typeof progress?.xp === 'number' && Number.isFinite(progress.xp) ? progress.xp : null;
+  const currentLevel = gamificationPolicy && xpValue !== null
+    ? GamificationService.calculateLevel(xpValue, gamificationPolicy)
+    : null;
+  const nextLevel = gamificationPolicy && xpValue !== null
+    ? GamificationService.getNextLevel(xpValue, gamificationPolicy)
+    : null;
+  const progressToNextLevel = currentLevel && nextLevel && xpValue !== null
+    ? Math.max(0, Math.min(100, ((xpValue - currentLevel.xp) / (nextLevel.xp - currentLevel.xp)) * 100))
+    : currentLevel ? 100 : null;
+
+  useEffect(() => {
+    let isMounted = true;
+    GamificationService.getPolicy()
+      .then(policy => {
+        if (isMounted) {
+          setGamificationPolicy(policy);
+          setGamificationPolicyError(null);
+        }
+      })
+      .catch(error => {
+        if (isMounted) {
+          setGamificationPolicy(null);
+          setGamificationPolicyError(error instanceof Error ? error.message : String(error));
+        }
+      });
+    return () => { isMounted = false; };
+  }, []);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -144,30 +170,41 @@ export default function MasteryCenter({
           </div>
         </header>
 
-        {/* Level Progress */}
+        {/* Level Progress: shown only when the persisted gamification policy is available. */}
         <section className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 p-6 sm:p-8 rounded-[2.5rem] shadow-sm">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h2 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                Level {currentLevel.level}: {currentLevel.title}
-                <Star className="text-amber-400 fill-amber-400" size={22} />
-              </h2>
-              <p className="text-slate-500 dark:text-zinc-400 text-xs sm:text-sm">
-                {nextLevel ? `${Math.round(nextLevel.xp - progress.xp)} XP to Level ${nextLevel.level}` : 'Max Level Reached!'}
+          {currentLevel && progressToNextLevel !== null ? (
+            <>
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h2 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    Level {currentLevel.level}: {currentLevel.title}
+                    <Star className="text-amber-400 fill-amber-400" size={22} />
+                  </h2>
+                  <p className="text-slate-500 dark:text-zinc-400 text-xs sm:text-sm">
+                    {nextLevel ? `${Math.max(0, Math.round(nextLevel.xp - (xpValue ?? 0)))} XP to Level ${nextLevel.level}` : 'Max level in the stored policy reached.'}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <div className="text-2xl sm:text-3xl font-bold text-emerald-600 dark:text-emerald-400">{Math.round(progressToNextLevel)}%</div>
+                </div>
+              </div>
+              <div className="h-4 bg-slate-100 dark:bg-zinc-800 rounded-full overflow-hidden">
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ width: `${progressToNextLevel}%` }}
+                  transition={{ duration: 1, ease: 'easeOut' }}
+                  className="h-full bg-gradient-to-r from-emerald-400 to-emerald-600 rounded-full"
+                />
+              </div>
+            </>
+          ) : (
+            <div className="space-y-2">
+              <h2 className="text-base font-bold text-slate-900 dark:text-white">Level progression unavailable</h2>
+              <p className="text-sm text-slate-500 dark:text-zinc-400">
+                {gamificationPolicyError || 'Waiting for the persisted gamification policy and verified XP record.'}
               </p>
             </div>
-            <div className="text-right">
-              <div className="text-2xl sm:text-3xl font-bold text-emerald-600 dark:text-emerald-400">{Math.round(progressToNextLevel)}%</div>
-            </div>
-          </div>
-          <div className="h-4 bg-slate-100 dark:bg-zinc-800 rounded-full overflow-hidden">
-            <motion.div 
-              initial={{ width: 0 }}
-              animate={{ width: `${progressToNextLevel}%` }}
-              transition={{ duration: 1, ease: "easeOut" }}
-              className="h-full bg-gradient-to-r from-emerald-400 to-emerald-600 rounded-full"
-            />
-          </div>
+          )}
         </section>
 
         {/* STATE 1: No Course Selected */}

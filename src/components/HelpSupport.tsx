@@ -3,7 +3,7 @@ import { ArrowLeft, Search, ChevronDown, ChevronUp, Play, Send, CheckCircle2, Me
 import { motion, AnimatePresence } from 'motion/react';
 import { auth } from '../firebase';
 import { useAuth } from '../context/AuthContext';
-import { SupportService, FaqItem, TutorialItem, DEFAULT_FAQS, DEFAULT_TUTORIALS } from '../services/supportConfig';
+import { SupportService, FaqItem, TutorialItem } from '../services/supportConfig';
 
 interface HelpSupportProps {
   onBack: () => void;
@@ -25,8 +25,8 @@ enum OperationType {
 
 export default function HelpSupport({ onBack }: HelpSupportProps) {
   const { user } = useAuth();
-  const [faqs, setFaqs] = useState<FaqItem[]>(DEFAULT_FAQS);
-  const [tutorials, setTutorials] = useState<TutorialItem[]>(DEFAULT_TUTORIALS);
+  const [faqs, setFaqs] = useState<FaqItem[]>([]);
+  const [tutorials, setTutorials] = useState<TutorialItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [openFaq, setOpenFaq] = useState<number | null>(null);
   const [formStatus, setFormStatus] = useState<'idle' | 'sending' | 'success'>('idle');
@@ -34,12 +34,8 @@ export default function HelpSupport({ onBack }: HelpSupportProps) {
 
   useEffect(() => {
     const unsubscribe = SupportService.subscribeSupportConfig((config) => {
-      if (config.faqs && config.faqs.length > 0) {
-        setFaqs(config.faqs);
-      }
-      if (config.tutorials && config.tutorials.length > 0) {
-        setTutorials(config.tutorials);
-      }
+      setFaqs(config.faqs);
+      setTutorials(config.tutorials);
     });
     return () => unsubscribe();
   }, []);

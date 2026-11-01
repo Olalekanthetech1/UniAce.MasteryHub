@@ -102,52 +102,15 @@ export function getMigrationMode(): string {
   if (record && record.description) {
     return record.description;
   }
-  return cachedFlags.ENABLE_POSTGRES_CATALOG ? 'postgres_cutover' : 'firestore_mirror';
+  return 'unconfigured';
 }
 
 /**
  * Returns all runtime flag records with metadata (cutover_at, updated_by, updated_at).
  */
 export function getAllRuntimeFlagRecords(): RuntimeFlagRecord[] {
-  if (cachedFlagRecords.size > 0) {
-    return Array.from(cachedFlagRecords.values());
-  }
-
-  // Synthesize default records if cache hasn't loaded yet
-  return [
-    {
-      flag_key: 'ENABLE_POSTGRES_CATALOG',
-      enabled: cachedFlags.ENABLE_POSTGRES_CATALOG,
-      cutover_at: null,
-      description: 'Routes course catalog, modules, lessons, and quizzes to PostgreSQL',
-      updated_by: 'system_default',
-      updated_at: new Date().toISOString()
-    },
-    {
-      flag_key: 'ENABLE_POSTGRES_PROGRESS',
-      enabled: cachedFlags.ENABLE_POSTGRES_PROGRESS,
-      cutover_at: null,
-      description: 'Routes student study progress, batches, lesson completions, and quizzes to PostgreSQL',
-      updated_by: 'system_default',
-      updated_at: new Date().toISOString()
-    },
-    {
-      flag_key: 'ENABLE_POSTGRES_GENERATION_JOBS',
-      enabled: cachedFlags.ENABLE_POSTGRES_GENERATION_JOBS,
-      cutover_at: null,
-      description: 'Routes background AI course generation jobs to PostgreSQL',
-      updated_by: 'system_default',
-      updated_at: new Date().toISOString()
-    },
-    {
-      flag_key: 'ENABLE_POSTGRES_SPARKS_ESCROW',
-      enabled: cachedFlags.ENABLE_POSTGRES_SPARKS_ESCROW,
-      cutover_at: null,
-      description: 'Routes AI Spark wallet balances, escrow locks, and transaction ledger to PostgreSQL',
-      updated_by: 'system_default',
-      updated_at: new Date().toISOString()
-    }
-  ];
+  // An empty result means no authoritative runtime-flag records have been loaded.
+  return Array.from(cachedFlagRecords.values());
 }
 
 /**

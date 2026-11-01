@@ -31,7 +31,7 @@ import { AIService } from '../services/ai';
 import { generateCourseContent, generateCourseSkeleton, generateModuleContent, generateCourseFormulas } from '../services/aiCourseGenerator';
 import { CourseService, sanitizeForFirestore } from '../services/courseService';
 import { Course, UserProgress, CourseId, Department, Level, Semester, Subject, CourseScope } from '../types';
-import { LEVELS, SEMESTERS } from '../constants';
+
 import { LogService, SystemLog } from '../services/logService';
 import { CurriculumIntegrityService } from '../services/curriculumIntegrity';
 import { usePermissions } from '../hooks/usePermissions';
@@ -223,24 +223,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   const [isPingingAll, setIsPingingAll] = useState(false);
   const [pingingProvider, setPingingProvider] = useState<string | null>(null);
   const [autoPingEnabled, setAutoPingEnabled] = useState(false);
-  const [routingConfig, setRoutingConfig] = useState({
-    global_provider: '',
-    chat: 'groq',
-    quiz: 'groq',
-    lesson: 'openrouter_free',
-    skeleton: 'cohere',
-    recommendation: 'cohere',
-    formulas: 'cohere',
-    flashcard: 'huggingface',
-    rag: 'openrouter_free',
-    vision: 'gemini_direct',
-    past_questions: 'gemini_direct',
-    voice_tutor: 'nvidia',
-    voice_tutor_model: 'nemotron-voicechat',
-    nvidia_text_model: 'nvidia/nemotron-3-super-120b-a12b',
-    nvidia_image_model: 'black-forest-labs/flux.1-dev',
-    default_personality: 'encouraging'
-  });
+  const [routingConfig, setRoutingConfig] = useState<Record<string, any>>({});
   const [logs, setLogs] = useState<SystemLog[]>([]);
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
   const [logFilter, setLogFilter] = useState<string>('all');
@@ -312,8 +295,8 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   const [quickCourseName, setQuickCourseName] = useState('');
   const [quickCourseCode, setQuickCourseCode] = useState('');
   const [quickSubject, setQuickSubject] = useState<Subject>('General Studies');
-  const [quickLevel, setQuickLevel] = useState<Level>('100');
-  const [quickSemester, setQuickSemester] = useState<Semester>('1st Semester');
+  const [quickLevel, setQuickLevel] = useState<Level>('');
+  const [quickSemester, setQuickSemester] = useState<Semester>('');
   const [quickDepartment, setQuickDepartment] = useState<Department | ''>('');
   const [courseScope, setCourseScope] = useState<CourseScope>('DEPARTMENT');
   const [selectedFaculties, setSelectedFaculties] = useState<string[]>([]);
@@ -643,9 +626,12 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
       const res = await safeFetchJson<any>('/api/admin/config', {
         headers: { 'Authorization': `Bearer ${idToken}` }
       });
-      if (res.ok && res.data?.routing) {
-        setRoutingConfig(prev => ({ ...prev, ...res.data.routing }));
+      if (!res.ok) throw new Error(`Routing configuration request failed with HTTP ${res.status}.`);
+      if (!res.data?.routing || typeof res.data.routing !== 'object') {
+        setRoutingConfig({});
+        throw new Error('No authoritative routing configuration is stored.');
       }
+      setRoutingConfig(res.data.routing);
     } catch (error) {
       console.warn("Notice fetching routing config:", error);
     }
@@ -761,11 +747,11 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   };
 
   const updateRoutingConfig = async (task: string, provider: string) => {
-    const newConfig = { ...routingConfig, [task]: provider };
-    setRoutingConfig(newConfig as any);
     try {
       const idToken = await auth.currentUser?.getIdToken();
-      await fetch('/api/admin/config', {
+      if (!idToken) throw new Error('Administrator authentication is required to change AI routing.');
+      const newConfig = { ...routingConfig, [task]: provider };
+      const response = await fetch('/api/admin/config', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${idToken}`,
@@ -773,11 +759,19 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
         },
         body: JSON.stringify({ routing: newConfig })
       });
-      showToast(`Routing for ${task} updated to ${provider}`, 'success');
-      LogService.log('info', 'admin', `Updated AI routing for ${task} to ${provider}`);
+      if (!response.ok) throw new Error(`Routing configuration save failed with HTTP ${response.status}.`);
+      const result = await response.json();
+      const persistedRouting = result?.routing || result?.data?.routing || newConfig;
+      if (!persistedRouting || typeof persistedRouting !== 'object') {
+        throw new Error('The server did not confirm the saved routing configuration.');
+      }
+      setRoutingConfig(persistedRouting);
+      showToast(`Routing for ${task} updated`, 'success');
+      void LogService.log('info', 'admin', `Updated AI routing for ${task}`);
     } catch (error) {
       console.error("Error updating routing config:", error);
-      showToast("Failed to update routing", "error");
+      showToast(error instanceof Error ? error.message : "Failed to update routing", "error");
+      void fetchRoutingConfig();
     }
   };
 
@@ -2527,10 +2521,11 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
 
   const renderCurriculumHealth = () => {
     // Group issues by dept and level
+    const liveLevels = Array.from(new Set(integrityIssues.map((issue: any) => typeof issue.level === 'string' ? issue.level.trim() : '').filter(Boolean))).sort();
     const heatmapData: Record<string, Record<string, number>> = {};
     DEPARTMENTS.forEach(dept => {
       heatmapData[dept] = {};
-      LEVELS.forEach(level => {
+      liveLevels.forEach(level => {
         heatmapData[dept][level] = 0;
       });
     });
@@ -2558,15 +2553,20 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
           </button>
         </div>
 
-        {/* Heatmap Grid */}
+        {/* Heatmap columns are derived only from observed curriculum-health records. */}
+        {liveLevels.length === 0 || DEPARTMENTS.length === 0 ? (
+          <div className="bg-white dark:bg-slate-800 p-8 rounded-[2.5rem] border border-slate-200 dark:border-slate-700 shadow-sm text-sm text-slate-500">
+            No verified curriculum-health records are available for configured departments and levels.
+          </div>
+        ) : (
         <div className="bg-white dark:bg-slate-800 p-8 rounded-[2.5rem] border border-slate-200 dark:border-slate-700 shadow-sm overflow-x-auto">
           <div className="min-w-[800px]">
             <div 
               className="grid gap-4 mb-6"
-              style={{ gridTemplateColumns: `200px repeat(${LEVELS.length}, 1fr)` }}
+              style={{ gridTemplateColumns: `200px repeat(${liveLevels.length}, 1fr)` }}
             >
               <div className="font-bold text-slate-400 text-xs uppercase tracking-widest text-left">Department</div>
-              {LEVELS.map(level => (
+              {liveLevels.map(level => (
                 <div key={level} className="text-center font-bold text-slate-400 text-xs uppercase tracking-widest">
                   Level {level}
                 </div>
@@ -2577,10 +2577,10 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
               <div 
                 key={dept} 
                 className="grid gap-4 mb-4"
-                style={{ gridTemplateColumns: `200px repeat(${LEVELS.length}, 1fr)` }}
+                style={{ gridTemplateColumns: `200px repeat(${liveLevels.length}, 1fr)` }}
               >
                 <div className="flex items-center font-bold text-slate-700 dark:text-slate-300 text-sm">{dept}</div>
-                {LEVELS.map(level => {
+                {liveLevels.map(level => {
                   const count = heatmapData[dept][level];
                   let bgColor = 'bg-slate-50 dark:bg-slate-900/50';
                   let textColor = 'text-slate-400';
@@ -2622,6 +2622,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
             ))}
           </div>
         </div>
+        )}
 
         {/* Drill-down Section */}
         <AnimatePresence>
@@ -3509,27 +3510,23 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
                     </div>
                     <div>
                       <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Level</label>
-                      <select 
+                      <input
+                        type="text"
                         value={quickLevel}
-                        onChange={(e) => setQuickLevel(e.target.value as Level)}
+                        onChange={(e) => setQuickLevel(e.target.value)}
+                        placeholder="Enter actual course level"
                         className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      >
-                        {LEVELS.map(level => (
-                          <option key={level} value={level}>{level}</option>
-                        ))}
-                      </select>
+                      />
                     </div>
                     <div>
                       <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Semester</label>
-                      <select 
+                      <input
+                        type="text"
                         value={quickSemester}
-                        onChange={(e) => setQuickSemester(e.target.value as Semester)}
+                        onChange={(e) => setQuickSemester(e.target.value)}
+                        placeholder="Enter actual semester"
                         className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      >
-                        {SEMESTERS.map(sem => (
-                          <option key={sem} value={sem}>{sem}</option>
-                        ))}
-                      </select>
+                      />
                     </div>
                   </div>
 
@@ -3849,30 +3846,23 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
               </div>
               <div>
                 <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Level</label>
-                <select
+                <input
+                  type="text"
                   value={quickLevel}
-                  onChange={(e) => setQuickLevel(e.target.value as any)}
+                  onChange={(e) => setQuickLevel(e.target.value)}
+                  placeholder="Enter actual course level"
                   className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                >
-                  <option value="100">100 Level</option>
-                  <option value="200">200 Level</option>
-                  <option value="300">300 Level</option>
-                  <option value="400">400 Level</option>
-                  <option value="500">500 Level</option>
-                </select>
+                />
               </div>
               <div>
                 <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Semester</label>
-                <select
+                <input
+                  type="text"
                   value={quickSemester}
-                  onChange={(e) => setQuickSemester(e.target.value as Semester)}
+                  onChange={(e) => setQuickSemester(e.target.value)}
+                  placeholder="Enter actual semester"
                   className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                >
-                  <option value="">Select semester...</option>
-                  {SEMESTERS.map(sem => (
-                    <option key={sem} value={sem}>{sem}</option>
-                  ))}
-                </select>
+                />
               </div>
               <div>
                 <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Department</label>
@@ -5784,16 +5774,14 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
                       <span className="font-bold text-slate-700 dark:text-slate-300 text-xs block">NVIDIA Text / STEM Core Model</span>
                       <span className="text-[10px] text-slate-500">Active model for physics, logic, calculus, and programming tasks.</span>
                     </div>
-                    <select
-                      value={(routingConfig as any).nvidia_text_model || 'nvidia/nemotron-3-super-120b-a12b'}
-                      onChange={(e) => updateRoutingConfig('nvidia_text_model', e.target.value)}
+                    <input
+                      type="text"
+                      value={routingConfig.nvidia_text_model || ''}
+                      onChange={(e) => setRoutingConfig((previous) => ({ ...previous, nvidia_text_model: e.target.value }))}
+                      onBlur={() => routingConfig.nvidia_text_model && void updateRoutingConfig('nvidia_text_model', routingConfig.nvidia_text_model)}
+                      placeholder="No text model configured"
                       className="bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl px-3 py-2 text-[11px] font-bold text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-indigo-500 transition-all mt-1"
-                    >
-                      <option value="nvidia/nemotron-3-super-120b-a12b">NVIDIA Nemotron-3 Super 120B (High Reasoning)</option>
-                      <option value="nvidia/llama-3.1-nemotron-70b-instruct">Llama 3.1 Nemotron 70B Instruct</option>
-                      <option value="nvidia/nemotron-4-340b-instruct">NVIDIA Nemotron-4 340B Instruct</option>
-                      <option value="nvidia/nemotron-mini-4b-instruct">NVIDIA Nemotron Mini 4B Instruct</option>
-                    </select>
+                    />
                   </div>
 
                   <div className="flex flex-col gap-2 p-4 bg-slate-50 dark:bg-slate-900/40 rounded-2xl border border-slate-100 dark:border-slate-700">
@@ -5801,14 +5789,14 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
                       <span className="font-bold text-slate-700 dark:text-slate-300 text-xs block">NVIDIA FLUX Image Generator</span>
                       <span className="text-[10px] text-slate-500">Active model for diagram illustrations and math-to-image features.</span>
                     </div>
-                    <select
-                      value={(routingConfig as any).nvidia_image_model || 'black-forest-labs/flux.1-dev'}
-                      onChange={(e) => updateRoutingConfig('nvidia_image_model', e.target.value)}
+                    <input
+                      type="text"
+                      value={routingConfig.nvidia_image_model || ''}
+                      onChange={(e) => setRoutingConfig((previous) => ({ ...previous, nvidia_image_model: e.target.value }))}
+                      onBlur={() => routingConfig.nvidia_image_model && void updateRoutingConfig('nvidia_image_model', routingConfig.nvidia_image_model)}
+                      placeholder="No image model configured"
                       className="bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl px-3 py-2 text-[11px] font-bold text-slate-700 dark:text-slate-300 outline-none focus:ring-2 focus:ring-indigo-500 transition-all mt-1"
-                    >
-                      <option value="black-forest-labs/flux.1-dev">Black Forest Labs FLUX.1 Dev</option>
-                      <option value="black-forest-labs/flux.1-schnell">Black Forest Labs FLUX.1 Schnell</option>
-                    </select>
+                    />
                   </div>
                 </div>
               </div>
@@ -5832,19 +5820,19 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
 
               <div className="grid grid-cols-1 gap-4">
                 {[
-                  { id: 'deep_reasoning', label: 'Deep Reasoning & Proofs (STEM)', icon: Cpu, recommended: 'nvidia', desc: 'Complex calculus, physics derivations, and multi-step logic (NVIDIA Nemotron / Qwen-80B).' },
-                  { id: 'coding', label: 'Software & Code Generation', icon: Terminal, recommended: 'nvidia', desc: 'Programming, debugging, algorithms, and SQL synthesis.' },
-                  { id: 'chat', label: 'Student Chat (Q&A)', icon: Bot, recommended: 'groq', desc: 'Real-time conversational assistance.' },
-                  { id: 'quiz', label: 'Quiz Generation', icon: Trophy, recommended: 'groq', desc: 'Creating assessments and practice questions.' },
-                  { id: 'lesson', label: 'Lesson Content', icon: BookOpen, recommended: 'nvidia', desc: 'Writing detailed educational modules and deep topic guides.' },
-                  { id: 'skeleton', label: 'Course Skeletons', icon: Layers, recommended: 'cohere', desc: 'Structuring curriculum outlines and hierarchies.' },
-                  { id: 'recommendation', label: 'Smart Recommendations', icon: Star, recommended: 'cohere', desc: 'Analyzing student data for study plans.' },
-                  { id: 'formulas', label: 'Formula Vault & Search', icon: Book, recommended: 'cohere', desc: 'Finding and generating university-level mathematical and scientific formulas.' },
-                  { id: 'flashcard', label: 'Flashcard Generation', icon: FileText, recommended: 'huggingface', desc: 'Fast, repetitive text extraction for study aids.' },
-                  { id: 'rag', label: 'Knowledge Retrieval', icon: Database, recommended: 'openrouter_free', desc: 'Searching and summarizing internal documents.' },
-                  { id: 'vision', label: 'Vision Processing', icon: Search, recommended: 'gemini_direct', desc: 'Analyzing images and handwritten notes.' },
-                  { id: 'past_questions', label: 'Past Questions Extraction', icon: FileText, recommended: 'gemini_direct', desc: 'Extracting questions from uploaded PDFs.' },
-                  { id: 'voice_tutor', label: 'Voice Tutor Engine', icon: Mic, recommended: 'nvidia', desc: 'Interactive audio-to-text voice tutor study sessions (NVIDIA Nemotron Voicechat / Google Gemini Direct).' }
+                  { id: 'deep_reasoning', label: 'Deep Reasoning & Proofs (STEM)', icon: Cpu, desc: 'Complex calculus, physics derivations, and multi-step logic (NVIDIA Nemotron / Qwen-80B).' },
+                  { id: 'coding', label: 'Software & Code Generation', icon: Terminal, desc: 'Programming, debugging, algorithms, and SQL synthesis.' },
+                  { id: 'chat', label: 'Student Chat (Q&A)', icon: Bot, desc: 'Real-time conversational assistance.' },
+                  { id: 'quiz', label: 'Quiz Generation', icon: Trophy, desc: 'Creating assessments and practice questions.' },
+                  { id: 'lesson', label: 'Lesson Content', icon: BookOpen, desc: 'Writing detailed educational modules and deep topic guides.' },
+                  { id: 'skeleton', label: 'Course Skeletons', icon: Layers, desc: 'Structuring curriculum outlines and hierarchies.' },
+                  { id: 'recommendation', label: 'Smart Recommendations', icon: Star, desc: 'Analyzing student data for study plans.' },
+                  { id: 'formulas', label: 'Formula Vault & Search', icon: Book, desc: 'Finding and generating university-level mathematical and scientific formulas.' },
+                  { id: 'flashcard', label: 'Flashcard Generation', icon: FileText, desc: 'Fast, repetitive text extraction for study aids.' },
+                  { id: 'rag', label: 'Knowledge Retrieval', icon: Database, desc: 'Searching and summarizing internal documents.' },
+                  { id: 'vision', label: 'Vision Processing', icon: Search, desc: 'Analyzing images and handwritten notes.' },
+                  { id: 'past_questions', label: 'Past Questions Extraction', icon: FileText, desc: 'Extracting questions from uploaded PDFs.' },
+                  { id: 'voice_tutor', label: 'Voice Tutor Engine', icon: Mic, desc: 'Interactive audio-to-text voice tutor study sessions (NVIDIA Nemotron Voicechat / Google Gemini Direct).' }
                 ].map((task) => (
                   <div key={task.id} className="flex flex-col p-4 rounded-2xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 gap-3">
                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -5855,8 +5843,8 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
                         <div>
                           <div className="flex items-center gap-2 flex-wrap">
                             <h4 className="font-bold text-slate-900 dark:text-white">{task.label}</h4>
-                            <span className="px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold uppercase tracking-wider">
-                              Recommended: {task.recommended}
+                            <span className="text-[10px] text-slate-500 dark:text-slate-400">
+                              Configured provider: {routingConfig[task.id] || 'Not configured'}
                             </span>
                           </div>
                           <p className="text-xs text-slate-500 mt-0.5">{task.desc}</p>
@@ -5864,23 +5852,11 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
                       </div>
 
                       <div className="flex items-center gap-3 flex-wrap">
-                        <button
-                          onClick={() => updateRoutingConfig(task.id, task.recommended)}
-                          className="px-3 py-1.5 rounded-lg text-[10px] font-bold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-colors border border-indigo-200 dark:border-indigo-800"
-                        >
-                          Use Recommended
-                        </button>
                         <div className="flex items-center gap-1 bg-white dark:bg-slate-800 p-1 rounded-xl border border-slate-200 dark:border-slate-700 overflow-x-auto scrollbar-hide max-w-full">
                           {['nvidia', 'gemini_direct', 'groq', 'mistral_direct', 'openrouter_free', 'cohere', 'huggingface'].map((provider) => (
                             <button
                               key={provider}
-                              onClick={() => {
-                                updateRoutingConfig(task.id, provider);
-                                if (task.id === 'voice_tutor') {
-                                  if (provider === 'nvidia') updateRoutingConfig('voice_tutor_model', 'nemotron-voicechat');
-                                  else if (provider === 'gemini_direct') updateRoutingConfig('voice_tutor_model', 'gemini-2.0-flash-exp');
-                                }
-                              }}
+                              onClick={() => { void updateRoutingConfig(task.id, provider); }}
                               className={`px-3 py-1.5 rounded-lg text-[10px] font-bold capitalize transition-all whitespace-nowrap ${
                                 routingConfig[task.id as keyof typeof routingConfig] === provider
                                   ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-sm'
@@ -5894,41 +5870,30 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
                       </div>
                     </div>
 
-                    {/* Conditional sub-configuration for Voice Tutor Model selection */}
                     {task.id === 'voice_tutor' && (
-                      <div className="mt-1 flex flex-wrap items-center gap-2 border-t border-slate-200/60 dark:border-slate-700/60 pt-3">
-                        <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mr-1">
-                          Active Voice Model ({routingConfig.voice_tutor || 'nvidia'}):
-                        </span>
-                        {(routingConfig.voice_tutor === 'nvidia' || !routingConfig.voice_tutor
-                          ? [
-                              'nemotron-voicechat',
-                              'nvidia/nemotron-3-super-120b-a12b',
-                              'nvidia/nemotron-mini-4b-instruct',
-                              'nvidia/llama-3.1-nemotron-70b-instruct',
-                              'nvidia/nemotron-4-340b-instruct'
-                            ]
-                          : [
-                              'gemini-2.0-flash-exp',
-                              'gemini-2.5-flash',
-                              'gemini-2.5-pro'
-                            ]
-                        ).map((model) => (
-                          <button
-                            key={model}
-                            onClick={() => updateRoutingConfig('voice_tutor_model', model)}
-                            className={`px-2.5 py-1 rounded-lg text-[10px] font-semibold border transition-all ${
-                              (routingConfig.voice_tutor_model || (routingConfig.voice_tutor === 'gemini_direct' ? 'gemini-2.0-flash-exp' : 'nemotron-voicechat')) === model
-                                ? 'bg-emerald-500/10 border-emerald-500 text-emerald-700 dark:text-emerald-400 font-bold shadow-xs'
-                                : 'border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
-                            }`}
-                          >
-                            {model}
-                          </button>
-                        ))}
-                        <span className="text-[10px] text-slate-400 italic ml-auto">
-                          {routingConfig.voice_tutor === 'nvidia' ? '(NVIDIA NIM High-Performance Nemotron Voice Inference)' : '(Google Bidirectional Multimodal Streaming)'}
-                        </span>
+                      <div className="mt-1 grid grid-cols-1 md:grid-cols-2 gap-3 border-t border-slate-200/60 dark:border-slate-700/60 pt-3">
+                        <label className="flex flex-col gap-1 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                          Configured Live Voice Model
+                          <input
+                            type="text"
+                            value={routingConfig.voice_tutor_model || ''}
+                            onChange={(e) => setRoutingConfig((previous) => ({ ...previous, voice_tutor_model: e.target.value }))}
+                            onBlur={() => routingConfig.voice_tutor_model && void updateRoutingConfig('voice_tutor_model', routingConfig.voice_tutor_model)}
+                            placeholder="No Live voice model configured"
+                            className="normal-case font-semibold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-700 dark:text-slate-300"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1 text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                          Configured Voice Name
+                          <input
+                            type="text"
+                            value={routingConfig.voice_tutor_voice || ''}
+                            onChange={(e) => setRoutingConfig((previous) => ({ ...previous, voice_tutor_voice: e.target.value }))}
+                            onBlur={() => routingConfig.voice_tutor_voice && void updateRoutingConfig('voice_tutor_voice', routingConfig.voice_tutor_voice)}
+                            placeholder="No voice configured"
+                            className="normal-case font-semibold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-700 dark:text-slate-300"
+                          />
+                        </label>
                       </div>
                     )}
                   </div>

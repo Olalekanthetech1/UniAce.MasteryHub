@@ -1,4 +1,5 @@
 import * as math from 'mathjs';
+import crypto from 'crypto';
 import { getPostgresPool } from './postgresPool';
 import { redactPII } from './piiRedactor';
 
@@ -44,29 +45,30 @@ export interface MathEngineConfig {
   maxMatrixDimension: number;
 }
 
-export const DEFAULT_MATH_CONFIG: MathEngineConfig = {
-  defaultEngine: 'smart_hybrid',
-  timeoutMs: 3500,
-  defaultRigor: 'granular',
-  enableAutoHeuristic: true,
-  maxMatrixDimension: 6,
-};
+function validateMathEngineConfig(value: any): MathEngineConfig {
+  const validEngine = ['sympy_local', 'wolfram_cloud', 'smart_hybrid'].includes(value?.defaultEngine);
+  const validRigor = ['granular', 'concise'].includes(value?.defaultRigor);
+  if (!validEngine || !validRigor ||
+      !Number.isFinite(value?.timeoutMs) || value.timeoutMs <= 0 ||
+      typeof value?.enableAutoHeuristic !== 'boolean' ||
+      !Number.isInteger(value?.maxMatrixDimension) || value.maxMatrixDimension < 1) {
+    throw new Error('Persisted Math Engine configuration is missing required verified settings.');
+  }
+  return value as MathEngineConfig;
+}
 
 /**
- * Retrieves Math Engine Configuration from Neon PostgreSQL (`system_config` key `'math_engine'`) or returns default.
+ * Retrieves the authoritative Math Engine configuration from Neon.
+ * Missing or invalid configuration is an unavailable state, not a reason to synthesize settings.
  */
 export async function getMathEngineConfig(): Promise<MathEngineConfig> {
-  try {
-    const pool = getPostgresPool();
-    if (!pool) return DEFAULT_MATH_CONFIG;
-    const res = await pool.query(`SELECT data FROM system_config WHERE key = 'math_engine' LIMIT 1`);
-    if (res.rows.length > 0 && res.rows[0].data) {
-      return { ...DEFAULT_MATH_CONFIG, ...res.rows[0].data } as MathEngineConfig;
-    }
-  } catch (err) {
-    console.warn('[MathEngine] Failed to fetch config from Neon PostgreSQL, using default:', err);
+  const pool = getPostgresPool();
+  if (!pool) throw new Error('Math Engine unavailable: Neon PostgreSQL is not connected.');
+  const res = await pool.query(`SELECT data FROM system_config WHERE key = 'math_engine' LIMIT 1`);
+  if (res.rows.length === 0 || !res.rows[0].data) {
+    throw new Error('Math Engine unavailable: no authoritative math_engine configuration is stored.');
   }
-  return DEFAULT_MATH_CONFIG;
+  return validateMathEngineConfig(res.rows[0].data);
 }
 
 /**
@@ -75,8 +77,14 @@ export async function getMathEngineConfig(): Promise<MathEngineConfig> {
 export async function saveMathEngineConfig(config: Partial<MathEngineConfig>): Promise<MathEngineConfig> {
   const pool = getPostgresPool();
   if (!pool) throw new Error('Neon PostgreSQL pool not initialized');
-  const current = await getMathEngineConfig();
-  const updated = { ...DEFAULT_MATH_CONFIG, ...current, ...config, updatedAt: new Date().toISOString() };
+  let current: Partial<MathEngineConfig> = {};
+  try {
+    current = await getMathEngineConfig();
+  } catch (error) {
+    // A first-time configuration is accepted only when the submitted fields satisfy the full runtime schema.
+    if (Object.keys(config).length === 0) throw error;
+  }
+  const updated = validateMathEngineConfig({ ...current, ...config, updatedAt: new Date().toISOString() });
   await pool.query(
     `INSERT INTO system_config (key, data, updated_at)
      VALUES ('math_engine', $1::jsonb, NOW())
@@ -105,10 +113,10 @@ export async function logMathTelemetry(
       latencyMs: res.latencyMs,
       success: res.success,
       error: res.error || null,
-      userId: userId || 'anonymous',
+      userId: userId || null,
       rigorLevel: req.rigorLevel || 'granular',
     };
-    const id = `math_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const id = `math_${Date.now()}_${crypto.randomUUID()}`;
     await pool.query(
       `INSERT INTO system_logs (id, level, category, message, metadata, user_id, created_at)
        VALUES ($1, $2, 'math_telemetry', $3, $4::jsonb, $5, NOW())`,

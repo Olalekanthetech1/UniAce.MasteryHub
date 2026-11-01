@@ -1,8 +1,8 @@
 
 export type Department = string;
 export type Subject = string;
-export type Level = '100' | '200' | '300' | '400' | '500' | '600';
-export type Semester = '1st Semester' | '2nd Semester';
+export type Level = string;
+export type Semester = string;
 
 export type CourseId = string;
 
@@ -150,7 +150,8 @@ export interface UserProfile {
   referralCode?: string;
   referredBy?: string;
   referral_count?: number;
-  ai_sparks?: number;
+  ai_sparks?: number | null;
+  unlimited_sparks?: boolean;
   has_seen_whatsapp?: boolean;
   onboarding_completed?: boolean;
 }
@@ -372,7 +373,7 @@ export interface LeaderboardEntry {
   photoURL: string;
   xp: number;
   rank: number;
-  streak: number;
+  streak?: number | null;
 }
 
 export interface Curriculum {

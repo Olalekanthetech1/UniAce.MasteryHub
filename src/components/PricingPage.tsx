@@ -4,7 +4,7 @@ import { Sparkles, Check, Zap, Shield, Rocket, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 // @ts-ignore
 import PaystackPop from '@paystack/inline-js';
-import { PricingService, PricingPlan, DEFAULT_PRICING_PLANS } from '../services/pricingConfig';
+import { PricingService, PricingPlan } from '../services/pricingConfig';
 
 export default function PricingPage() {
   const { user, profile } = useAuth();
@@ -12,14 +12,12 @@ export default function PricingPage() {
   const [selectedPlan, setSelectedPlan] = useState<any>(null);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [transactionRef, setTransactionRef] = useState('');
-  const [plans, setPlans] = useState<PricingPlan[]>(DEFAULT_PRICING_PLANS);
+  const [plans, setPlans] = useState<PricingPlan[]>([]);
   const [dailyFreeSparks, setDailyFreeSparks] = useState<number | null>(null);
 
   useEffect(() => {
     const unsubscribe = PricingService.subscribePricingConfig((config) => {
-      if (config.plans && config.plans.length > 0) {
-        setPlans(config.plans.filter(p => p.enabled !== false));
-      }
+      setPlans(config.plans.filter(p => p.enabled !== false));
     });
 
     let isMounted = true;
@@ -144,6 +142,11 @@ export default function PricingPage() {
           </div>
         </div>
 
+        {plans.length === 0 ? (
+          <div className="rounded-3xl border border-amber-200 dark:border-amber-900 p-8 text-center text-slate-600 dark:text-zinc-300">
+            Live pricing is currently unavailable. No estimated or default prices are displayed.
+          </div>
+        ) : (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8 items-start">
           {plans.map((plan) => (
             <motion.div 
@@ -208,6 +211,7 @@ export default function PricingPage() {
             </motion.div>
           ))}
         </div>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
           <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-3xl p-8 flex items-start gap-6 shadow-sm">
@@ -217,7 +221,7 @@ export default function PricingPage() {
             <div>
               <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-1">How Sparks Work</h3>
               <p className="text-slate-600 dark:text-zinc-400 text-sm leading-relaxed">
-                Sparks fuel UniAce AI. Costs are dynamic based on query complexity. Standard queries start at ~2 Sparks; Deep Analysis starts at ~15 Sparks.
+                Sparks fuel UniAce AI. Costs are dynamic based on query complexity. The applicable Spark cost is calculated by the backend for each request and shown with the transaction result.
                 {dailyFreeSparks !== null && dailyFreeSparks > 0
                   ? ` Daily allowance: Free users receive ${dailyFreeSparks} Sparks daily!`
                   : ''}

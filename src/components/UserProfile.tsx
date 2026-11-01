@@ -467,7 +467,7 @@ export default function UserProfile({ onBack, onNavigate }: UserProfileProps) {
             </div>
             <div className="bg-slate-50 dark:bg-slate-700/50 p-4 rounded-2xl">
               <p className="text-xs text-slate-500 dark:text-slate-400">AI Sparks</p>
-              <p className="text-sm font-semibold text-slate-900 dark:text-white">{isAdmin ? 'Unlimited' : (profile?.ai_sparks || 0)}</p>
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">{profile?.unlimited_sparks === true ? 'Unlimited' : (typeof profile?.ai_sparks === 'number' ? profile.ai_sparks : 'Not verified')}</p>
             </div>
             {profile?.subscription_start_date && (
               <div className="bg-slate-50 dark:bg-slate-700/50 p-4 rounded-2xl">

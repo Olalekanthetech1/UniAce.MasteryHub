@@ -35,20 +35,27 @@ export const CourseService = {
       throw new Error(`Failed to fetch catalog (${res.error || `HTTP ${res.status}`})`);
     }
     const data = res.data;
-    return (data.courses || []).map((c: any) => ({
-      id: c.id,
-      title: c.title,
-      description: c.description || '',
-      department: c.department || '',
-      faculty: c.faculty || '',
-      faculties: c.faculties || (c.faculty ? [c.faculty] : []),
-      departments: c.departments || (c.department ? [c.department] : []),
-      level: (c.level || '100') as any,
-      semester: (normalizeSemester(c.semester) || '1st Semester') as any,
-      scope: c.scope || 'DEPARTMENT',
-      status: c.status,
-      syllabus: Array.isArray(c.syllabus) ? sortCourseSyllabus(c.syllabus) : []
-    }));
+    if (!Array.isArray(data.courses)) throw new Error('Catalog response is missing its live courses array.');
+    return data.courses.map((c: any) => {
+      const normalizedSemester = normalizeSemester(c.semester);
+      if (!c.id || !c.title || !c.level || !normalizedSemester || !c.scope) {
+        throw new Error(`Course ${c.id || '(unknown id)'} is missing authoritative academic metadata.`);
+      }
+      return {
+        id: c.id,
+        title: c.title,
+        description: typeof c.description === 'string' ? c.description : '',
+        department: typeof c.department === 'string' ? c.department : '',
+        faculty: typeof c.faculty === 'string' ? c.faculty : '',
+        faculties: Array.isArray(c.faculties) ? c.faculties : (c.faculty ? [c.faculty] : []),
+        departments: Array.isArray(c.departments) ? c.departments : (c.department ? [c.department] : []),
+        level: c.level as any,
+        semester: normalizedSemester as any,
+        scope: c.scope,
+        status: c.status,
+        syllabus: Array.isArray(c.syllabus) ? sortCourseSyllabus(c.syllabus) : []
+      };
+    });
   },
 
   async getCourse(courseId: string): Promise<Course | null> {
@@ -59,17 +66,21 @@ export const CourseService = {
     }
     if (!res.data?.course) return null;
     const c = res.data.course;
+    const normalizedSemester = normalizeSemester(c.semester);
+    if (!c.id || !c.title || !c.level || !normalizedSemester || !c.scope) {
+      throw new Error(`Course ${courseId} is missing authoritative academic metadata.`);
+    }
     return {
       id: c.id,
       title: c.title,
-      description: c.description || '',
-      department: c.department || '',
-      faculty: c.faculty || '',
+      description: typeof c.description === 'string' ? c.description : '',
+      department: typeof c.department === 'string' ? c.department : '',
+      faculty: typeof c.faculty === 'string' ? c.faculty : '',
       faculties: c.faculty ? [c.faculty] : [],
       departments: c.department ? [c.department] : [],
-      level: (c.level || '100') as any,
-      semester: (normalizeSemester(c.semester) || '1st Semester') as any,
-      scope: c.scope || 'DEPARTMENT',
+      level: c.level as any,
+      semester: normalizedSemester as any,
+      scope: c.scope,
       status: c.status,
       syllabus: Array.isArray(c.syllabus) ? sortCourseSyllabus(c.syllabus) : []
     };
@@ -82,7 +93,7 @@ export const CourseService = {
     }
     const data = res.data;
     if (!Array.isArray(data.modules)) {
-      return [];
+      throw new Error(`Modules response for ${courseId} did not include a verified modules array.`);
     }
     return data.modules.map((m: any) => ({
       id: m.id,
@@ -99,7 +110,7 @@ export const CourseService = {
     }
     const data = res.data;
     if (!Array.isArray(data.lessons)) {
-      return [];
+      throw new Error(`Lessons response for ${courseId}/${moduleId} did not include a verified lessons array.`);
     }
     return data.lessons.map((l: any) => ({
       id: l.id,
@@ -110,7 +121,11 @@ export const CourseService = {
   },
 
   async getQuiz(courseId: string, moduleId: string): Promise<Quiz | null> {
-    return null;
+    const res = await safeFetchJson<any>(`/api/courses/${encodeURIComponent(courseId)}/modules/${encodeURIComponent(moduleId)}/quiz`);
+    if (!res.ok || !res.data || !Object.prototype.hasOwnProperty.call(res.data, 'quiz')) {
+      throw new Error(`Live quiz retrieval is unavailable for ${courseId}/${moduleId}.`);
+    }
+    return res.data.quiz as Quiz | null;
   },
 
   async getFormulas(courseId: string): Promise<Formula[]> {
@@ -119,17 +134,17 @@ export const CourseService = {
       throw new Error(`Failed to fetch formulas for ${courseId} (HTTP ${res.status}: ${res.statusText})`);
     }
     const data = await res.json();
-    if (Array.isArray(data.formulas)) {
-      return data.formulas.map((f: any) => ({
-        id: f.id,
-        name: f.name,
-        latex: f.latex_expression || f.latex || '',
-        description: f.derivation_notes || f.description || '',
-        category: f.category || 'General',
-        variables: f.variables_breakdown
-      }));
+    if (!Array.isArray(data.formulas)) {
+      throw new Error(`Formula response for ${courseId} did not include a verified formulas array.`);
     }
-    return [];
+    return data.formulas.map((f: any) => ({
+      id: f.id,
+      name: f.name,
+      latex: f.latex_expression ?? f.latex ?? '',
+      description: f.derivation_notes ?? f.description ?? '',
+      category: typeof f.category === 'string' ? f.category : '',
+      variables: f.variables_breakdown
+    }));
   },
 
   async saveFormulas(courseId: string, formulas: Formula[]): Promise<void> {

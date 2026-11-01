@@ -1,44 +1,61 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Trophy, Medal, Crown, User, Zap, Star, ArrowUp, ArrowDown, Minus, Flame } from 'lucide-react';
+import { Trophy, Medal, Crown, User, Zap, Flame } from 'lucide-react';
 import { safeFetchJson } from '../utils/safeFetch';
 
 interface LeaderboardEntry {
   uid: string;
   displayName: string;
-  photoURL: string;
+  photoURL?: string | null;
   xp: number;
   level: number;
-  streak: number;
-  rank?: number;
+  streak?: number | null;
+  rank: number;
 }
 
 export default function Leaderboard() {
   const [leaders, setLeaders] = useState<LeaderboardEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
     const fetchLeaders = async () => {
       try {
-        const res = await safeFetchJson<any>('/api/gamification/leaderboard');
-        if (res.ok && res.data && isMounted) {
-          const json = res.data;
-          if (json.leaderboard) {
-            const data = json.leaderboard.map((item: any) => ({
-              uid: item.id,
-              displayName: item.name || 'Scholar',
-              photoURL: item.avatar || '',
-              xp: item.xp || 0,
-              level: item.level || 1,
-              streak: item.streak || 0,
-              rank: item.rank
-            }));
-            setLeaders(data);
+        const res = await safeFetchJson<any>('/api/gamification/leaderboard', { cache: 'no-store' });
+        if (!res.ok || !res.data || !Array.isArray(res.data.leaderboard)) {
+          throw new Error(res.error || 'The live leaderboard response is unavailable or malformed.');
+        }
+        const data: LeaderboardEntry[] = res.data.leaderboard.map((item: any, index: number) => {
+          if (typeof item.id !== 'string' || !item.id.trim() ||
+              typeof item.name !== 'string' || !item.name.trim() ||
+              !Number.isInteger(item.xp) || item.xp < 0 ||
+              !Number.isInteger(item.level) || item.level < 1 ||
+              !Number.isInteger(item.rank) || item.rank < 1 ||
+              (item.streak !== null && item.streak !== undefined &&
+                (!Number.isInteger(item.streak) || item.streak < 0))) {
+            throw new Error(`Leaderboard record at position ${index + 1} is missing verified fields.`);
           }
+          return {
+            uid: item.id,
+            displayName: item.name,
+            photoURL: typeof item.avatar === 'string' && item.avatar.trim() ? item.avatar : null,
+            xp: item.xp,
+            level: item.level,
+            streak: item.streak ?? null,
+            rank: item.rank
+          };
+        });
+        if (isMounted) {
+          setLeaders(data);
+          setLoadError(null);
         }
       } catch (error) {
         console.warn('Leaderboard fetch error:', error);
+        if (isMounted) {
+          setLeaders([]);
+          setLoadError(error instanceof Error ? error.message : String(error));
+        }
       } finally {
         if (isMounted) setIsLoading(false);
       }
@@ -56,14 +73,11 @@ export default function Leaderboard() {
             <Trophy size={24} />
           </div>
           <div>
-            <h2 className="text-lg sm:text-xl font-bold text-zinc-900 dark:text-white tracking-tight">Global Hall of Fame</h2>
-            <p className="text-xs text-zinc-500 font-semibold uppercase tracking-wider">Top 10 Gladiators</p>
+            <h2 className="text-lg sm:text-xl font-bold text-zinc-900 dark:text-white tracking-tight">Recorded Student Leaderboard</h2>
+            <p className="text-xs text-zinc-500 font-semibold uppercase tracking-wider">Ranked by stored XP</p>
           </div>
         </div>
-        <div className="flex items-center gap-2 bg-zinc-100 dark:bg-zinc-800 px-3.5 py-1.5 rounded-xl">
-          <Star size={16} className="text-amber-400" fill="currentColor" />
-          <span className="text-xs sm:text-sm font-semibold text-zinc-900 dark:text-white">Season 1</span>
-        </div>
+        <span className="text-xs text-zinc-500">Live user profile records</span>
       </div>
 
       <div className="p-6">
@@ -72,6 +86,14 @@ export default function Leaderboard() {
             {[...Array(5)].map((_, i) => (
               <div key={i} className="h-16 bg-zinc-50 dark:bg-zinc-800/50 rounded-2xl animate-pulse" />
             ))}
+          </div>
+        ) : loadError ? (
+          <div className="py-8 text-center text-sm text-amber-700 dark:text-amber-300">
+            Leaderboard unavailable: {loadError}
+          </div>
+        ) : leaders.length === 0 ? (
+          <div className="py-8 text-center text-sm text-zinc-500">
+            No verified student leaderboard records are currently available.
           </div>
         ) : (
           <div className="space-y-3">
@@ -89,19 +111,23 @@ export default function Leaderboard() {
               >
                 <div className="flex items-center gap-4">
                   <div className="w-8 flex justify-center">
-                    {index === 0 ? <Crown className="text-yellow-500" size={20} /> :
-                     index === 1 ? <Medal className="text-zinc-400" size={20} /> :
-                     index === 2 ? <Medal className="text-amber-600" size={20} /> :
-                     <span className="text-sm font-bold text-zinc-400">#{index + 1}</span>}
+                    {leader.rank === 1 ? <Crown className="text-yellow-500" size={20} /> :
+                     leader.rank === 2 ? <Medal className="text-zinc-400" size={20} /> :
+                     leader.rank === 3 ? <Medal className="text-amber-600" size={20} /> :
+                     <span className="text-sm font-bold text-zinc-400">#{leader.rank}</span>}
                   </div>
                   
                   <div className="relative">
-                    <div className="w-10 h-10 rounded-xl overflow-hidden border-2 border-white dark:border-zinc-800 shadow-sm">
-                      <img 
-                        src={leader.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${leader.uid}`} 
-                        alt={leader.displayName} 
-                        className="w-full h-full object-cover"
-                      />
+                    <div className="w-10 h-10 rounded-xl overflow-hidden border-2 border-white dark:border-zinc-800 shadow-sm flex items-center justify-center bg-zinc-100 dark:bg-zinc-800">
+                      {leader.photoURL ? (
+                        <img
+                          src={leader.photoURL}
+                          alt={leader.displayName}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <User size={18} className="text-zinc-500" />
+                      )}
                     </div>
                     <div className="absolute -bottom-1 -right-1 bg-zinc-900 text-white text-[8px] font-bold px-1 rounded-sm">
                       Lvl {leader.level}
@@ -113,7 +139,7 @@ export default function Leaderboard() {
                     <div className="flex items-center gap-2">
                        <Zap size={10} className="text-amber-500" fill="currentColor" />
                        <span className="text-[10px] font-bold text-zinc-500 uppercase">{leader.xp.toLocaleString()} XP</span>
-                       {leader.streak > 0 && (
+                       {typeof leader.streak === 'number' && leader.streak > 0 && (
                          <>
                            <span className="text-zinc-300 dark:text-zinc-700">•</span>
                            <span className="text-[10px] font-bold text-orange-500 uppercase flex items-center gap-0.5">
@@ -126,15 +152,7 @@ export default function Leaderboard() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-4">
-                  <div className="flex flex-col items-end">
-                    <div className="flex items-center gap-1 text-emerald-500">
-                      <ArrowUp size={12} />
-                      <span className="text-[10px] font-bold">2</span>
-                    </div>
-                    <span className="text-[8px] font-bold text-zinc-400 uppercase">Trend</span>
-                  </div>
-                </div>
+                <div className="text-xs text-zinc-400">#{leader.rank}</div>
               </motion.div>
             ))}
           </div>
@@ -143,7 +161,7 @@ export default function Leaderboard() {
 
       <div className="p-6 bg-zinc-50 dark:bg-zinc-900/50 border-t border-zinc-100 dark:border-zinc-800 text-center">
         <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-[0.2em]">
-          Leaderboard updates every 5 minutes
+          Rankings reflect the latest successfully retrieved profile metrics
         </p>
       </div>
     </div>
