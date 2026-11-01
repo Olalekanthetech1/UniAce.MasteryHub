@@ -8204,94 +8204,132 @@ Requirements:
 });
 
 /**
- * Server-side helper to dynamically generate plausible, contextually grounded academic distractors
- * for multiple-choice questions using AI, ensuring they model real student misconceptions and sign errors.
+ * Generate distractors only from supplied lesson content. Invalid or incomplete
+ * provider output is an error; it is never converted into a successful empty list.
  */
 export async function generatePlausibleDistractorsServer(params: {
   question: string;
   correctAnswer: string;
   subtopicTitle?: string;
   subtopicContent: string;
-  count?: number;
+  count: number;
   subject?: string;
   rollingMasteryScore?: number;
 }): Promise<Array<{ text: string; feedback: string }>> {
   const {
     question,
     correctAnswer,
-    subtopicTitle = '',
+    subtopicTitle,
     subtopicContent,
-    count = 3,
-    subject = 'University Assessment',
-    rollingMasteryScore = 50
+    count,
+    subject,
+    rollingMasteryScore
   } = params;
 
+  if (!question.trim() || !correctAnswer.trim() || !subtopicContent.trim()) {
+    throw new Error('Question, correct answer, and source lesson content are required.');
+  }
+  if (!Number.isInteger(count) || count < 1 || count > 10) {
+    throw new Error('A valid distractor count from 1 to 10 is required.');
+  }
+  if (rollingMasteryScore !== undefined &&
+      (!Number.isFinite(rollingMasteryScore) || rollingMasteryScore < 0 || rollingMasteryScore > 100)) {
+    throw new Error('Rolling mastery must be a verified percentage between 0 and 100.');
+  }
+
+  const masteryDirective = rollingMasteryScore === undefined
+    ? 'Do not assume or infer the student mastery level.'
+    : (rollingMasteryScore >= 75
+      ? 'Generate subtle, sophisticated distractors appropriate for the supplied high mastery score.'
+      : 'Generate rigorous university-level distractors appropriate for the supplied mastery score.');
+
   const systemInstruction = `You are a university assessment psychometrician.
-Generate exactly ${count} highly PLAUSIBLE BUT INCORRECT "distractor" answer options for a multiple-choice question.
-Output strictly valid raw JSON starting with { and ending with }.${latexInstruction}
+Generate exactly ${count} plausible but incorrect distractor options for a multiple-choice question.
+Output strictly valid raw JSON starting with { and ending with }. ${latexInstruction}
 
 DISTRACTOR RIGOR RULES:
-1. Contextually Grounded: Every distractor MUST be strictly derived from the provided subtopic material.
-2. Model Real University Errors: Include sign inversions ($+ \\leftrightarrow -$), reciprocal fraction errors, forgotten constants, or adjacent phase/mechanism confusion.
-3. Every distractor MUST include a specific 'feedback' string explaining why an intelligent student might mistakenly choose it, and why it is actually false.
-4. Rigor Level: ${rollingMasteryScore >= 75 ? 'HIGH MASTERY (>=75%): Generate subtle, sophisticated distractors testing deep mechanical comprehension.' : 'Standard university exam caliber.'}
+1. Every distractor must be strictly derived from the supplied lesson material.
+2. Model realistic misconceptions without introducing concepts absent from the source.
+3. Every distractor must include specific feedback explaining why it is wrong.
+4. ${masteryDirective}
 
 Return JSON matching:
 {
   "distractors": [
     {
-      "text": "string (Plausible distractor text with $...$ math)",
-      "feedback": "string (Specific feedback on why this option is false)"
+      "text": "Plausible but incorrect option",
+      "feedback": "Source-grounded explanation of the misconception"
     }
   ]
 }`;
 
-  const userPrompt = `Question: "${question}"
-Correct Answer: "${correctAnswer}"
-Subtopic: "${subtopicTitle}"
-Domain/Subject: "${subject}"
-Student Mastery: ${rollingMasteryScore}%
-Content Excerpt:
-${(subtopicContent || '').slice(0, 4000)}`;
+  const contextLines = [
+    `Question: "${question}"`,
+    `Correct answer: "${correctAnswer}"`,
+    subtopicTitle ? `Subtopic: "${subtopicTitle}"` : '',
+    subject ? `Subject: "${subject}"` : '',
+    rollingMasteryScore === undefined ? '' : `Verified rolling mastery: ${rollingMasteryScore}%`,
+    `Source lesson content:\\n${subtopicContent.slice(0, 4000)}`
+  ].filter(Boolean);
 
-  try {
-    const parsed = await completeWithProviderJSON<{ distractors: Array<{ text: string; feedback: string }> }>({
-      type: 'quiz' as any,
-      messages: [
-        { role: 'system', content: systemInstruction },
-        { role: 'user', content: userPrompt }
-      ],
-      complexity: rollingMasteryScore >= 75 ? 'high' : 'standard'
-    });
+  const parsed = await completeWithProviderJSON<{ distractors: Array<{ text: string; feedback: string }> }>({
+    type: 'quiz' as any,
+    messages: [
+      { role: 'system', content: systemInstruction },
+      { role: 'user', content: contextLines.join('\\n\\n') }
+    ],
+    complexity: rollingMasteryScore !== undefined && rollingMasteryScore >= 75 ? 'high' : 'standard'
+  });
 
-    const list = Array.isArray(parsed?.distractors) ? parsed.distractors : [];
-    return list
-      .filter((d) => d && typeof d.text === 'string' && d.text.trim().toLowerCase() !== correctAnswer.trim().toLowerCase())
-      .slice(0, count);
-  } catch (err: any) {
-    logger.warn({ err: err.message }, '[generatePlausibleDistractorsServer] Distractor fallback notice');
-    return [];
+  if (!Array.isArray(parsed?.distractors) || parsed.distractors.length !== count) {
+    throw new Error(`The provider did not return exactly ${count} distractors. The incomplete result was rejected.`);
   }
+
+  const seen = new Set<string>([correctAnswer.trim().toLocaleLowerCase()]);
+  const validated = parsed.distractors.map((item, index) => {
+    const textValue = typeof item?.text === 'string' ? item.text.trim() : '';
+    const feedback = typeof item?.feedback === 'string' ? item.feedback.trim() : '';
+    const normalized = textValue.toLocaleLowerCase();
+    if (!textValue || !feedback || seen.has(normalized)) {
+      throw new Error(`Distractor ${index + 1} is missing, duplicated, or identical to the correct answer.`);
+    }
+    seen.add(normalized);
+    return { text: textValue, feedback };
+  });
+
+  return validated;
 }
 
 app.post('/api/quiz/generate-distractors', verifyAuth, async (req, res) => {
   const { question, correctAnswer, subtopicTitle, subtopicContent, count, subject, rollingMasteryScore } = req.body || {};
-  if (!question || !correctAnswer || !subtopicContent) {
-    return res.status(400).json({ error: 'question, correctAnswer, and subtopicContent are required' });
+  if (typeof question !== 'string' || typeof correctAnswer !== 'string' ||
+      typeof subtopicContent !== 'string' || !question.trim() ||
+      !correctAnswer.trim() || !subtopicContent.trim()) {
+    return res.status(400).json({ error: 'Question, correct answer, and source lesson content are required.' });
   }
+  if (!Number.isInteger(count) || count < 1 || count > 10) {
+    return res.status(400).json({ error: 'A valid distractor count from 1 to 10 is required.' });
+  }
+  if (rollingMasteryScore !== undefined &&
+      (typeof rollingMasteryScore !== 'number' || !Number.isFinite(rollingMasteryScore) ||
+       rollingMasteryScore < 0 || rollingMasteryScore > 100)) {
+    return res.status(400).json({ error: 'Rolling mastery must be a verified percentage between 0 and 100.' });
+  }
+
   try {
     const distractors = await generatePlausibleDistractorsServer({
       question,
       correctAnswer,
-      subtopicTitle,
+      subtopicTitle: typeof subtopicTitle === 'string' ? subtopicTitle : undefined,
       subtopicContent,
-      count: Number(count) || 3,
-      subject,
-      rollingMasteryScore: Number(rollingMasteryScore) || 50
+      count,
+      subject: typeof subject === 'string' ? subject : undefined,
+      rollingMasteryScore
     });
     return res.json({ success: true, distractors });
   } catch (error: any) {
-    return res.status(500).json({ error: 'Failed to generate distractors', details: error.message });
+    logger.error({ error: error?.message || String(error) }, '[Quiz distractors] Generation failed');
+    return res.status(503).json({ error: 'Verified source-grounded distractors could not be generated.' });
   }
 });
 
