@@ -1826,64 +1826,79 @@ app.get('/api/system/config/:key', async (req, res) => {
 app.post('/api/admin/system-config/:key', verifyAdmin, async (req, res) => {
   const { key } = req.params;
   const data = req.body;
+  const pool = getPostgresPool();
+  if (!pool) {
+    return res.status(503).json({ error: 'System configuration unavailable: PostgreSQL is not connected.' });
+  }
+
   try {
-    const pool = getPostgresPool();
-    if (pool) {
-      await pool.query(
-        'INSERT INTO system_config (key, data, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()',
-        [key, JSON.stringify(data)]
-      );
-      systemConfigCache.delete(key);
-    }
-    res.json({ success: true, key, data });
+    await pool.query(
+      'INSERT INTO system_config (key, data, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()',
+      [key, JSON.stringify(data)]
+    );
+    systemConfigCache.delete(key);
+    return res.json({ success: true, key, data });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    logger.error({ key, error: err?.message || String(err) }, '[System config] Persist failed');
+    return res.status(503).json({ error: 'System configuration could not be persisted to the authoritative database.' });
   }
 });
 
 app.get('/api/announcements/active', async (req, res) => {
+  const pool = getPostgresPool();
+  if (!pool) {
+    return res.status(503).json({ error: 'Announcements unavailable: PostgreSQL is not connected.' });
+  }
+
   try {
-    const pool = getPostgresPool();
-    if (!pool) return res.json({ announcements: [] });
     const result = await pool.query(`
       SELECT id, title, message, severity, audience, target_department, target_level, cta_label, cta_url, active, expires_at, created_at
       FROM announcements
       WHERE active = TRUE AND (expires_at IS NULL OR expires_at > NOW())
       ORDER BY created_at DESC
     `);
-    res.json({ announcements: result.rows });
+    return res.json({ announcements: result.rows });
   } catch (err: any) {
-    res.json({ announcements: [] });
+    logger.error({ error: err?.message || String(err) }, '[Announcements] Active announcements query failed');
+    return res.status(503).json({ error: 'Announcements could not be loaded from the authoritative database.' });
   }
 });
 
 app.get('/api/user/announcements/dismissals', verifyAuth, async (req, res) => {
   const uid = (req as any).user.uid;
+  const pool = getPostgresPool();
+  if (!pool) {
+    return res.status(503).json({ error: 'Announcement dismissals unavailable: PostgreSQL is not connected.' });
+  }
+
   try {
-    const pool = getPostgresPool();
-    if (!pool) return res.json({ dismissedIds: [] });
     const result = await pool.query('SELECT announcement_id FROM announcement_dismissals WHERE uid = $1', [uid]);
-    res.json({ dismissedIds: result.rows.map(r => r.announcement_id) });
+    return res.json({ dismissedIds: result.rows.map(r => r.announcement_id) });
   } catch (err: any) {
-    res.json({ dismissedIds: [] });
+    logger.error({ uid, error: err?.message || String(err) }, '[Announcements] Dismissal lookup failed');
+    return res.status(503).json({ error: 'Announcement dismissals could not be verified.' });
   }
 });
 
 app.post('/api/user/announcements/dismiss', verifyAuth, async (req, res) => {
   const uid = (req as any).user.uid;
-  const { announcementId } = req.body;
-  if (!announcementId) return res.status(400).json({ error: 'announcementId required' });
+  const announcementId = typeof req.body?.announcementId === 'string' ? req.body.announcementId.trim() : '';
+  if (!announcementId) return res.status(400).json({ error: 'A valid announcementId is required.' });
+
+  const pool = getPostgresPool();
+  if (!pool) {
+    return res.status(503).json({ error: 'Announcement dismissal unavailable: PostgreSQL is not connected.' });
+  }
+
   try {
-    const pool = getPostgresPool();
-    if (pool) {
-      await pool.query(
-        'INSERT INTO announcement_dismissals (uid, announcement_id, dismissed_at) VALUES ($1, $2, NOW()) ON CONFLICT (uid, announcement_id) DO NOTHING',
-        [uid, announcementId]
-      );
-    }
-    res.json({ success: true });
+    await pool.query(
+      'INSERT INTO announcement_dismissals (uid, announcement_id, dismissed_at) VALUES ($1, $2, NOW()) ON CONFLICT (uid, announcement_id) DO NOTHING',
+      [uid, announcementId]
+    );
+    return res.json({ success: true });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    logger.error({ uid, announcementId, error: err?.message || String(err) }, '[Announcements] Dismissal write failed');
+    return res.status(503).json({ error: 'Announcement dismissal could not be persisted.' });
   }
 });
 
