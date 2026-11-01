@@ -15,13 +15,28 @@ export interface EligibilityResult {
  * Future-proofed: Uses explicit profile faculty, registry lookup, and structural domain inference
  * to seamlessly accommodate new departments without manual code updates.
  */
+export type DepartmentFacultyMap = Record<string, string>;
+
+/**
+ * Resolves a student's faculty from their explicit profile value first, then
+ * from the institution's live department-to-faculty registry.
+ */
 export const resolveUserFaculty = (
-  _department?: string | null,
-  explicitFaculty?: string | null
+  department?: string | null,
+  explicitFaculty?: string | null,
+  departmentToFaculty: DepartmentFacultyMap = {}
 ): string => {
-  // A department-to-faculty relationship is used only when supplied by the live user/institution record.
-  // No department-name heuristics are used to infer institutional structure.
-  return typeof explicitFaculty === 'string' ? explicitFaculty.trim() : '';
+  if (typeof explicitFaculty === 'string' && explicitFaculty.trim()) {
+    return explicitFaculty.trim();
+  }
+
+  const normalizedDepartment = String(department || '').trim().toLowerCase().replace(/\\s+/g, ' ');
+  if (!normalizedDepartment) return '';
+
+  const matchingEntry = Object.entries(departmentToFaculty).find(
+    ([name]) => name.trim().toLowerCase().replace(/\\s+/g, ' ') === normalizedDepartment
+  );
+  return typeof matchingEntry?.[1] === 'string' ? matchingEntry[1].trim() : '';
 };
 
 /**
@@ -57,6 +72,9 @@ export const isCourseFacultyCore = (course: Course, userFaculty: string): boolea
  */
 export const isCourseDepartmentMatch = (course: Course, userDepartment: string): boolean => {
   if (!course || !userDepartment) return false;
+  // Department targeting must not be inferred from the legacy grouping field
+  // on GLOBAL or FACULTY courses.
+  if (course.scope && course.scope !== 'DEPARTMENT') return false;
 
   if (course.offerings && course.offerings.length > 0) {
     const matched = course.offerings.some(
@@ -87,7 +105,8 @@ export const isCourseDepartmentMatch = (course: Course, userDepartment: string):
 export const getCourseProgramStatus = (
   course: Course,
   profile: UserProfile | null,
-  activeSemester?: Semester | string
+  activeSemester?: Semester | string,
+  departmentToFaculty: DepartmentFacultyMap = {}
 ): ProgramStatus => {
   if (!course) return 'unmapped';
   if (!profile?.department || !profile?.academic_level) return 'unmapped';
@@ -110,7 +129,7 @@ export const getCourseProgramStatus = (
   }
 
   // 2. Faculty Core Courses (across all departments within the faculty)
-  const userFaculty = resolveUserFaculty(profile.department, profile.faculty);
+  const userFaculty = resolveUserFaculty(profile.department, profile.faculty, departmentToFaculty);
   if (isCourseFacultyCore(course, userFaculty)) {
     if (courseLevel === userLevel && (!userSemester || courseSemester === userSemester)) {
       return 'current_program';
@@ -134,7 +153,8 @@ export const isCourseEligibleForUser = (
   course: Course,
   profile: UserProfile | null,
   activeSemester: Semester | string,
-  explicitEnrolledIds: CourseId[] = []
+  explicitEnrolledIds: CourseId[] = [],
+  departmentToFaculty: DepartmentFacultyMap = {}
 ): boolean => {
   if (!course || !profile) return false;
 
@@ -151,7 +171,7 @@ export const isCourseEligibleForUser = (
     return false;
   }
 
-  const status = getCourseProgramStatus(course, profile, activeSemester);
+  const status = getCourseProgramStatus(course, profile, activeSemester, departmentToFaculty);
 
   if (status === 'current_program' || status === 'global_core') {
     return true;
