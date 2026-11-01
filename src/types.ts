@@ -373,7 +373,7 @@ export interface LeaderboardEntry {
   photoURL: string;
   xp: number;
   rank: number;
-  streak: number;
+  streak?: number | null;
 }
 
 export interface Curriculum {
