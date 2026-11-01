@@ -4,7 +4,7 @@ import { validateRecordedHumanReplay } from '../server/services/arenaReplay';
 
 const validRow = () => ({
   id: 'battle-real-001',
-  updated_at: '2026-10-31T12:00:00.000Z',
+  updated_at: '2026-10-31T12:01:00.000Z',
   data: {
     status: 'finished',
     opponentType: 'human',
