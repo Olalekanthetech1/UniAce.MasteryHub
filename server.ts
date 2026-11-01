@@ -8353,14 +8353,8 @@ function isExerciseAlreadySeen(ex: any, avoidSet: string[]): boolean {
 app.post('/api/skill-session/generate', verifyAuth, async (req, res) => {
   const {
     courseId,
-    courseTitle,
-    moduleId,
-    moduleTitle,
     skillId,
     skillTitle,
-    skillContent,
-    rollingMastery = 50,
-    sessionAttempt = 1,
     avoidPrompts = [],
     forceFresh = false
   } = req.body || {};
@@ -8380,37 +8374,65 @@ app.post('/api/skill-session/generate', verifyAuth, async (req, res) => {
     let dbKeyTerms: string[] = [];
     let dbLearningOutcomes: string[] = [];
     let existingBank: any[] = [];
-    let matchedLessonId = skillId || '';
+    const uid = (req as any).user?.uid;
+    if (!uid) return res.status(401).json({ error: 'Authenticated student session required.' });
 
     const lessonQuery = await pool.query(
-      `SELECT id, title, content_markdown, key_terms, learning_outcomes, skill_bank
-       FROM course_lessons 
-       WHERE course_id = $1 AND (id = $2 OR LOWER(title) = LOWER($3))
+      `SELECT lesson.id, lesson.course_id, lesson.module_id, lesson.title,
+              lesson.content_markdown, lesson.key_terms, lesson.learning_outcomes,
+              lesson.skill_bank, course.title AS course_title, module.title AS module_title
+       FROM course_lessons AS lesson
+       JOIN courses AS course ON course.id = lesson.course_id
+       JOIN course_modules AS module ON module.id = lesson.module_id AND module.course_id = lesson.course_id
+       WHERE lesson.course_id = $1 AND (lesson.id = $2 OR LOWER(lesson.title) = LOWER($3))
        LIMIT 1`,
-      [courseId, skillId || '', skillTitle]
-    ).catch(() => ({ rows: [] as any[] }));
-
-    if (lessonQuery.rows.length > 0) {
-      const row = lessonQuery.rows[0];
-      matchedLessonId = row.id || matchedLessonId;
-      dbLessonMarkdown = String(row.content_markdown || '');
-      dbKeyTerms = Array.isArray(row.key_terms) ? row.key_terms : [];
-      dbLearningOutcomes = Array.isArray(row.learning_outcomes) ? row.learning_outcomes : [];
-      if (Array.isArray(row.skill_bank) && row.skill_bank.length > 0) {
-        existingBank = row.skill_bank;
-      }
+      [courseId, typeof skillId === 'string' ? skillId : '', skillTitle]
+    );
+    if (lessonQuery.rows.length === 0) {
+      return res.status(404).json({ error: 'The requested lesson does not exist in the live course catalog.' });
     }
 
-    const masteryScore = Number(rollingMastery) || 50;
-    const attempt = Math.max(1, Number(sessionAttempt) || 1);
-    const isHighMastery = masteryScore >= 75;
+    const liveLesson = lessonQuery.rows[0];
+    const matchedLessonId = liveLesson.id;
+    const liveModuleId = liveLesson.module_id;
+    const liveCourseTitle = liveLesson.course_title;
+    const liveModuleTitle = liveLesson.module_title;
+    const liveSkillTitle = liveLesson.title;
+    if (typeof liveLesson.content_markdown !== 'string' || !liveLesson.content_markdown.trim()) {
+      return res.status(503).json({ error: 'The live lesson has no persisted teaching content. Skill practice was not generated.' });
+    }
+    dbLessonMarkdown = liveLesson.content_markdown;
+    dbKeyTerms = Array.isArray(liveLesson.key_terms) ? liveLesson.key_terms : [];
+    dbLearningOutcomes = Array.isArray(liveLesson.learning_outcomes) ? liveLesson.learning_outcomes : [];
+    existingBank = Array.isArray(liveLesson.skill_bank) ? liveLesson.skill_bank : [];
+
+    const historyRes = await pool.query(
+      `SELECT COUNT(*)::int AS attempt_count,
+              AVG(score_pct)::float AS average_score
+       FROM user_quiz_attempts
+       WHERE uid = $1 AND course_id = $2 AND quiz_id = $3`,
+      [uid, courseId, matchedLessonId]
+    );
+    const recordedAttemptCount = Number(historyRes.rows[0]?.attempt_count);
+    if (!Number.isInteger(recordedAttemptCount) || recordedAttemptCount < 0) {
+      throw new Error('Recorded quiz-attempt history could not be verified.');
+    }
+    const rawAverageScore = historyRes.rows[0]?.average_score;
+    const masteryScore = rawAverageScore === null || rawAverageScore === undefined
+      ? null
+      : Number(rawAverageScore);
+    if (masteryScore !== null && (!Number.isFinite(masteryScore) || masteryScore < 0 || masteryScore > 100)) {
+      throw new Error('Persisted practice-score history contains an invalid value.');
+    }
+    const attempt = recordedAttemptCount + 1;
+    const isHighMastery = masteryScore !== null && masteryScore >= 75;
 
     const cleanAvoidList = Array.isArray(avoidPrompts)
       ? avoidPrompts.map((p: any) => String(p || '').toLowerCase().replace(/\s+/g, ' ').trim()).filter((s: string) => s.length >= 4)
       : [];
 
     // Dynamically compute session exercise count & mastery target based on lesson richness & student level
-    const rawContentText = dbLessonMarkdown || String(skillContent || '');
+    const rawContentText = dbLessonMarkdown;
     const formulaMatches = (rawContentText.match(/\$[^\$]+\$/g) || []).length;
     const headingMatches = (rawContentText.match(/^#{1,4}\s+/gm) || []).length;
     const conceptDensityScore =
@@ -8454,10 +8476,10 @@ app.post('/api/skill-session/generate', verifyAuth, async (req, res) => {
         rollingMastery: masteryScore,
         session: {
           courseId,
-          moduleId: moduleId || 'unit_1',
-          skillId: matchedLessonId || skillTitle,
-          skillTitle,
-          learnSummary: dbLessonMarkdown.slice(0, 1600) || `Core principles of ${skillTitle}.`,
+          moduleId: liveModuleId,
+          skillId: matchedLessonId,
+          skillTitle: liveSkillTitle,
+          learnSummary: dbLessonMarkdown.slice(0, 1600),
           recommendedMasteryTarget: dynamicMasteryTarget,
           exercises: selected
         }
@@ -8474,15 +8496,14 @@ app.post('/api/skill-session/generate', verifyAuth, async (req, res) => {
     ];
 
     const combinedLessonContext = [
-      `Course: ${courseId} — ${courseTitle || courseId}`,
-      moduleTitle ? `Unit: ${moduleTitle}` : '',
-      `Skill Topic: ${skillTitle}`,
+      `Course: ${courseId} — ${liveCourseTitle}`,
+      `Unit: ${liveModuleTitle}`,
+      `Skill Topic: ${liveSkillTitle}`,
       `Practice Attempt #: ${attempt}`,
-      `Student Rolling Mastery: ${masteryScore}% (${isHighMastery ? 'High Mastery: Focus on advanced conceptual synthesis, multi-word error spotting, and derivations' : 'Foundational to Intermediate Mastery progression'})`,
+      `Recorded practice history: ${masteryScore === null ? 'No quiz attempts are recorded for this lesson; do not infer a mastery level.' : `Average recorded client-computed practice score: ${masteryScore.toFixed(2)}%; this is not a server-verified examination grade.`} ${isHighMastery ? 'Use greater conceptual depth as a generation preference.' : ''}`,
       dbKeyTerms.length > 0 ? `Key Terms (${dbKeyTerms.length}): ${dbKeyTerms.join(', ')}` : '',
       dbLearningOutcomes.length > 0 ? `Learning Outcomes: ${dbLearningOutcomes.join('; ')}` : '',
       dbLessonMarkdown ? `Authoritative Lesson Content:\n${dbLessonMarkdown.slice(0, 4200)}` : '',
-      skillContent ? `Additional Topic Notes:\n${String(skillContent).slice(0, 2200)}` : '',
       priorQuestionsSummary.length > 0
         ? `STRICT NON-REPETITION RULE (Attempt #${attempt}) — DO NOT repeat or reuse any of these previously seen questions, scenarios, passages, or examples:\n${priorQuestionsSummary.map((q, idx) => `${idx + 1}. ${String(q).slice(0, 140)}`).join('\n')}`
         : ''
@@ -8585,14 +8606,15 @@ Return STRICT JSON matching:
     // 4. Append new unseen exercises to Neon PostgreSQL course_lessons skill_bank (capped at 40 items)
     if (matchedLessonId) {
       const mergedBank = [...existingBank, ...stampedPool].slice(-40);
-      await pool.query(
+      const saveResult = await pool.query(
         `UPDATE course_lessons 
          SET skill_bank = $1::jsonb, updated_at = NOW()
          WHERE course_id = $2 AND (id = $3 OR LOWER(title) = LOWER($4))`,
         [JSON.stringify(mergedBank), courseId, matchedLessonId, skillTitle]
-      ).catch((saveErr) => {
-        logger.warn({ err: saveErr.message }, '[POST /api/skill-session/generate] Notice saving skill_bank to Neon');
-      });
+      );
+      if (saveResult.rowCount !== 1) {
+        throw new Error('Generated skill exercises were not persisted to the authoritative lesson record.');
+      }
     }
 
     return res.json({
@@ -8602,10 +8624,10 @@ Return STRICT JSON matching:
       rollingMastery: masteryScore,
       session: {
         courseId,
-        moduleId: moduleId || 'unit_1',
-        skillId: matchedLessonId || skillTitle,
-        skillTitle: parsed.skillTitle || skillTitle,
-        learnSummary: parsed.learnSummary || dbLessonMarkdown.slice(0, 1600) || `Core principles of ${skillTitle}.`,
+        moduleId: liveModuleId,
+        skillId: matchedLessonId,
+        skillTitle: parsed.skillTitle || liveSkillTitle,
+        learnSummary: parsed.learnSummary || dbLessonMarkdown.slice(0, 1600),
         recommendedMasteryTarget: Number(parsed.recommendedMasteryTarget) || dynamicMasteryTarget,
         exercises: stampedPool
       }
