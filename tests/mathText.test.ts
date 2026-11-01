@@ -28,3 +28,11 @@ test('wraps raw and already-delimited formulas once for display', () => {
   assert.equal(asDisplayMath('\\[\\frac{F}{A}\\]'), '$$\n\\frac{F}{A}\n$$');
   assert.equal(asDisplayMath(''), '');
 });
+
+test('converts explicit math code fences into display equations', () => {
+  const fence = String.fromCharCode(96).repeat(3);
+  const source = fence + 'latex\n\\frac{F}{A}\n' + fence;
+  const result = normalizeMathDelimiters(source);
+  assert.ok(result.includes('$$\n\\frac{F}{A}\n$$'));
+  assert.equal(result.includes(fence), false);
+});
