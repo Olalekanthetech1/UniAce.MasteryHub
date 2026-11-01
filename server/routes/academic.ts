@@ -1,141 +1,208 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, RequestHandler } from 'express';
 import {
   searchAcademicPapers,
   getCitationAndAbstract,
   extractCanonicalDefinitions,
   checkAcademicProvidersHealth,
   getAcademicConfig,
+  initializeAcademicConfig,
   updateAcademicConfig,
 } from '../academicResearchEngine.js';
 import { getPostgresPool } from '../postgresPool.js';
 
 const router = Router();
 
-// 1. Search Academic Papers
+// The global populateUser middleware verifies the Firebase ID token before
+// this router is reached. Admin authorization is then resolved from the
+// server-side allow-list or the authoritative Neon users table.
+const requireAcademicAdmin: RequestHandler = async (req, res, next) => {
+  const user = (req as any).user;
+  const uid = typeof user?.uid === 'string' ? user.uid : '';
+  const email = typeof user?.email === 'string' ? user.email : '';
+
+  if (!uid) {
+    return res.status(401).json({ error: 'A verified administrator session is required.' });
+  }
+
+  const configuredAdmins = (process.env.ADMIN_EMAILS || '')
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  if (email && configuredAdmins.includes(email.toLowerCase())) {
+    return next();
+  }
+
+  const pool = getPostgresPool();
+  if (!pool) {
+    return res.status(503).json({ error: 'Administrator authorization cannot be verified because Neon PostgreSQL is unavailable.' });
+  }
+
+  try {
+    const result = await pool.query('SELECT role FROM users WHERE uid = $1 LIMIT 1', [uid]);
+    if (result.rows[0]?.role !== 'admin') {
+      return res.status(403).json({ error: 'Academic research management is restricted to administrators.' });
+    }
+    return next();
+  } catch (error) {
+    console.error('[Academic Research] Admin authorization lookup failed:', error);
+    return res.status(503).json({ error: 'Administrator authorization could not be verified.' });
+  }
+};
+
+router.use(requireAcademicAdmin);
+
+// Search scholarly records from configured live providers.
 router.post('/search', async (req: Request, res: Response) => {
   try {
-    const { query, fieldOfStudy, limit, minYear, courseCode } = req.body;
-    if (!query || typeof query !== 'string') {
-      res.status(400).json({ error: 'Valid query parameter is required' });
-      return;
+    const { query, fieldOfStudy, limit, minYear, courseCode } = req.body || {};
+    if (typeof query !== 'string' || !query.trim()) {
+      return res.status(400).json({ error: 'A non-empty research query is required.' });
     }
 
     const result = await searchAcademicPapers({
-      query,
-      fieldOfStudy,
-      limit: limit ? Number(limit) : 5,
-      minYear: minYear ? Number(minYear) : undefined,
-      courseCode,
+      query: query.trim(),
+      ...(typeof fieldOfStudy === 'string' && fieldOfStudy.trim() ? { fieldOfStudy: fieldOfStudy.trim() } : {}),
+      ...(typeof courseCode === 'string' && courseCode.trim() ? { courseCode: courseCode.trim() } : {}),
+      ...(limit !== undefined ? { limit: Number(limit) } : {}),
+      ...(minYear !== undefined ? { minYear: Number(minYear) } : {}),
     });
 
-    res.json(result);
+    return res.json(result);
   } catch (error) {
-    console.error('Academic Search Endpoint Error:', error);
-    res.status(503).json({
-      error: 'Academic Research Search Error',
+    console.error('[Academic Research] Search failed:', error);
+    return res.status(503).json({
+      error: 'Academic research search could not be completed from live providers.',
       message: (error as Error).message,
     });
   }
 });
 
-// 2. Get Citation and Abstract
+// Resolve an identifier against a live scholarly registry.
 router.post('/citation', async (req: Request, res: Response) => {
   try {
-    const { identifier, format } = req.body;
-    if (!identifier) {
-      res.status(400).json({ error: 'Identifier (DOI, arXiv ID, or title) is required' });
-      return;
+    const { identifier, format } = req.body || {};
+    if (typeof identifier !== 'string' || !identifier.trim()) {
+      return res.status(400).json({ error: 'A DOI, arXiv identifier, or paper title is required.' });
     }
 
-    const citation = await getCitationAndAbstract({ identifier, format });
-    res.json(citation);
+    const citation = await getCitationAndAbstract({ identifier: identifier.trim(), format });
+    return res.json(citation);
   } catch (error) {
-    console.error('Academic Citation Endpoint Error:', error);
-    res.status(404).json({
-      error: 'Citation Not Found',
+    console.error('[Academic Research] Citation lookup failed:', error);
+    return res.status(404).json({
+      error: 'The requested citation could not be verified in the live scholarly registry.',
       message: (error as Error).message,
     });
   }
 });
 
-// 3. Extract Canonical Definitions
+// Return a definition only when a live registry supplies a sourced description.
 router.post('/definitions', async (req: Request, res: Response) => {
   try {
-    const { subject, topic, courseCode } = req.body;
-    if (!subject || !topic) {
-      res.status(400).json({ error: 'Subject and topic parameters are required' });
-      return;
+    const { subject, topic } = req.body || {};
+    if (typeof subject !== 'string' || !subject.trim() ||
+        typeof topic !== 'string' || !topic.trim()) {
+      return res.status(400).json({ error: 'Subject and topic are required.' });
     }
 
-    const definition = await extractCanonicalDefinitions(subject, topic, courseCode);
-    res.json(definition);
+    const definition = await extractCanonicalDefinitions(subject.trim(), topic.trim());
+    if (!definition) {
+      return res.status(404).json({
+        error: 'No source-backed concept definition was found. No definition was generated as a substitute.',
+      });
+    }
+    return res.json(definition);
   } catch (error) {
-    console.error('Academic Definition Endpoint Error:', error);
-    res.status(500).json({
-      error: 'Canonical Definition Error',
-      message: (error as Error).message,
-    });
+    console.error('[Academic Research] Definition lookup failed:', error);
+    return res.status(503).json({ error: 'The live definition source could not be queried.' });
   }
 });
 
-// 4. Get System Stats & Provider Health
-router.get('/stats', async (req: Request, res: Response) => {
+// Safe status only: provider credentials are never returned to the dashboard.
+router.get('/stats', async (_req: Request, res: Response) => {
   try {
-    const health = await checkAcademicProvidersHealth();
-    const config = getAcademicConfig();
-
-    let totalLogCount = 0;
+    await initializeAcademicConfig();
+    const providerHealth = await checkAcademicProvidersHealth();
     const pool = getPostgresPool();
+
+    let totalLogCount: number | null = null;
     if (pool) {
       try {
-        const countRes = await pool.query(`SELECT COUNT(*)::int AS cnt FROM system_logs WHERE category = 'academic_research'`);
-        totalLogCount = Number(countRes.rows[0]?.cnt || 0);
-      } catch (err) {
-        console.warn('Log count error:', err);
+        const countRes = await pool.query(
+          `SELECT COUNT(*)::int AS cnt FROM system_logs WHERE category = 'academic_research'`
+        );
+        totalLogCount = Number(countRes.rows[0]?.cnt);
+      } catch (error) {
+        console.warn('[Academic Research] Could not read search telemetry count:', error);
       }
     }
 
-    res.json({
-      status: 'operational',
-      config,
-      providerHealth: health,
+    return res.json({
+      status: providerHealth.some((provider) => provider.status === 'healthy') ? 'operational' : 'degraded',
+      config: getAcademicConfig(),
+      providerHealth,
       totalQueriesLogged: totalLogCount,
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to retrieve academic engine stats' });
+    console.error('[Academic Research] Stats unavailable:', error);
+    return res.status(503).json({ error: 'Academic research configuration or provider status could not be verified.' });
   }
 });
 
-// 5. Admin Config GET
-router.get('/config', (req: Request, res: Response) => {
-  res.json(getAcademicConfig());
-});
-
-// 6. Admin Config POST
-router.post('/config', (req: Request, res: Response) => {
+// Read persisted, non-secret engine configuration.
+router.get('/config', async (_req: Request, res: Response) => {
   try {
-    const updated = updateAcademicConfig(req.body);
-    res.json({ message: 'Academic Config updated successfully', config: updated });
+    await initializeAcademicConfig();
+    return res.json(getAcademicConfig());
   } catch (error) {
-    res.status(400).json({ error: 'Failed to update academic config', details: (error as Error).message });
+    console.error('[Academic Research] Config read failed:', error);
+    return res.status(503).json({ error: 'Academic research configuration could not be read from Neon.' });
   }
 });
 
-// 7. Admin Live Smoke Test Sandbox
+// Persist allow-listed settings. Provider secrets are configured server-side only.
+router.post('/config', async (req: Request, res: Response) => {
+  try {
+    const body = req.body || {};
+    if (Object.prototype.hasOwnProperty.call(body, 'semanticScholarApiKey') ||
+        Object.prototype.hasOwnProperty.call(body, 'tavilyApiKey') ||
+        Object.prototype.hasOwnProperty.call(body, 'openAlexEmail')) {
+      return res.status(400).json({
+        error: 'Provider credentials and contact details must be configured on the server, not stored through the browser configuration endpoint.',
+      });
+    }
+
+    const updated = await updateAcademicConfig(body);
+    return res.json({ message: 'Academic configuration persisted to Neon.', config: updated });
+  } catch (error) {
+    return res.status(400).json({
+      error: 'Academic configuration was not updated.',
+      details: (error as Error).message,
+    });
+  }
+});
+
+// Smoke tests must use a caller-supplied research query.
 router.post('/test', async (req: Request, res: Response) => {
   try {
-    const { query = 'quantum computing', limit = 3 } = req.body;
-    const searchRes = await searchAcademicPapers({ query, limit: Number(limit) });
-    const health = await checkAcademicProvidersHealth();
+    const { query, limit } = req.body || {};
+    if (typeof query !== 'string' || !query.trim()) {
+      return res.status(400).json({ error: 'Provide a research query for the live smoke test.' });
+    }
+    const searchRes = await searchAcademicPapers({
+      query: query.trim(),
+      ...(limit !== undefined ? { limit: Number(limit) } : {}),
+    });
+    const providerHealth = await checkAcademicProvidersHealth();
 
-    res.json({
-      smokeTest: 'passed',
+    return res.json({
+      smokeTest: 'completed',
       searchResult: searchRes,
-      providerHealth: health,
+      providerHealth,
     });
   } catch (error) {
-    res.status(503).json({
+    return res.status(503).json({
       smokeTest: 'failed',
       error: (error as Error).message,
     });
