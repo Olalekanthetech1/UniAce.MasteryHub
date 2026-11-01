@@ -660,8 +660,8 @@ Return your response strictly as a JSON object matching:
     }
 
     const sourceMaterial = subTopic
-      ? `Subtopic Title: "${subTopic.title}"\\nContent: ${subTopic.content || ''}`
-      : `Module Title: "${module.title}"\\n${module.subTopics.map(st => `--- Subtopic: ${st.title} ---\\n${st.content || ''}`).join('\\n\\n')}`;
+      ? `Subtopic Title: "${subTopic.title}"\nContent: ${subTopic.content || ''}`
+      : `Module Title: "${module.title}"\n${module.subTopics.map(st => `--- Subtopic: ${st.title} ---\n${st.content || ''}`).join('\n\n')}`;
     if (!sourceMaterial.replace(/Subtopic Title:|Module Title:|--- Subtopic:|---/g, '').trim()) {
       throw new Error('Quiz generation requires non-empty lesson source material from the live course record.');
     }
@@ -704,7 +704,7 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
        - The 'correctAnswer' field should represent a comprehensive Model Answer / Grading Rubric outlining the key technical points, core variables, or conceptual steps that a perfect answer should cover.
     
     Ensure questions are technically accurate and mathematically rigorous for the given subject (Math, Physics, Zoology, GST, etc.) as detailed in the content material.
-    CRITICAL: Calibrate the difficulty and complexity to the student's level (${level || 'University Level'}).
+    CRITICAL: Calibrate difficulty only when the student's academic level is supplied (${level || 'not supplied; do not infer'}).
     Include mathematical formulas in LaTeX format.
     LATEX SQUARE ROOTS: You MUST use \\\\sqrt{...} for all square roots. NEVER use the Unicode symbol √.
     IMPORTANT: You are generating a JSON string. Use $ for inline LaTeX (e.g., $x$) and $$ for block LaTeX (e.g., $$x^2$$). For any LaTeX commands that use a backslash (e.g., \\\\mathbf), you MUST output them with double backslashes (e.g., \\\\\\\\mathbf).
