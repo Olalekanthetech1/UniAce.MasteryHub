@@ -294,15 +294,66 @@ export class CourseRepository {
 
     // Must execute atomic Postgres update and throw on any error
     // ZERO SILENT FALLBACK TO FIRESTORE PERMITTED ON WRITES
-    const checkRes = await queryPostgres<{ version: number }>(
-      'SELECT version FROM courses WHERE id = $1',
+    const checkRes = await queryPostgres<{
+      id: string;
+      version: number;
+      title: string;
+      level: string;
+      department: string | null;
+      semester: string;
+      scope: string;
+    }>(
+      'SELECT id, version, title, level, department, semester, scope FROM courses WHERE id = $1',
       [courseId]
     );
     if (checkRes.rows.length === 0) {
       throw new Error(`Course ${courseId} not found in PostgreSQL catalog`);
     }
 
-    const currentVersion = Number(checkRes.rows[0].version || 1);
+    const course = checkRes.rows[0];
+    const missingMetadata = ['title', 'level', 'department', 'semester', 'scope']
+      .filter(key => typeof (course as any)[key] !== 'string' || !(course as any)[key].trim());
+    if (missingMetadata.length > 0) {
+      throw new Error(`Course cannot be published; required metadata is missing: ${missingMetadata.join(', ')}.`);
+    }
+
+    const modulesRes = await queryPostgres<{ id: string }>(
+      `SELECT id FROM course_modules
+       WHERE course_id = $1 AND COALESCE(is_archived, FALSE) = FALSE
+       ORDER BY order_index ASC`,
+      [courseId]
+    );
+    if (modulesRes.rows.length === 0) {
+      throw new Error('Course cannot be published without stored, non-archived modules.');
+    }
+
+    const lessonsRes = await queryPostgres<{ module_id: string; title: string; content_markdown: string }>(
+      `SELECT module_id, title, content_markdown
+       FROM course_lessons
+       WHERE course_id = $1
+       ORDER BY module_id, order_index ASC`,
+      [courseId]
+    );
+    const lessonsByModule = new Map<string, typeof lessonsRes.rows>();
+    for (const lesson of lessonsRes.rows) {
+      const moduleLessons = lessonsByModule.get(String(lesson.module_id)) || [];
+      moduleLessons.push(lesson);
+      lessonsByModule.set(String(lesson.module_id), moduleLessons);
+    }
+    for (const module of modulesRes.rows) {
+      const moduleLessons = lessonsByModule.get(String(module.id)) || [];
+      if (moduleLessons.length === 0) {
+        throw new Error(`Course module ${module.id} has no stored lessons and cannot be published.`);
+      }
+      for (const lesson of moduleLessons) {
+        if (typeof lesson.title !== 'string' || !lesson.title.trim() ||
+            typeof lesson.content_markdown !== 'string' || lesson.content_markdown.trim().length < 600) {
+          throw new Error(`Course lesson "${lesson.title || lesson.module_id}" is incomplete and cannot be published.`);
+        }
+      }
+    }
+
+    const currentVersion = Number(course.version);
     const newVersion = currentVersion + 1;
     const nowIso = new Date().toISOString();
 
