@@ -1128,6 +1128,13 @@ async function resolveCourseAccessForUser(uid: string, email: string | undefined
   };
 }
 
+async function requireCourseAccessFromBody(req: any, res: any, next: any) {
+  const courseId = typeof req.body?.courseId === 'string' ? req.body.courseId.trim() : '';
+  if (!courseId) return res.status(400).json({ error: 'A valid courseId is required.' });
+  req.params = { ...req.params, courseId };
+  return requireCourseAccess(req, res, next);
+}
+
 async function requireCourseAccess(req: any, res: any, next: any) {
   const uid = req.user?.uid;
   if (!uid) return res.status(401).json({ error: 'Authenticated student session required.' });
@@ -1707,7 +1714,7 @@ app.post('/api/progress/sync', verifyAuth, async (req: any, res: any) => {
   }
 });
 
-app.get('/api/progress/:courseId', verifyAuth, async (req: any, res: any) => {
+app.get('/api/progress/:courseId', verifyAuth, requireCourseAccess, async (req: any, res: any) => {
   const t0 = Date.now();
   try {
     const user = req.user;
@@ -1725,7 +1732,7 @@ app.get('/api/progress/:courseId', verifyAuth, async (req: any, res: any) => {
   }
 });
 
-app.post('/api/progress/quiz-attempt', verifyAuth, async (req: any, res: any) => {
+app.post('/api/progress/quiz-attempt', verifyAuth, requireCourseAccessFromBody, async (req: any, res: any) => {
   const t0 = Date.now();
   try {
     const user = req.user;
@@ -2007,7 +2014,7 @@ app.post('/api/srs/record-review', verifyAuth, async (req, res) => {
 });
 
 // Quiz Attempts Record
-app.post('/api/quiz/record-attempt', verifyAuth, async (req, res) => {
+app.post('/api/quiz/record-attempt', verifyAuth, requireCourseAccessFromBody, async (req, res) => {
   const uid = (req as any).user.uid;
   const {
     courseId,
