@@ -18,12 +18,17 @@ import {
   autoHealQuestion
 } from './validators/aiSchemas';
 
-const getAuthToken = async () => {
-  try {
-    return await auth?.currentUser?.getIdToken(true);
-  } catch (e) {
-    return null;
+const getAuthToken = async (): Promise<string> => {
+  const currentUser = auth?.currentUser;
+  if (!currentUser) {
+    throw new Error('Authentication is required before requesting AI services.');
   }
+
+  const token = await currentUser.getIdToken(true);
+  if (typeof token !== 'string' || !token.trim()) {
+    throw new Error('The authenticated session did not provide a valid access token.');
+  }
+  return token;
 };
 
 export const callAI = async (prompt: any, systemInstruction?: string, responseFormat?: 'json', maxTokens?: number, complexity: 'standard' | 'high' | 'quiz' = 'standard', taskType: string = 'chat', preferredProvider?: string) => {
