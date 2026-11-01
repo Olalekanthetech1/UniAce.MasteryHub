@@ -2616,28 +2616,32 @@ export interface TransactionalPaymentSuccessResult {
 /**
  * Helper to dynamically parse numeric sparks from plan data
  */
-function parsePlanSparksValue(rawSparks: any, defaultSparks: number): number {
-  if (typeof rawSparks === 'number' && !isNaN(rawSparks) && rawSparks > 0) {
-    return rawSparks;
+function parsePlanSparksValue(rawSparks: unknown): number {
+  const parsed = typeof rawSparks === 'number'
+    ? rawSparks
+    : typeof rawSparks === 'string' && /^\\s*[\\d,]+\\s*(?:sparks?)?\\s*$/i.test(rawSparks)
+      ? Number(rawSparks.replace(/[^0-9]/g, ''))
+      : NaN;
+
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error('The selected live pricing plan does not contain a valid positive integer Spark allocation.');
   }
-  if (typeof rawSparks === 'string') {
-    const parsed = parseInt(rawSparks.replace(/[^0-9]/g, ''), 10);
-    if (!isNaN(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-  return defaultSparks;
+  return parsed;
 }
 
 /**
- * Helper to dynamically determine duration in days and whether it is a top-up
+ * Resolve subscription duration only from the selected configured plan.
  */
-function parsePlanDurationValue(durationStr: string, planId: string): { durationDays: number; isTopUp: boolean } {
-  const normPlanId = (planId || '').toLowerCase().trim();
-  const normDuration = (durationStr || '').toLowerCase().trim();
+function parsePlanDurationValue(durationStr: unknown, planId: unknown): { durationDays: number; isTopUp: boolean } {
+  if (typeof durationStr !== 'string' || !durationStr.trim() ||
+      typeof planId !== 'string' || !planId.trim()) {
+    throw new Error('The selected live pricing plan must define its identifier and subscription duration.');
+  }
+
+  const normPlanId = planId.toLowerCase().trim();
+  const normDuration = durationStr.toLowerCase().trim();
 
   if (
-    normPlanId === 'emergency_topup' ||
     normPlanId.includes('topup') ||
     normPlanId.includes('top_up') ||
     normDuration.includes('one-time') ||
@@ -2646,27 +2650,13 @@ function parsePlanDurationValue(durationStr: string, planId: string): { duration
     return { durationDays: 0, isTopUp: true };
   }
 
-  const daysMatch = normDuration.match(/(\d+)\s*(?:day|days)/);
-  if (daysMatch && daysMatch[1]) {
-    const days = parseInt(daysMatch[1], 10);
-    if (!isNaN(days) && days > 0) {
-      return { durationDays: days, isTopUp: false };
-    }
+  const daysMatch = normDuration.match(/^(\\d+)\\s*days?$/);
+  const days = daysMatch ? Number(daysMatch[1]) : NaN;
+  if (!Number.isSafeInteger(days) || days <= 0) {
+    throw new Error('The selected live pricing plan has an unsupported duration. Configure an explicit number of days or a one-time top-up.');
   }
 
-  if (normPlanId === 'semester' || normDuration.includes('semester')) {
-    return { durationDays: 120, isTopUp: false };
-  }
-
-  if (normPlanId === 'scholar' || normDuration.includes('month') || normDuration.includes('30')) {
-    return { durationDays: 30, isTopUp: false };
-  }
-
-  if (normDuration.includes('year') || normDuration.includes('annual')) {
-    return { durationDays: 365, isTopUp: false };
-  }
-
-  return { durationDays: 30, isTopUp: false };
+  return { durationDays: days, isTopUp: false };
 }
 
 /**
@@ -2706,28 +2696,45 @@ export async function executeTransactionalPaymentSuccess(params: {
   } = params;
 
   const pool = getPostgresPool();
+  const normPlanType = typeof planType === 'string' ? planType.trim().toLowerCase() : '';
+  if (!normPlanType) {
+    throw new Error('A valid configured pricing plan identifier is required to process payment.');
+  }
+
+  let pricingData: Record<string, any> | null = null;
   if (pool && !sandboxNamespace) {
-    const CANONICAL_PLANS: Record<string, { sparks: number; duration: string; name: string }> = {
-      emergency_topup: { sparks: 500, duration: 'One-Time', name: 'Emergency Top-Up' },
-      scholar: { sparks: 2000, duration: '30 Days', name: 'Scholar' },
-      semester: { sparks: 6000, duration: '120 Days', name: 'Semester Bundle' }
-    };
+    pricingData = await getSystemConfigDoc('pricing');
+  } else {
+    const pricingDb = app.firestore();
+    const pricingCollection = getLedgerScopedCollection(pricingDb, 'system_config', sandboxNamespace);
+    const pricingSnapshot = await pricingCollection.doc('pricing').get();
+    pricingData = pricingSnapshot.exists ? pricingSnapshot.data() || null : null;
+  }
 
-    const normPlanType = (planType || 'scholar').toLowerCase().trim();
-    const canonicalFallback =
-      CANONICAL_PLANS[normPlanType] ||
-      (normPlanType.includes('semester')
-        ? CANONICAL_PLANS.semester
-        : normPlanType.includes('topup') || normPlanType.includes('emergency')
-        ? CANONICAL_PLANS.emergency_topup
-        : CANONICAL_PLANS.scholar);
+  if (!Array.isArray(pricingData?.plans)) {
+    throw new Error('Authoritative pricing configuration is unavailable; payment was not processed.');
+  }
 
-    const sparksToAdd = canonicalFallback.sparks;
-    const planName = canonicalFallback.name;
-    const isTopUp = normPlanType.includes('topup') || normPlanType.includes('emergency');
-    const durationDays = normPlanType.includes('semester') ? 120 : (isTopUp ? 0 : 30);
-    const amountNgn = Number(amount);
+  const matchedPlan = pricingData.plans.find((candidate: any) =>
+    candidate &&
+    typeof candidate.id === 'string' &&
+    typeof candidate.name === 'string' &&
+    candidate.id.trim().length > 0 &&
+    candidate.name.trim().length > 0 &&
+    (candidate.id.trim().toLowerCase() === normPlanType ||
+      candidate.name.trim().toLowerCase() === normPlanType)
+  );
 
+  if (!matchedPlan || matchedPlan.enabled === false) {
+    throw new Error('The requested pricing plan is not present or is disabled in the authoritative pricing configuration.');
+  }
+
+  const sparksToAdd = parsePlanSparksValue(matchedPlan.sparks);
+  const planName = matchedPlan.name.trim();
+  const { durationDays, isTopUp } = parsePlanDurationValue(matchedPlan.duration, matchedPlan.id);
+  const amountNgn = Number(amount);
+
+  if (pool && !sandboxNamespace) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -2879,46 +2886,7 @@ export async function executeTransactionalPaymentSuccess(params: {
   const policyRef = configCol.doc('evaluation_policy');
   const tokenPricingRef = configCol.doc('token_pricing');
 
-  // 1. Read-only dynamic plan resolution outside transaction
-  let matchedPlan: any = null;
-  try {
-    const pricingDoc = await configCol.doc('pricing').get();
-    if (pricingDoc.exists) {
-      const pricingData = pricingDoc.data();
-      if (Array.isArray(pricingData?.plans)) {
-        matchedPlan = pricingData.plans.find(
-          (p: any) =>
-            p.id === planType ||
-            p.id?.toLowerCase() === planType?.toLowerCase() ||
-            p.name?.toLowerCase() === planType?.toLowerCase()
-        );
-      }
-    }
-  } catch (err) {
-    console.warn('Could not fetch dynamic pricing config from Firestore, falling back to canonical defaults:', err);
-  }
-
-  const CANONICAL_PLANS: Record<string, { sparks: number; duration: string; name: string }> = {
-    emergency_topup: { sparks: 500, duration: 'One-Time', name: 'Emergency Top-Up' },
-    scholar: { sparks: 2000, duration: '30 Days', name: 'Scholar' },
-    semester: { sparks: 6000, duration: '120 Days', name: 'Semester Bundle' }
-  };
-
-  const normPlanType = (planType || 'scholar').toLowerCase().trim();
-  const canonicalFallback =
-    CANONICAL_PLANS[normPlanType] ||
-    (normPlanType.includes('semester')
-      ? CANONICAL_PLANS.semester
-      : normPlanType.includes('topup') || normPlanType.includes('emergency')
-      ? CANONICAL_PLANS.emergency_topup
-      : CANONICAL_PLANS.scholar);
-
-  const rawSparks = matchedPlan?.sparks ?? canonicalFallback.sparks;
-  const rawDuration = matchedPlan?.duration ?? canonicalFallback.duration;
-  const planName = matchedPlan?.name ?? canonicalFallback.name;
-
-  const sparksToAdd = parsePlanSparksValue(rawSparks, canonicalFallback.sparks);
-  const { durationDays, isTopUp } = parsePlanDurationValue(rawDuration, planType);
+  // Pricing has already been resolved and validated from the authoritative configuration.
 
   // 2. Core Payment & User Spark Credit Transaction (strictly isolated from affiliate/email side effects)
   const coreResult = await db.runTransaction(async (transaction) => {
