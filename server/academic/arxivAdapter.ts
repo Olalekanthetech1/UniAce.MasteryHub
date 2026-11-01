@@ -22,7 +22,7 @@ export async function fetchFromArxiv(query: string, limit: number = 5): Promise<
 
   const response = await fetch(url, {
     headers: {
-      'User-Agent': 'UniAce-AcademicGrounding-Bot/1.0 (uniace.support@gmail.com)',
+      'User-Agent': 'UniAce-AcademicResearch/1.0',
     },
     signal: AbortSignal.timeout(8000),
   });
@@ -44,7 +44,8 @@ export async function fetchFromArxiv(query: string, limit: number = 5): Promise<
     const title = extractTagValue(entryXml, 'title').replace(/^\[.*?\]\s*/, '');
     const summary = extractTagValue(entryXml, 'summary');
     const published = extractTagValue(entryXml, 'published');
-    const publishedYear = published ? new Date(published).getFullYear() : new Date().getFullYear();
+    const publishedDate = published ? new Date(published) : null;
+    const publishedYear = publishedDate && Number.isFinite(publishedDate.getTime()) ? publishedDate.getFullYear() : null;
 
     // Extract authors
     const authorBlocks = entryXml.match(/<author[\s\S]*?<\/author>/gi) || [];
@@ -66,14 +67,14 @@ export async function fetchFromArxiv(query: string, limit: number = 5): Promise<
       papers.push({
         id: `arxiv_${arxivId}`,
         title,
-        authors: authors.length > 0 ? authors : ['arXiv Contributor'],
+        authors,
         abstract: summary,
         year: publishedYear,
         venue: 'arXiv Preprint Repository',
         doi,
         url: `https://arxiv.org/abs/${arxivId}`,
         pdfUrl,
-        citationCount: 0,
+        citationCount: null,
         source: 'arxiv',
         relevanceScore: 0,
         syllabusTags: [],
