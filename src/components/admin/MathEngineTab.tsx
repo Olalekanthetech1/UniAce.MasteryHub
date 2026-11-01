@@ -72,6 +72,7 @@ interface MathStats {
 export default function MathEngineTab() {
   // Configuration State
   const [config, setConfig] = useState<MathConfig | null>(null);
+  const [configDraft, setConfigDraft] = useState<Partial<MathConfig>>({});
   const [configError, setConfigError] = useState<string | null>(null);
   const [isLoadingConfig, setIsLoadingConfig] = useState(true);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
@@ -141,8 +142,15 @@ export default function MathEngineTab() {
 
   // Save Configuration Handler
   const handleSaveConfig = async () => {
-    if (!config) {
-      setConfigError('A complete, verified configuration is required before saving.');
+    const candidate = config || configDraft;
+    const validCandidate =
+      ['sympy_local', 'wolfram_cloud', 'smart_hybrid'].includes(String(candidate.defaultEngine)) &&
+      ['granular', 'concise'].includes(String(candidate.defaultRigor)) &&
+      Number.isFinite(candidate.timeoutMs) && Number(candidate.timeoutMs) > 0 &&
+      typeof candidate.enableAutoHeuristic === 'boolean' &&
+      Number.isInteger(candidate.maxMatrixDimension) && Number(candidate.maxMatrixDimension) > 0;
+    if (!validCandidate) {
+      setConfigError('Complete every required setting with an explicit value before saving.');
       return;
     }
     setIsSavingConfig(true);
@@ -156,7 +164,7 @@ export default function MathEngineTab() {
           'Content-Type': 'application/json',
           ...(idToken ? { Authorization: `Bearer ${idToken}` } : {})
         },
-        body: JSON.stringify(config)
+        body: JSON.stringify(candidate)
       });
 
       if (!res.ok) {
@@ -166,6 +174,7 @@ export default function MathEngineTab() {
       const result = await res.json();
       if (!result?.config) throw new Error('The server did not confirm the persisted Math Engine configuration.');
       setConfig(result.config);
+      setConfigDraft(result.config);
       setConfigError(null);
       setConfigSaveSuccess(true);
       setTimeout(() => setConfigSaveSuccess(false), 3500);
@@ -464,14 +473,63 @@ export default function MathEngineTab() {
           </div>
 
           ) : (
-            <div className="bg-white dark:bg-slate-800 p-6 rounded-3xl border border-amber-200 dark:border-amber-900 shadow-sm space-y-3">
-              <h3 className="font-bold text-slate-900 dark:text-white">Math Engine configuration unavailable</h3>
-              <p className="text-sm text-slate-600 dark:text-slate-300">{configError || (isLoadingConfig ? 'Loading stored Math Engine configuration…' : 'No persisted Math Engine configuration was returned.')}</p>
-              <p className="text-xs text-slate-500">No default computation settings or sample configuration will be substituted.</p>
-              <button onClick={fetchMathData} disabled={isLoadingConfig} className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold disabled:opacity-50">
-                Refresh configuration
-              </button>
+            <div className="bg-white dark:bg-slate-800 p-6 rounded-3xl border border-amber-200 dark:border-amber-900 shadow-sm space-y-4">
+              <div className="space-y-2">
+                <h3 className="font-bold text-slate-900 dark:text-white">Math Engine configuration unavailable</h3>
+                <p className="text-sm text-slate-600 dark:text-slate-300">{configError || (isLoadingConfig ? 'Loading stored Math Engine configuration…' : 'No persisted Math Engine configuration was returned.')}</p>
+                <p className="text-xs text-slate-500">Enter the settings that your institution has selected. No engine, timeout, rigor level, heuristic policy or matrix limit is preselected.</p>
+              </div>
+              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                Computation engine
+                <select
+                  value={configDraft.defaultEngine || ''}
+                  onChange={e => setConfigDraft(current => ({ ...current, defaultEngine: (e.target.value || undefined) as MathConfig['defaultEngine'] | undefined }))}
+                  className="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-transparent px-3 py-2"
+                >
+                  <option value="">Select configured engine…</option>
+                  <option value="sympy_local">SymPy local</option>
+                  <option value="wolfram_cloud">Wolfram Cloud</option>
+                  <option value="smart_hybrid">Smart Hybrid</option>
+                </select>
+              </label>
+              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                Timeout (milliseconds)
+                <input type="number" min="1" step="1" value={configDraft.timeoutMs ?? ''} onChange={e => setConfigDraft(current => ({ ...current, timeoutMs: e.target.value === '' ? undefined : Number(e.target.value) }))} className="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-transparent px-3 py-2" placeholder="Enter timeout" />
+              </label>
+              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                Derivation rigor
+                <select value={configDraft.defaultRigor || ''} onChange={e => setConfigDraft(current => ({ ...current, defaultRigor: (e.target.value || undefined) as MathConfig['defaultRigor'] | undefined }))} className="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-transparent px-3 py-2">
+                  <option value="">Select derivation rigor…</option>
+                  <option value="granular">Granular</option>
+                  <option value="concise">Concise</option>
+                </select>
+              </label>
+              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                Automatic heuristic policy
+                <select value={configDraft.enableAutoHeuristic === undefined ? '' : String(configDraft.enableAutoHeuristic)} onChange={e => setConfigDraft(current => ({ ...current, enableAutoHeuristic: e.target.value === '' ? undefined : e.target.value === 'true' }))} className="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-transparent px-3 py-2">
+                  <option value="">Select policy…</option>
+                  <option value="true">Enabled</option>
+                  <option value="false">Disabled</option>
+                </select>
+              </label>
+              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                Maximum matrix dimension
+                <input type="number" min="1" step="1" value={configDraft.maxMatrixDimension ?? ''} onChange={e => setConfigDraft(current => ({ ...current, maxMatrixDimension: e.target.value === '' ? undefined : Number(e.target.value) }))} className="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-transparent px-3 py-2" placeholder="Enter matrix limit" />
+              </label>
+              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                Wolfram App ID (only when configured for use)
+                <input type="password" autoComplete="off" value={configDraft.wolframAppId || ''} onChange={e => setConfigDraft(current => ({ ...current, wolframAppId: e.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-transparent px-3 py-2" placeholder="Optional credential" />
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={handleSaveConfig} disabled={isSavingConfig || isLoadingConfig} className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold disabled:opacity-50">
+                  {isSavingConfig ? 'Saving…' : 'Save explicitly entered configuration'}
+                </button>
+                <button onClick={fetchMathData} disabled={isLoadingConfig} className="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-sm font-semibold disabled:opacity-50">
+                  Refresh from database
+                </button>
+              </div>
             </div>
+
           )}
         </div>
 
