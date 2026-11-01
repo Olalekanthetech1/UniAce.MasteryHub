@@ -1242,24 +1242,56 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
     }
   },
 
-  generateFastTrackPlan: async (progress: UserProgress, syllabus: Module[], fastTrackTopicTitle: string) => {
-    const masteryData = Object.entries(progress?.mastery || {}).map(([id, score]) => {
-      const topic = (syllabus || []).flatMap(m => m?.subTopics || []).find(st => st?.id === id);
-      return { title: topic?.title || id, score };
+  generateFastTrackPlan: async (
+    progress: UserProgress,
+    syllabus: Module[],
+    fastTrackTopicTitle: string,
+    targetDate?: string
+  ) => {
+    if (!Array.isArray(syllabus) || syllabus.length === 0) {
+      throw new Error('Fast-track planning requires the persisted course syllabus.');
+    }
+    if (typeof fastTrackTopicTitle !== 'string' || !fastTrackTopicTitle.trim()) {
+      throw new Error('A topic from the persisted syllabus is required for fast-track planning.');
+    }
+
+    const topics = syllabus.flatMap(module => module.subTopics);
+    const matchedTopics = topics.filter(topic =>
+      topic.title.trim().toLocaleLowerCase() === fastTrackTopicTitle.trim().toLocaleLowerCase()
+    );
+    if (matchedTopics.length !== 1) {
+      throw new Error('The fast-track topic could not be uniquely resolved in the persisted syllabus.');
+    }
+    const masteredTopic = matchedTopics[0];
+    const recordedMastery = progress.mastery[masteredTopic.id];
+    if (typeof recordedMastery !== 'number' || recordedMastery !== 100) {
+      throw new Error('Fast-track planning requires a recorded 100% mastery value for the selected topic.');
+    }
+
+    const masteryData = Object.entries(progress.mastery).map(([id, score]) => {
+      const topic = topics.find(item => item.id === id);
+      if (!topic) {
+        throw new Error(`Mastery record ${id} does not map to a persisted syllabus topic.`);
+      }
+      return { title: topic.title, score };
     });
+
+    const syllabusContext = syllabus.map(module =>
+      `- ${module.title}: ${module.subTopics.map(topic => topic.title).join(', ')}`
+    ).join('\\n');
 
     const prompt = `As an expert academic strategist, generate a fast-track, advanced study plan for this student.
     
-    The student has achieved perfect 100% mastery in "${fastTrackTopicTitle}"!
-    We want to fast-track them to advanced topics, skipping introductory material for this subject.
+    The persisted mastery record for "${masteredTopic.title}" is exactly ${recordedMastery}%.
+    Generate advanced study activities for this topic without claiming mastery for any other topic.
     
     Student Progress:
     - Mastery Levels: ${JSON.stringify(masteryData)}
     - Level: ${progress.level}
-    - Target Exam Date: Next 30 days
+    - Target Exam Date: ${targetDate || 'Not supplied; do not infer a date or planning horizon'}
     
     Syllabus Structure:
-    ${(syllabus || []).map(m => `- ${m?.title || 'Module'}: ${(m?.subTopics || []).map(st => st?.title || 'Topic').join(', ')}`).join('\n')}
+    ${syllabusContext}
     
     CRITICAL: Output ONLY the JSON object. Do not include any other text, markdown formatting, or explanations.
     Return a JSON object with the following structure:
@@ -1273,15 +1305,12 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
     }`;
 
     const response = await callAI(prompt, undefined, 'json', undefined, 'standard', 'recommendation');
-    try {
-      const rawData = extractJSON(response.text || "null");
-      return safeParseAIResponse(StudyPlanSchema, rawData);
-    } catch (e) {
-      console.error("Fast track plan generation error:", e);
-      throw e;
+    if (typeof response?.text !== 'string' || !response.text.trim()) {
+      throw new Error('The AI provider returned no fast-track study plan.');
     }
+    const rawData = extractJSON(response.text);
+    return safeParseAIResponse(StudyPlanSchema, rawData);
   },
-
   claimReward: async (subTopicId: string, rewardType: 'proactive_quiz' = 'proactive_quiz') => {
     try {
       const token = await getAuthToken();
