@@ -48,7 +48,7 @@ export async function fetchFromSemanticScholar(
     for (const paper of data.data) {
       if (!paper.title) continue;
 
-      const authors = paper.authors ? paper.authors.map((a) => a.name) : ['Unknown Author'];
+      const authors = paper.authors ? paper.authors.map((a) => a.name).filter(Boolean) : [];
       const doi = paper.externalIds?.DOI || null;
       const pdfUrl = paper.openAccessPdf?.url || (paper.externalIds?.ArXiv ? `https://arxiv.org/pdf/${paper.externalIds.ArXiv}.pdf` : null);
 
@@ -56,13 +56,13 @@ export async function fetchFromSemanticScholar(
         id: `s2_${paper.paperId}`,
         title: paper.title,
         authors,
-        abstract: paper.abstract || 'Abstract unavailable in Semantic Scholar index.',
+        abstract: paper.abstract || '',
         year: paper.year || null,
-        venue: paper.venue || 'Academic Journal / Conference',
+        venue: paper.venue || null,
         doi,
         url: paper.url || (doi ? `https://doi.org/${doi}` : `https://www.semanticscholar.org/paper/${paper.paperId}`),
         pdfUrl,
-        citationCount: paper.citationCount || 0,
+        citationCount: typeof paper.citationCount === 'number' ? paper.citationCount : null,
         source: 'semantic_scholar',
         relevanceScore: 0,
         syllabusTags: [],
@@ -119,14 +119,14 @@ export async function lookupPaperSemanticScholar(
     return {
       id: `s2_${paper.paperId}`,
       title: paper.title,
-      authors: paper.authors ? paper.authors.map((a) => a.name) : ['Unknown Author'],
-      abstract: paper.abstract || 'Abstract unavailable.',
+      authors: paper.authors ? paper.authors.map((a) => a.name).filter(Boolean) : [],
+      abstract: paper.abstract || '',
       year: paper.year || null,
-      venue: paper.venue || 'Academic Journal',
+      venue: paper.venue || null,
       doi: paper.externalIds?.DOI || null,
       url: paper.url || `https://www.semanticscholar.org/paper/${paper.paperId}`,
       pdfUrl: paper.openAccessPdf?.url || null,
-      citationCount: paper.citationCount || 0,
+      citationCount: typeof paper.citationCount === 'number' ? paper.citationCount : null,
       source: 'semantic_scholar',
       relevanceScore: 0,
       syllabusTags: [],
