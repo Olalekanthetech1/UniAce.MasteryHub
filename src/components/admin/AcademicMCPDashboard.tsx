@@ -33,7 +33,7 @@ interface Paper {
   citationCount?: number | null;
   source: 'arxiv' | 'semantic_scholar' | 'openalex';
   relevanceScore: number;
-  syllabusTags: string[];
+  conceptTags: string[];
 }
 
 interface ProviderHealth {
@@ -375,9 +375,9 @@ export const AcademicMCPDashboard: React.FC = () => {
 
                     <div className="pt-2 border-t border-slate-700/50 flex flex-wrap items-center justify-between gap-2 text-xs">
                       <div className="flex items-center space-x-2">
-                        {paper.syllabusTags.length > 0 && (
+                        {paper.conceptTags.length > 0 && (
                           <span className="text-[10px] text-slate-400">
-                            Indexed concepts: {paper.syllabusTags.join(', ')}
+                            Indexed concepts: {paper.conceptTags.join(', ')}
                           </span>
                         )}
                         {paper.doi && (
