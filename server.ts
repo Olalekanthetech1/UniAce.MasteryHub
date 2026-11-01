@@ -5716,12 +5716,7 @@ interface CompleteProviderOptions<T> {
 }
 
 async function completeWithProviderJSON<T = any>(opts: CompleteProviderOptions<T>): Promise<T> {
-  let routingConfig: any = {};
-  try {
-    routingConfig = (await getSystemConfigDoc('routing')) || {};
-  } catch (e) {
-    console.warn('Could not read routing config from Neon PostgreSQL:', e);
-  }
+  const routingConfig = await requireLiveRoutingConfig();
 
   const providerMap: Record<string, any> = {
     gemini_direct: globalGeminiDirectBreaker,
@@ -5735,30 +5730,29 @@ async function completeWithProviderJSON<T = any>(opts: CompleteProviderOptions<T
     openrouter_free: globalOpenRouterFreeBreaker
   };
 
+  const taskType = opts.type === 'module' ? 'lesson' : opts.type;
   const rawRequested = (opts.requestedProvider || '').toLowerCase().trim();
-  const normalizedRequested = rawRequested === 'gemini' ? 'gemini_direct' : rawRequested === 'mistral' ? 'mistral_direct' : rawRequested;
-  const primaryKey = normalizedRequested || routingConfig[opts.type] || 'gemini_direct';
-  const normalizedPrimary = primaryKey === 'gemini' ? 'gemini_direct' : primaryKey === 'mistral' ? 'mistral_direct' : primaryKey;
+  const requested = rawRequested === 'gemini' ? 'gemini_direct' : rawRequested === 'mistral' ? 'mistral_direct' : rawRequested;
+  const providerNames = resolveLiveProviderQueue(
+    routingConfig,
+    taskType,
+    providerMap,
+    requested || undefined,
+    opts.strictMode === true
+  );
 
-  // Strict mode: only fail fast when explicitly requested on this call; otherwise allow multi-provider failover
-  const isStrict = opts.strictMode === true;
-
-  const distinctProviders = ['gemini_direct', 'groq', 'nvidia', 'mistral_direct', 'cohere', 'openrouter_free', 'huggingface'];
-  const queue = [normalizedPrimary];
-  if (!isStrict && systemConfig.autoFallback !== false) {
-    const fallbacks = distinctProviders.filter(p => p !== normalizedPrimary);
-    queue.push(...fallbacks);
-  }
-
-  // Deduplicate breaker instances
+  // Deduplicate configured provider routes by breaker instance.
   const activeProviders: any[] = [];
   const seenBreakers = new Set();
-  for (const name of queue) {
+  for (const name of providerNames) {
     const breaker = providerMap[name];
     if (breaker && !seenBreakers.has(breaker)) {
       seenBreakers.add(breaker);
       activeProviders.push(breaker);
     }
+  }
+  if (activeProviders.length === 0) {
+    throw new Error(`No configured providers for task "${taskType}" are currently available.`);
   }
 
   let lastError: any = null;
