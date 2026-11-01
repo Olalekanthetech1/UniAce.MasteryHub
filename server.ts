@@ -5328,44 +5328,8 @@ app.post('/api/ai/generate', verifyAuth, async (req, res) => {
     const effectiveTaskType = classified.taskType;
     const effectiveComplexity = complexity || classified.complexity;
 
-    const routingConfig = (await getSystemConfigDoc('routing')) || {
-      chat: 'groq',
-      deep_reasoning: 'nvidia',
-      coding: 'nvidia',
-      quiz: 'groq',
-      lesson: 'nvidia',
-      skeleton: 'cohere',
-      recommendation: 'cohere',
-      flashcard: 'huggingface',
-      rag: 'openrouter_free',
-      vision: 'gemini_direct',
-      past_questions: 'gemini_direct',
-      voice_tutor: 'nvidia',
-      voice_tutor_model: 'nemotron-voicechat',
-      nvidia_text_model: 'nvidia/nemotron-3-super-120b-a12b',
-      nvidia_image_model: 'black-forest-labs/flux.1-dev'
-    };
-    
-    const TASK_ROUTING_TABLE: Record<string, { primary: string, fallbacks: string[] }> = {
-      'chat': { primary: 'groq', fallbacks: ['nvidia', 'cohere', 'openrouter_free'] },
-      'deep_reasoning': { primary: 'nvidia', fallbacks: ['groq', 'gemini_direct', 'cohere'] },
-      'coding': { primary: 'nvidia', fallbacks: ['groq', 'mistral_direct', 'openrouter_free'] },
-      'quiz': { primary: 'groq', fallbacks: ['nvidia', 'openrouter_free'] },
-      'skeleton': { primary: 'cohere', fallbacks: ['nvidia', 'openrouter_free'] },
-      'recommendation': { primary: 'cohere', fallbacks: ['nvidia', 'openrouter_free'] },
-      'lesson': { primary: 'nvidia', fallbacks: ['groq', 'openrouter_free', 'cohere'] },
-      'flashcard': { primary: 'huggingface', fallbacks: ['groq', 'nvidia'] },
-      'rag': { primary: 'openrouter_free', fallbacks: ['nvidia', 'groq'] },
-      'vision': { primary: 'gemini_direct', fallbacks: ['nvidia'] },
-      'past_questions': { primary: 'gemini_direct', fallbacks: ['nvidia', 'groq'] },
-      'voice_tutor': { primary: 'nvidia', fallbacks: ['gemini_direct', 'groq', 'cohere'] },
-      'default': { primary: 'groq', fallbacks: ['nvidia', 'openrouter_free', 'cohere'] }
-    };
+    const routingConfig = await requireLiveRoutingConfig();
 
-    const routeConfig = TASK_ROUTING_TABLE[effectiveTaskType] || TASK_ROUTING_TABLE['default'];
-    const centralProvider = routingConfig.global_provider || process.env.ACTIVE_AI_PROVIDER;
-    const primaryProviderName = req.body.preferredProvider || centralProvider || routingConfig[effectiveTaskType] || routeConfig.primary;
-    
     const providerMap: Record<string, { breaker: any, name: string }> = {
       gemini_direct: { breaker: globalGeminiDirectBreaker, name: 'gemini_direct' },
       mistral_direct: { breaker: globalMistralDirectBreaker, name: 'mistral_direct' },
@@ -5375,25 +5339,14 @@ app.post('/api/ai/generate', verifyAuth, async (req, res) => {
       openrouter_free: { breaker: globalOpenRouterFreeBreaker, name: 'openrouter_free' },
       nvidia: { breaker: globalNvidiaBreaker || globalNvidiaProvider, name: 'nvidia' }
     };
-    
-    const providerQueue: string[] = [];
-    if (providerMap[primaryProviderName]) {
-      providerQueue.push(primaryProviderName);
-    }
-    
-    // Add configured fallbacks first
-    for (const fb of routeConfig.fallbacks) {
-      if (!providerQueue.includes(fb) && providerMap[fb]) {
-        providerQueue.push(fb);
-      }
-    }
 
-    // Add remaining providers as dynamic safety nets
-    for (const key of Object.keys(providerMap)) {
-      if (!providerQueue.includes(key)) {
-        providerQueue.push(key);
-      }
-    }
+    const providerQueue = resolveLiveProviderQueue(
+      routingConfig,
+      effectiveTaskType,
+      providerMap,
+      req.body.preferredProvider
+    );
+    const primaryProviderName = providerQueue[0];
 
     let aiResponse;
     let lastError;
@@ -5417,7 +5370,7 @@ app.post('/api/ai/generate', verifyAuth, async (req, res) => {
         aiResponse = await generateWithTelemetry(provObj.breaker, augmentedMessages, { 
           complexity: effectiveComplexity === 'quiz' ? 'high' : 'high',
           jsonMode: responseFormat === 'json',
-          model: effectiveTaskType === 'voice_tutor' ? routingConfig.voice_tutor_model : (provKey === 'nvidia' ? (routingConfig.nvidia_text_model || 'nvidia/nemotron-3-super-120b-a12b') : undefined)
+          model: effectiveTaskType === 'voice_tutor' ? routingConfig.voice_tutor_model : (provKey === 'nvidia' ? routingConfig.nvidia_text_model : undefined)
         });
 
         if (aiResponse && aiResponse.text && aiResponse.text.trim().length > 5) {
