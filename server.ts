@@ -1306,7 +1306,7 @@ app.get('/api/courses/:courseId', verifyAuth, requireCourseAccess, async (req, r
   }
 });
 
-app.get('/api/courses/:courseId/modules', optionalAuth, requirePublishedCourseOrAdmin, async (req, res) => {
+app.get('/api/courses/:courseId/modules', verifyAuth, requireCourseAccess, async (req, res) => {
   const t0 = Date.now();
   try {
     const { courseId } = req.params;
@@ -1328,7 +1328,7 @@ app.get('/api/courses/:courseId/modules', optionalAuth, requirePublishedCourseOr
   }
 });
 
-app.get('/api/courses/:courseId/modules/:moduleId/lessons', optionalAuth, requirePublishedCourseOrAdmin, async (req, res) => {
+app.get('/api/courses/:courseId/modules/:moduleId/lessons', verifyAuth, requireCourseAccess, async (req, res) => {
   const t0 = Date.now();
   try {
     const { courseId, moduleId } = req.params;
@@ -1664,7 +1664,7 @@ app.post('/api/courses/:courseId/modules/:moduleId/lessons/:lessonId/attempts', 
   }
 });
 
-app.get('/api/courses/:courseId/formulas', optionalAuth, requirePublishedCourseOrAdmin, async (req, res) => {
+app.get('/api/courses/:courseId/formulas', verifyAuth, requireCourseAccess, async (req, res) => {
   const t0 = Date.now();
   try {
     const { courseId } = req.params;
