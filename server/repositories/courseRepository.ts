@@ -29,13 +29,13 @@ export class CourseRepository {
   /**
    * Fetches published courses list with caching & resilient routing
    */
-  async listPublishedCourses(filter: CourseQueryFilter = {}): Promise<CourseEntity[]> {
+  async listPublishedCourses(filter: CourseQueryFilter = {}, forceRefresh = false): Promise<CourseEntity[]> {
     await ensureCourseLearningSchema();
     const flags = getFeatureFlags();
     const cacheKey = `catalog:list:${filter.department || 'all'}:${filter.level || 'all'}`;
 
     // 1. Attempt L1 memory cache read (<5ms)
-    const cached = catalogCache.getPublished<CourseEntity[]>(cacheKey);
+    const cached = forceRefresh ? null : catalogCache.getPublished<CourseEntity[]>(cacheKey);
     if (cached) {
       return cached;
     }
@@ -44,7 +44,7 @@ export class CourseRepository {
     if (flags.ENABLE_POSTGRES_CATALOG) {
       try {
         let sql = `
-          SELECT id, code, title, description, level, department, faculty, semester, faculties, departments,
+          SELECT id, code, title, description, level, department, faculty, semester, faculties, departments, scope,
                  thumbnail_url, author_id, status, version, created_at, updated_at
           FROM courses
           WHERE 1=1
@@ -79,12 +79,13 @@ export class CourseRepository {
           level: r.level || 'undergraduate',
           department: r.department || null,
           faculty: r.faculty || null,
+          scope: r.scope || null,
           faculties: Array.isArray(r.faculties) && r.faculties.length ? r.faculties : (r.faculty ? [r.faculty] : []),
           departments: Array.isArray(r.departments) && r.departments.length ? r.departments : (r.department ? [r.department] : []),
           semester: r.semester || null,
           thumbnail_url: r.thumbnail_url || null,
           author_id: r.author_id || '',
-          status: r.status || 'published',
+          status: r.status,
           generation_status: 'none',
           generation_job_id: null,
           version: Number(r.version || 1),
@@ -102,7 +103,7 @@ export class CourseRepository {
     }
 
     // Zero-Firestore fallback: check if cached in L1 or throw clean error
-    const staleCached = catalogCache.getPublished<CourseEntity[]>(cacheKey);
+    const staleCached = forceRefresh ? null : catalogCache.getPublished<CourseEntity[]>(cacheKey);
     if (staleCached) {
       return staleCached;
     }
@@ -125,7 +126,7 @@ export class CourseRepository {
     if (flags.ENABLE_POSTGRES_CATALOG) {
       try {
         const sql = `
-          SELECT id, code, title, description, level, department, faculty, semester, faculties, departments,
+          SELECT id, code, title, description, level, department, faculty, semester, faculties, departments, scope,
                  thumbnail_url, author_id, status, version, created_at, updated_at
           FROM courses
           WHERE id = $1
@@ -142,12 +143,13 @@ export class CourseRepository {
             level: r.level || 'undergraduate',
             department: r.department || null,
             faculty: r.faculty || null,
+            scope: r.scope || null,
             faculties: Array.isArray(r.faculties) && r.faculties.length ? r.faculties : (r.faculty ? [r.faculty] : []),
             departments: Array.isArray(r.departments) && r.departments.length ? r.departments : (r.department ? [r.department] : []),
             semester: r.semester || null,
             thumbnail_url: r.thumbnail_url || null,
             author_id: r.author_id || '',
-            status: r.status || 'published',
+            status: r.status,
             generation_status: 'none',
             generation_job_id: null,
             version: Number(r.version || 1),
@@ -381,12 +383,14 @@ export class CourseRepository {
    * Retrieves full published catalog with titles & module structure only (no lesson content)
    * Enforces status = 'published' and filters out archived modules.
    */
-  async getFullCatalogWithSyllabus(): Promise<{ courses: any[]; etag: string; maxUpdatedAt: string }> {
+  async getFullCatalogWithSyllabus(forceRefresh = false): Promise<{ courses: any[]; etag: string; maxUpdatedAt: string | null }> {
     await ensureCourseLearningSchema();
     const flags = getFeatureFlags();
     const cacheKey = 'catalog:full:published';
 
-    const cached = catalogCache.getPublished<{ courses: any[]; etag: string; maxUpdatedAt: string }>(cacheKey);
+    const cached = forceRefresh
+      ? null
+      : catalogCache.getPublished<{ courses: any[]; etag: string; maxUpdatedAt: string | null }>(cacheKey);
     if (cached) {
       return cached;
     }
@@ -436,7 +440,7 @@ export class CourseRepository {
           });
         }
 
-        let maxUpdatedAt = '1970-01-01T00:00:00.000Z';
+        let maxUpdatedAt: string | null = null;
 
         const fullCourses = coursesRes.rows.map(c => {
           if (c.updated_at && c.updated_at > maxUpdatedAt) maxUpdatedAt = c.updated_at;
@@ -460,9 +464,9 @@ export class CourseRepository {
             departments: Array.isArray(c.departments) && c.departments.length > 0
               ? c.departments
               : (c.scope === 'DEPARTMENT' && c.department ? [c.department] : []),
-            level: c.level || '100',
-            semester: (String(c.semester || '').toLowerCase().includes('2') || String(c.semester || '').toLowerCase().includes('second')) ? '2nd Semester' : '1st Semester',
-            scope: c.scope || 'DEPARTMENT',
+            level: c.level ?? null,
+            semester: typeof c.semester === 'string' && c.semester.trim() ? ((c.semester.toLowerCase().includes('2') || c.semester.toLowerCase().includes('second')) ? '2nd Semester' : ((c.semester.toLowerCase().includes('1') || c.semester.toLowerCase().includes('first')) ? '1st Semester' : c.semester)) : null,
+            scope: c.scope || null,
             status: c.status,
             syllabus: sortCourseSyllabus(cMods)
           };
@@ -480,7 +484,9 @@ export class CourseRepository {
     }
 
     // Zero-Firestore fallback: check if cached in L1 or throw clean 503 error
-    const staleCached = catalogCache.getPublished<{ courses: any[]; etag: string; maxUpdatedAt: string }>(cacheKey);
+    const staleCached = forceRefresh
+      ? null
+      : catalogCache.getPublished<{ courses: any[]; etag: string; maxUpdatedAt: string | null }>(cacheKey);
     if (staleCached) {
       return staleCached;
     }
