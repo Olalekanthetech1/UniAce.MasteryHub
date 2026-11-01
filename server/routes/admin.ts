@@ -32,7 +32,7 @@ export function setupAdminRoutes(
   syncAllProvidersFromSettings?: (apiKeysData: any) => void
 ) {
   async function checkIsAdmin(uid: string, email?: string): Promise<boolean> {
-    if (email && (email.toLowerCase() === 'olalekan4565@gmail.com' || isAdminEmail(email))) return true;
+    if (email && isAdminEmail(email)) return true;
     try {
       const pool = getPostgresPool();
       if (pool) {
