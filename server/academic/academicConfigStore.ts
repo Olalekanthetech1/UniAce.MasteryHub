@@ -17,6 +17,7 @@ export interface AcademicResearchSettings {
   researchDepth: AcademicResearchDepth;
   adaptiveMaxQueries: number;
   minimumUsefulSources: number;
+  minimumRelevanceScore: number;
 }
 export interface AcademicResearchSecrets {
   semanticScholarApiKey?: string;
@@ -45,6 +46,7 @@ export const DEFAULT_ACADEMIC_RESEARCH_SETTINGS: AcademicResearchSettings = {
   researchDepth: 'adaptive',
   adaptiveMaxQueries: 2,
   minimumUsefulSources: 3,
+  minimumRelevanceScore: 0.25,
 };
 
 interface EncryptedSecret {
@@ -128,6 +130,7 @@ function normalizeSettings(value: unknown): AcademicResearchSettings {
     researchDepth: 'adaptive',
     adaptiveMaxQueries: typeof stored.adaptiveMaxQueries === 'number' ? stored.adaptiveMaxQueries : DEFAULT_ACADEMIC_RESEARCH_SETTINGS.adaptiveMaxQueries,
     minimumUsefulSources: typeof stored.minimumUsefulSources === 'number' ? stored.minimumUsefulSources : DEFAULT_ACADEMIC_RESEARCH_SETTINGS.minimumUsefulSources,
+    minimumRelevanceScore: typeof stored.minimumRelevanceScore === 'number' ? stored.minimumRelevanceScore : DEFAULT_ACADEMIC_RESEARCH_SETTINGS.minimumRelevanceScore,
   };
   if (
     typeof settings.enabled !== 'boolean' ||
@@ -135,6 +138,7 @@ function normalizeSettings(value: unknown): AcademicResearchSettings {
     !Number.isInteger(settings.arxivMaxResults) || settings.arxivMaxResults < 1 || settings.arxivMaxResults > 20 ||
     !Number.isInteger(settings.adaptiveMaxQueries) || settings.adaptiveMaxQueries < 1 || settings.adaptiveMaxQueries > 2 ||
     !Number.isInteger(settings.minimumUsefulSources) || settings.minimumUsefulSources < 1 || settings.minimumUsefulSources > 10 ||
+    !Number.isFinite(settings.minimumRelevanceScore) || settings.minimumRelevanceScore < 0 || settings.minimumRelevanceScore > 1 ||
     typeof settings.defaultCourseAlignment !== 'string' ||
     (settings.openAlexEmail !== undefined && typeof settings.openAlexEmail !== 'string') ||
     Object.values(settings.providersEnabled).some(flag => typeof flag !== 'boolean')
