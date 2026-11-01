@@ -149,41 +149,55 @@ export const SRSService = {
    */
   async getDueReviews(userId?: string): Promise<SRSRecord[]> {
     const user = auth.currentUser;
-    const uid = userId || user?.uid;
-    if (!uid) return [];
-
-    try {
-      const token = await user?.getIdToken();
-      if (token) {
-        const res = await safeFetchJson<any>('/api/user/srs', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (res.ok && res.data) {
-          const json = res.data;
-          if (Array.isArray(json.cards)) {
-            const now = Date.now();
-            return json.cards
-              .filter((c: any) => !c.next_review_at || new Date(c.next_review_at).getTime() <= now)
-              .map((c: any) => ({
-                userId: uid,
-                topicId: c.card_id,
-                courseId: c.course_id,
-                easinessFactor: c.ease_factor || 2.5,
-                interval: 1,
-                repetitions: c.review_count || 0,
-                box: c.box,
-                nextReviewDate: c.next_review_at,
-                lastReviewed: c.updated_at || new Date().toISOString(),
-                repetitionCount: c.review_count,
-                easeFactor: c.ease_factor,
-                lastPerformanceScore: 3
-              }));
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('[SRSService] Failed to fetch due reviews:', err);
+    if (!user) {
+      throw new Error('An authenticated user is required to retrieve spaced-repetition reviews.');
     }
-    return [];
+    if (userId && userId !== user.uid) {
+      throw new Error('The authenticated user does not match the requested spaced-repetition profile.');
+    }
+
+    const token = await user.getIdToken();
+    const res = await safeFetchJson<any>('/api/user/srs', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!res.ok) {
+      throw new Error(`Spaced-repetition review lookup failed with HTTP ${res.status}.`);
+    }
+    if (!res.data || !Array.isArray(res.data.cards)) {
+      throw new Error('Spaced-repetition response did not contain a verified cards array.');
+    }
+
+    const now = Date.now();
+    return res.data.cards.map((card: any, index: number) => {
+      const repetitions = Number(card.review_count);
+      const easinessFactor = Number(card.ease_factor);
+      const box = Number(card.box);
+      const nextReviewDate = card.next_review_at;
+      const lastReviewed = card.updated_at;
+      if (typeof card.card_id !== 'string' || !card.card_id.trim() ||
+          typeof card.course_id !== 'string' || !card.course_id.trim() ||
+          !Number.isFinite(repetitions) || repetitions < 0 ||
+          !Number.isFinite(easinessFactor) || !Number.isFinite(box) ||
+          typeof nextReviewDate !== 'string' || Number.isNaN(Date.parse(nextReviewDate)) ||
+          typeof lastReviewed !== 'string' || Number.isNaN(Date.parse(lastReviewed))) {
+        throw new Error(`Persisted spaced-repetition record ${index + 1} is incomplete or invalid.`);
+      }
+
+      const lastReviewedTime = Date.parse(lastReviewed);
+      const nextReviewTime = Date.parse(nextReviewDate);
+      return {
+        userId: user.uid,
+        topicId: card.card_id,
+        courseId: card.course_id,
+        easinessFactor,
+        interval: Math.max(0, Math.ceil((nextReviewTime - lastReviewedTime) / 86400000)),
+        repetitions,
+        box,
+        nextReviewDate,
+        lastReviewed,
+        repetitionCount: repetitions,
+        easeFactor: easinessFactor
+      };
+    }).filter((record: SRSRecord) => Date.parse(record.nextReviewDate) <= now);
   }
 };
