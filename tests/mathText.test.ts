@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { Marked } from 'marked';
+import markedKatex from 'marked-katex-extension';
 import { asDisplayMath, normalizeMathDelimiters } from '../src/shared/mathText';
 
 test('normalizes LaTeX inline and display delimiter variants', () => {
@@ -35,4 +37,14 @@ test('converts explicit math code fences into display equations', () => {
   const result = normalizeMathDelimiters(source);
   assert.ok(result.includes('$$\n\\frac{F}{A}\n$$'));
   assert.equal(result.includes(fence), false);
+});
+
+test('KaTeX compiles normalized course equations into rendered math markup', () => {
+  const markdown = normalizeMathDelimiters('Hydrostatic pressure: \\(p = \\rho g h\\)\\n\\n\\[F = ma\\]');
+  const marked = new Marked();
+  marked.use(markedKatex({ throwOnError: false, output: 'htmlAndMathml', strict: false }));
+  const html = marked.parse(markdown) as string;
+  assert.match(html, /class="katex"/);
+  assert.match(html, /class="katex-display"/);
+  assert.doesNotMatch(html, /\\\\rho g h/);
 });
