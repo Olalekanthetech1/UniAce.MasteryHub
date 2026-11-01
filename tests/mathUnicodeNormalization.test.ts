@@ -176,3 +176,33 @@ test('normalized generated expressions compile with KaTeX without warnings', () 
   );
 });
 
+test('centralized utility detects mathematical Unicode and normalizes operators inside math delimiters only', async () => {
+  const {
+    containsMathUnicode,
+    normalizeMathUnicodeInMarkdown,
+    normalizeMathBody
+  } = await import('../src/shared/mathUnicodeNormalizer.js');
+
+  assert.equal(containsMathUnicode('Water is H₂O and area is x²'), true);
+  assert.equal(containsMathUnicode('Ordinary text with no math'), false);
+  assert.equal(containsMathUnicode('$a ≤ b$'), true);
+
+  // In prose, operators and subscripts must be preserved
+  const proseWithSymbols = 'In ordinary prose: 5 × 4 = 20, water is H₂O, and T is 25°C.';
+  assert.equal(normalizeMathUnicodeInMarkdown(proseWithSymbols), proseWithSymbols);
+
+  // Inside math delimiters, operators and subscripts are converted to valid LaTeX
+  const mathWithSymbols = 'Compare: $a ≤ b × c$ and $$x ≠ y \\pm z$$';
+  const normalizedMath = normalizeMathUnicodeInMarkdown(mathWithSymbols);
+  assert.equal(normalizedMath, 'Compare: $a \\le b \\times c$ and $$x \\ne y \\pm z$$');
+
+  // Verify compiled with KaTeX
+  assert.doesNotThrow(() =>
+    katex.renderToString(normalizeMathBody('a ≤ b × c'), { throwOnError: true })
+  );
+  assert.doesNotThrow(() =>
+    katex.renderToString(normalizeMathBody('x ≠ y \\pm z'), { throwOnError: true })
+  );
+});
+
+

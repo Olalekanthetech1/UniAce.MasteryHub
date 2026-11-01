@@ -1,7 +1,7 @@
 import { Module, SubTopic, UserProgress } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
-import { BookOpen, ChevronRight, Brain, Menu, Volume2, Loader2, ArrowLeft, Sparkles, Wand2, Lock, Calculator as CalcIcon, List } from 'lucide-react';
-import { useState, useEffect, useRef } from 'react';
+import { BookOpen, ChevronRight, Brain, Menu, Volume2, Loader2, ArrowLeft, Sparkles, Wand2, Lock, Calculator as CalcIcon, List, Clock, CheckCircle2 } from 'lucide-react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import QuizGenerator from './QuizGenerator';
 import QuickCheck from './QuickCheck';
 import MarkdownRenderer from './MarkdownRenderer';
@@ -18,6 +18,7 @@ import { useAuth } from '../context/AuthContext';
 import { usePremiumStatus } from '../hooks/usePremiumStatus';
 import { PipelineMetadata } from '../types';
 import type { StudentInstructionalContent } from '../shared/courseSchemas';
+import { calculateReadingTime, calculateSubTopicReadingTime, calculateModuleReadingTime, type ReadingTimeEstimate } from '../utils/readingTime';
 
 const stripThinkTags = (text: string) => {
   return text.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
@@ -73,6 +74,7 @@ export default function ContentArea({
   const hasCheckedInRef = useRef<Set<string>>(new Set());
   const [lockedFeatureName, setLockedFeatureName] = useState('');
   const [fetchedLesson, setFetchedLesson] = useState<{ id: string; content: string; metadata: PipelineMetadata; instructionalContent?: StudentInstructionalContent } | null>(null);
+  const [moduleLessonsById, setModuleLessonsById] = useState<Record<string, SubTopic>>({});
   const [isFetchingContent, setIsFetchingContent] = useState(false);
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const { courses, refreshCourses } = useCourses();
@@ -96,6 +98,59 @@ export default function ContentArea({
     : (fetchedLesson?.id === activeSubTopic?.id && fetchedLesson.content && fetchedLesson.content.trim().length > 0 ? fetchedLesson : null);
 
   const isCurrentLessonLoading = isFetchingContent || (!activeLessonData && !isGenerating);
+
+  // Calculate reading time for each subtopic in the module and for the currently active lesson
+  const subTopicReadingTimes = useMemo<Record<string, ReadingTimeEstimate>>(() => {
+    const map: Record<string, ReadingTimeEstimate> = {};
+    for (const st of subTopics) {
+      const matchedFromBatch =
+        moduleLessonsById[st.id] ||
+        (st.id.includes('-') ? moduleLessonsById[st.id.split('-')[1]] : undefined);
+      const isCurrentFetched = fetchedLesson?.id === st.id;
+      const content =
+        (isCurrentFetched ? fetchedLesson?.content : undefined) ||
+        st.content ||
+        matchedFromBatch?.content ||
+        '';
+      const instructionalContent =
+        (isCurrentFetched ? fetchedLesson?.instructionalContent : undefined) ||
+        st.instructionalContent ||
+        matchedFromBatch?.instructionalContent;
+      map[st.id] = calculateReadingTime(content, instructionalContent);
+    }
+    return map;
+  }, [subTopics, moduleLessonsById, fetchedLesson]);
+
+  const activeReadingTime = useMemo<ReadingTimeEstimate>(() => {
+    if (activeLessonData) {
+      return calculateReadingTime(activeLessonData.content, activeLessonData.instructionalContent);
+    }
+    if (activeSubTopic?.id && subTopicReadingTimes[activeSubTopic.id]) {
+      return subTopicReadingTimes[activeSubTopic.id];
+    }
+    return calculateReadingTime('', null);
+  }, [activeLessonData, activeSubTopic?.id, subTopicReadingTimes]);
+
+  const moduleTotalReadingTime = useMemo<ReadingTimeEstimate>(() => {
+    const hydratedSubTopics = subTopics.map((st) => {
+      const matchedFromBatch =
+        moduleLessonsById[st.id] ||
+        (st.id.includes('-') ? moduleLessonsById[st.id.split('-')[1]] : undefined);
+      const isCurrentFetched = fetchedLesson?.id === st.id;
+      return {
+        content:
+          (isCurrentFetched ? fetchedLesson?.content : undefined) ||
+          st.content ||
+          matchedFromBatch?.content ||
+          '',
+        instructionalContent:
+          (isCurrentFetched ? fetchedLesson?.instructionalContent : undefined) ||
+          st.instructionalContent ||
+          matchedFromBatch?.instructionalContent
+      };
+    });
+    return calculateModuleReadingTime(hydratedSubTopics);
+  }, [subTopics, moduleLessonsById, fetchedLesson]);
 
   const generationSteps = [
     "AI is brainstorming the lesson structure...",
@@ -149,6 +204,14 @@ export default function ContentArea({
         console.log(`[ContentArea] Fetching lessons via Neon API for ${courseId}/${module.id}/${activeSubTopic?.id}`);
         const { CourseService } = await import('../services/courseService');
         const lessons = await CourseService.getLessons(courseId, module.id);
+        const byId: Record<string, SubTopic> = {};
+        for (const l of lessons) {
+          byId[l.id] = {
+            ...l,
+            content: l.content ? sanitizeLatex(stripThinkTags(l.content)) : ''
+          };
+        }
+        setModuleLessonsById(byId);
         const targetLesson = lessons.find(l => l.id === activeSubTopic?.id || (activeSubTopic?.id.includes('-') && l.id === activeSubTopic.id.split('-')[1]));
 
         if (targetLesson && targetLesson.content) {
@@ -273,10 +336,12 @@ export default function ContentArea({
     if (!activeLessonData || isGenerating || isCurrentLessonLoading) return;
     if (hasCheckedInRef.current.has(activeSubTopic.id)) return;
 
-    // Calculate Dynamic Delay (Smart Timer)
-    // Avg reading speed: 200 wpm. We nudge at ~70% of estimated reading time.
-    const wordCount = activeLessonData.content.split(/\s+/).length;
-    const estimatedReadingTimeMs = (wordCount / 200) * 60 * 1000;
+    // Calculate Dynamic Delay (Smart Timer) using calculated reading & comprehension time.
+    // We nudge at ~70% of estimated reading time.
+    const estimatedReadingTimeMs =
+      activeReadingTime.hasContent && activeReadingTime.totalSeconds > 0
+        ? activeReadingTime.totalSeconds * 1000
+        : (activeLessonData.content.split(/\s+/).length / 200) * 60 * 1000;
     const dynamicDelay = Math.max(45000, Math.min(180000, estimatedReadingTimeMs * 0.7));
 
     const timer = setTimeout(() => {
@@ -288,7 +353,7 @@ export default function ContentArea({
     }, dynamicDelay);
 
     return () => clearTimeout(timer);
-  }, [activeSubTopic.id, activeLessonData, isGenerating, isCurrentLessonLoading]);
+  }, [activeSubTopic.id, activeLessonData, activeReadingTime, isGenerating, isCurrentLessonLoading]);
 
   useEffect(() => {
     if (autoStartQuiz) {
@@ -534,6 +599,67 @@ export default function ContentArea({
         </div>
       </div>
 
+      {/* Module Subtopics Reading Time & Session Planner Strip */}
+      {subTopics.length > 0 && (
+        <div className="bg-zinc-100/80 dark:bg-zinc-900/60 border-b border-zinc-200/80 dark:border-zinc-800/80 px-4 sm:px-6 py-2 flex items-center justify-between gap-4 overflow-x-auto no-scrollbar">
+          <div className="flex items-center gap-1.5 shrink-0">
+            {subTopics.map((st, idx) => {
+              const isSelected = st.id === activeSubTopic?.id;
+              const stReading = subTopicReadingTimes[st.id];
+              const isTopicLocked = isLocked && idx > 0;
+              const isMastered = (progress?.mastery?.[st.id] || 0) >= 100;
+
+              return (
+                <button
+                  key={st.id}
+                  onClick={() => {
+                    if (isTopicLocked) {
+                      setLockedFeatureName('Full Module Access');
+                      setShowPricingModal(true);
+                      return;
+                    }
+                    onSubTopicSelect(st.id);
+                  }}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all shrink-0 border ${
+                    isSelected
+                      ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white border-zinc-300 dark:border-zinc-700 shadow-xs'
+                      : 'bg-transparent text-zinc-600 dark:text-zinc-400 border-transparent hover:bg-white/60 dark:hover:bg-zinc-800/50 hover:text-zinc-900 dark:hover:text-zinc-200'
+                  }`}
+                >
+                  <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold ${
+                    isSelected
+                      ? 'bg-emerald-600 text-white'
+                      : isMastered
+                        ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400'
+                        : 'bg-zinc-200 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400'
+                  }`}>
+                    {isTopicLocked ? <Lock size={9} /> : isMastered ? <CheckCircle2 size={10} /> : idx + 1}
+                  </span>
+                  <span className="max-w-[11rem] truncate">{st.title}</span>
+                  {stReading?.hasContent && (
+                    <span className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md font-semibold ${
+                      isSelected
+                        ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300'
+                        : 'bg-zinc-200/70 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400'
+                    }`}>
+                      <Clock size={10} />
+                      <span>{stReading.formatted}</span>
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {moduleTotalReadingTime.hasContent && (
+            <div className="hidden md:flex items-center gap-1.5 text-[11px] font-semibold text-zinc-500 dark:text-zinc-400 shrink-0 pl-2 border-l border-zinc-200 dark:border-zinc-800">
+              <Clock size={12} className="text-emerald-600 dark:text-emerald-400" />
+              <span>Module Total: {moduleTotalReadingTime.formatted}</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Main Content */}
       <div ref={contentScrollRef} className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-10 pb-4 lg:pb-10">
         <div className="w-full space-y-8">
@@ -544,11 +670,30 @@ export default function ContentArea({
             transition={{ duration: 0.3 }}
             className="bg-white dark:bg-zinc-900 rounded-xl shadow-sm border border-zinc-200 dark:border-zinc-800 p-8 lg:p-10 text-zinc-800 dark:text-zinc-200"
           >
-            <div className="flex items-center gap-2 text-zinc-400 dark:text-zinc-500 text-[10px] font-semibold uppercase tracking-wider mb-3 sm:mb-4">
-              <BookOpen size={12} />
-              <span>{module.title}</span>
-              <ChevronRight size={12} />
-              <span className="text-zinc-900 dark:text-zinc-100">{activeSubTopic.title}</span>
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-3 sm:mb-4">
+              <div className="flex items-center gap-2 text-zinc-400 dark:text-zinc-500 text-[10px] font-semibold uppercase tracking-wider">
+                <BookOpen size={12} />
+                <span>{module.title}</span>
+                <ChevronRight size={12} />
+                <span className="text-zinc-900 dark:text-zinc-100">{activeSubTopic.title}</span>
+              </div>
+
+              {activeReadingTime.hasContent && (
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800/50 font-semibold"
+                    title="Estimated study & comprehension time based on word count, mathematical derivations, and figures"
+                  >
+                    <Clock size={13} className="text-emerald-600 dark:text-emerald-400" />
+                    <span>{activeReadingTime.formatted}</span>
+                  </span>
+                  <span className="text-[11px] font-medium text-zinc-400 dark:text-zinc-500">
+                    {activeReadingTime.wordCount.toLocaleString()} {activeReadingTime.wordCount === 1 ? 'word' : 'words'}
+                    {activeReadingTime.equationCount > 0 ? ` • ${activeReadingTime.equationCount} ${activeReadingTime.equationCount === 1 ? 'formula' : 'formulas'}` : ''}
+                    {activeReadingTime.figureCount > 0 ? ` • ${activeReadingTime.figureCount} ${activeReadingTime.figureCount === 1 ? 'figure' : 'figures'}` : ''}
+                  </span>
+                </div>
+              )}
             </div>
 
             <h1 className="text-xl sm:text-2xl lg:text-3xl font-bold text-zinc-950 dark:text-white mb-5 sm:mb-7 tracking-tight leading-snug">{activeSubTopic.title}</h1>
@@ -707,7 +852,14 @@ export default function ContentArea({
                 onClick={() => onSubTopicSelect(prevSubTopic.id)}
                 className="group flex flex-col items-start gap-1 p-5 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl hover:border-zinc-900 dark:hover:border-zinc-100 transition-all text-left"
               >
-                <span className="text-[10px] font-semibold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">Previous Topic</span>
+                <div className="flex items-center gap-2 text-[10px] font-semibold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">
+                  <span>Previous Topic</span>
+                  {subTopicReadingTimes[prevSubTopic.id]?.hasContent && (
+                    <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 normal-case">
+                      • <Clock size={10} /> {subTopicReadingTimes[prevSubTopic.id].formatted}
+                    </span>
+                  )}
+                </div>
                 <span className="text-zinc-900 dark:text-zinc-100 font-semibold group-hover:text-emerald-600 transition-colors text-sm sm:text-base">{prevSubTopic.title}</span>
               </button>
             ) : <div />}
@@ -725,10 +877,15 @@ export default function ContentArea({
                 onClick={handleNextTopicClick}
                 className="group flex flex-col items-end gap-1 p-5 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl hover:border-zinc-900 dark:hover:border-zinc-100 transition-all text-right"
               >
-                <span className="text-[10px] font-semibold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider flex items-center gap-1">
+                <div className="text-[10px] font-semibold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider flex items-center gap-1.5">
+                  {subTopicReadingTimes[nextSubTopic.id]?.hasContent && (
+                    <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 normal-case">
+                      <Clock size={10} /> {subTopicReadingTimes[nextSubTopic.id].formatted} •
+                    </span>
+                  )}
                   {isLocked && activeSubTopicIndex + 1 > 0 && <Lock size={10} className="text-amber-500" />}
-                  Next Topic
-                </span>
+                  <span>Next Topic</span>
+                </div>
                 <span className="text-zinc-900 dark:text-zinc-100 font-semibold group-hover:text-emerald-600 transition-colors text-sm sm:text-base">{nextSubTopic.title}</span>
               </button>
             ) : <div />}

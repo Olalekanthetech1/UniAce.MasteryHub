@@ -31,6 +31,7 @@ import { getModuleIcon } from '../utils/moduleIcons';
 import CourseContextBar from './CourseContextBar';
 import { getCourseProgramStatus, isCourseEligibleForUser } from '../utils/courseEligibility';
 import { sortCourseSyllabus } from '../shared/courseSchemas';
+import { calculateModuleReadingTime } from '../utils/readingTime';
 import toast from 'react-hot-toast';
 
 interface CourseSyllabusProps {
@@ -426,9 +427,22 @@ export default function CourseSyllabus({
                 <BookOpen size={20} className="text-emerald-500" />
                 <span>Core Study Map</span>
               </h2>
-              <span className="text-xs font-semibold text-slate-500 dark:text-zinc-400">
-                {syllabus.length} modules • Est. 45 study hours
-              </span>
+              {(() => {
+                const totalSubTopics = syllabus.reduce((acc, m) => acc + (m.subTopics?.length || 0), 0);
+                const allSubTopics = syllabus.flatMap((m) => m.subTopics || []);
+                const courseReading = calculateModuleReadingTime(allSubTopics);
+                return (
+                  <span className="text-xs font-semibold text-slate-500 dark:text-zinc-400 flex items-center gap-1.5">
+                    <span>{syllabus.length} {syllabus.length === 1 ? 'module' : 'modules'}</span>
+                    {totalSubTopics > 0 && <span>• {totalSubTopics} {totalSubTopics === 1 ? 'topic' : 'topics'}</span>}
+                    {courseReading.hasContent && (
+                      <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                        • <Clock size={12} /> {courseReading.formatted}
+                      </span>
+                    )}
+                  </span>
+                );
+              })()}
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">

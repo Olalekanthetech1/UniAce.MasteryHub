@@ -596,6 +596,7 @@ function AppContent() {
 
         {activeView === 'module-topics' && activeModule && (
           <ModuleTopics 
+            courseId={activeCourseId}
             module={activeModule}
             onBack={() => setActiveView('course-syllabus')}
             onSubTopicSelect={handleSubTopicSelect}

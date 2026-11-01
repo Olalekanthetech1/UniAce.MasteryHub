@@ -1,14 +1,16 @@
-import { useState } from 'react';
-import { Module, UserProgress } from '../types';
-import { Book, ArrowLeft, ArrowRight, ChevronRight, GraduationCap, BrainCircuit, MessageSquare, Lock, Award, CheckCircle2 } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
+import { Module, SubTopic, UserProgress } from '../types';
+import { Book, ArrowLeft, ArrowRight, ChevronRight, GraduationCap, BrainCircuit, MessageSquare, Lock, Award, CheckCircle2, Clock } from 'lucide-react';
 import { motion } from 'motion/react';
 import Flashcards from './Flashcards';
 import { useAuth } from '../context/AuthContext';
 import { usePremiumStatus } from '../hooks/usePremiumStatus';
 import { LogService } from '../services/logService';
 import PricingModal from './PricingModal';
+import { calculateReadingTime, calculateModuleReadingTime, type ReadingTimeEstimate } from '../utils/readingTime';
 
 interface ModuleTopicsProps {
+  courseId?: string | null;
   module: Module;
   onBack: () => void;
   onSubTopicSelect: (subTopicId: string) => void;
@@ -17,15 +19,71 @@ interface ModuleTopicsProps {
   progress: UserProgress;
 }
 
-export default function ModuleTopics({ module, onBack, onSubTopicSelect, onTakeQuiz, onOpenChat, progress }: ModuleTopicsProps) {
+export default function ModuleTopics({ courseId, module, onBack, onSubTopicSelect, onTakeQuiz, onOpenChat, progress }: ModuleTopicsProps) {
   const [showFlashcards, setShowFlashcards] = useState(false);
   const [showPricingModal, setShowPricingModal] = useState(false);
   const [lockedFeatureName, setLockedFeatureName] = useState('');
+  const [fetchedLessonsById, setFetchedLessonsById] = useState<Record<string, SubTopic>>({});
   const { user, profile } = useAuth();
   const { isPremium } = usePremiumStatus();
   
   const isAdmin = Boolean(user && profile?.role === 'admin');
   const isLocked = !isPremium && !isAdmin;
+
+  useEffect(() => {
+    let isMounted = true;
+    if (!courseId || !module?.id) return;
+
+    const subTopics = module.subTopics || [];
+    const allHaveInlineContent =
+      subTopics.length > 0 && subTopics.every((st) => Boolean(st.content && st.content.trim().length > 0));
+    if (allHaveInlineContent) return;
+
+    import('../services/courseService')
+      .then(({ CourseService }) => CourseService.getLessons(courseId, module.id))
+      .then((lessons) => {
+        if (!isMounted || !Array.isArray(lessons)) return;
+        const map: Record<string, SubTopic> = {};
+        for (const l of lessons) {
+          map[l.id] = l;
+        }
+        setFetchedLessonsById(map);
+      })
+      .catch(() => {
+        // Non-fatal: reading times will use inline content if available
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [courseId, module?.id, module?.subTopics]);
+
+  const subTopicReadingTimes = useMemo<Record<string, ReadingTimeEstimate>>(() => {
+    const map: Record<string, ReadingTimeEstimate> = {};
+    for (const st of module?.subTopics || []) {
+      const matched =
+        fetchedLessonsById[st.id] ||
+        (st.id.includes('-') ? fetchedLessonsById[st.id.split('-')[1]] : undefined);
+      map[st.id] = calculateReadingTime(
+        st.content || matched?.content || '',
+        st.instructionalContent || matched?.instructionalContent
+      );
+    }
+    return map;
+  }, [module?.subTopics, fetchedLessonsById]);
+
+  const moduleReadingTime = useMemo<ReadingTimeEstimate>(() => {
+    const hydrated = (module?.subTopics || []).map((st) => {
+      const matched =
+        fetchedLessonsById[st.id] ||
+        (st.id.includes('-') ? fetchedLessonsById[st.id.split('-')[1]] : undefined);
+      return {
+        content: st.content || matched?.content || '',
+        instructionalContent: st.instructionalContent || matched?.instructionalContent
+      };
+    });
+    return calculateModuleReadingTime(hydrated);
+  }, [module?.subTopics, fetchedLessonsById]);
 
   const getMasteryLevel = (subTopicId: string) => {
     const mastery = progress.mastery?.[subTopicId] || 0;
@@ -87,9 +145,17 @@ export default function ModuleTopics({ module, onBack, onSubTopicSelect, onTakeQ
           
           <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-6">
             <div className="space-y-2">
-              <div className="flex items-center gap-3 text-emerald-600 dark:text-emerald-400 font-semibold uppercase tracking-wider text-xs">
-                <GraduationCap size={16} />
-                <span>Module Overview</span>
+              <div className="flex flex-wrap items-center gap-3 text-emerald-600 dark:text-emerald-400 font-semibold uppercase tracking-wider text-xs">
+                <span className="flex items-center gap-1.5">
+                  <GraduationCap size={16} />
+                  <span>Module Overview</span>
+                </span>
+                {moduleReadingTime.hasContent && (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 text-[11px] normal-case font-semibold border border-emerald-200/60 dark:border-emerald-800/50">
+                    <Clock size={12} />
+                    <span>{moduleReadingTime.detailedLabel}</span>
+                  </span>
+                )}
               </div>
               <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-slate-900 dark:text-white tracking-tight">
                 {module.title}
@@ -159,8 +225,14 @@ export default function ModuleTopics({ module, onBack, onSubTopicSelect, onTakeQ
                       </span>
                     )}
                   </div>
-                  <div className="flex items-center gap-3 mt-1">
+                  <div className="flex flex-wrap items-center gap-3 mt-1">
                     <p className="text-slate-400 dark:text-blue-400 text-[10px] font-medium uppercase tracking-wider">Topic {i + 1}</p>
+                    {subTopicReadingTimes[topic.id]?.hasContent && (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 dark:text-blue-300 bg-slate-100 dark:bg-blue-950/70 px-2 py-0.5 rounded-md">
+                        <Clock size={11} className="text-emerald-600 dark:text-emerald-400" />
+                        <span>{subTopicReadingTimes[topic.id].formatted}</span>
+                      </span>
+                    )}
                     {masteryPercent > 0 && (
                       <div className="flex items-center gap-1.5">
                         <div className="w-20 h-1 bg-slate-100 dark:bg-blue-950 rounded-full overflow-hidden">

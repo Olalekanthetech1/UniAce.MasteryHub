@@ -1,4 +1,4 @@
-import { normalizeMathBody, normalizeMathUnicodeInMarkdown } from './courseSchemas.js';
+import { normalizeMathBody, normalizeMathUnicodeInMarkdown } from './mathUnicodeNormalizer.js';
 
 /**
  * Shared math delimiter and Unicode script normalization for generation, lesson display and review.
