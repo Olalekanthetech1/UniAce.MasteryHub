@@ -1283,28 +1283,36 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
 
   const findVerifiedGhostRecording = async (db: any, topicId: string, excludedBattleId?: string) => {
     const candidates = await db.query(
-      `SELECT id, updated_at, data
-       FROM arena_battles
-       WHERE status = 'finished'
-         AND topic = $1
-         AND ($2::text IS NULL OR id <> $2)
-         AND data->>'opponentType' = 'human'
-         AND data->'player1'->>'opponentType' = 'human'
-         AND data->'player2'->>'opponentType' = 'human'
+      `SELECT b.id,
+              b.updated_at,
+              b.data,
+              p1.uid AS verified_player1_uid,
+              p2.uid AS verified_player2_uid
+       FROM arena_battles AS b
+       JOIN users AS p1
+         ON p1.uid = b.data->'player1'->>'uid'
+       JOIN users AS p2
+         ON p2.uid = b.data->'player2'->>'uid'
+       WHERE b.status = 'finished'
+         AND b.topic = $1
+         AND ($2::text IS NULL OR b.id <> $2)
+         AND b.data->>'opponentType' = 'human'
+         AND b.data->'player1'->>'opponentType' = 'human'
+         AND b.data->'player2'->>'opponentType' = 'human'
          AND (
            CASE
-             WHEN jsonb_typeof(data->'player1'->'actionLog') = 'array'
-             THEN jsonb_array_length(data->'player1'->'actionLog') > 0
+             WHEN jsonb_typeof(b.data->'player1'->'actionLog') = 'array'
+             THEN jsonb_array_length(b.data->'player1'->'actionLog') > 0
              ELSE FALSE
            END
            OR
            CASE
-             WHEN jsonb_typeof(data->'player2'->'actionLog') = 'array'
-             THEN jsonb_array_length(data->'player2'->'actionLog') > 0
+             WHEN jsonb_typeof(b.data->'player2'->'actionLog') = 'array'
+             THEN jsonb_array_length(b.data->'player2'->'actionLog') > 0
              ELSE FALSE
            END
          )
-       ORDER BY updated_at DESC`,
+       ORDER BY b.updated_at DESC`,
       [topicId, excludedBattleId || null]
     );
 
