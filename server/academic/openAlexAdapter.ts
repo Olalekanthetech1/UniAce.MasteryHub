@@ -2,7 +2,7 @@ import { AcademicPaper, CanonicalDefinition } from './types.js';
 
 function reconstructAbstract(invertedIndex?: Record<string, number[]>): string {
   if (!invertedIndex || Object.keys(invertedIndex).length === 0) {
-    return 'Abstract unavailable in OpenAlex index.';
+    return '';
   }
 
   const wordMap: Array<{ pos: number; word: string }> = [];
@@ -19,16 +19,16 @@ function reconstructAbstract(invertedIndex?: Record<string, number[]>): string {
 export async function fetchFromOpenAlex(
   query: string,
   limit: number = 5,
-  politeEmail: string = 'uniace.support@gmail.com'
+  politeEmail?: string
 ): Promise<{ papers: AcademicPaper[]; latencyMs: number }> {
   const startTime = Date.now();
-  const url = `https://api.openalex.org/works?search=${encodeURIComponent(
-    query
-  )}&per-page=${limit}&mailto=${encodeURIComponent(politeEmail)}`;
+  const params = new URLSearchParams({ search: query, 'per-page': String(limit) });
+  if (politeEmail) params.set('mailto', politeEmail);
+  const url = `https://api.openalex.org/works?${params.toString()}`;
 
   const response = await fetch(url, {
     headers: {
-      'User-Agent': `UniAce-AcademicGrounding-Bot/1.0 (mailto:${politeEmail})`,
+      'User-Agent': 'UniAce-AcademicGrounding-Bot/1.0',
     },
     signal: AbortSignal.timeout(8000),
   });
@@ -62,8 +62,8 @@ export async function fetchFromOpenAlex(
       if (!item.title) continue;
 
       const authors = item.authorships
-        ? item.authorships.map((a) => a.author?.display_name || 'Contributor').filter(Boolean)
-        : ['Unknown Author'];
+        ? item.authorships.map((a) => a.author?.display_name || '').filter(Boolean)
+        : [];
 
       const abstract = reconstructAbstract(item.abstract_inverted_index);
       const cleanDoi = item.doi ? item.doi.replace(/^https?:\/\/(dx\.)?doi\.org\//i, '') : null;
@@ -78,11 +78,11 @@ export async function fetchFromOpenAlex(
         authors,
         abstract,
         year: item.publication_year || null,
-        venue: item.primary_location?.source?.display_name || 'Academic Literature',
+        venue: item.primary_location?.source?.display_name || null,
         doi: cleanDoi,
         url,
         pdfUrl,
-        citationCount: item.cited_by_count || 0,
+        citationCount: typeof item.cited_by_count === 'number' ? item.cited_by_count : null,
         source: 'openalex',
         relevanceScore: 0,
         syllabusTags: conceptTags,
@@ -97,7 +97,6 @@ export async function fetchFromOpenAlex(
 export async function fetchOpenAlexConceptDefinitions(
   subject: string,
   topic: string,
-  courseCode?: string
 ): Promise<CanonicalDefinition | null> {
   const searchTerm = `${subject} ${topic}`.trim();
   const url = `https://api.openalex.org/concepts?search=${encodeURIComponent(
@@ -116,6 +115,7 @@ export async function fetchOpenAlexConceptDefinitions(
 
     const data = (await response.json()) as {
       results?: Array<{
+        id: string;
         display_name: string;
         description?: string;
         related_concepts?: Array<{ display_name: string }>;
@@ -126,25 +126,20 @@ export async function fetchOpenAlexConceptDefinitions(
     if (!data.results || data.results.length === 0) return null;
 
     const primaryConcept = data.results[0];
-    const canonicalDef = primaryConcept.description || `Canonical definition and core theory governing ${primaryConcept.display_name} in ${subject}.`;
+    const canonicalDef = primaryConcept.description?.trim();
+    if (!canonicalDef || !primaryConcept.id) return null;
 
-    const related = primaryConcept.related_concepts
-      ? primaryConcept.related_concepts.slice(0, 3).map((c) => c.display_name)
+    const relatedConcepts = primaryConcept.related_concepts
+      ? primaryConcept.related_concepts.slice(0, 3).map((concept) => concept.display_name).filter(Boolean)
       : [];
 
     return {
       topic: primaryConcept.display_name,
       subject,
       canonicalDefinition: canonicalDef,
-      sourceTextbooks: [
-        'Standard Reference Textbooks (e.g. Halliday & Resnick, Stewart Calculus, Cormen Algorithms)',
-        'OpenAlex Academic Concept Knowledge Graph',
-      ],
-      keyEquations: related.length > 0 ? related : [topic],
-      courseAlignment: {
-        curriculumBenchmark: `Grounded in accredited global university curriculum benchmarks and academic standards for ${subject}`,
-        courseCode: courseCode || `${subject.slice(0, 3).toUpperCase()} 101`,
-      },
+      sourceProvider: 'openalex',
+      sourceUrl: primaryConcept.id,
+      relatedConcepts,
     };
   } catch (error) {
     console.error('OpenAlex Concept Fetch Error:', error);
