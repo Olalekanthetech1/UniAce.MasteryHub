@@ -23,7 +23,7 @@ export function setupMathRoutes(
   };
 
   // 1. Primary Math Computation Endpoint (Used by Student AI Chat & Interactive Solvers)
-  app.post('/api/math/compute', async (req: express.Request, res: express.Response) => {
+  app.post('/api/math/compute', verifyAuth, async (req: express.Request, res: express.Response) => {
     try {
       const {
         operation,
