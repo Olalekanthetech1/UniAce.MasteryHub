@@ -20,8 +20,6 @@ export default function CourseCreateModal({ onClose, onSave }: CourseCreateModal
   const [level, setLevel] = useState<Level | ''>('');
   const [semester, setSemester] = useState<Semester | ''>('');
   const [scope, setScope] = useState<CourseScope | ''>('');
-  const [academicStandard, setAcademicStandard] = useState<string>('Globally Adaptive (Universal University Standard)');
-  const [customStandard, setCustomStandard] = useState<string>('');
   const [faculties, setFaculties] = useState<string[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
   const [modules, setModules] = useState<Module[]>([]);
@@ -35,10 +33,6 @@ export default function CourseCreateModal({ onClose, onSave }: CourseCreateModal
     }
     setIsSaving(true);
     try {
-      const activeStandard = academicStandard === 'Custom Academic Benchmark'
-        ? (customStandard.trim() || 'Custom Dynamic Academic Benchmark')
-        : academicStandard;
-
       const targetDepts = scope === 'DEPARTMENT'
         ? Array.from(new Set([department, ...departments].filter(Boolean)))
         : (scope === 'GLOBAL' ? [] : departments);
@@ -174,39 +168,6 @@ export default function CourseCreateModal({ onClose, onSave }: CourseCreateModal
                 <option value="DEPARTMENT">Department</option>
               </select>
             </div>
-          </div>
-
-          <div>
-            <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">
-              Academic Standard & Curriculum Framework
-            </label>
-            <select
-              value={academicStandard}
-              onChange={(e) => setAcademicStandard(e.target.value)}
-              className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-            >
-              <option value="Globally Adaptive (Universal University Standard)">Globally Adaptive (Universal University Standard)</option>
-              <option value="International Higher Education Curriculum Standard">International Higher Education Curriculum Standard</option>
-              <option value="Global Accreditation & Outcomes-Based Framework">Global Accreditation & Outcomes-Based Framework</option>
-              <option value="North American University Benchmark (ABET/CSAB Aligned)">North American University Benchmark (ABET/CSAB Aligned)</option>
-              <option value="European Higher Education Area / Bologna Process">European Higher Education Area / Bologna Process</option>
-              <option value="Commonwealth Higher Education Quality Framework">Commonwealth Higher Education Quality Framework</option>
-              <option value="Custom Academic Benchmark">Custom Academic Benchmark (Enter Custom Standard)...</option>
-            </select>
-            {academicStandard === 'Custom Academic Benchmark' && (
-              <div className="mt-3">
-                <input
-                  type="text"
-                  placeholder="e.g., Oxford/Cambridge Tripos, IEEE/ACM 2023, National University Benchmark"
-                  value={customStandard}
-                  onChange={(e) => setCustomStandard(e.target.value)}
-                  className="w-full bg-slate-50 dark:bg-slate-900 border border-emerald-300 dark:border-emerald-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                />
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                  Courses and AI tutoring for this course will dynamically calibrate to this accredited academic standard.
-                </p>
-              </div>
-            )}
           </div>
 
           {scope === 'FACULTY' && (
