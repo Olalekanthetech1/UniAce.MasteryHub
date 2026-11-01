@@ -925,161 +925,41 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
             </div>
           </header>
 
-          {/* LIVE ADAPTIVE AI CHALLENGER ([AI Challenger] Sparring Partner) & GHOST REPLAY PANEL */}
-          <div className="bg-gradient-to-br from-slate-900 via-slate-900 to-purple-950/40 border border-purple-500/30 rounded-[2.5rem] p-6 sm:p-8 shadow-2xl space-y-6">
+          {/* Only verified historical human replays are offered here. */}
+          <div className="bg-gradient-to-br from-slate-900 via-slate-900 to-emerald-950/30 border border-emerald-500/25 rounded-[2.5rem] p-6 sm:p-8 shadow-2xl space-y-5">
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-              <div className="space-y-1.5">
-                <div className="flex flex-wrap items-center gap-2.5">
-                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-purple-500/20 border border-purple-500/40 text-purple-300 text-xs font-black uppercase tracking-wider">
-                    <Bot size={14} />
-                    [AI Challenger] Sparring Partner
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-950 border border-slate-800 text-xs font-bold text-emerald-400">
-                    {challengerCal?.tierLabel || 'Beginner (<50% Course Mastery)'} •{' '}
-                    {challengerCal?.pacingRangeLabel || '12–15s / question'}
-                  </span>
+              <div className="space-y-2">
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-black uppercase tracking-wider">
+                  <History size={14} />
+                  Recorded Human Replay
                 </div>
                 <h2 className="text-xl sm:text-2xl font-black text-white">
-                  Live Adaptive AI Challenger &amp; Instant Sparring
+                  Replay a verified human battle
                 </h2>
                 <p className="text-xs sm:text-sm text-slate-400 max-w-3xl">
-                  If no historical human match exists yet for <strong className="text-white">{selectedCourseId || 'this course'}</strong>, launch an instant duel against your telemetry-calibrated <strong className="text-purple-300">[AI Challenger]</strong>. Instead of random timers, the server reads your actual database telemetry to calibrate response speed and accuracy, followed by a live AI <strong className="text-white">Post-Match Tactical Breakdown</strong> of any question you miss.
+                  Replay is enabled only when Neon contains a finished human-versus-human battle with its original questions, recorded answers, answer outcomes and valid timing. Missing history is never filled with generated moves or substitute questions.
                 </p>
               </div>
-
-              <div className="flex flex-wrap items-center gap-3 shrink-0">
-                <button
-                  onClick={() => startDirectSparring('ai_challenger')}
-                  disabled={!selectedCourseId || launchingSpar !== null}
-                  className="px-6 py-3.5 bg-purple-600 hover:bg-purple-500 text-white rounded-2xl font-black text-sm shadow-lg shadow-purple-600/30 transition-all active:scale-95 disabled:opacity-50 flex items-center gap-2.5 cursor-pointer"
-                >
-                  <Bot size={18} />
-                  {launchingSpar === 'ai_challenger'
-                    ? 'Calibrating AI Challenger...'
-                    : 'Spar with Adaptive AI Challenger'}
-                </button>
-
-                <button
-                  onClick={() => startDirectSparring('ghost_replay')}
-                  disabled={!selectedCourseId || !canLaunchGhostInLobby || launchingSpar !== null}
-                  className={`px-5 py-3.5 rounded-2xl font-black text-sm border transition-all flex items-center gap-2 ${
-                    canLaunchGhostInLobby
-                      ? 'bg-slate-950 border-emerald-500/50 text-emerald-300 hover:bg-emerald-950/40 cursor-pointer'
-                      : 'bg-slate-950/60 border-slate-800 text-slate-500 cursor-not-allowed'
-                  }`}
-                >
-                  <History size={17} />
-                  {canLaunchGhostInLobby
-                    ? `Challenge Ghost Replay (${lobbyTelemetry.historicalGhostCount})`
-                    : '0 Human Replays Yet'}
-                </button>
-              </div>
-            </div>
-
-            {/* Live Database Telemetry Calibration Breakdown */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-4">
-                <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                  Calibrated Course Mastery
-                </div>
-                <div className="text-2xl font-black text-purple-400 mt-1">
-                  {challengerCal?.calibratedMasteryPct ?? 0}%
-                </div>
-                <div className="text-[11px] text-slate-400 mt-1">
-                  Target AI Pacing: <strong className="text-white">{challengerCal?.pacingRangeLabel || '12–15s / question'}</strong>
-                </div>
-              </div>
-
-              <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-4">
-                <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                  Course Quiz Telemetry
-                </div>
-                <div className="text-2xl font-black text-white mt-1">
-                  {challengerCal?.quizScorePct !== null && challengerCal?.quizScorePct !== undefined
-                    ? `${challengerCal.quizScorePct}%`
-                    : '0%'}
-                </div>
-                <div className="text-[11px] text-slate-400 mt-1">
-                  {challengerCal?.attemptsSampled
-                    ? `${challengerCal.attemptsSampled} quiz(zes) • ${challengerCal.lessonsCompleted} lesson(s)`
-                    : `${challengerCal?.lessonsCompleted ?? 0} lesson(s) • No course quizzes yet`}
-                </div>
-              </div>
-
-              <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-4">
-                <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                  SRS Retention Rate
-                </div>
-                <div className="text-2xl font-black text-emerald-400 mt-1">
-                  {challengerCal?.srsRetentionPct !== null && challengerCal?.srsRetentionPct !== undefined
-                    ? `${challengerCal.srsRetentionPct}%`
-                    : '0%'}
-                </div>
-                <div className="text-[11px] text-slate-400 mt-1">
-                  {challengerCal?.srsCardsSampled
-                    ? `${challengerCal.srsCardsRetained}/${challengerCal.srsCardsSampled} SRS cards retained`
-                    : '0 SRS flashcards recorded for course'}
-                </div>
-              </div>
-
-              <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-4">
-                <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                  Course Arena W/L Ratio
-                </div>
-                <div className="text-2xl font-black text-amber-400 mt-1">
-                  {challengerCal?.courseWinRatePct !== null && challengerCal?.courseWinRatePct !== undefined
-                    ? `${challengerCal.courseWinRatePct}%`
-                    : '0%'}
-                </div>
-                <div className="text-[11px] text-slate-400 mt-1">
-                  {challengerCal?.arenaBattlesSampled
-                    ? `${challengerCal.courseWins}W – ${challengerCal.courseLosses}L in ${selectedCourseId}`
-                    : `0 past battles for ${selectedCourseId || 'course'}`}
-                </div>
-              </div>
-            </div>
-
-            {/* Adaptive Calibration Rules Summary */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1">
-              <div
-                className={`p-3.5 rounded-2xl border text-xs ${
-                  (challengerCal?.tier || 'beginner') === 'beginner'
-                    ? 'bg-emerald-950/30 border-emerald-500/50 text-emerald-200'
-                    : 'bg-slate-950/60 border-slate-800 text-slate-400'
-                }`}
+              <button
+                onClick={() => startDirectSparring()}
+                disabled={!selectedCourseId || lobbyTelemetry.ghostReplayAvailable !== true || launchingSpar !== null}
+                className="px-5 py-3.5 rounded-2xl font-black text-sm border transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed bg-slate-950 border-emerald-500/50 text-emerald-300 hover:bg-emerald-950/40"
               >
-                <div className="font-black text-white mb-0.5">
-                  Beginner Student (&lt;50% Course Mastery)
-                </div>
-                <div>
-                  AI Challenger paces answers at <strong>~12–15 seconds per question</strong> so you have time to read and think without getting instantly overwhelmed.
-                </div>
-              </div>
-
-              <div
-                className={`p-3.5 rounded-2xl border text-xs ${
-                  challengerCal?.tier === 'advanced'
-                    ? 'bg-purple-950/40 border-purple-500/60 text-purple-200'
-                    : 'bg-slate-950/60 border-slate-800 text-slate-400'
-                }`}
-              >
-                <div className="font-black text-white mb-0.5">
-                  Advanced Student (&gt;80% Course Mastery)
-                </div>
-                <div>
-                  AI Challenger paces answers at <strong>~6–8 seconds per question</strong> with high accuracy, creating an intense, exam-speed pressure test.
-                </div>
-              </div>
-
-              <div className="p-3.5 rounded-2xl border bg-slate-950/60 border-slate-800 text-xs text-slate-300">
-                <div className="font-black text-white mb-0.5">
-                  Post-Match Tactical Breakdown
-                </div>
-                <div>
-                  Powered by your live AI engine, <strong>[AI Challenger]</strong> provides a tactical explanation of any question missed during the duel.
-                </div>
-              </div>
+                <History size={17} />
+                {lobbyTelemetry.ghostReplayAvailable === null
+                  ? 'Checking verified recordings...'
+                  : lobbyTelemetry.ghostReplayAvailable
+                  ? 'Challenge Recorded Replay'
+                  : 'No Verified Replay Available'}
+              </button>
             </div>
+            {lobbyTelemetry.latestGhostMeta && (
+              <div className="rounded-2xl bg-slate-950/80 border border-slate-800 p-4 text-xs text-slate-300">
+                Latest verified source: <strong className="text-white">{lobbyTelemetry.latestGhostMeta.playerName}</strong>
+                {' '}• recorded {new Date(lobbyTelemetry.latestGhostMeta.recordedAt).toLocaleString()}
+                {' '}• source battle <span className="font-mono">{lobbyTelemetry.latestGhostMeta.battleId}</span>
+              </div>
+            )}
           </div>
 
           {/* Open Live Matchmaking Queue Banner (if any real student is waiting in any course) */}
