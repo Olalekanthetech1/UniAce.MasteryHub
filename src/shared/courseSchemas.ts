@@ -127,14 +127,42 @@ function getUnicodeScript(glyph: string): { marker: '_' | '^'; value: string } |
  * Converts consecutive Unicode subscript/superscript runs into grouped LaTeX scripts.
  * In text mode, ordinary text is kept in separate \text{...} groups around each script.
  */
-function normalizeUnicodeScriptRuns(value: string, textMode = false): string {
+function normalizeUnicodeScriptRuns(value: string): string {
+  let output = '';
+  let index = 0;
+
+  while (index < value.length) {
+    const script = getUnicodeScript(value[index]);
+    if (!script) {
+      output += value[index];
+      index += 1;
+      continue;
+    }
+
+    const marker = script.marker;
+    let scriptValue = '';
+    while (index < value.length) {
+      const nextScript = getUnicodeScript(value[index]);
+      if (!nextScript || nextScript.marker !== marker) break;
+      scriptValue += nextScript.value;
+      index += 1;
+    }
+
+    output += marker + '{' + scriptValue + '}';
+  }
+
+  return output;
+}
+
+/** Converts Unicode scripts inside a \text{...} argument without nesting text groups. */
+function normalizeTextCommandBody(value: string): string {
   let output = '';
   let textBuffer = '';
   let index = 0;
 
   const flushText = () => {
     if (textBuffer.length === 0) return;
-    output += textMode ? '\\text{' + textBuffer + '}' : textBuffer;
+    output += '\\text{' + textBuffer + '}';
     textBuffer = '';
   };
 
@@ -149,7 +177,6 @@ function normalizeUnicodeScriptRuns(value: string, textMode = false): string {
     flushText();
     const marker = script.marker;
     let scriptValue = '';
-
     while (index < value.length) {
       const nextScript = getUnicodeScript(value[index]);
       if (!nextScript || nextScript.marker !== marker) break;
@@ -161,7 +188,7 @@ function normalizeUnicodeScriptRuns(value: string, textMode = false): string {
   }
 
   flushText();
-  return textMode && output.length === 0 ? '\\text{}' : output;
+  return output.length === 0 ? '\\text{}' : output;
 }
 
 /** Finds a balanced closing brace while respecting escaped braces. */
@@ -204,7 +231,7 @@ function normalizeMathBody(value: string): string {
       if (closingBraceIndex >= 0) {
         output += normalizeUnicodeScriptRuns(value.slice(plainStart, index));
         const textBody = value.slice(openingBraceIndex + 1, closingBraceIndex);
-        output += '\\text{' + normalizeUnicodeScriptRuns(textBody, true) + '}';
+        output += normalizeTextCommandBody(textBody);
         index = closingBraceIndex + 1;
         plainStart = index;
         continue;
