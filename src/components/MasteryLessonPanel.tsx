@@ -1,23 +1,117 @@
 import React, { useState } from 'react';
-import type { InstructionalContent, InstructionalPracticeItem } from '../shared/courseSchemas';
+import type {
+  StudentInstructionalContent,
+  StudentPracticePrompt,
+  StudentKnowledgeCheckPrompt
+} from '../shared/courseSchemas';
+import { useAuth } from '../context/AuthContext';
+
+type PracticeActivityType = 'guidedPractice' | 'independentPractice';
+type ActivityType = PracticeActivityType | 'knowledgeChecks';
 
 interface MasteryLessonPanelProps {
-  content: InstructionalContent;
+  content: StudentInstructionalContent;
+  courseId: string;
+  moduleId: string;
+  lessonId: string;
+}
+
+interface PracticeReveal {
+  expectedApproach: string;
+  expectedAnswer: string;
+  explanation: string;
+}
+
+interface KnowledgeCheckReveal {
+  expectedReasoning: string;
+  answerOrRubric: string;
+}
+
+interface AttemptRequest {
+  courseId: string;
+  moduleId: string;
+  lessonId: string;
+  activityType: ActivityType;
+  activityIndex: number;
+  response: string;
+}
+
+async function saveAttemptAndGetReveal<T>(
+  getIdToken: () => Promise<string | undefined>,
+  request: AttemptRequest
+): Promise<T> {
+  const token = await getIdToken();
+  if (!token) throw new Error('Please sign in again before submitting your attempt.');
+
+  const url = `/api/courses/${encodeURIComponent(request.courseId)}/modules/${encodeURIComponent(request.moduleId)}/lessons/${encodeURIComponent(request.lessonId)}/attempts`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify({
+      activityType: request.activityType,
+      activityIndex: request.activityIndex,
+      response: request.response
+    })
+  });
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(payload?.error || 'Your attempt could not be saved.');
+  }
+  return payload?.reveal as T;
 }
 
 function PracticeCard({
   item,
   title,
-  index
+  index,
+  activityType,
+  courseId,
+  moduleId,
+  lessonId
 }: {
-  item: InstructionalPracticeItem;
+  item: StudentPracticePrompt;
   title: string;
   index: number;
+  activityType: PracticeActivityType;
+  courseId: string;
+  moduleId: string;
+  lessonId: string;
 }) {
   const [attempt, setAttempt] = useState('');
   const [revealedHints, setRevealedHints] = useState(0);
-  const [showAnswer, setShowAnswer] = useState(false);
+  const [reveal, setReveal] = useState<PracticeReveal | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const { user } = useAuth();
   const canReveal = attempt.trim().length >= 3;
+
+  const handleSubmitAttempt = async () => {
+    if (!canReveal || isSubmitting || reveal) return;
+    setIsSubmitting(true);
+    setError('');
+    try {
+      const result = await saveAttemptAndGetReveal<PracticeReveal>(
+        async () => await user?.getIdToken(),
+        {
+          courseId,
+          moduleId,
+          lessonId,
+          activityType,
+          activityIndex: index,
+          response: attempt
+        }
+      );
+      setReveal(result);
+    } catch (submitError: any) {
+      setError(submitError?.message || 'Could not save your attempt.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   return (
     <section className="rounded-2xl border border-zinc-200 dark:border-zinc-700 p-4 space-y-3">
@@ -52,33 +146,119 @@ function PracticeCard({
           value={attempt}
           onChange={event => setAttempt(event.target.value)}
           rows={3}
+          maxLength={10000}
           placeholder="Write your reasoning or working before viewing the explanation."
           className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 p-3 text-sm text-zinc-900 dark:text-zinc-100"
         />
       </label>
       <button
         type="button"
-        disabled={!canReveal}
-        onClick={() => setShowAnswer(true)}
+        disabled={!canReveal || isSubmitting || Boolean(reveal)}
+        onClick={handleSubmitAttempt}
         className="rounded-xl bg-zinc-900 dark:bg-white px-4 py-2 text-sm font-semibold text-white dark:text-zinc-900 disabled:opacity-40"
       >
-        {showAnswer ? 'Explanation revealed' : 'I have attempted it — show explanation'}
+        {isSubmitting ? 'Saving attempt…' : reveal ? 'Attempt saved · guide revealed' : 'Save my attempt and reveal guide'}
       </button>
-      {showAnswer && (
+      {error && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {reveal && (
         <div className="rounded-xl bg-emerald-50 dark:bg-emerald-950/25 border border-emerald-200 dark:border-emerald-900 p-3 space-y-2">
           <p className="text-xs font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">Expected approach</p>
-          <p className="text-sm text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap">{item.expectedApproach}</p>
+          <p className="text-sm text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap">{reveal.expectedApproach}</p>
           <p className="text-xs font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">Answer and explanation</p>
-          <p className="text-sm text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap">{item.expectedAnswer}</p>
-          <p className="text-sm text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap">{item.explanation}</p>
-          <p className="text-xs text-emerald-800 dark:text-emerald-300">Self-check only. UniAce has not graded this free-text response.</p>
+          <p className="text-sm text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap">{reveal.expectedAnswer}</p>
+          <p className="text-sm text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap">{reveal.explanation}</p>
+          <p className="text-xs text-emerald-800 dark:text-emerald-300">Your attempt was saved. This is a self-check; UniAce has not automatically graded the free-text response.</p>
         </div>
       )}
     </section>
   );
 }
 
-export default function MasteryLessonPanel({ content }: MasteryLessonPanelProps) {
+function KnowledgeCheckCard({
+  check,
+  index,
+  courseId,
+  moduleId,
+  lessonId
+}: {
+  check: StudentKnowledgeCheckPrompt;
+  index: number;
+  courseId: string;
+  moduleId: string;
+  lessonId: string;
+}) {
+  const [attempt, setAttempt] = useState('');
+  const [reveal, setReveal] = useState<KnowledgeCheckReveal | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const { user } = useAuth();
+  const canReveal = attempt.trim().length >= 3;
+
+  const handleSubmitAttempt = async () => {
+    if (!canReveal || isSubmitting || reveal) return;
+    setIsSubmitting(true);
+    setError('');
+    try {
+      const result = await saveAttemptAndGetReveal<KnowledgeCheckReveal>(
+        async () => await user?.getIdToken(),
+        {
+          courseId,
+          moduleId,
+          lessonId,
+          activityType: 'knowledgeChecks',
+          activityIndex: index,
+          response: attempt
+        }
+      );
+      setReveal(result);
+    } catch (submitError: any) {
+      setError(submitError?.message || 'Could not save your attempt.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <section className="rounded-2xl border border-zinc-200 dark:border-zinc-700 p-4 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <h4 className="font-semibold text-zinc-900 dark:text-zinc-100">Check {index + 1}</h4>
+        <span className="text-xs text-zinc-500">Difficulty {check.difficulty}/5 · {check.responseMode}</span>
+      </div>
+      <p className="text-sm leading-6 text-zinc-800 dark:text-zinc-200">{check.prompt}</p>
+      <textarea
+        value={attempt}
+        onChange={event => setAttempt(event.target.value)}
+        rows={3}
+        maxLength={10000}
+        placeholder="Explain your reasoning, not just the final answer."
+        className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 p-3 text-sm text-zinc-900 dark:text-zinc-100"
+      />
+      <button
+        type="button"
+        disabled={!canReveal || isSubmitting || Boolean(reveal)}
+        onClick={handleSubmitAttempt}
+        className="rounded-xl border border-zinc-300 dark:border-zinc-700 px-4 py-2 text-sm font-semibold text-zinc-800 dark:text-zinc-200 disabled:opacity-40"
+      >
+        {isSubmitting ? 'Saving attempt…' : reveal ? 'Attempt saved · guide revealed' : 'Save my answer and compare'}
+      </button>
+      {error && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {reveal && (
+        <div className="rounded-xl bg-zinc-50 dark:bg-zinc-900 p-3 space-y-2">
+          <p className="text-sm text-zinc-800 dark:text-zinc-200"><strong>Expected reasoning:</strong> {reveal.expectedReasoning}</p>
+          <p className="text-sm text-zinc-800 dark:text-zinc-200"><strong>Answer / rubric:</strong> {reveal.answerOrRubric}</p>
+          <p className="text-xs text-zinc-500">Attempt saved for revision history. This free-text response has not been automatically graded.</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+export default function MasteryLessonPanel({
+  content,
+  courseId,
+  moduleId,
+  lessonId
+}: MasteryLessonPanelProps) {
   if (!content) return null;
 
   return (
@@ -112,10 +292,19 @@ export default function MasteryLessonPanel({ content }: MasteryLessonPanelProps)
         <section className="space-y-3">
           <div>
             <h3 className="font-bold text-zinc-900 dark:text-zinc-100">Guided practice</h3>
-            <p className="text-xs text-zinc-500 dark:text-zinc-400">Use hints progressively. Write your own attempt before opening the explanation.</p>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">Use hints progressively. Submit your attempt before the server releases the comparison guide.</p>
           </div>
           {content.guidedPractice.map((item, index) => (
-            <PracticeCard key={index} item={item} title="Guided exercise" index={index} />
+            <PracticeCard
+              key={index}
+              item={item}
+              title="Guided exercise"
+              index={index}
+              activityType="guidedPractice"
+              courseId={courseId}
+              moduleId={moduleId}
+              lessonId={lessonId}
+            />
           ))}
         </section>
       )}
@@ -127,7 +316,16 @@ export default function MasteryLessonPanel({ content }: MasteryLessonPanelProps)
             <p className="text-xs text-zinc-500 dark:text-zinc-400">Attempt these without hints before comparing your reasoning with the worked answer.</p>
           </div>
           {content.independentPractice.map((item, index) => (
-            <PracticeCard key={index} item={item} title="Independent exercise" index={index} />
+            <PracticeCard
+              key={index}
+              item={item}
+              title="Independent exercise"
+              index={index}
+              activityType="independentPractice"
+              courseId={courseId}
+              moduleId={moduleId}
+              lessonId={lessonId}
+            />
           ))}
         </section>
       )}
@@ -136,7 +334,14 @@ export default function MasteryLessonPanel({ content }: MasteryLessonPanelProps)
         <section className="space-y-3">
           <h3 className="font-bold text-zinc-900 dark:text-zinc-100">Verify your understanding</h3>
           {content.knowledgeChecks.map((check, index) => (
-            <KnowledgeCheckCard key={index} check={check} index={index} />
+            <KnowledgeCheckCard
+              key={index}
+              check={check}
+              index={index}
+              courseId={courseId}
+              moduleId={moduleId}
+              lessonId={lessonId}
+            />
           ))}
         </section>
       )}
@@ -157,49 +362,5 @@ export default function MasteryLessonPanel({ content }: MasteryLessonPanelProps)
         )}
       </section>
     </div>
-  );
-}
-
-function KnowledgeCheckCard({
-  check,
-  index
-}: {
-  check: InstructionalContent['knowledgeChecks'][number];
-  index: number;
-}) {
-  const [attempt, setAttempt] = useState('');
-  const [showRubric, setShowRubric] = useState(false);
-  const canReveal = attempt.trim().length >= 3;
-
-  return (
-    <section className="rounded-2xl border border-zinc-200 dark:border-zinc-700 p-4 space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <h4 className="font-semibold text-zinc-900 dark:text-zinc-100">Check {index + 1}</h4>
-        <span className="text-xs text-zinc-500">Difficulty {check.difficulty}/5 · {check.responseMode}</span>
-      </div>
-      <p className="text-sm leading-6 text-zinc-800 dark:text-zinc-200">{check.prompt}</p>
-      <textarea
-        value={attempt}
-        onChange={event => setAttempt(event.target.value)}
-        rows={3}
-        placeholder="Explain your reasoning, not just the final answer."
-        className="w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 p-3 text-sm text-zinc-900 dark:text-zinc-100"
-      />
-      <button
-        type="button"
-        disabled={!canReveal}
-        onClick={() => setShowRubric(true)}
-        className="rounded-xl border border-zinc-300 dark:border-zinc-700 px-4 py-2 text-sm font-semibold text-zinc-800 dark:text-zinc-200 disabled:opacity-40"
-      >
-        {showRubric ? 'Comparison guide revealed' : 'I have answered — compare with the guide'}
-      </button>
-      {showRubric && (
-        <div className="rounded-xl bg-zinc-50 dark:bg-zinc-900 p-3 space-y-2">
-          <p className="text-sm text-zinc-800 dark:text-zinc-200"><strong>Expected reasoning:</strong> {check.expectedReasoning}</p>
-          <p className="text-sm text-zinc-800 dark:text-zinc-200"><strong>Answer / rubric:</strong> {check.answerOrRubric}</p>
-          <p className="text-xs text-zinc-500">Self-comparison only; this free-text response has not been automatically graded.</p>
-        </div>
-      )}
-    </section>
   );
 }
