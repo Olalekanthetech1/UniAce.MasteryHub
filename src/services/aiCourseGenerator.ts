@@ -435,8 +435,12 @@ export async function generateCourseSkeleton(
   scope?: string,
   selectedFaculties: string[] = [],
   selectedDepartments: string[] = [],
-  courseCode?: string
-): Promise<any> {
+  courseCode?: string,
+  creditUnits?: number
+ ): Promise<any> {
+  if (!Number.isInteger(creditUnits) || (creditUnits as number) < 1 || (creditUnits as number) > 12) {
+    throw new Error('A verified course credit-unit value between 1 and 12 is required before curriculum generation.');
+  }
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 600000); // 10 minutes for multi-agent audit
 
@@ -458,6 +462,7 @@ export async function generateCourseSkeleton(
             scope,
             level,
             semester,
+            creditUnits,
             tone,
             depth,
             outline,
@@ -858,12 +863,15 @@ export async function generateCourseContent(
   sourceContext?: string,
   academicStandard: string = 'Globally Adaptive (Universal University Standard)',
   level?: string,
-  department?: string
+  department?: string,
+  creditUnits?: number
 ): Promise<GeneratedCourse> {
-  
+  if (!Number.isInteger(creditUnits) || (creditUnits as number) < 1 || (creditUnits as number) > 12) {
+    throw new Error('Verified course credit units are required for full-course generation.');
+  }
   if (onProgress) onProgress(10, "Generating course skeleton...");
 
-  const skeleton = await generateCourseSkeleton(courseName, courseDescription, outline, provider, [], level, undefined, department, undefined, tone, depth, sourceContext, academicStandard);
+  const skeleton = await generateCourseSkeleton(courseName, courseDescription, outline, provider, [], level, undefined, department, undefined, tone, depth, sourceContext, academicStandard, undefined, [], [], courseName, creditUnits);
   
   if (!skeleton || !skeleton.modules || !Array.isArray(skeleton.modules)) {
     throw new Error("Failed to generate a valid course skeleton.");

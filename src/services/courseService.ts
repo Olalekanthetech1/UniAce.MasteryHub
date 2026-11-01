@@ -62,6 +62,7 @@ export const CourseService = {
           : (c.scope === 'DEPARTMENT' && c.department ? [c.department] : []),
         level: c.level as any,
         semester: normalizedSemester as any,
+        ...(Number.isInteger(c.creditUnits ?? c.credit_units) ? { creditUnits: Number(c.creditUnits ?? c.credit_units) } : {}),
         scope: c.scope,
         status: c.status,
         syllabus: Array.isArray(c.syllabus) ? sortCourseSyllabus(c.syllabus) : []
@@ -94,6 +95,7 @@ export const CourseService = {
         : (c.scope === 'DEPARTMENT' && c.department ? [c.department] : []),
       level: c.level as any,
       semester: normalizedSemester as any,
+      ...(Number.isInteger(c.creditUnits ?? c.credit_units) ? { creditUnits: Number(c.creditUnits ?? c.credit_units) } : {}),
       scope: c.scope,
       status: c.status,
       syllabus: Array.isArray(c.syllabus) ? sortCourseSyllabus(c.syllabus) : []
@@ -179,6 +181,16 @@ export const CourseService = {
   },
 
   async saveGeneratedCourse(courseId: string, data: any): Promise<void> {
+    if (
+      typeof data?.title !== 'string' || !data.title.trim() ||
+      typeof data?.level !== 'string' || !data.level.trim() ||
+      typeof data?.department !== 'string' || !data.department.trim() ||
+      typeof data?.semester !== 'string' || !data.semester.trim() ||
+      !['GLOBAL', 'FACULTY', 'DEPARTMENT'].includes(data?.scope) ||
+      !Number.isInteger(data?.creditUnits) || data.creditUnits < 1 || data.creditUnits > 12
+    ) {
+      throw new Error('Saving a generated course requires verified title, level, department, semester, scope, and credit units.');
+    }
     const headers = await buildAuthHeaders(undefined, { 'Content-Type': 'application/json' });
     const res = await fetch('/api/admin/courses', {
       method: 'POST',
@@ -186,8 +198,15 @@ export const CourseService = {
       body: JSON.stringify({
         id: courseId,
         code: courseId,
-        title: data.title || courseId,
+        title: data.title,
         description: data.description || '',
+        level: data.level,
+        department: data.department,
+        semester: data.semester,
+        creditUnits: data.creditUnits,
+        scope: data.scope,
+        faculties: Array.isArray(data.faculties) ? data.faculties : [],
+        departments: Array.isArray(data.departments) ? data.departments : [],
         syllabus: (data.modules || []).map((m: any, mIdx: number) => ({
           id: `m${mIdx + 1}`,
           title: m.title || `Module ${mIdx + 1}`,

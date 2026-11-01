@@ -984,7 +984,7 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
     const isAdmin = await checkIsAdmin(user.uid, user.email);
     if (!isAdmin) return res.status(403).json({ error: 'Admin privileges required' });
 
-    const { id, code, title, description, level, department, faculty, semester, scope, syllabus } = req.body || {};
+    const { id, code, title, description, level, department, faculty, semester, creditUnits, scope, syllabus } = req.body || {};
     const requiredFields = { id, title, level, department, semester, scope };
     const missingFields = Object.entries(requiredFields)
       .filter(([, value]) => typeof value !== 'string' || !value.trim())
@@ -994,6 +994,9 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
         error: 'Course creation requires source-supplied academic metadata.',
         missingFields
       });
+    }
+    if (typeof creditUnits !== 'number' || !Number.isInteger(creditUnits) || creditUnits < 1 || creditUnits > 12) {
+      return res.status(400).json({ error: 'Course credit units must be a verified whole number between 1 and 12.' });
     }
     if (syllabus !== undefined && !Array.isArray(syllabus)) {
       return res.status(400).json({ error: 'Syllabus must be an array supplied by the course author or generation process.' });
@@ -1018,15 +1021,16 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
 
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+    await ensureCourseLearningSchema();
 
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
       const courseCode = typeof code === 'string' && code.trim() ? code.trim() : id.trim();
       await client.query(
-        `INSERT INTO courses (id, code, title, description, level, department, faculty, semester, scope, status, version, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'draft', 1, NOW(), NOW())`,
-        [id.trim(), courseCode, title.trim(), typeof description === 'string' ? description : null, level, department, faculty || null, semester, scope]
+        `INSERT INTO courses (id, code, title, description, level, department, faculty, semester, credit_units, scope, status, version, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'draft', 1, NOW(), NOW())`,
+        [id.trim(), courseCode, title.trim(), typeof description === 'string' ? description : null, level, department, faculty || null, semester, creditUnits, scope]
       );
 
       if (Array.isArray(syllabus)) {
@@ -1082,10 +1086,14 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
     }
 
     const { id } = req.params;
-    const { title, description, level, semester, scope, faculties, departments, syllabus } = req.body;
+    const { title, description, level, semester, creditUnits, scope, faculties, departments, syllabus } = req.body;
+    if (creditUnits !== undefined && (typeof creditUnits !== 'number' || !Number.isInteger(creditUnits) || creditUnits < 1 || creditUnits > 12)) {
+      return res.status(400).json({ error: 'Course credit units must be a verified whole number between 1 and 12.' });
+    }
 
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+    await ensureCourseLearningSchema();
 
     const client = await pool.connect();
     try {
@@ -1098,17 +1106,19 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
              level = COALESCE($3, level),
              semester = COALESCE($4, semester),
              scope = COALESCE($5, scope),
-             faculty = COALESCE($6, faculty),
-             department = COALESCE($7, department),
+             credit_units = COALESCE($6, credit_units),
+             faculty = COALESCE($7, faculty),
+             department = COALESCE($8, department),
              version = version + 1,
              updated_at = NOW()
-         WHERE id = $8`,
+         WHERE id = $9`,
         [
           title || null,
           description || null,
           level || null,
           semester || null,
           scope || null,
+          creditUnits ?? null,
           (faculties && faculties[0]) || null,
           (departments && departments[0]) || null,
           id

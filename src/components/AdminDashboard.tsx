@@ -307,6 +307,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   const [quickSubject, setQuickSubject] = useState<Subject>('General Studies');
   const [quickLevel, setQuickLevel] = useState<Level>('');
   const [quickSemester, setQuickSemester] = useState<Semester>('');
+  const [quickCreditUnits, setQuickCreditUnits] = useState<number | ''>('');
   const [quickDepartment, setQuickDepartment] = useState<Department | ''>('');
   const [courseScope, setCourseScope] = useState<CourseScope>('DEPARTMENT');
   const [selectedFaculties, setSelectedFaculties] = useState<string[]>([]);
@@ -1145,8 +1146,12 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   };
 
   const handleGenerateSkeleton = async () => {
-    if (!quickCourseName || !quickCourseCode) {
+    if (!quickCourseName.trim() || !quickCourseCode.trim()) {
       showToast('Please provide both course code and name', 'error');
+      return;
+    }
+    if (typeof quickCreditUnits !== 'number' || !Number.isInteger(quickCreditUnits) || quickCreditUnits < 1 || quickCreditUnits > 12) {
+      showToast('Enter the verified course credit units (a whole number from 1 to 12).', 'error');
       return;
     }
     const target = resolveCourseGenerationTarget(courseScope, selectedFaculties, selectedDepartments);
@@ -1185,8 +1190,10 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
             activeAcademicStandard,
             courseScope,
             target.selectedFaculties,
-            target.selectedDepartments
-          );
+            target.selectedDepartments,
+              quickCourseCode,
+              quickCreditUnits
+            );
         } catch (err) {
           retries--;
           if (retries > 0) {
@@ -1278,6 +1285,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
           provider: aiProvider,
           level: quickLevel,
           semester: quickSemester,
+          creditUnits: quickCreditUnits,
           department: target.department,
           tone: quickTone,
           depth: quickDepth,
@@ -1355,6 +1363,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
             setQuickCourseName('');
             setQuickCourseCode('');
             setQuickCourseOutline('');
+             setQuickCreditUnits('');
             setGenerationProgress(0);
             setUploadSuccess(false);
           }, 3000);
@@ -3529,7 +3538,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
                     </p>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
                     <div>
                       <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Course Scope</label>
                       <select 
@@ -3549,6 +3558,14 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
                         value={quickLevel}
                         onChange={(e) => setQuickLevel(e.target.value)}
                         placeholder="Enter actual course level"
+                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Course Units (Credit Units)</label>
+                      <input type="number" min="1" max="12" step="1" value={quickCreditUnits}
+                        onChange={(e) => setQuickCreditUnits(e.target.value === '' ? '' : Number(e.target.value))}
+                        placeholder="Enter verified course units"
                         className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                       />
                     </div>

@@ -748,7 +748,7 @@ export function normalizeLearningOutcomes(raw: any): LearningOutcome[] {
  * Helper to derive curriculum parameters based on level, term, and credits
  */
 export function deriveCurriculumParameters(level?: string, semester?: string, creditUnits?: number, depth?: string) {
-  if (!creditUnits || !Number.isInteger(creditUnits) || creditUnits <= 0) throw new Error('Verified course credit units are required to derive curriculum parameters.');
+  if (!creditUnits || !Number.isInteger(creditUnits) || creditUnits < 1 || creditUnits > 12) throw new Error('Verified course credit units are required to derive curriculum parameters.');
   if (!level?.trim()) throw new Error('Verified academic level is required to derive curriculum parameters.');
   const credits = creditUnits;
   let minModules = 6;

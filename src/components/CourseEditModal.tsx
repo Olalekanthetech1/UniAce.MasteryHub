@@ -18,6 +18,7 @@ export default function CourseEditModal({ course, onClose, onSave }: CourseEditM
   const [description, setDescription] = useState(course.description);
   const [level, setLevel] = useState<Level | undefined>(course.level);
   const [semester, setSemester] = useState<Semester | undefined>(course.semester);
+  const [creditUnits, setCreditUnits] = useState(course.creditUnits?.toString() || '');
   const [scope, setScope] = useState<CourseScope | undefined>(course.scope);
 
   const [faculties, setFaculties] = useState<string[]>(course.faculties || []);
@@ -28,8 +29,13 @@ export default function CourseEditModal({ course, onClose, onSave }: CourseEditM
   const [confirmModal, setConfirmModal] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null);
 
   const handleSave = async () => {
-    if (!title.trim() || !level?.trim() || !semester?.trim() || !scope) {
-      alert('Course title, academic level, semester and scope are required.');
+    const parsedCreditUnits = Number(creditUnits);
+    if (!title.trim() || !level?.trim() || !semester?.trim() || !scope || !creditUnits.trim()) {
+      alert('Course title, academic level, semester, course units and scope are required.');
+      return;
+    }
+    if (!Number.isInteger(parsedCreditUnits) || parsedCreditUnits < 1 || parsedCreditUnits > 12) {
+      alert('Course Units must be a whole number between 1 and 12.');
       return;
     }
     setIsSaving(true);
@@ -68,6 +74,7 @@ export default function CourseEditModal({ course, onClose, onSave }: CourseEditM
           description,
           level,
           semester,
+          creditUnits: parsedCreditUnits,
           scope,
           faculties: scope === 'FACULTY' ? faculties : [],
           departments: targetDepts,
@@ -185,7 +192,7 @@ export default function CourseEditModal({ course, onClose, onSave }: CourseEditM
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div>
               <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Level</label>
               <input
@@ -205,6 +212,12 @@ export default function CourseEditModal({ course, onClose, onSave }: CourseEditM
                 placeholder="Enter the institution's semester"
                 className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white"
               />
+            </div>
+            <div>
+              <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Course Units (Credit Units)</label>
+              <input type="number" min="1" max="12" step="1" required value={creditUnits}
+                onChange={(e) => setCreditUnits(e.target.value)} placeholder="e.g. 3"
+                className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white" />
             </div>
             <div>
               <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Scope</label>

@@ -19,6 +19,7 @@ export default function CourseCreateModal({ onClose, onSave }: CourseCreateModal
   const [department, setDepartment] = useState<Department | ''>('');
   const [level, setLevel] = useState<Level | ''>('');
   const [semester, setSemester] = useState<Semester | ''>('');
+  const [creditUnits, setCreditUnits] = useState('');
   const [scope, setScope] = useState<CourseScope | ''>('');
   const [faculties, setFaculties] = useState<string[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
@@ -27,8 +28,13 @@ export default function CourseCreateModal({ onClose, onSave }: CourseCreateModal
 
   const handleSave = async () => {
     const sanitizedId = id.replace(/\s+/g, '').toUpperCase();
-    if (!sanitizedId || !title || !department || !level || !semester || !scope) {
-      alert("Please provide Course ID, Title, Department, Level, Semester, and Scope.");
+    const parsedCreditUnits = Number(creditUnits);
+    if (!sanitizedId || !title.trim() || !department || !level.trim() || !semester.trim() || !scope || !creditUnits.trim()) {
+      alert("Please provide Course ID, Title, Department, Level, Semester, Course Units, and Scope.");
+      return;
+    }
+    if (!Number.isInteger(parsedCreditUnits) || parsedCreditUnits < 1 || parsedCreditUnits > 12) {
+      alert('Course Units must be a whole number between 1 and 12.');
       return;
     }
     setIsSaving(true);
@@ -60,6 +66,7 @@ export default function CourseCreateModal({ onClose, onSave }: CourseCreateModal
           department,
           level,
           semester,
+          creditUnits: parsedCreditUnits,
           scope,
           faculties: scope === 'FACULTY' ? faculties : [],
           departments: targetDepts,
@@ -123,7 +130,7 @@ export default function CourseCreateModal({ onClose, onSave }: CourseCreateModal
             />
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
             <div>
               <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Department</label>
               <select
@@ -154,6 +161,12 @@ export default function CourseCreateModal({ onClose, onSave }: CourseCreateModal
                 placeholder="Enter the institution's semester"
                 className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white"
               />
+            </div>
+            <div>
+              <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Course Units (Credit Units)</label>
+              <input type="number" min="1" max="12" step="1" required value={creditUnits}
+                onChange={(e) => setCreditUnits(e.target.value)} placeholder="e.g. 3"
+                className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white" />
             </div>
             <div>
               <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Scope</label>
