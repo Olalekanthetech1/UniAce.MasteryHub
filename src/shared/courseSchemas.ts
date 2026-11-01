@@ -221,6 +221,89 @@ export const LessonContentSchema = z.preprocess((val: any) => {
 }));
 export type LessonContent = z.infer<typeof LessonContentSchema>;
 
+/**
+ * Structured lesson data for the Universal Mastery Framework.
+ * Optional collections can be empty when a component is not appropriate.
+ */
+export const InstructionalPracticeItemSchema = z.object({
+  prompt: z.string().min(10),
+  hints: z.array(z.string()).default([]),
+  expectedApproach: z.string().min(10),
+  expectedAnswer: z.string().min(1),
+  explanation: z.string().min(10),
+  diagnosticSignals: z.array(z.string()).default([])
+});
+export type InstructionalPracticeItem = z.infer<typeof InstructionalPracticeItemSchema>;
+
+export const InstructionalContentSchema = z.object({
+  frameworkVersion: z.literal('understand-explore-apply-verify-master-v1'),
+  disciplineEngine: DisciplinePedagogyTypeEnum,
+  learningObjectives: z.array(z.string().min(1)).min(1).max(8),
+  prerequisites: z.array(z.object({
+    concept: z.string().min(1),
+    whyNeeded: z.string().min(10),
+    readinessCheck: z.string().min(5)
+  })).default([]),
+  conceptIntroduction: z.string().min(30),
+  deepExplanation: z.string().min(80),
+  formalDevelopment: z.string().min(40),
+  workedExamples: z.array(z.object({
+    title: z.string().min(1),
+    exampleType: z.enum(['numerical', 'conceptual', 'proof', 'case-analysis', 'experimental', 'design']),
+    problem: z.string().min(10),
+    reasoningSteps: z.array(z.string().min(5)).min(2),
+    solution: z.string().min(10),
+    verification: z.string().min(10)
+  })).min(1),
+  applications: z.array(z.object({
+    context: z.string().min(1),
+    conceptConnection: z.string().min(10),
+    constraintsOrAssumptions: z.string().min(5)
+  })).default([]),
+  applicationRationale: z.string().min(10),
+  misconceptions: z.array(z.object({
+    misconception: z.string().min(5),
+    whyItIsWrong: z.string().min(10),
+    correction: z.string().min(10)
+  })).default([]),
+  misconceptionRationale: z.string().min(10),
+  guidedPractice: z.array(InstructionalPracticeItemSchema).min(1),
+  independentPractice: z.array(InstructionalPracticeItemSchema).min(1),
+  knowledgeChecks: z.array(z.object({
+    prompt: z.string().min(10),
+    responseMode: z.enum(['explain', 'calculate', 'compare', 'interpret', 'construct', 'multiple-choice']),
+    expectedReasoning: z.string().min(10),
+    answerOrRubric: z.string().min(10),
+    misconceptionSignals: z.array(z.string()).default([]),
+    difficulty: z.number().int().min(1).max(5),
+    learningOutcome: z.string().optional()
+  })).min(2),
+  mastery: z.object({
+    targetLevel: z.number().int().min(1).max(5),
+    criteria: z.array(z.string().min(5)).min(1),
+    retentionPrompts: z.array(z.string().min(5)).min(1)
+  }),
+  verification: z.object({
+    structureValidation: z.enum(['passed', 'failed']),
+    academicAccuracy: z.enum(['not_independently_verified', 'subject_expert_reviewed']),
+    calculationValidation: z.enum(['pending_independent_check', 'not_applicable', 'passed', 'failed']),
+    subjectExpertReview: z.enum(['not_reviewed', 'reviewed']),
+    checkedAt: z.string().datetime(),
+    policyVersion: z.string().min(1)
+  }).optional()
+});
+export type InstructionalContent = z.infer<typeof InstructionalContentSchema>;
+
+export const StructuredLessonOutputSchema = z.object({
+  pedagogicalReasoning: z.string().optional(),
+  title: z.string().min(1),
+  content: z.string().min(600).refine((value) => !isBareDiagramOrFragment(value), {
+    message: 'Lesson content must include substantive academic prose, not only a diagram or fragment.'
+  }),
+  instructionalContent: InstructionalContentSchema
+});
+export type StructuredLessonOutput = z.infer<typeof StructuredLessonOutputSchema>;
+
 export const CourseProvenanceSchema = z.object({
   sources: z.array(z.string().min(1)).min(1),
   modelVersion: z.string().min(1),
