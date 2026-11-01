@@ -705,12 +705,13 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
    * User payment history from Neon PostgreSQL payments table
    */
   app.get('/api/user/payments', verifyAuth, async (req, res) => {
+    const uid = (req as any).user?.uid;
+    if (!uid) return res.status(401).json({ error: 'Authenticated user session required.' });
+
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Payment history unavailable: PostgreSQL is not connected.' });
+
     try {
-      const uid = (req as any).user?.uid;
-      const pool = getPostgresPool();
-      if (!pool || !uid) {
-        return res.json({ payments: [] });
-      }
       const result = await pool.query(
         `SELECT reference, amount_ngn, plan_type, status, sparks_added, created_at
          FROM payments
@@ -719,18 +720,34 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
          LIMIT 10`,
         [uid]
       );
-      const payments = result.rows.map((r) => ({
-        id: r.reference,
-        reference: r.reference,
-        amount: Number(r.amount_ngn ?? 0),
-        plan_type: r.plan_type || 'scholar',
-        status: r.status || 'success',
-        sparks_added: Number(r.sparks_added ?? 0),
-        createdAt: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString()
-      }));
+      const payments = result.rows.map((row: any, index: number) => {
+        const amount = Number(row.amount_ngn);
+        const sparksAdded = Number(row.sparks_added);
+        const createdAt = row.created_at instanceof Date
+          ? row.created_at
+          : (typeof row.created_at === 'string' && row.created_at.trim() ? new Date(row.created_at) : null);
+        if (typeof row.reference !== 'string' || !row.reference.trim() ||
+            typeof row.plan_type !== 'string' || !row.plan_type.trim() ||
+            typeof row.status !== 'string' || !row.status.trim() ||
+            !Number.isFinite(amount) || !Number.isFinite(sparksAdded) ||
+            !createdAt || Number.isNaN(createdAt.getTime())) {
+          throw new Error(`Persisted payment record ${index + 1} is incomplete or invalid.`);
+        }
+
+        return {
+          id: row.reference,
+          reference: row.reference,
+          amount,
+          plan_type: row.plan_type,
+          status: row.status,
+          sparks_added: sparksAdded,
+          createdAt: createdAt.toISOString()
+        };
+      });
       return res.json({ payments });
     } catch (err: any) {
-      return res.status(500).json({ error: err.message || 'Failed to fetch payments' });
+      logger.error({ uid, error: err?.message || String(err) }, '[StudentRoutes] Payment history could not be verified');
+      return res.status(503).json({ error: 'Payment history could not be verified from the authoritative database.' });
     }
   });
 
