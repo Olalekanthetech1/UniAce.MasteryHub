@@ -28,12 +28,7 @@ export const DomainBriefSchema = z.object({
   subDisciplines: z.array(z.string()).min(1),
   pedagogyType: DisciplinePedagogyTypeEnum,
   courseLevelFramework: z.string().min(1),
-  recommendedCreditHours: z.number().int().min(1).max(12),
-  targetModuleCountRange: z.object({
-    min: z.number().int().min(4),
-    max: z.number().int().max(16)
-  }),
-  canonicalCourseReferences: z.array(z.string()).min(1),
+  canonicalCourseReferences: z.array(z.string()),
   foundationalAxioms: z.array(z.string()).min(1),
   coreCourseTopics: z.array(z.string()).min(6)
 });
@@ -42,8 +37,8 @@ export type DomainBrief = z.infer<typeof DomainBriefSchema>;
 export const CourseLessonOutlineSchema = z.object({
   id: z.string().optional(),
   title: z.string().min(1),
-  learningOutcomeIds: z.array(z.string()).optional().default([]),
-  coreConcepts: z.array(z.string()).optional().default([])
+  learningOutcomeIds: z.array(z.string()).optional(),
+  coreConcepts: z.array(z.string()).optional()
 });
 export type CourseLessonOutline = z.infer<typeof CourseLessonOutlineSchema>;
 
@@ -51,21 +46,21 @@ export const CourseModuleOutlineSchema = z.object({
   id: z.string().optional(),
   title: z.string().min(1),
   order: z.number().int().optional(),
-  isFoundationModule: z.boolean().optional().default(false),
+  isFoundationModule: z.boolean(),
   topics: z.array(z.string()).optional(),
   lessonTitles: z.array(z.string()).optional(),
   lessons: z.array(z.union([z.string(), CourseLessonOutlineSchema])).optional(),
-  quizTopics: z.array(z.string()).optional().default([]),
-  learningOutcomeIds: z.array(z.string()).optional().default([])
+  quizTopics: z.array(z.string().min(1)).min(1),
+  learningOutcomeIds: z.array(z.string().min(1)).min(1)
 });
 export type CourseModuleOutline = z.infer<typeof CourseModuleOutlineSchema>;
 
 export const CourseSkeletonSchema = z.object({
-  pedagogicalReasoning: z.string().optional(),
-  description: z.string().optional().default(''),
-  pedagogyType: DisciplinePedagogyTypeEnum.optional().default('STEM_MATHEMATICAL'),
-  creditHours: z.number().int().min(1).max(12).optional().default(3),
-  learningOutcomes: z.array(z.union([z.string(), LearningOutcomeSchema])).optional().default([]),
+  pedagogicalReasoning: z.string().trim().min(1),
+  description: z.string().trim().min(1),
+  pedagogyType: DisciplinePedagogyTypeEnum,
+  creditHours: z.number().int().min(1).max(12),
+  learningOutcomes: z.array(z.union([z.string().trim().min(1), LearningOutcomeSchema])).min(1),
   modules: z.array(CourseModuleOutlineSchema).min(1)
 });
 export type CourseSkeleton = z.infer<typeof CourseSkeletonSchema>;
@@ -227,11 +222,11 @@ export type LessonContent = z.infer<typeof LessonContentSchema>;
  */
 export const InstructionalPracticeItemSchema = z.object({
   prompt: z.string().min(10),
-  hints: z.array(z.string()).default([]),
+  hints: z.array(z.string().min(1)).min(1),
   expectedApproach: z.string().min(10),
   expectedAnswer: z.string().min(1),
   explanation: z.string().min(10),
-  diagnosticSignals: z.array(z.string()).default([])
+  diagnosticSignals: z.array(z.string().min(1)).optional()
 });
 export type InstructionalPracticeItem = z.infer<typeof InstructionalPracticeItemSchema>;
 
@@ -243,7 +238,7 @@ export const InstructionalContentSchema = z.object({
     concept: z.string().min(1),
     whyNeeded: z.string().min(10),
     readinessCheck: z.string().min(5)
-  })).default([]),
+  })).optional(),
   conceptIntroduction: z.string().min(30),
   deepExplanation: z.string().min(80),
   formalDevelopment: z.string().min(40),
@@ -259,13 +254,13 @@ export const InstructionalContentSchema = z.object({
     context: z.string().min(1),
     conceptConnection: z.string().min(10),
     constraintsOrAssumptions: z.string().min(5)
-  })).default([]),
+  })).optional(),
   applicationRationale: z.string().min(10),
   misconceptions: z.array(z.object({
     misconception: z.string().min(5),
     whyItIsWrong: z.string().min(10),
     correction: z.string().min(10)
-  })).default([]),
+  })).optional(),
   misconceptionRationale: z.string().min(10),
   guidedPractice: z.array(InstructionalPracticeItemSchema).min(1),
   independentPractice: z.array(InstructionalPracticeItemSchema).min(1),
@@ -274,7 +269,7 @@ export const InstructionalContentSchema = z.object({
     responseMode: z.enum(['explain', 'calculate', 'compare', 'interpret', 'construct', 'multiple-choice']),
     expectedReasoning: z.string().min(10),
     answerOrRubric: z.string().min(10),
-    misconceptionSignals: z.array(z.string()).default([]),
+    misconceptionSignals: z.array(z.string().min(1)).optional(),
     difficulty: z.number().int().min(1).max(5),
     learningOutcome: z.string().optional()
   })).min(2),
