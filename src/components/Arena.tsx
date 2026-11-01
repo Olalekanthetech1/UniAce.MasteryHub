@@ -1468,6 +1468,9 @@ Produce an AI-generated review. Explain the likely error using only the supplied
       battleData.player1.uid !== user?.uid ? battleData.player1 : battleData.player2;
     const missedQuestions = getMissedQuestionsFromBattle(battleData);
     const recordedAttemptCount = Array.isArray(myPlayer?.actionLog) ? myPlayer.actionLog.length : 0;
+    const creditedXp = (battleData as any).xpRewards?.[user?.uid];
+    const hasVerifiedXpCredit =
+      typeof creditedXp === 'number' && Number.isSafeInteger(creditedXp) && creditedXp >= 0;
 
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-start p-4 sm:p-8 pb-24 lg:pb-12 overflow-y-auto">
@@ -1497,11 +1500,9 @@ Produce an AI-generated review. Explain the likely error using only the supplied
               {isWinner ? 'VICTORY!' : isDraw ? 'DRAW!' : 'DEFEAT'}
             </h1>
             <p className="text-slate-400 mb-6 font-medium text-sm">
-              {isWinner
-                ? '+100 XP Credited to Your Profile'
-                : isDraw
-                ? '+25 XP Credited to Your Profile'
-                : '+10 Participation XP Credited'}
+              {hasVerifiedXpCredit
+                ? `${creditedXp} XP credit confirmed in your persisted profile`
+                : 'XP credit was not confirmed in the returned battle record'}
             </p>
 
             <div className="grid grid-cols-2 gap-4 mb-6">
