@@ -18,12 +18,12 @@ export interface CourseEntity {
   scope?: string | null;
   semester: 'first' | 'second' | null;
   thumbnail_url: string | null;
-  author_id: string;
+  author_id: string | null;
   status: 'draft' | 'in_review' | 'published' | 'archived';
-  generation_status: 'none' | 'queued' | 'generating' | 'completed' | 'failed';
-  generation_job_id: string | null;
+  generation_status?: 'none' | 'queued' | 'generating' | 'completed' | 'failed';
+  generation_job_id?: string | null;
   version: number;
-  content_hash: string | null;
+  content_hash?: string | null;
   created_at: string;
   updated_at: string;
 }
