@@ -7111,9 +7111,10 @@ app.post('/api/course/:courseId/publish', verifyAdmin, async (req, res) => {
     }
 
     await pool.query(
-      `UPDATE courses
+`UPDATE courses
        SET published = true,
-           status_message = 'Course published successfully after human review.',
+           status = 'published',
+           status_message = 'Course published by an administrator after review.',
            updated_at = NOW()
        WHERE id = $1`,
       [courseId]
