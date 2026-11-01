@@ -485,60 +485,90 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
       source
     } = req.body || {};
 
-    if (!cardId) {
-      return res.status(400).json({ error: 'cardId is required' });
+    if (typeof cardId !== 'string' || !cardId.trim()) {
+      return res.status(400).json({ error: 'A valid cardId is required.' });
+    }
+    if (rating === undefined && nextReviewAt === undefined) {
+      return res.status(400).json({ error: 'A recorded review rating or explicit next-review timestamp is required.' });
+    }
+    if (rating !== undefined && (typeof rating !== 'number' || !Number.isInteger(rating) || rating < 0 || rating > 5)) {
+      return res.status(400).json({ error: 'Review rating must be an integer from 0 to 5.' });
     }
 
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
 
     try {
-      const cleanCardId = String(cardId).trim();
+      const cleanCardId = cardId.trim();
       const id = cleanCardId.startsWith(`${user.uid}_`) ? cleanCardId : `${user.uid}_${cleanCardId}`;
 
-      // Fetch existing card state if rating-based SM-2 calculation is needed
       const existingRes = await pool.query(
-        'SELECT box, review_count, ease_factor, card_data FROM user_spaced_repetition WHERE id = $1 LIMIT 1',
+        'SELECT box, review_count, ease_factor, next_review_at, course_id, card_data FROM user_spaced_repetition WHERE id = $1 LIMIT 1',
         [id]
       );
       const existing = existingRes.rows[0] || null;
+      const effectiveCourseId = typeof courseId === 'string' && courseId.trim()
+        ? courseId.trim()
+        : (typeof existing?.course_id === 'string' && existing.course_id.trim() ? existing.course_id : null);
+      if (!effectiveCourseId) {
+        return res.status(400).json({ error: 'A real courseId is required for a new spaced-repetition card.' });
+      }
 
-      let computedBox = typeof box === 'number' ? box : (existing?.box ?? 1);
-      let computedEase = typeof easeFactor === 'number' ? easeFactor : Number(existing?.ease_factor ?? 2.5);
-      let computedNextReview: Date = nextReviewAt ? new Date(nextReviewAt) : new Date();
+      const initialBox = existing ? Number(existing.box) : 1;
+      const initialEase = existing ? Number(existing.ease_factor) : 2.5;
+      let computedBox = typeof box === 'number' ? box : initialBox;
+      let computedEase = typeof easeFactor === 'number' ? easeFactor : initialEase;
+      if (!Number.isInteger(computedBox) || computedBox < 1 || computedBox > 5 ||
+          !Number.isFinite(computedEase) || computedEase < 1.3) {
+        return res.status(400).json({ error: 'Persisted or supplied spaced-repetition scheduling state is invalid.' });
+      }
 
-      if (typeof rating === 'number' && !nextReviewAt) {
-        const q = Math.max(0, Math.min(5, rating));
-        const prevReps = Number(existing?.review_count ?? 0);
+      let computedNextReview: Date;
+      if (nextReviewAt !== undefined) {
+        computedNextReview = new Date(nextReviewAt);
+        if (Number.isNaN(computedNextReview.getTime())) {
+          return res.status(400).json({ error: 'nextReviewAt must be a valid timestamp.' });
+        }
+      } else {
+        const q = rating as number;
+        const previousReviewCount = existing ? Number(existing.review_count) : 0;
+        if (!Number.isInteger(previousReviewCount) || previousReviewCount < 0) {
+          throw new Error('Persisted spaced-repetition review count is invalid.');
+        }
         let intervalDays = 1;
         if (q >= 3) {
-          if (prevReps === 0) intervalDays = 1;
-          else if (prevReps === 1) intervalDays = 4;
-          else intervalDays = Math.max(1, Math.round(prevReps * computedEase));
+          if (previousReviewCount === 0) intervalDays = 1;
+          else if (previousReviewCount === 1) intervalDays = 4;
+          else intervalDays = Math.max(1, Math.round(previousReviewCount * computedEase));
           computedBox = Math.min(5, computedBox + 1);
         } else {
-          intervalDays = 1;
           computedBox = 1;
         }
         computedEase = Math.max(1.3, computedEase + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)));
         computedNextReview = new Date(Date.now() + intervalDays * 24 * 60 * 60 * 1000);
       }
 
+      const existingCardData = existing?.card_data && typeof existing.card_data === 'object'
+        ? existing.card_data
+        : {};
+      const suppliedCardData = cardData && typeof cardData === 'object' && !Array.isArray(cardData)
+        ? cardData
+        : {};
       const mergedCardData = {
-        ...(existing?.card_data && typeof existing.card_data === 'object' ? existing.card_data : {}),
-        ...(cardData && typeof cardData === 'object' ? cardData : {}),
-        ...(front ? { front } : {}),
-        ...(back ? { back } : {}),
-        ...(topicTitle ? { topicTitle } : {}),
-        ...(explanation ? { explanation } : {}),
-        ...(source ? { source } : {})
+        ...existingCardData,
+        ...suppliedCardData,
+        ...(typeof front === 'string' && front.trim() ? { front } : {}),
+        ...(typeof back === 'string' && back.trim() ? { back } : {}),
+        ...(typeof topicTitle === 'string' && topicTitle.trim() ? { topicTitle } : {}),
+        ...(typeof explanation === 'string' && explanation.trim() ? { explanation } : {}),
+        ...(typeof source === 'string' && source.trim() ? { source } : {})
       };
 
       const upserted = await pool.query(
         `INSERT INTO user_spaced_repetition (id, uid, card_id, course_id, box, next_review_at, review_count, ease_factor, card_data, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8::jsonb, NOW(), NOW())
          ON CONFLICT (id) DO UPDATE SET
-           course_id = COALESCE(EXCLUDED.course_id, user_spaced_repetition.course_id),
+           course_id = EXCLUDED.course_id,
            box = EXCLUDED.box,
            next_review_at = EXCLUDED.next_review_at,
            review_count = user_spaced_repetition.review_count + 1,
@@ -550,7 +580,7 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
           id,
           user.uid,
           cleanCardId,
-          courseId || existing?.course_id || 'general',
+          effectiveCourseId,
           computedBox,
           computedNextReview,
           Number(computedEase.toFixed(2)),
@@ -558,9 +588,13 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
         ]
       );
 
+      if (!upserted.rows[0]) {
+        throw new Error('The database did not return the persisted spaced-repetition record.');
+      }
       return res.json({ success: true, card: upserted.rows[0] });
     } catch (err: any) {
-      return res.status(500).json({ error: 'Failed to record SRS review', details: err.message });
+      logger.error({ uid: user.uid, cardId, error: err?.message || String(err) }, '[StudentRoutes] Failed to record SRS review');
+      return res.status(503).json({ error: 'The spaced-repetition update could not be persisted to the authoritative database.' });
     }
   };
 
