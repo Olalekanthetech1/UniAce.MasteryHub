@@ -238,6 +238,7 @@ export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublish
   const [bundle, setBundle] = useState<ReviewBundle | null>(null);
   const [search, setSearch] = useState('');
   const [reviewNote, setReviewNote] = useState('');
+  const [approvalChecks, setApprovalChecks] = useState({ subjectExpert: false, calculations: false, curriculum: false, rendering: false });
   const [loadingQueue, setLoadingQueue] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [busy, setBusy] = useState<ReviewAction | 'publish' | null>(null);
@@ -287,6 +288,11 @@ export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublish
   }, [user, refreshKey]);
 
   useEffect(() => {
+    setApprovalChecks({ subjectExpert: false, calculations: false, curriculum: false, rendering: false });
+    setReviewNote('');
+  }, [selectedId]);
+
+  useEffect(() => {
     if (!drafts.length) {
       setSelectedId('');
       setBundle(null);
@@ -330,13 +336,17 @@ export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublish
       setDetailError('Add specific revision instructions (at least 10 characters).');
       return;
     }
+    if (action === 'approve' && !Object.values(approvalChecks).every(Boolean)) {
+      setDetailError('Complete all four review attestations before approving this course.');
+      return;
+    }
     setBusy(action);
     setDetailError('');
     try {
       const response = await fetch('/api/admin/courses/' + encodeURIComponent(bundle.course.id) + '/review-status', {
         method: 'POST',
         headers: { ...(await headers()), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, notes: reviewNote.trim() || undefined })
+        body: JSON.stringify({ action, notes: reviewNote.trim() || undefined, approvalChecks: action === 'approve' ? approvalChecks : undefined })
       });
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new Error(data?.error || 'The review decision could not be saved.');
@@ -487,9 +497,27 @@ export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublish
               <section className="rounded-2xl border border-slate-200 dark:border-slate-700 p-4 space-y-3">
                 <h4 className="font-bold text-slate-900 dark:text-white">Review decision</h4>
                 <label className="block space-y-1"><span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Reviewer note / revision instructions</span><textarea value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} rows={4} maxLength={5000} placeholder="Record specific corrections, missing topics, calculation checks or references that need attention." className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500" /></label>
+                {bundle.course.review_status === 'in_review' && (
+                  <fieldset className="rounded-xl border border-slate-200 dark:border-slate-700 p-4 space-y-3">
+                    <legend className="px-1 text-xs font-bold uppercase tracking-wide text-slate-600 dark:text-slate-300">Required approval attestations</legend>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">These are explicit reviewer confirmations, not checks performed automatically by the AI.</p>
+                    {([
+                      ['subjectExpert', 'A qualified subject reviewer has checked the academic content.'],
+                      ['calculations', 'Equations, derivations, units, assumptions and worked calculations have been checked.'],
+                      ['curriculum', 'The course syllabus, learning outcomes and module coverage have been checked.'],
+                      ['rendering', 'Mathematical notation, diagrams, tables and lesson formatting have been visually checked.']
+                    ] as const).map(([key, label]) => (
+                      <label key={key} className="flex items-start gap-3 text-sm text-slate-700 dark:text-slate-200">
+                        <input type="checkbox" checked={approvalChecks[key]} onChange={(event) => setApprovalChecks((current) => ({ ...current, [key]: event.target.checked }))} className="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </fieldset>
+                )}
+
                 <div className="flex flex-wrap gap-2">
                   {(bundle.course.review_status === 'pending' || bundle.course.review_status === 'needs_revision') && <button type="button" onClick={() => void submitReviewAction('start_review')} disabled={Boolean(busy)} className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"><Clock3 size={16} />Start review</button>}
-                  {bundle.course.review_status === 'in_review' && <><button type="button" onClick={() => void submitReviewAction('request_revision')} disabled={Boolean(busy) || reviewNote.trim().length < 10} className="inline-flex items-center gap-2 rounded-xl border border-amber-300 dark:border-amber-800 px-4 py-2.5 text-sm font-semibold text-amber-800 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/30 disabled:opacity-50"><Send size={16} />Request changes</button><button type="button" onClick={() => void submitReviewAction('approve')} disabled={Boolean(busy)} className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"><CheckCircle2 size={16} />Approve course</button></>}
+                  {bundle.course.review_status === 'in_review' && <><button type="button" onClick={() => void submitReviewAction('request_revision')} disabled={Boolean(busy) || reviewNote.trim().length < 10} className="inline-flex items-center gap-2 rounded-xl border border-amber-300 dark:border-amber-800 px-4 py-2.5 text-sm font-semibold text-amber-800 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/30 disabled:opacity-50"><Send size={16} />Request changes</button><button type="button" onClick={() => void submitReviewAction('approve')} disabled={Boolean(busy) || !Object.values(approvalChecks).every(Boolean)} className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"><CheckCircle2 size={16} />Approve course</button></>}
                   {bundle.course.review_status === 'approved' && <button type="button" onClick={() => void publishCourse()} disabled={Boolean(busy)} className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"><BookOpen size={16} />Publish to student catalog</button>}
                   {busy && <span className="inline-flex items-center gap-2 text-xs text-slate-500"><RefreshCw size={14} className="animate-spin" />{busy === 'publish' ? 'Publishing…' : 'Saving review decision…'}</span>}
                 </div>
