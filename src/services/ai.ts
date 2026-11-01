@@ -1174,7 +1174,7 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
     Student Progress:
     - Mastery Levels: ${JSON.stringify(masteryData)}
     - Level: ${progress.level}
-    - Target Exam Date: ${targetDate || 'Next 30 days'}
+    - Target Exam Date: ${targetDate || 'Not supplied; do not infer a date or planning horizon'}
     
     Syllabus Structure:
     ${(syllabus || []).map(m => `- ${m?.title || 'Module'}: ${(m?.subTopics || []).map(st => st?.title || 'Topic').join(', ')}`).join('\n')}
