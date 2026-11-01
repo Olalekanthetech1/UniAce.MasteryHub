@@ -1288,6 +1288,7 @@ app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regen
       messages: [{
         role: 'user',
         content: buildDomainBriefPrompt({
+          courseId,
           courseName,
           courseCode: String(course.code || courseId),
           department: String(course.department || 'General Studies'),
