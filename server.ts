@@ -1419,32 +1419,46 @@ app.post('/api/user/announcements/dismiss', verifyAuth, async (req, res) => {
   }
 });
 
-// Gamification Leaderboard with 5-minute In-Memory Cache
+// Gamification leaderboard is derived only from recorded user profile metrics.
 let leaderboardCache: { data: any[]; cachedAt: number } | null = null;
 const LEADERBOARD_CACHE_TTL_MS = 5 * 60 * 1000;
 
 app.get('/api/gamification/leaderboard', async (req, res) => {
   if (leaderboardCache && (Date.now() - leaderboardCache.cachedAt < LEADERBOARD_CACHE_TTL_MS)) {
-    return res.json({ leaderboard: leaderboardCache.data, fromCache: true });
+    return res.json({ leaderboard: leaderboardCache.data, fromCache: true, cachedAt: leaderboardCache.cachedAt });
   }
+  const pool = getPostgresPool();
+  if (!pool) return res.status(503).json({ error: 'Leaderboard unavailable: PostgreSQL is not connected.' });
+
   try {
-    const pool = getPostgresPool();
-    if (!pool) return res.json({ leaderboard: [] });
     const qRes = await pool.query(`
-      SELECT uid as id, COALESCE(display_name, 'Anonymous') as name, COALESCE(learning_profile->>'avatar', '') as avatar,
-             COALESCE((learning_profile->>'xp')::int, 0) as xp,
-             COALESCE((learning_profile->>'level')::int, 1) as level,
-             COALESCE(learning_profile->>'department', '') as department
+      SELECT
+        uid AS id,
+        display_name AS name,
+        NULLIF(learning_profile->>'avatar', '') AS avatar,
+        CASE WHEN learning_profile->>'xp' ~ '^[0-9]+$'
+          THEN (learning_profile->>'xp')::int END AS xp,
+        CASE WHEN learning_profile->>'level' ~ '^[0-9]+$'
+          THEN (learning_profile->>'level')::int END AS level,
+        CASE WHEN learning_profile->>'streak' ~ '^[0-9]+$'
+          THEN (learning_profile->>'streak')::int END AS streak
       FROM users
-      WHERE role = 'student' OR role IS NULL
-      ORDER BY xp DESC
+      WHERE role = 'student'
+        AND NULLIF(BTRIM(display_name), '') IS NOT NULL
+        AND learning_profile->>'xp' ~ '^[0-9]+$'
+        AND learning_profile->>'level' ~ '^[0-9]+$'
+      ORDER BY (learning_profile->>'xp')::int DESC, uid ASC
       LIMIT 50
     `);
-    const leaderboard = qRes.rows.map((r, idx) => ({ ...r, rank: idx + 1 }));
+    const leaderboard = qRes.rows.map((row: any, index: number) => ({
+      ...row,
+      rank: index + 1
+    }));
     leaderboardCache = { data: leaderboard, cachedAt: Date.now() };
-    res.json({ leaderboard });
+    return res.json({ leaderboard, fromCache: false, cachedAt: leaderboardCache.cachedAt });
   } catch (err: any) {
-    res.json({ leaderboard: [] });
+    console.error('[Leaderboard] Failed to query recorded user metrics:', err);
+    return res.status(503).json({ error: 'Leaderboard data could not be verified.' });
   }
 });
 
