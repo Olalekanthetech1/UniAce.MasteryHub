@@ -13,6 +13,7 @@ import { fetchFromArxiv } from './academic/arxivAdapter.js';
 import { fetchFromSemanticScholar, lookupPaperSemanticScholar } from './academic/semanticScholarAdapter.js';
 import { fetchFromOpenAlex, fetchOpenAlexConceptDefinitions } from './academic/openAlexAdapter.js';
 import { getPostgresPool } from './postgresPool.js';
+import { createHash } from 'node:crypto';
 import { getSystemConfigDoc, setSystemConfigDoc } from './systemConfigStore.js';
 import { z } from 'zod';
 
@@ -270,12 +271,13 @@ export async function searchAcademicPapers(
   if (!activeConfig.enabled) throw new Error('Academic research is disabled in the persisted engine configuration.');
 
   const normalizedQuery = `${query} ${fieldOfStudy || ''}`.trim().toLowerCase();
-  const cacheKey = Buffer.from(JSON.stringify({
+  const cacheKey = createHash('sha256').update(JSON.stringify({
     query: normalizedQuery,
     courseCode: courseCode || null,
     minYear: parsed.minYear ?? null,
     limit,
-  })).toString('base64').slice(0, 64);
+    providersEnabled: activeConfig.providersEnabled,
+  })).digest('hex');
 
   // Check Cache
   const cached = await getCachedSearch(cacheKey);
