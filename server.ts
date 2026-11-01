@@ -6445,37 +6445,26 @@ app.post('/api/admin/extract-questions', verifyAuth, async (req, res) => {
 
     const { pdfData, mimeType, courseCode, year, semester, provider } = req.body;
     
-    let aiProvider;
-    if (provider === 'mistral_direct') {
-      aiProvider = globalMistralDirectProvider;
-      if (!aiProvider) throw new Error('Mistral Direct API Key missing');
-    } else if (provider === 'openrouter_free') {
-      aiProvider = globalOpenRouterFreeProvider;
-      if (!aiProvider) throw new Error('OpenRouter API Key missing');
-    } else if (provider === 'groq') {
-      aiProvider = globalGroqProvider;
-      if (!aiProvider) throw new Error('Groq API Key missing');
-    } else if (provider === 'cohere') {
-      aiProvider = globalCohereProvider;
-      if (!aiProvider) throw new Error('Cohere API Key missing');
-    } else if (provider === 'huggingface') {
-      aiProvider = globalHuggingFaceProvider;
-      if (!aiProvider) throw new Error('Hugging Face API Key missing');
-    } else if (provider === 'nvidia') {
-      aiProvider = globalNvidiaProvider;
-      if (!aiProvider) throw new Error('NVIDIA API Key missing');
-    } else if (provider === 'gemini') {
-      // Legacy support
-      aiProvider = globalGeminiDirectProvider;
-      if (!aiProvider) throw new Error('Gemini Direct API Key missing');
-    } else if (provider === 'mistral') {
-      // Legacy support
-      aiProvider = globalMistralDirectProvider;
-      if (!aiProvider) throw new Error('Mistral Direct API Key missing');
-    } else {
-      aiProvider = globalGeminiDirectProvider;
-      if (!aiProvider) throw new Error('Default AI Provider (Gemini Direct) missing');
-    }
+    const routingConfig = await requireLiveRoutingConfig();
+    const providerMap: Record<string, any> = {
+      gemini_direct: globalGeminiDirectBreaker,
+      mistral_direct: globalMistralDirectBreaker,
+      groq: globalGroqBreaker,
+      nvidia: globalNvidiaBreaker || globalNvidiaProvider,
+      cohere: globalCohereBreaker,
+      huggingface: globalHuggingFaceBreaker,
+      openrouter_free: globalOpenRouterFreeBreaker
+    };
+    const requestedProvider = typeof provider === 'string' && provider.trim()
+      ? provider.trim().toLowerCase()
+      : undefined;
+    const providerNames = resolveLiveProviderQueue(
+      routingConfig,
+      'past_questions',
+      providerMap,
+      requestedProvider
+    );
+
 
     const systemInstruction = `You are the UniAce Past Question Extraction Engine.
     Analyze the provided PDF document of a past examination paper.
@@ -6498,18 +6487,36 @@ app.post('/api/admin/extract-questions', verifyAuth, async (req, res) => {
       ]
     }`;
 
-    const response = await aiProvider.generate([
+    const messages = [
       { role: 'system', content: systemInstruction },
-      { 
-        role: 'user', 
+      {
+        role: 'user',
         content: [
           { type: 'text', text: 'Extract all multiple-choice questions from this past paper.' },
           { type: 'image_url', image_url: { url: `data:${mimeType};base64,${pdfData}` } }
-        ] 
+        ]
       }
-    ], { complexity: 'high', jsonMode: true });
+    ];
 
-    res.json({ text: response.text });
+    let response: any = null;
+    let lastError: any = null;
+    let providerUsed: string | null = null;
+    for (const providerName of providerNames) {
+      try {
+        response = await generateWithTelemetry(providerMap[providerName], messages, { complexity: 'high', jsonMode: true });
+        if (response?.text) {
+          providerUsed = providerName;
+          break;
+        }
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (!response?.text || !providerUsed) {
+      throw lastError || new Error('No configured provider returned question extraction content.');
+    }
+
+    return res.json({ text: response.text, providerUsed });
   } catch (error: any) {
     console.error('Question Extraction Error:', error);
     res.status(500).json({ error: 'Failed to extract questions from PDF' });
