@@ -3636,49 +3636,6 @@ const StudySessionSchema = z.object({
   }))
 });
 
-const DomainInferenceSchema = z.object({
-  primaryDomain: z.string(),
-  subDisciplines: z.array(z.string()),
-  coreRequiredTopics: z.array(z.string()),
-  accreditationStandards: z.array(z.string()).optional().default(['ABET', 'Standard University Benchmarks']),
-  groundingReferences: z.array(z.string()).optional().default([])
-});
-
-const VerificationResultSchema = z.object({
-  isValid: z.boolean(),
-  reasoning: z.string(),
-  expectedTopics: z.array(z.string()).optional().default([]),
-  coveredTopics: z.array(z.string()).optional().default([]),
-  missingTopics: z.array(z.string()).optional().default([]),
-  genericFillerDetected: z.boolean(),
-  coverageScore: z.number().min(0).max(100).optional().default(0),
-  pedagogyAudit: z.object({
-    isSequencingValid: z.boolean(),
-    prerequisiteGaps: z.array(z.string()),
-    workloadAssessment: z.string()
-  }).optional(),
-  consistencyScore: z.number().min(0).max(100).optional().default(100),
-  confidenceState: z.enum(['verified', 'needs_review', 'failed']).optional().default('needs_review')
-});
-
-const ModuleTelemetrySchema = z.object({
-  regenerationCount: z.number().default(0),
-  editCount: z.number().default(0),
-  dropOffRate: z.number().default(0),
-  studentFeedbackScore: z.number().default(0)
-});
-
-const RegressionTestSchema = z.object({
-  testId: z.string(),
-  courseTitle: z.string(),
-  expectedDomain: z.string(),
-  status: z.enum(['passed', 'failed', 'pending']),
-  actualDomain: z.string().optional(),
-  coverageScore: z.number().optional(),
-  error: z.string().optional(),
-  timestamp: z.string()
-});
-
 const LearningProfileSchema = z.object({
   strengths: z.array(z.string()).default([]),
   weaknesses: z.array(z.string()).default([])
