@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import {
   BookOpen,
   Search,
-  CheckCircle2,
   AlertCircle,
   Clock,
   RefreshCw,
@@ -72,18 +71,9 @@ export const AcademicMCPDashboard: React.FC = () => {
 
   // Engine Stats & Health State
   const [providerHealth, setProviderHealth] = useState<ProviderHealth[]>([]);
-  const [config, setConfig] = useState<AcademicConfig>({
-    enabled: true,
-    cacheTtlHours: 24,
-    semanticScholarApiKeyConfigured: false,
-    openAlexEmail: '',
-    arxivMaxResults: 5,
-    providersEnabled: {
-      arxiv: true,
-      semanticScholar: true,
-      openAlex: true,
-    },
-  });
+  const [config, setConfig] = useState<AcademicConfig | null>(null);
+  const [configLoading, setConfigLoading] = useState<boolean>(true);
+  const [configLoadError, setConfigLoadError] = useState<string | null>(null);
   const [totalQueries, setTotalQueries] = useState<number>(0);
   const [semanticScholarApiKeyInput, setSemanticScholarApiKeyInput] = useState<string>('');
 
@@ -96,20 +86,42 @@ export const AcademicMCPDashboard: React.FC = () => {
     return { Authorization: `Bearer ${idToken}` };
   };
 
-  // Fetch Stats & Config
+  // Fetch persisted configuration separately from live provider telemetry.
+  // If the authoritative read fails, do not present local defaults as real settings.
   const fetchStatsAndConfig = async () => {
+    setConfigLoading(true);
+    setConfigLoadError(null);
+
     try {
-      const res = await fetch('/api/admin/academic/stats', {
+      const configResponse = await fetch('/api/admin/academic/config', {
         headers: await getAuthHeaders()
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.providerHealth) setProviderHealth(data.providerHealth);
-        if (data.config) setConfig(data.config);
-        if (data.totalQueriesLogged !== undefined) setTotalQueries(data.totalQueriesLogged);
+      const configData = await configResponse.json();
+      if (!configResponse.ok) {
+        throw new Error(configData.error || configData.message || 'Unable to read persisted academic research settings.');
       }
+      setConfig(configData);
     } catch (err) {
-      console.error('Failed to fetch academic stats:', err);
+      setConfig(null);
+      setConfigLoadError((err as Error).message || 'Academic research settings could not be verified.');
+      console.error('Failed to fetch persisted academic configuration:', err);
+    } finally {
+      setConfigLoading(false);
+    }
+
+    try {
+      const statsResponse = await fetch('/api/admin/academic/stats', {
+        headers: await getAuthHeaders()
+      });
+      if (!statsResponse.ok) {
+        throw new Error('Live academic provider statistics are currently unavailable.');
+      }
+      const statsData = await statsResponse.json();
+      if (statsData.providerHealth) setProviderHealth(statsData.providerHealth);
+      if (statsData.totalQueriesLogged !== undefined) setTotalQueries(statsData.totalQueriesLogged);
+    } catch (err) {
+      console.error('Failed to fetch academic provider stats:', err);
+      setProviderHealth([]);
     }
   };
 
@@ -185,10 +197,19 @@ export const AcademicMCPDashboard: React.FC = () => {
 
   // Save Config
   const handleSaveConfig = async () => {
+    if (!config) {
+      toast.error('Load the persisted academic configuration before saving changes.');
+      return;
+    }
+
     try {
       const apiKey = semanticScholarApiKeyInput.trim();
       const payload = {
-        ...config,
+        enabled: config.enabled,
+        cacheTtlHours: config.cacheTtlHours,
+        arxivMaxResults: config.arxivMaxResults,
+        openAlexEmail: config.openAlexEmail || '',
+        providersEnabled: config.providersEnabled,
         ...(apiKey ? { semanticScholarApiKey: apiKey } : {})
       };
       const res = await fetch('/api/admin/academic/config', {
@@ -202,12 +223,12 @@ export const AcademicMCPDashboard: React.FC = () => {
         throw new Error(data.message || data.error || 'Failed to persist academic research configuration.');
       }
 
-      if (data.config) setConfig(data.config);
+      setConfig(data.config);
       setSemanticScholarApiKeyInput('');
       toast.success('Academic research configuration saved to Neon.');
-      fetchStatsAndConfig();
+      await fetchStatsAndConfig();
     } catch (err) {
-      toast.error('Error saving academic config');
+      toast.error((err as Error).message || 'Error saving academic config');
     }
   };
 
@@ -491,7 +512,7 @@ export const AcademicMCPDashboard: React.FC = () => {
 
           <div className="p-4 bg-slate-800/40 border border-slate-800 rounded-xl flex items-center justify-between text-xs text-slate-400">
             <span>Total Logged Academic Searches in Database: <strong className="text-white">{totalQueries}</strong></span>
-            <span>Cache TTL: <strong className="text-cyan-400">{config.cacheTtlHours} Hours</strong></span>
+            <span>Cache TTL: <strong className="text-cyan-400">{config ? `${config.cacheTtlHours} Hours` : configLoading ? 'Loading persisted setting…' : 'Unavailable'}</strong></span>
           </div>
         </div>
       )}
@@ -500,9 +521,23 @@ export const AcademicMCPDashboard: React.FC = () => {
       {activeTab === 'config' && (
         <div className="space-y-4 bg-slate-800/50 p-5 rounded-xl border border-slate-800">
           <h3 className="text-sm font-bold text-white flex items-center gap-2">
-            <Settings className="w-4 h-4 text-cyan-400" /> Dynamic Engine Configuration & Rate Limits
+            <Settings className="w-4 h-4 text-cyan-400" /> Persisted Academic Research Configuration
           </h3>
 
+          {configLoading ? (
+            <p className="text-xs text-slate-400">Reading the authoritative configuration from Neon…</p>
+          ) : !config ? (
+            <div className="space-y-3">
+              <p className="text-xs text-rose-300">{configLoadError || 'Persisted configuration is unavailable. Settings are not editable until the authoritative read succeeds.'}</p>
+              <button
+                onClick={fetchStatsAndConfig}
+                className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white text-xs rounded-lg"
+              >
+                Retry configuration read
+              </button>
+            </div>
+          ) : (
+          <>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
             <div className="space-y-1">
               <label className="text-slate-400">Semantic Scholar API Key</label>
@@ -551,6 +586,8 @@ export const AcademicMCPDashboard: React.FC = () => {
               Save Engine Settings
             </button>
           </div>
+          </>
+          )}
         </div>
       )}
     </div>
