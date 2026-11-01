@@ -25,6 +25,74 @@ export interface CourseQueryFilter {
   limit?: number;
 }
 
+/**
+ * Convert an authoritative PostgreSQL course row without substituting invented
+ * metadata. A malformed persisted course is rejected and surfaced to the caller.
+ */
+function mapCourseRecord(row: any): CourseEntity {
+  const requiredText = ['id', 'code', 'title', 'level', 'status'];
+  for (const field of requiredText) {
+    if (typeof row[field] !== 'string' || !row[field].trim()) {
+      throw new Error(`Course catalog record is missing required persisted field: ${field}.`);
+    }
+  }
+
+  const validLevels: CourseEntity['level'][] = [
+    '100L', '200L', '300L', '400L', 'undergraduate', 'postgraduate'
+  ];
+  if (!validLevels.includes(row.level)) {
+    throw new Error(`Course ${row.id} has an unsupported persisted academic level: ${row.level}.`);
+  }
+
+  const validStatuses: CourseEntity['status'][] = ['draft', 'in_review', 'published', 'archived'];
+  if (!validStatuses.includes(row.status)) {
+    throw new Error(`Course ${row.id} has an unsupported persisted status: ${row.status}.`);
+  }
+
+  const version = Number(row.version);
+  if (!Number.isInteger(version) || version < 1) {
+    throw new Error(`Course ${row.id} is missing a valid persisted version.`);
+  }
+
+  const toPersistedIso = (value: unknown, field: string): string => {
+    const date = value instanceof Date
+      ? value
+      : (typeof value === 'string' && value.trim() ? new Date(value) : null);
+    if (!date || Number.isNaN(date.getTime())) {
+      throw new Error(`Course ${row.id} is missing a valid persisted ${field} timestamp.`);
+    }
+    return date.toISOString();
+  };
+
+  const semester = row.semester == null ? null : String(row.semester);
+  if (semester !== null && semester !== 'first' && semester !== 'second') {
+    throw new Error(`Course ${row.id} has an unsupported persisted semester value: ${semester}.`);
+  }
+
+  return {
+    id: row.id,
+    code: row.code,
+    title: row.title,
+    description: typeof row.description === 'string' ? row.description : null,
+    level: row.level,
+    department: typeof row.department === 'string' ? row.department : null,
+    faculty: typeof row.faculty === 'string' ? row.faculty : null,
+    faculties: Array.isArray(row.faculties) ? row.faculties : null,
+    departments: Array.isArray(row.departments) ? row.departments : null,
+    scope: typeof row.scope === 'string' ? row.scope : null,
+    semester: semester as CourseEntity['semester'],
+    thumbnail_url: typeof row.thumbnail_url === 'string' ? row.thumbnail_url : null,
+    author_id: typeof row.author_id === 'string' && row.author_id.trim() ? row.author_id : null,
+    status: row.status,
+    version,
+    created_at: toPersistedIso(row.created_at, 'created_at'),
+    updated_at: toPersistedIso(row.updated_at, 'updated_at'),
+    ...(typeof row.generation_status === 'string' ? { generation_status: row.generation_status } : {}),
+    ...(typeof row.generation_job_id === 'string' ? { generation_job_id: row.generation_job_id } : {}),
+    ...(typeof row.content_hash === 'string' ? { content_hash: row.content_hash } : {})
+  };
+}
+
 export class CourseRepository {
   /**
    * Fetches published courses list with caching & resilient routing
@@ -71,28 +139,7 @@ export class CourseRepository {
         }
 
         const res = await queryPostgres<any>(sql, params);
-        const courses: CourseEntity[] = res.rows.map((r: any) => ({
-          id: r.id,
-          code: r.code || '',
-          title: r.title || '',
-          description: r.description || null,
-          level: r.level || 'undergraduate',
-          department: r.department || null,
-          faculty: r.faculty || null,
-          scope: r.scope || null,
-          faculties: Array.isArray(r.faculties) && r.faculties.length ? r.faculties : (r.faculty ? [r.faculty] : []),
-          departments: Array.isArray(r.departments) && r.departments.length ? r.departments : (r.department ? [r.department] : []),
-          semester: r.semester || null,
-          thumbnail_url: r.thumbnail_url || null,
-          author_id: r.author_id || '',
-          status: r.status,
-          generation_status: 'none',
-          generation_job_id: null,
-          version: Number(r.version || 1),
-          content_hash: null,
-          created_at: typeof r.created_at === 'string' ? r.created_at : (r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString()),
-          updated_at: typeof r.updated_at === 'string' ? r.updated_at : (r.updated_at ? new Date(r.updated_at).toISOString() : new Date().toISOString())
-        }));
+        const courses: CourseEntity[] = res.rows.map(mapCourseRecord);
 
         // Populate in-memory cache
         catalogCache.setPublished(cacheKey, courses, 1);
@@ -135,28 +182,7 @@ export class CourseRepository {
         const res = await queryPostgres<any>(sql, [courseId]);
         if (res.rows.length > 0) {
           const r = res.rows[0];
-          const course: CourseEntity = {
-            id: r.id,
-            code: r.code || '',
-            title: r.title || '',
-            description: r.description || null,
-            level: r.level || 'undergraduate',
-            department: r.department || null,
-            faculty: r.faculty || null,
-            scope: r.scope || null,
-            faculties: Array.isArray(r.faculties) && r.faculties.length ? r.faculties : (r.faculty ? [r.faculty] : []),
-            departments: Array.isArray(r.departments) && r.departments.length ? r.departments : (r.department ? [r.department] : []),
-            semester: r.semester || null,
-            thumbnail_url: r.thumbnail_url || null,
-            author_id: r.author_id || '',
-            status: r.status,
-            generation_status: 'none',
-            generation_job_id: null,
-            version: Number(r.version || 1),
-            content_hash: null,
-            created_at: typeof r.created_at === 'string' ? r.created_at : (r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString()),
-            updated_at: typeof r.updated_at === 'string' ? r.updated_at : (r.updated_at ? new Date(r.updated_at).toISOString() : new Date().toISOString())
-          };
+          const course: CourseEntity = mapCourseRecord(r);
           catalogCache.setPublished(cacheKey, course, course.version || 1);
           return course;
         }
