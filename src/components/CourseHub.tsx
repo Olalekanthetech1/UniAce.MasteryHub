@@ -11,6 +11,7 @@ import AcademicProfileModal from './AcademicProfileModal';
 import { useDebounce } from 'use-debounce';
 import { formatDistanceToNow } from 'date-fns';
 import { useAppStore } from '../lib/store';
+import { useInstitution } from '../context/InstitutionContext';
 import { isCourseEligibleForUser, getCourseProgramStatus } from '../utils/courseEligibility';
 
 interface CourseHubProps {
@@ -28,6 +29,7 @@ type Tab = 'your-courses' | 'explore';
 export default function CourseHub({ onSelectCourse, onProfileClick, onViewSelect, enrolledCourses, progress, activeSemester, setActiveSemester }: CourseHubProps) {
   const { user, profile, isConfigured } = useAuth();
   const { courses, loading: coursesLoading } = useCourses();
+  const { departmentToFaculty } = useInstitution();
   const { isPremium } = usePremiumStatus();
   const isAdmin = profile?.role === 'admin' || (import.meta.env.VITE_ADMIN_EMAILS || '').split(',').includes(user?.email || '');
   
@@ -73,10 +75,10 @@ export default function CourseHub({ onSelectCourse, onProfileClick, onViewSelect
 
     // Apply Tab Filter
     if (activeTab === 'your-courses') {
-      result = result.filter(c => isCourseEligibleForUser(c, profile, activeSemester, enrolledCourses));
+      result = result.filter(c => isCourseEligibleForUser(c, profile, activeSemester, enrolledCourses, departmentToFaculty));
     } else if (activeTab === 'explore' && !isAdmin) {
       result = result.filter(c => {
-        const status = getCourseProgramStatus(c, profile, activeSemester);
+        const status = getCourseProgramStatus(c, profile, activeSemester, departmentToFaculty);
         return status === 'current_program' || status === 'global_core' || status === 'elective';
       });
     }
