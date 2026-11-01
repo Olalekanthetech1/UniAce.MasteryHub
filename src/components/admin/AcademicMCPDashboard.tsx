@@ -469,7 +469,7 @@ export const AcademicMCPDashboard: React.FC = () => {
                           <ExternalLink className="w-3.5 h-3.5 text-slate-400 inline" />
                         </a>
                         <p className="text-xs text-slate-400 mt-1">
-                          By <span className="text-slate-300">{paper.authors.slice(0, 3).join(', ')}{paper.authors.length > 3 ? ' et al.' : ''}</span> • {paper.venue ? `• ${paper.venue}` : ''} {paper.year != null ? `(${paper.year})` : ''}
+                          {paper.authors.length > 0 && <>By <span className="text-slate-300">{paper.authors.slice(0, 3).join(', ')}{paper.authors.length > 3 ? ' et al.' : ''}</span></>}{paper.venue ? ` • ${paper.venue}` : ''}{paper.year != null ? ` (${paper.year})` : ''}
                         </p>
                       </div>
 
