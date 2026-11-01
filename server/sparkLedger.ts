@@ -2679,7 +2679,7 @@ export async function executeTransactionalPaymentSuccess(params: {
   amount: number;
   planType: string;
   metadata?: any;
-  commissionRateOverride?: number;
+  commissionRateOverride?: number | null;
   simulateAffiliateFailureForTest?: boolean;
   sandboxNamespace?: string;
 }): Promise<TransactionalPaymentSuccessResult> {
@@ -3113,23 +3113,31 @@ export async function executeTransactionalPaymentSuccess(params: {
       }
 
       if (resolvedRefCode) {
-        let commissionRate = 0.30;
+        let commissionRate: number | null = null;
         if (typeof commissionRateOverride === 'number' && commissionRateOverride >= 0 && commissionRateOverride <= 1) {
           commissionRate = commissionRateOverride;
         } else {
           try {
             const settingsDoc = await settingsCol.doc('commissions').get();
             if (settingsDoc.exists) {
-              const data = settingsDoc.data();
-              if (typeof data?.rate === 'number' && data.rate > 0 && data.rate <= 1) {
-                commissionRate = data.rate;
-              } else if (typeof data?.rate === 'number' && data.rate > 1) {
-                commissionRate = data.rate / 100;
+              const configuredRate = settingsDoc.data()?.rate;
+              if (typeof configuredRate === 'number' && configuredRate >= 0 && configuredRate <= 1) {
+                commissionRate = configuredRate;
+              } else if (typeof configuredRate === 'number' && configuredRate > 1 && configuredRate <= 100) {
+                commissionRate = configuredRate / 100;
               }
             }
           } catch (err) {
-            console.warn('Error fetching commission rate settings, using 30% default:', err);
+            console.warn('[Commissions] Could not verify the configured commission rate:', err);
           }
+        }
+
+        if (commissionRate === null) {
+          await paymentDocRef.set({
+            referred_by: resolvedRefCode,
+            affiliate_status: 'pending_configuration'
+          }, { merge: true });
+          throw new Error('Affiliate commission was not calculated because no verified commission rate is configured. Core payment credit remains committed.');
         }
 
         commissionAmount = Number((coreResult.amountNgn * commissionRate).toFixed(2));
