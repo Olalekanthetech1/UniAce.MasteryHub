@@ -8,43 +8,154 @@ import {
   CanonicalDefinition,
   AcademicConfig,
   AcademicProviderHealth,
+  AcademicWebSourceSearchResponse,
 } from './academic/types.js';
 import { fetchFromArxiv } from './academic/arxivAdapter.js';
 import { fetchFromSemanticScholar, lookupPaperSemanticScholar } from './academic/semanticScholarAdapter.js';
 import { fetchFromOpenAlex, fetchOpenAlexConceptDefinitions } from './academic/openAlexAdapter.js';
 import { getPostgresPool } from './postgresPool.js';
+import {
+  DEFAULT_ACADEMIC_RESEARCH_SETTINGS,
+  loadAcademicResearchConfig,
+  saveAcademicResearchConfig,
+  AcademicResearchConfigRecord,
+} from './academic/academicConfigStore.js';
+import { searchTavilyAcademicSources } from './academic/tavilyAdapter.js';
 
-// Default Admin Configuration
-let activeConfig: AcademicConfig = {
-  enabled: true,
-  cacheTtlHours: 24,
-  arxivMaxResults: 5,
-  defaultCourseAlignment: 'Global University Benchmark Syllabus (Adaptive)',
-  providersEnabled: {
-    arxiv: true,
-    semanticScholar: true,
-    openAlex: true,
-  },
-};
-
-export function getAcademicConfig(): AcademicConfig {
-  // Never return provider credentials to the browser, including administrator clients.
-  return { ...activeConfig, semanticScholarApiKey: undefined };
+interface ActiveAcademicConfig extends AcademicResearchConfigRecord['settings'] {
+  semanticScholarApiKey?: string;
+  tavilyApiKey?: string;
 }
 
-export function updateAcademicConfig(newConfig: Partial<AcademicConfig>): AcademicConfig {
-  activeConfig = {
-    ...activeConfig,
-    ...newConfig,
-    providersEnabled: {
-      ...activeConfig.providersEnabled,
-      ...(newConfig.providersEnabled || {}),
-    },
-    semanticScholarApiKey: typeof newConfig.semanticScholarApiKey === 'string' && newConfig.semanticScholarApiKey.trim()
-      ? newConfig.semanticScholarApiKey.trim()
-      : activeConfig.semanticScholarApiKey,
+let activeConfig: ActiveAcademicConfig = {
+  ...DEFAULT_ACADEMIC_RESEARCH_SETTINGS,
+  providersEnabled: { ...DEFAULT_ACADEMIC_RESEARCH_SETTINGS.providersEnabled },
+};
+let configLoadedAt = 0;
+let configLoadPromise: Promise<void> | null = null;
+const CONFIG_REFRESH_MS = 60_000;
+
+async function ensureAcademicConfig(forceRefresh = false): Promise<void> {
+  if (!forceRefresh && configLoadedAt && Date.now() - configLoadedAt < CONFIG_REFRESH_MS) return;
+  if (configLoadPromise) {
+    await configLoadPromise;
+    return;
+  }
+  configLoadPromise = (async () => {
+    const record = await loadAcademicResearchConfig(forceRefresh);
+    activeConfig = {
+      ...record.settings,
+      semanticScholarApiKey: record.secrets.semanticScholarApiKey,
+      tavilyApiKey: record.secrets.tavilyApiKey,
+    };
+    configLoadedAt = Date.now();
+  })();
+  try {
+    await configLoadPromise;
+  } finally {
+    configLoadPromise = null;
+  }
+}
+
+export async function getAcademicConfig(): Promise<AcademicConfig> {
+  await ensureAcademicConfig();
+  return {
+    enabled: activeConfig.enabled,
+    cacheTtlHours: activeConfig.cacheTtlHours,
+    openAlexEmail: activeConfig.openAlexEmail,
+    arxivMaxResults: activeConfig.arxivMaxResults,
+    defaultCourseAlignment: activeConfig.defaultCourseAlignment,
+    providersEnabled: { ...activeConfig.providersEnabled },
+    researchDepth: 'adaptive',
+    adaptiveMaxQueries: activeConfig.adaptiveMaxQueries,
+    minimumUsefulSources: activeConfig.minimumUsefulSources,
+    tavilyApiKeyConfigured: Boolean(activeConfig.tavilyApiKey),
+    semanticScholarApiKeyConfigured: Boolean(activeConfig.semanticScholarApiKey),
   };
+}
+
+export async function updateAcademicConfig(
+  newConfig: Partial<AcademicConfig> & { tavilyApiKey?: string; semanticScholarApiKey?: string }
+): Promise<AcademicConfig> {
+  await ensureAcademicConfig();
+  const record = await saveAcademicResearchConfig(newConfig);
+  activeConfig = {
+    ...record.settings,
+    semanticScholarApiKey: record.secrets.semanticScholarApiKey,
+    tavilyApiKey: record.secrets.tavilyApiKey,
+  };
+  configLoadedAt = Date.now();
   return getAcademicConfig();
+}
+
+export async function searchAcademicWebSources(input: {
+  query: string;
+  maxResults?: number;
+}): Promise<AcademicWebSourceSearchResponse> {
+  await ensureAcademicConfig();
+  if (!activeConfig.enabled) throw new Error('Academic research is disabled in system settings.');
+  if (!activeConfig.providersEnabled.tavily) throw new Error('Tavily search is disabled. Enable it in Academic Research settings.');
+  if (!activeConfig.tavilyApiKey) throw new Error('Tavily is enabled but no API key is configured.');
+  const query = input.query.trim();
+  if (query.length < 4) throw new Error('Research query must contain at least four characters.');
+
+  const maxResults = Math.min(20, Math.max(1, Math.floor(input.maxResults ?? 10)));
+  const stages: AcademicWebSourceSearchResponse['stages'] = [];
+  const first = await searchTavilyAcademicSources({
+    query,
+    searchDepth: 'basic',
+    maxResults,
+  }, activeConfig.tavilyApiKey);
+  stages.push({
+    searchDepth: 'basic',
+    resultCount: first.results.length,
+    usefulSourceCount: first.results.filter(source => source.score >= 0.25).length,
+    creditsUsed: first.creditsUsed,
+    responseTimeSeconds: first.responseTimeSeconds,
+  });
+
+  let sources = [...first.results];
+  let escalated = false;
+  if (
+    activeConfig.researchDepth === 'adaptive' &&
+    activeConfig.adaptiveMaxQueries > 1 &&
+    stages[0].usefulSourceCount < activeConfig.minimumUsefulSources
+  ) {
+    escalated = true;
+    const advanced = await searchTavilyAcademicSources({
+      query,
+      searchDepth: 'advanced',
+      maxResults,
+    }, activeConfig.tavilyApiKey);
+    stages.push({
+      searchDepth: 'advanced',
+      resultCount: advanced.results.length,
+      usefulSourceCount: advanced.results.filter(source => source.score >= 0.25).length,
+      creditsUsed: advanced.creditsUsed,
+      responseTimeSeconds: advanced.responseTimeSeconds,
+    });
+    const byUrl = new Map<string, typeof sources[number]>();
+    for (const source of [...sources, ...advanced.results]) {
+      const key = source.url.replace(/#.*$/, '').replace(/\/$/, '').toLowerCase();
+      const previous = byUrl.get(key);
+      if (!previous || source.score > previous.score) byUrl.set(key, source);
+    }
+    sources = Array.from(byUrl.values()).sort((a, b) => b.score - a.score).slice(0, maxResults);
+  }
+
+  const measuredCredits = stages.every(stage => stage.creditsUsed !== null)
+    ? stages.reduce((total, stage) => total + (stage.creditsUsed || 0), 0)
+    : null;
+  return {
+    query,
+    researchDepth: 'adaptive',
+    status: sources.length > 0 ? 'results_found' : 'no_results',
+    escalated,
+    stages,
+    sources,
+    creditsUsed: measuredCredits,
+    disclaimer: 'Search results are source candidates, not verified institutional syllabi or approved curriculum evidence. Review the original sources and establish their authority before using them as curriculum requirements.',
+  };
 }
 
 // Levenshtein distance for fuzzy title deduplication
@@ -189,6 +300,7 @@ async function logAcademicTelemetry(
 export async function searchAcademicPapers(
   input: SearchAcademicPapersInput
 ): Promise<AcademicSearchResponse> {
+  await ensureAcademicConfig();
   const startTime = Date.now();
   const parsed = SearchAcademicPapersInputSchema.parse(input);
   const { query, fieldOfStudy, limit, courseCode } = parsed;
@@ -311,6 +423,7 @@ export async function searchAcademicPapers(
 
 // --- CITATION GENERATOR ---
 export async function getCitationAndAbstract(input: GetCitationInput): Promise<CitationResult> {
+  await ensureAcademicConfig();
   const { identifier } = input;
   let paper: AcademicPaper | null = null;
 
@@ -370,6 +483,7 @@ export async function extractCanonicalDefinitions(
 
 // --- HEALTH CHECK FUNCTION ---
 export async function checkAcademicProvidersHealth(): Promise<AcademicProviderHealth[]> {
+  await ensureAcademicConfig();
   const providers: Array<'arxiv' | 'semantic_scholar' | 'openalex'> = ['arxiv', 'semantic_scholar', 'openalex'];
   const results: AcademicProviderHealth[] = [];
 
