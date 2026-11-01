@@ -171,6 +171,7 @@ import { JobRepository } from './server/repositories/jobRepository';
 import { jobStreamManager } from './server/services/jobStreamManager';
 import { getFeatureFlags, initRuntimeFlagsSync } from './server/config/features';
 import { ensureCourseLearningSchema } from './server/services/courseLearningSchema';
+import { ensureCourseAssessmentSchema } from './server/services/courseAssessmentSchema';
 import { getSystemConfigDoc, setSystemConfigDoc, getSystemSettingsDoc, setSystemSettingsDoc } from './server/systemConfigStore';
 
 const latexInstruction = `
@@ -1184,6 +1185,32 @@ app.get('/api/courses/:courseId/modules', async (req, res) => {
   }
 });
 
+/**
+ * Remove answer/rubric material from the ordinary student lesson payload.
+ * The source JSONB remains intact for authenticated, persisted reveal requests.
+ */
+function redactInstructionalAnswersForStudent(value: any): any {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const stripKeys = (item: any, keys: string[]) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+    const copy = { ...item };
+    for (const key of keys) delete copy[key];
+    return copy;
+  };
+  return {
+    ...value,
+    guidedPractice: Array.isArray(value.guidedPractice)
+      ? value.guidedPractice.map((item: any) => stripKeys(item, ['expectedApproach', 'expectedAnswer', 'explanation', 'diagnosticSignals']))
+      : [],
+    independentPractice: Array.isArray(value.independentPractice)
+      ? value.independentPractice.map((item: any) => stripKeys(item, ['expectedApproach', 'expectedAnswer', 'explanation', 'diagnosticSignals']))
+      : [],
+    knowledgeChecks: Array.isArray(value.knowledgeChecks)
+      ? value.knowledgeChecks.map((item: any) => stripKeys(item, ['expectedReasoning', 'answerOrRubric', 'misconceptionSignals']))
+      : []
+  };
+}
+
 app.get('/api/courses/:courseId/modules/:moduleId/lessons', async (req, res) => {
   const t0 = Date.now();
   try {
@@ -1201,7 +1228,11 @@ app.get('/api/courses/:courseId/modules/:moduleId/lessons', async (req, res) => 
       }
     }
     const latencyMs = Date.now() - t0;
-    res.json({ lessons, total: lessons.length, latencyMs });
+    const studentLessons = lessons.map((lesson: any) => ({
+      ...lesson,
+      instructional_content: redactInstructionalAnswersForStudent(lesson.instructional_content)
+    }));
+    res.json({ lessons: studentLessons, total: studentLessons.length, latencyMs });
   } catch (err: any) {
     logger.error({ err: err.message, courseId: req.params.courseId, moduleId: req.params.moduleId }, '[GET /api/courses/.../lessons] Failed');
     const statusCode = (err.message?.includes('Database service unavailable') || err.message?.includes('unreachable')) ? 503 : 500;
@@ -1233,6 +1264,301 @@ app.post('/api/courses/:courseId/modules/:moduleId/lessons/:lessonId', async (re
     logger.error({ err: err.message, courseId: req.params.courseId, lessonId: req.params.lessonId }, '[POST /api/courses/.../lessons] Failed');
     const statusCode = (err.message?.includes('Database service unavailable') || err.message?.includes('unreachable')) ? 503 : 500;
     res.status(statusCode).json({ error: 'Failed to update lesson', message: err.message });
+  }
+});
+
+
+/**
+ * Server-authorized single-lesson regeneration. It uses the same structured
+ * contract, discipline selection and structural validation as coordinated
+ * course generation; the browser cannot submit generated lesson text.
+ */
+app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regenerate', verifyAdmin, async (req: any, res: any) => {
+  const { courseId, moduleId, lessonId } = req.params;
+  const pool = getPostgresPool();
+  if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+  try {
+    await ensureCourseLearningSchema();
+    const [courseResult, moduleResult, lessonResult] = await Promise.all([
+      pool.query(
+        'SELECT id, code, title, level, department FROM courses WHERE id = $1 LIMIT 1',
+        [courseId]
+      ),
+      pool.query(
+        'SELECT id, title, description, order_index, estimated_minutes FROM course_modules WHERE course_id = $1 AND id = $2 AND is_archived IS NOT TRUE LIMIT 1',
+        [courseId, moduleId]
+      ),
+      pool.query(
+        'SELECT id, title, order_index, learning_outcomes FROM course_lessons WHERE course_id = $1 AND module_id = $2 AND id = $3 LIMIT 1',
+        [courseId, moduleId, lessonId]
+      )
+    ]);
+
+    if (!courseResult.rows[0] || !moduleResult.rows[0] || !lessonResult.rows[0]) {
+      return res.status(404).json({ error: 'Course, module, or lesson not found' });
+    }
+
+    const course = courseResult.rows[0];
+    const module = moduleResult.rows[0];
+    const lesson = lessonResult.rows[0];
+    const courseName = String(course.title || course.code || courseId);
+    const level = String(course.level || 'undergraduate');
+    const requestedProvider = typeof req.body?.provider === 'string' && req.body.provider.trim()
+      ? req.body.provider.trim()
+      : undefined;
+
+    const domainBrief = await completeWithProviderJSON({
+      type: 'skeleton',
+      messages: [{
+        role: 'user',
+        content: buildDomainBriefPrompt({
+          courseName,
+          courseCode: String(course.code || courseId),
+          department: String(course.department || 'General Studies'),
+          level,
+          outline: `Module: ${module.title}\nLesson: ${lesson.title}`
+        })
+      }],
+      schema: DomainBriefSchema,
+      requestedProvider,
+      complexity: 'standard'
+    });
+
+    const learningOutcomes = Array.isArray(lesson.learning_outcomes)
+      ? lesson.learning_outcomes.filter((value: any) => typeof value === 'string' && value.trim())
+      : [];
+    const prompt = buildLessonPrompt(
+      String(lesson.title || lessonId),
+      String(module.title || moduleId),
+      Math.max(1, Number(module.order_index) || 1),
+      domainBrief,
+      {
+        courseId,
+        courseName,
+        department: String(course.department || 'General Studies'),
+        level,
+        depth: 'standard',
+        scope: 'DEPARTMENT'
+      },
+      learningOutcomes.join('\n')
+    );
+
+    const validatedSchema = StructuredLessonOutputSchema.superRefine((value, context) => {
+      if (value.instructionalContent.disciplineEngine !== domainBrief.pedagogyType) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['instructionalContent', 'disciplineEngine'],
+          message: 'Instructional engine does not match the server-selected course discipline.'
+        });
+      }
+      const syntax = validateLessonSyntax(value.content, domainBrief.pedagogyType);
+      if (!syntax.isValid) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['content'],
+          message: syntax.errors.join(' ')
+        });
+      }
+    });
+
+    const generated = await completeWithProviderJSON({
+      type: 'lesson',
+      messages: [
+        {
+          role: 'system',
+          content: `You are a university instructor in ${domainBrief.primaryDomain}. Return strictly valid JSON and follow the UniAce Mastery Framework. Do not claim independent academic verification.\n\n${latexInstruction}`
+        },
+        { role: 'user', content: prompt }
+      ],
+      schema: validatedSchema,
+      requestedProvider,
+      complexity: 'high'
+    });
+
+    const markdown = normalizeLessonMarkdownContent(generated.content);
+    const finalSyntax = validateLessonSyntax(markdown, domainBrief.pedagogyType);
+    if (!finalSyntax.isValid) {
+      return res.status(422).json({
+        error: 'Generated lesson failed structural validation',
+        validationErrors: finalSyntax.errors
+      });
+    }
+
+    const instructionalContent = {
+      ...generated.instructionalContent,
+      verification: {
+        structureValidation: 'passed',
+        academicAccuracy: 'not_independently_verified',
+        calculationValidation: domainBrief.pedagogyType === 'STEM_MATHEMATICAL'
+          ? 'pending_independent_check'
+          : 'not_applicable',
+        subjectExpertReview: 'not_reviewed',
+        checkedAt: new Date().toISOString(),
+        policyVersion: 'uniace-mastery-verification-v1'
+      }
+    };
+
+    await JobRepository.upsertModuleAndLesson({
+      courseId,
+      module: {
+        id: moduleId,
+        title: String(module.title || moduleId),
+        description: String(module.description || ''),
+        orderIndex: Math.max(1, Number(module.order_index) || 1),
+        estimatedMinutes: Number(module.estimated_minutes) || 60
+      },
+      lesson: {
+        id: lessonId,
+        title: String(generated.title || lesson.title || lessonId),
+        contentMarkdown: markdown,
+        orderIndex: Math.max(1, Number(lesson.order_index) || 1),
+        learningOutcomes,
+        instructionalContent
+      }
+    });
+
+    await recordBackendSystemLog(
+      'success',
+      'ai',
+      `Regenerated structured lesson ${lessonId} for course ${courseId}`,
+      {
+        courseId,
+        moduleId,
+        lessonId,
+        disciplineEngine: domainBrief.pedagogyType,
+        structureValidation: 'passed',
+        academicAccuracy: 'not_independently_verified'
+      },
+      { uid: req.user?.uid, email: req.user?.email }
+    );
+
+    return res.json({
+      success: true,
+      lesson: {
+        id: lessonId,
+        title: String(generated.title || lesson.title || lessonId),
+        content: markdown,
+        instructionalContent: redactInstructionalAnswersForStudent(instructionalContent)
+      },
+      verification: {
+        structureValidation: 'passed',
+        academicAccuracy: 'not_independently_verified',
+        calculationValidation: instructionalContent.verification.calculationValidation,
+        subjectExpertReview: 'not_reviewed'
+      }
+    });
+  } catch (error: any) {
+    logger.error({
+      error: error?.message || String(error),
+      courseId,
+      moduleId,
+      lessonId
+    }, '[Admin lesson regeneration] Failed');
+    return res.status(500).json({
+      error: 'Structured lesson regeneration failed. No replacement lesson was reported as successful.'
+    });
+  }
+});
+
+/**
+ * Persist a student's attempt before releasing the related comparison guide.
+ * This is a learning self-check, not proctored grading or a secure examination.
+ */
+app.post('/api/courses/:courseId/modules/:moduleId/lessons/:lessonId/attempts', verifyAuth, async (req: any, res: any) => {
+  const { courseId, moduleId, lessonId } = req.params;
+  const uid = req.user?.uid;
+  if (!uid) return res.status(401).json({ error: 'Authenticated user required' });
+
+  const { activityType, activityIndex, response } = req.body || {};
+  const allowedTypes = new Set(['guidedPractice', 'independentPractice', 'knowledgeChecks']);
+  if (!allowedTypes.has(activityType)) {
+    return res.status(400).json({ error: 'Unsupported lesson activity type' });
+  }
+  if (!Number.isInteger(activityIndex) || activityIndex < 0 || activityIndex > 100) {
+    return res.status(400).json({ error: 'A valid activity index is required' });
+  }
+  if (typeof response !== 'string' || response.trim().length < 3 || response.length > 10000) {
+    return res.status(400).json({ error: 'Write an attempt between 3 and 10000 characters before requesting the comparison guide' });
+  }
+
+  const pool = getPostgresPool();
+  if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+
+  try {
+    await ensureCourseAssessmentSchema();
+    const lessonResult = await pool.query(
+      'SELECT instructional_content FROM course_lessons WHERE course_id = $1 AND module_id = $2 AND id = $3 LIMIT 1',
+      [courseId, moduleId, lessonId]
+    );
+    if (!lessonResult.rows[0]) return res.status(404).json({ error: 'Lesson not found' });
+
+    let instructionalContent = lessonResult.rows[0].instructional_content;
+    if (typeof instructionalContent === 'string') {
+      try {
+        instructionalContent = JSON.parse(instructionalContent);
+      } catch {
+        return res.status(409).json({ error: 'Lesson instructional content is not valid structured data' });
+      }
+    }
+    const activityList = instructionalContent?.[activityType];
+    const activity = Array.isArray(activityList) ? activityList[activityIndex] : null;
+    if (!activity) return res.status(404).json({ error: 'Lesson activity not found' });
+
+    let reveal: Record<string, string>;
+    if (activityType === 'knowledgeChecks') {
+      if (typeof activity.expectedReasoning !== 'string' || typeof activity.answerOrRubric !== 'string') {
+        return res.status(409).json({ error: 'This knowledge check has no stored comparison guide' });
+      }
+      reveal = {
+        expectedReasoning: activity.expectedReasoning,
+        answerOrRubric: activity.answerOrRubric
+      };
+    } else {
+      if (
+        typeof activity.expectedApproach !== 'string' ||
+        typeof activity.expectedAnswer !== 'string' ||
+        typeof activity.explanation !== 'string'
+      ) {
+        return res.status(409).json({ error: 'This practice item has no stored explanation' });
+      }
+      reveal = {
+        expectedApproach: activity.expectedApproach,
+        expectedAnswer: activity.expectedAnswer,
+        explanation: activity.explanation
+      };
+    }
+
+    const savedAttempt = await pool.query(
+      `INSERT INTO course_lesson_practice_attempts
+        (uid, course_id, module_id, lesson_id, activity_type, activity_index, response_text)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, attempted_at`,
+      [uid, courseId, moduleId, lessonId, activityType, activityIndex, response.trim()]
+    );
+
+    return res.status(201).json({
+      success: true,
+      attempt: {
+        id: savedAttempt.rows[0]?.id,
+        attemptedAt: savedAttempt.rows[0]?.attempted_at
+      },
+      reveal,
+      grading: {
+        status: 'not_graded',
+        mode: 'student_self_check',
+        message: 'Your response was saved. Compare your reasoning with the guide; UniAce has not automatically graded this free-text attempt.'
+      }
+    });
+  } catch (error: any) {
+    logger.error({
+      error: error?.message || String(error),
+      uid,
+      courseId,
+      moduleId,
+      lessonId
+    }, '[Lesson practice attempt] Failed');
+    return res.status(500).json({ error: 'Could not save your attempt or release the comparison guide' });
   }
 });
 
