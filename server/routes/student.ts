@@ -1402,8 +1402,11 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
               WHERE status = 'waiting'
                 AND id = $1
                 AND topic = $2
-                AND jsonb_typeof(data->'questions') = 'array'
-                AND jsonb_array_length(data->'questions') > 0
+                AND CASE
+                  WHEN jsonb_typeof(data->'questions') = 'array'
+                  THEN jsonb_array_length(data->'questions') > 0
+                  ELSE FALSE
+                END
               FOR UPDATE SKIP LOCKED
             `
           : `
@@ -1411,8 +1414,11 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
               FROM arena_battles
               WHERE status = 'waiting'
                 AND topic = $1
-                AND jsonb_typeof(data->'questions') = 'array'
-                AND jsonb_array_length(data->'questions') > 0
+                AND CASE
+                  WHEN jsonb_typeof(data->'questions') = 'array'
+                  THEN jsonb_array_length(data->'questions') > 0
+                  ELSE FALSE
+                END
               ORDER BY created_at ASC
               LIMIT 5
               FOR UPDATE SKIP LOCKED
@@ -1554,12 +1560,6 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
     }
   });
 
-  /**
-   * POST /api/arena/battles/:battleId/spar
-   * Instant Sparring Fallback when no live human challenger is in queue for the same course:
-   * - mode === 'ghost_replay': Replays a real historical student recording from Neon PostgreSQL at exact recorded timestamps.
-   * - mode === 'ai_challenger': Launches a transparent Adaptive AI Challenger ([AI Challenger]) calibrated from the student's live PostgreSQL telemetry.
-   */
   /**
    * POST /api/arena/battles/:battleId/spar
    * Starts only a validated replay of real historical human answers.
