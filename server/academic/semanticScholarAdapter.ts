@@ -11,7 +11,7 @@ export async function fetchFromSemanticScholar(
   )}&limit=${limit}&fields=title,authors,abstract,year,venue,citationCount,externalIds,url,openAccessPdf`;
 
   const headers: Record<string, string> = {
-    'User-Agent': 'UniAce-AcademicGrounding-Bot/1.0 (uniace.support@gmail.com)',
+    'User-Agent': 'UniAce-AcademicResearch/1.0',
   };
 
   if (apiKey) {
@@ -48,7 +48,7 @@ export async function fetchFromSemanticScholar(
     for (const paper of data.data) {
       if (!paper.title) continue;
 
-      const authors = paper.authors ? paper.authors.map((a) => a.name) : ['Unknown Author'];
+      const authors = paper.authors ? paper.authors.map((a) => a.name).filter((name): name is string => typeof name === 'string' && name.trim().length > 0) : [];
       const doi = paper.externalIds?.DOI || null;
       const pdfUrl = paper.openAccessPdf?.url || (paper.externalIds?.ArXiv ? `https://arxiv.org/pdf/${paper.externalIds.ArXiv}.pdf` : null);
 
@@ -56,13 +56,13 @@ export async function fetchFromSemanticScholar(
         id: `s2_${paper.paperId}`,
         title: paper.title,
         authors,
-        abstract: paper.abstract || 'Abstract unavailable in Semantic Scholar index.',
-        year: paper.year || null,
-        venue: paper.venue || 'Academic Journal / Conference',
+        abstract: paper.abstract || '',
+        year: paper.year ?? null,
+        ...(paper.venue ? { venue: paper.venue } : {}),
         doi,
         url: paper.url || (doi ? `https://doi.org/${doi}` : `https://www.semanticscholar.org/paper/${paper.paperId}`),
         pdfUrl,
-        citationCount: paper.citationCount || 0,
+        citationCount: paper.citationCount ?? null,
         source: 'semantic_scholar',
         relevanceScore: 0,
         syllabusTags: [],
@@ -119,10 +119,10 @@ export async function lookupPaperSemanticScholar(
     return {
       id: `s2_${paper.paperId}`,
       title: paper.title,
-      authors: paper.authors ? paper.authors.map((a) => a.name) : ['Unknown Author'],
-      abstract: paper.abstract || 'Abstract unavailable.',
+      authors: paper.authors ? paper.authors.map((a) => a.name).filter((name): name is string => typeof name === 'string' && name.trim().length > 0) : [],
+      abstract: paper.abstract || '',
       year: paper.year || null,
-      venue: paper.venue || 'Academic Journal',
+      ...(paper.venue ? { venue: paper.venue } : {}),
       doi: paper.externalIds?.DOI || null,
       url: paper.url || `https://www.semanticscholar.org/paper/${paper.paperId}`,
       pdfUrl: paper.openAccessPdf?.url || null,
