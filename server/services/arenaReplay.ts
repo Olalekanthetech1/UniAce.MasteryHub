@@ -37,6 +37,7 @@ export function validateRecordedHumanReplay(row: unknown): VerifiedRecordedHuman
 
   const recordedAt = toValidTimestamp(row.updated_at);
   if (!recordedAt) return null;
+  const recordedAtMs = new Date(recordedAt).getTime();
 
   const durationSeconds = row.data.durationSeconds;
   if (typeof durationSeconds !== 'number' || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
@@ -48,78 +49,96 @@ export function validateRecordedHumanReplay(row: unknown): VerifiedRecordedHuman
   if (!questions.every(question =>
     isRecord(question) &&
     typeof question.correctAnswer === 'string' &&
-    question.correctAnswer.trim().length > 0
+    question.correctAnswer.trim().length > 0 &&
+    Array.isArray(question.options) &&
+    question.options.length >= 2 &&
+    question.options.every(option => typeof option === 'string' && option.trim().length > 0) &&
+    question.options.includes(question.correctAnswer)
   )) return null;
 
   const humanPlayers = [row.data.player1, row.data.player2]
     .filter((player): player is Record<string, any> =>
       isRecord(player) &&
       player.opponentType === 'human' &&
+      typeof player.uid === 'string' &&
+      player.uid.trim().length > 0 &&
+      typeof player.name === 'string' &&
+      player.name.trim().length > 0 &&
+      !['gladiator', 'scholar'].includes(player.name.trim().toLowerCase()) &&
       Array.isArray(player.actionLog) &&
       player.actionLog.length > 0
     )
     .sort((left, right) => right.actionLog.length - left.actionLog.length);
 
-  // Choose the most complete source once. An invalid source must fail closed;
-  // it must never cause a switch to another participant's recording.
-  const sourcePlayer = humanPlayers[0];
-  if (!sourcePlayer) return null;
+  for (const sourcePlayer of humanPlayers) {
+    const actions: VerifiedRecordedHumanReplay['actions'] = [];
+    let previousElapsedMs = 0;
+    let previousTimestampMs = 0;
+    let valid = true;
 
-  if (
-    typeof sourcePlayer.uid !== 'string' ||
-    !sourcePlayer.uid.trim() ||
-    typeof sourcePlayer.name !== 'string' ||
-    !sourcePlayer.name.trim() ||
-    ['gladiator', 'scholar'].includes(sourcePlayer.name.trim().toLowerCase())
-  ) return null;
+    for (let index = 0; index < sourcePlayer.actionLog.length; index += 1) {
+      const action = sourcePlayer.actionLog[index];
+      if (!isRecord(action)) {
+        valid = false;
+        break;
+      }
 
-  const actions: VerifiedRecordedHumanReplay['actions'] = [];
-  let previousElapsedMs = 0;
+      const questionIndex = action.questionIndex;
+      const selectedOption = action.selectedOption;
+      const elapsedMs = action.elapsedMs;
+      const timestamp = toValidTimestamp(action.timestamp);
+      const timestampMs = timestamp ? new Date(timestamp).getTime() : NaN;
+      const question = questions[index];
 
-  for (let index = 0; index < sourcePlayer.actionLog.length; index += 1) {
-    const action = sourcePlayer.actionLog[index];
-    if (!isRecord(action)) return null;
+      if (
+        questionIndex !== index ||
+        questionIndex >= questions.length ||
+        typeof selectedOption !== 'string' ||
+        !Array.isArray(question.options) ||
+        !question.options.includes(selectedOption) ||
+        typeof action.correct !== 'boolean' ||
+        typeof elapsedMs !== 'number' ||
+        !Number.isFinite(elapsedMs) ||
+        elapsedMs <= 0 ||
+        elapsedMs < previousElapsedMs ||
+        elapsedMs > durationSeconds * 1000 ||
+        !timestamp ||
+        !Number.isFinite(timestampMs) ||
+        timestampMs > recordedAtMs ||
+        timestampMs < previousTimestampMs
+      ) {
+        valid = false;
+        break;
+      }
 
-    const questionIndex = action.questionIndex;
-    const selectedOption = action.selectedOption;
-    const elapsedMs = action.elapsedMs;
-    const timestamp = toValidTimestamp(action.timestamp);
-    const question = questions[index];
+      const correct = selectedOption === question.correctAnswer;
+      if (action.correct !== correct) {
+        valid = false;
+        break;
+      }
 
-    if (
-      questionIndex !== index ||
-      questionIndex >= questions.length ||
-      typeof selectedOption !== 'string' ||
-      typeof action.correct !== 'boolean' ||
-      typeof elapsedMs !== 'number' ||
-      !Number.isFinite(elapsedMs) ||
-      elapsedMs <= 0 ||
-      elapsedMs < previousElapsedMs ||
-      elapsedMs > durationSeconds * 1000 ||
-      !timestamp
-    ) return null;
+      actions.push({ questionIndex, selectedOption, correct, elapsedMs, timestamp });
+      previousElapsedMs = elapsedMs;
+      previousTimestampMs = timestampMs;
+    }
 
-    const correct = selectedOption === question.correctAnswer;
-    if (action.correct !== correct) return null;
-
-    actions.push({ questionIndex, selectedOption, correct, elapsedMs, timestamp });
-    previousElapsedMs = elapsedMs;
+    if (valid && actions.length > 0) {
+      return {
+        id: row.id,
+        recordedAt,
+        durationSeconds,
+        questions,
+        sourcePlayer: {
+          uid: sourcePlayer.uid,
+          name: sourcePlayer.name.trim(),
+          avatar: typeof sourcePlayer.avatar === 'string' && sourcePlayer.avatar.trim()
+            ? sourcePlayer.avatar
+            : null
+        },
+        actions
+      };
+    }
   }
 
-  if (actions.length === 0) return null;
-
-  return {
-    id: row.id,
-    recordedAt,
-    durationSeconds,
-    questions,
-    sourcePlayer: {
-      uid: sourcePlayer.uid,
-      name: sourcePlayer.name.trim(),
-      avatar: typeof sourcePlayer.avatar === 'string' && sourcePlayer.avatar.trim()
-        ? sourcePlayer.avatar
-        : null
-    },
-    actions
-  };
+  return null;
 }
