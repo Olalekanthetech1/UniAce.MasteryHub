@@ -38,6 +38,7 @@ export default function QuizHub({
   // Firestore Quiz Attempts
   const [recentAttempts, setRecentAttempts] = useState<any[]>([]);
   const [isLoadingAttempts, setIsLoadingAttempts] = useState(false);
+  const [attemptsError, setAttemptsError] = useState<string | null>(null);
   const [hasLoggedEmptyAlert, setHasLoggedEmptyAlert] = useState(false);
 
   const activeCourse = courseId ? courses[courseId] : null;
@@ -76,18 +77,26 @@ export default function QuizHub({
   useEffect(() => {
     if (!user || !courseId) return;
     setIsLoadingAttempts(true);
+    setAttemptsError(null);
+    setRecentAttempts([]);
     (async () => {
       try {
         const token = await user.getIdToken();
         const res = await fetch(`/api/quiz/recent-attempts?courseId=${encodeURIComponent(courseId)}`, {
           headers: token ? { 'Authorization': `Bearer ${token}` } : {}
         });
-        if (res.ok) {
-          const data = await res.json();
-          setRecentAttempts(data.attempts || []);
+        if (!res.ok) {
+          throw new Error(`Quiz history request failed with HTTP ${res.status}.`);
         }
+        const data = await res.json();
+        if (!Array.isArray(data?.attempts)) {
+          throw new Error('Quiz history response did not contain a verified attempts array.');
+        }
+        setRecentAttempts(data.attempts);
       } catch (err) {
-        console.warn("Failed loading quiz attempts:", err);
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("Failed loading quiz attempts:", message);
+        setAttemptsError(message);
       } finally {
         setIsLoadingAttempts(false);
       }
@@ -100,6 +109,10 @@ export default function QuizHub({
       toast.error("Please enter a topic name.");
       return;
     }
+    if (!customNotes.trim()) {
+      toast.error("Add lecture notes or source material so the quiz can be grounded in supplied content.");
+      return;
+    }
 
     const customModule: Module = {
       id: `custom-${Date.now()}`,
@@ -108,7 +121,7 @@ export default function QuizHub({
         {
           id: `custom-subtopic-${Date.now()}`,
           title: customTopic.trim(),
-          content: customNotes.trim() ? customNotes.trim() : `Custom AI Practice for topic: ${customTopic.trim()}`
+          content: customNotes.trim()
         }
       ]
     };
@@ -176,7 +189,7 @@ export default function QuizHub({
                     </h4>
                   </div>
                   <div className="flex items-center justify-between text-xs font-semibold text-slate-600 dark:text-zinc-300 pt-3 border-t border-slate-200/60 dark:border-zinc-700/60">
-                    <span>{c.level ? `L${c.level}` : 'L100'} • {c.semester || activeSemester}</span>
+                    <span>{c.level ? `L${c.level}` : 'Level not recorded'} • {c.semester || 'Semester not recorded'}</span>
                     <ArrowRight size={14} className="group-hover:translate-x-1 transition-transform text-emerald-500" />
                   </div>
                 </button>
@@ -281,9 +294,17 @@ export default function QuizHub({
             <div className="text-center py-6 text-sm text-slate-500 dark:text-zinc-400">
               Select a course to view your attempt history and weak spot telemetry.
             </div>
+          ) : isLoadingAttempts ? (
+            <div className="text-center py-6 text-sm text-slate-500 dark:text-zinc-400">
+              Loading recorded quiz attempts…
+            </div>
+          ) : attemptsError ? (
+            <div className="text-center py-6 text-sm text-amber-700 dark:text-amber-300">
+              Quiz history could not be verified: {attemptsError}
+            </div>
           ) : recentAttempts.length === 0 ? (
             <div className="text-center py-6 text-sm text-slate-500 dark:text-zinc-400">
-              No quiz attempts recorded yet for {courseId}. Take a quiz above to start tracking your mastery!
+              No quiz attempts are recorded for {courseId}.
             </div>
           ) : (
             <div className="space-y-3">
@@ -298,10 +319,10 @@ export default function QuizHub({
                     </div>
                     <div>
                       <div className="font-semibold text-slate-900 dark:text-white">
-                        {attempt.moduleTitle || attempt.topicId || 'Module Quiz'}
+                        {attempt.quizId || 'Quiz identifier unavailable'}
                       </div>
                       <div className="text-xs text-slate-500 dark:text-zinc-400">
-                        {attempt.completedAt ? new Date(attempt.completedAt).toLocaleDateString() : 'Recent'} • {attempt.mode || 'Practice'} Mode
+                        {attempt.completedAt ? new Date(attempt.completedAt).toLocaleDateString() : 'Timestamp unavailable'}
                       </div>
                     </div>
                   </div>
@@ -311,7 +332,7 @@ export default function QuizHub({
                       {attempt.score}%
                     </span>
                     <span className="block text-[10px] text-emerald-500 font-semibold uppercase">
-                      {attempt.score >= 80 ? 'Mastered' : 'Needs Review'}
+                      {attempt.gradingSource === 'client_computed_practice' ? 'Client-computed practice' : 'Verification source unavailable'}
                     </span>
                   </div>
                 </div>
@@ -355,13 +376,13 @@ export default function QuizHub({
 
               <div>
                 <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-zinc-300 mb-1">
-                  Lecture Notes / Source Material (Optional for Strict Grounding)
+                  Lecture Notes / Source Material <span className="text-red-500">*</span>
                 </label>
                 <textarea
                   value={customNotes}
                   onChange={(e) => setCustomNotes(e.target.value)}
                   rows={4}
-                  placeholder="Paste lecture notes or textbook excerpts here. Leaving this empty generates an Ungrounded Practice Quiz."
+                  placeholder="Paste the lecture notes, textbook excerpt, or verified source material the quiz must use."
                   className="w-full px-4 py-3 bg-slate-100 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-xl text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 />
               </div>

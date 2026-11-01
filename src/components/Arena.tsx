@@ -42,39 +42,17 @@ interface WaitingLobbyItem {
   createdAt: string;
 }
 
-interface ChallengerTelemetry {
-  calibratedMasteryPct: number;
-  tier: 'beginner' | 'intermediate' | 'advanced';
-  tierLabel: string;
-  pacingRangeLabel: string;
-  minStepMs: number;
-  maxStepMs: number;
-  baseStepMs: number;
-  targetAccuracyPct: number;
-  quizScorePct: number | null;
-  attemptsSampled: number;
-  srsRetentionPct: number | null;
-  srsCardsSampled: number;
-  srsCardsRetained: number;
-  courseWinRatePct: number | null;
-  courseWins: number;
-  courseLosses: number;
-  arenaBattlesSampled: number;
-  lessonsCompleted: number;
-}
-
 interface LobbyTelemetry {
-  serverNow: number;
-  serverIsoTime: string;
-  onlineCount: number;
+  serverNow: number | null;
+  serverIsoTime: string | null;
+  onlineCount: number | null;
   waitingBattles: WaitingLobbyItem[];
-  historicalGhostCount: number;
+  ghostReplayAvailable: boolean | null;
   latestGhostMeta: {
     battleId: string;
     playerName: string;
     recordedAt: string;
   } | null;
-  challengerTelemetry?: ChallengerTelemetry;
 }
 
 interface MissedQuestionBreakdownItem {
@@ -101,7 +79,7 @@ export default function Arena({ activeCourseId }: ArenaProps) {
   const [timeLeft, setTimeLeft] = useState(60);
   const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
   const [submittingAnswer, setSubmittingAnswer] = useState(false);
-  const [launchingSpar, setLaunchingSpar] = useState<'ghost_replay' | 'ai_challenger' | null>(null);
+  const [launchingSpar, setLaunchingSpar] = useState<'ghost_replay' | null>(null);
   const [matchStatus, setMatchStatus] = useState('Searching for opponent...');
   const [matchWaitSeconds, setMatchWaitSeconds] = useState(0);
   const [wsConnected, setWsConnected] = useState(false);
@@ -111,11 +89,11 @@ export default function Arena({ activeCourseId }: ArenaProps) {
   const [schedulingSrs, setSchedulingSrs] = useState(false);
   const [srsScheduled, setSrsScheduled] = useState(false);
   const [lobbyTelemetry, setLobbyTelemetry] = useState<LobbyTelemetry>({
-    serverNow: Date.now(),
-    serverIsoTime: new Date().toISOString(),
-    onlineCount: 1,
+    serverNow: null,
+    serverIsoTime: null,
+    onlineCount: null,
     waitingBattles: [],
-    historicalGhostCount: 0,
+    ghostReplayAvailable: null,
     latestGhostMeta: null
   });
 
@@ -157,21 +135,39 @@ export default function Arena({ activeCourseId }: ArenaProps) {
     if (!user) return;
     try {
       const token = await user.getIdToken();
-      const query = selectedCourseId ? `?topicId=${encodeURIComponent(selectedCourseId)}` : '';
-      const res = await fetch(`/api/arena/lobby-telemetry${query}`, {
-        headers: { Authorization: `Bearer ${token}` }
+      const query = selectedCourseId ? '?topicId=' + encodeURIComponent(selectedCourseId) : '';
+      const res = await fetch('/api/arena/lobby-telemetry' + query, {
+        headers: { Authorization: 'Bearer ' + token }
       });
-      if (res.ok) {
-        const data = await res.json();
-        updateServerClockOffset(data.serverNow);
-        setLobbyTelemetry((prev) => ({
-          ...prev,
-          ...data,
-          waitingBattles: Array.isArray(data.waitingBattles) ? data.waitingBattles : prev.waitingBattles
-        }));
+      if (!res.ok) {
+        throw new Error('Arena telemetry request failed with HTTP ' + res.status + '.');
       }
+
+      const data = await res.json();
+      if (typeof data.serverNow !== 'number' || !Number.isFinite(data.serverNow) ||
+          typeof data.onlineCount !== 'number' || !Number.isFinite(data.onlineCount) ||
+          typeof data.ghostReplayAvailable !== 'boolean' ||
+          !Array.isArray(data.waitingBattles)) {
+        throw new Error('Arena telemetry response is incomplete and cannot be presented as live data.');
+      }
+
+      updateServerClockOffset(data.serverNow);
+      const latest = data.latestGhostMeta;
+      setLobbyTelemetry({
+        serverNow: data.serverNow,
+        serverIsoTime: typeof data.serverIsoTime === 'string' ? data.serverIsoTime : null,
+        onlineCount: data.onlineCount,
+        waitingBattles: data.waitingBattles,
+        ghostReplayAvailable: data.ghostReplayAvailable,
+        latestGhostMeta: latest &&
+          typeof latest.battleId === 'string' &&
+          typeof latest.playerName === 'string' &&
+          typeof latest.recordedAt === 'string'
+          ? latest
+          : null
+      });
     } catch (err) {
-      console.warn('[Arena] Failed to fetch lobby telemetry:', err);
+      console.warn('[Arena] Failed to fetch verified lobby telemetry:', err);
     }
   }, [user, selectedCourseId, updateServerClockOffset]);
 
@@ -396,19 +392,26 @@ export default function Arena({ activeCourseId }: ArenaProps) {
     const missed: MissedQuestionBreakdownItem[] = [];
 
     for (const act of actionLog) {
-      if (!act.correct) {
-        const q = questions[act.questionIndex];
-        if (q) {
-          missed.push({
-            questionIndex: act.questionIndex,
-            question: q.question,
-            selectedOption: act.selectedOption || 'No answer selected',
-            correctAnswer: q.correctAnswer,
-            curriculumExplanation: q.explanation || '',
-            elapsedSeconds: typeof act.elapsedMs === 'number' ? Number((act.elapsedMs / 1000).toFixed(1)) : null
-          });
-        }
+      if (act.correct !== false || !Number.isInteger(act.questionIndex) ||
+          typeof act.selectedOption !== 'string' || !act.selectedOption.trim()) {
+        continue;
       }
+
+      const q = questions[act.questionIndex];
+      if (!q || typeof q.question !== 'string' || typeof q.correctAnswer !== 'string') {
+        continue;
+      }
+
+      missed.push({
+        questionIndex: act.questionIndex,
+        question: q.question,
+        selectedOption: act.selectedOption,
+        correctAnswer: q.correctAnswer,
+        curriculumExplanation: typeof q.explanation === 'string' ? q.explanation : '',
+        elapsedSeconds: typeof act.elapsedMs === 'number' && Number.isFinite(act.elapsedMs)
+          ? Number((act.elapsedMs / 1000).toFixed(1))
+          : null
+      });
     }
     return missed;
   }, [user]);
@@ -433,24 +436,24 @@ export default function Arena({ activeCourseId }: ArenaProps) {
 
     const generateLiveTacticalBreakdown = async () => {
       try {
-        const courseId = battleData.topicId || selectedCourseId || 'University Course';
+        const courseId = battleData.topicId || selectedCourseId;
+        if (!courseId) {
+          throw new Error('A verified course reference is required for post-match analysis.');
+        }
         const promptLines = missed.map(
           (m, i) =>
-            `${i + 1}. Question (Q${m.questionIndex + 1}): ${m.question}\n   - Student Selected: ${m.selectedOption}\n   - Correct Answer: ${m.correctAnswer}\n   - Core Explanation: ${m.curriculumExplanation}`
+            `${i + 1}. Question (Q${m.questionIndex + 1}): ${m.question}\n   - Recorded Student Answer: ${m.selectedOption}\n   - Stored Correct Answer: ${m.correctAnswer}\n   - Stored Explanation (if any): ${m.curriculumExplanation || 'No explanation was stored with this question.'}`
         );
-        const prompt = `You are the [AI Challenger] Sparring Partner in the UniAce Academic Arena for ${courseId}.
-The student just completed a timed Arena duel and missed the following ${missed.length} question(s):
+        const prompt = `You are an AI academic coach reviewing recorded answers for ${courseId}.
+The student completed an Arena battle. The following records identify answers marked incorrect by the battle server:
 
 ${promptLines.join('\n\n')}
 
-Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed question:
-1. **Why the Chosen Option Failed**: Briefly explain the misconception or trap in the student's selected answer.
-2. **Core Academic Principle**: State the exact formula, theorem, or concept that proves the correct answer (use valid KaTeX $...$ or $$...$$ where appropriate).
-3. **Speed-Recognition Cue**: Give a 1-sentence tactical shortcut so the student can spot and solve this in under 8 seconds in their next duel.`;
+Produce an AI-generated review. Explain the likely error using only the supplied question, recorded answer, stored correct answer and explanation. Do not claim an external source or independent curriculum verification. If the available evidence is insufficient to establish a concept or derivation, state that limitation. Use valid KaTeX notation where appropriate.`;
 
         const responseText = await AIService.generateContent(
           prompt,
-          'You are the [AI Challenger] Sparring Partner providing a rigorous, encouraging post-match tactical breakdown. Use clean Markdown and valid KaTeX math notation.'
+          'You are an AI academic coach. Analyse only the supplied recorded battle data, distinguish stored data from your own explanation, state uncertainty where appropriate, and do not claim independent verification. Use clean Markdown and valid KaTeX math notation.'
         );
         if (!cancelled) {
           setTacticalDebrief(responseText);
@@ -573,7 +576,7 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
 
       const player: BattlePlayer = {
         uid: user.uid,
-        name: profile?.displayName || user.displayName || 'Gladiator',
+        name: profile?.displayName || user.displayName || '',
         avatar: profile?.photoURL || user.photoURL || '',
         score: 0,
         currentQuestionIndex: 0,
@@ -622,36 +625,35 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
     }
   };
 
-  // 2. Direct Sparring Launch from Lobby or Waiting Screen ([AI Challenger] or Ghost Replay)
-  const startDirectSparring = async (mode: 'ghost_replay' | 'ai_challenger') => {
+  // Direct replay launch requires a verified historical human recording.
+  const startDirectSparring = async () => {
     const targetCourse = selectedCourseId;
     if (!user || !targetCourse || launchingSpar) {
       if (!targetCourse) toast.error('Please select a course first.');
       return;
     }
 
-    setLaunchingSpar(mode);
+    const displayName = typeof profile?.displayName === 'string' && profile.displayName.trim()
+      ? profile.displayName.trim()
+      : typeof user.displayName === 'string' && user.displayName.trim()
+      ? user.displayName.trim()
+      : '';
+    if (!displayName || ['gladiator', 'scholar'].includes(displayName.toLowerCase())) {
+      toast.error('A verified student display name is required before opening an Arena room.');
+      return;
+    }
+
+    setLaunchingSpar('ghost_replay');
     setView('matching');
     matchStartEpochRef.current = getAuthoritativeNowMs();
     setMatchWaitSeconds(0);
-    setMatchStatus(
-      mode === 'ai_challenger'
-        ? `Generating live ${targetCourse} combat questions for [AI Challenger] duel...`
-        : `Loading recorded ${targetCourse} Ghost Replay from Neon PostgreSQL...`
-    );
+    setMatchStatus('Checking for a verified recorded human replay in ' + targetCourse + '...');
 
+    let createdBattleId: string | null = null;
     try {
-      let questions: QuizQuestion[] = [];
-      if (mode === 'ai_challenger') {
-        questions = await generateBattleQuestions(targetCourse);
-        setMatchStatus(
-          `Calibrating [AI Challenger] (${lobbyTelemetry.challengerTelemetry?.pacingRangeLabel || '12–15s / question'}) & starting duel...`
-        );
-      }
-
       const player: BattlePlayer = {
         uid: user.uid,
-        name: profile?.displayName || user.displayName || 'Gladiator',
+        name: displayName,
         avatar: profile?.photoURL || user.photoURL || '',
         score: 0,
         currentQuestionIndex: 0,
@@ -664,89 +666,103 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
+          Authorization: 'Bearer ' + token
         },
         body: JSON.stringify({
           topicId: targetCourse,
           player,
-          questions,
+          questions: [],
           skipQueueJoin: true
         })
       });
-
-      if (!createRes.ok) throw new Error('Failed to initialize sparring room');
       const createdData = await createRes.json();
-      const newBattleId = createdData.battleId;
-      setBattleId(newBattleId);
-
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'battle:subscribe', battleId: newBattleId }));
+      if (!createRes.ok || typeof createdData.battleId !== 'string') {
+        throw new Error(createdData.error || 'The replay room could not be initialized from live data.');
       }
 
-      const sparRes = await fetch(`/api/arena/battles/${encodeURIComponent(newBattleId)}/spar`, {
+      createdBattleId = createdData.battleId;
+      setBattleId(createdBattleId);
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'battle:subscribe', battleId: createdBattleId }));
+      }
+
+      const sparRes = await fetch('/api/arena/battles/' + encodeURIComponent(createdBattleId) + '/spar', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
+          Authorization: 'Bearer ' + token
         },
-        body: JSON.stringify({ mode })
+        body: JSON.stringify({ mode: 'ghost_replay' })
       });
-
       const sparData = await sparRes.json();
       if (!sparRes.ok) {
-        toast.error(sparData.error || 'Could not launch sparring match');
-        setView('lobby');
-        return;
+        throw new Error(sparData.error || 'No verified human replay is available for this course.');
+      }
+      if (!sparData.battle) {
+        throw new Error('The replay endpoint did not return a persisted battle record.');
       }
 
       updateServerClockOffset(sparData.serverNow);
-      if (sparData.battle) {
-        setBattleData(sparData.battle);
-        setSelectedAnswer(null);
-        setSubmittingAnswer(false);
-        setView('battle');
-      }
+      setBattleData(sparData.battle);
+      setSelectedAnswer(null);
+      setSubmittingAnswer(false);
+      setView('battle');
     } catch (err: any) {
-      toast.error(err?.message || 'Failed to launch sparring match');
+      toast.error(err?.message || 'Could not start a verified human replay.');
+      if (createdBattleId) {
+        try {
+          const token = await user.getIdToken();
+          const cancelRes = await fetch('/api/arena/battles/' + encodeURIComponent(createdBattleId), {
+            method: 'DELETE',
+            headers: { Authorization: 'Bearer ' + token }
+          });
+          if (!cancelRes.ok) {
+            console.warn('[Arena] Temporary replay room could not be removed:', cancelRes.status);
+          }
+        } catch (cleanupError) {
+          console.warn('[Arena] Temporary replay room cleanup failed:', cleanupError);
+        }
+      }
+      setBattleId(null);
+      setBattleData(null);
       setView('lobby');
+      void fetchLobbyTelemetry();
     } finally {
       setLaunchingSpar(null);
     }
   };
 
-  // Launch Sparring when already inside a waiting battle
-  const handleLaunchSparring = async (mode: 'ghost_replay' | 'ai_challenger') => {
+  // Launch a verified replay from the user's own waiting battle.
+  const handleLaunchSparring = async () => {
     if (!battleId || !user || launchingSpar) return;
-    setLaunchingSpar(mode);
-    setMatchStatus(
-      mode === 'ai_challenger'
-        ? `Calibrating [AI Challenger] (${lobbyTelemetry.challengerTelemetry?.pacingRangeLabel || '12–15s / question'}) & starting duel...`
-        : `Loading recorded ${selectedCourseId} Ghost Replay...`
-    );
+    setLaunchingSpar('ghost_replay');
+    setMatchStatus('Validating recorded human moves for ' + (selectedCourseId || 'the selected course') + '...');
     try {
       const token = await user.getIdToken();
-      const res = await fetch(`/api/arena/battles/${encodeURIComponent(battleId)}/spar`, {
+      const res = await fetch('/api/arena/battles/' + encodeURIComponent(battleId) + '/spar', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
+          Authorization: 'Bearer ' + token
         },
-        body: JSON.stringify({ mode })
+        body: JSON.stringify({ mode: 'ghost_replay' })
       });
       const data = await res.json();
       if (!res.ok) {
-        toast.error(data.error || 'Could not launch sparring match');
+        toast.error(data.error || 'No verified human replay is available.');
+        return;
+      }
+      if (!data.battle) {
+        toast.error('The replay endpoint did not return a persisted battle record.');
         return;
       }
       updateServerClockOffset(data.serverNow);
-      if (data.battle) {
-        setBattleData(data.battle);
-        setSelectedAnswer(null);
-        setSubmittingAnswer(false);
-        setView('battle');
-      }
+      setBattleData(data.battle);
+      setSelectedAnswer(null);
+      setSubmittingAnswer(false);
+      setView('battle');
     } catch (err: any) {
-      toast.error(err?.message || 'Failed to start sparring match');
+      toast.error(err?.message || 'Failed to start the verified replay.');
     } finally {
       setLaunchingSpar(null);
     }
@@ -817,14 +833,31 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
 
   const cancelMatchmaking = async () => {
     if (battleId && user) {
-      const token = await user.getIdToken();
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'battle:unsubscribe', battleId }));
+      try {
+        const token = await user.getIdToken();
+        const response = await fetch(`/api/arena/battles/${encodeURIComponent(battleId)}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!response.ok) {
+          const result = await response.json().catch(() => null);
+          toast.error(
+            typeof result?.error === 'string'
+              ? result.error
+              : 'The server did not confirm cancellation. The current battle state was kept.'
+          );
+          if (response.status === 409) {
+            void syncBattleStateOnce(battleId);
+          }
+          return;
+        }
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'battle:unsubscribe', battleId }));
+        }
+      } catch (error: any) {
+        toast.error(error?.message || 'Cancellation could not be confirmed by the server.');
+        return;
       }
-      await fetch(`/api/arena/battles/${encodeURIComponent(battleId)}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` }
-      }).catch(() => {});
     }
     setBattleId(null);
     setBattleData(null);
@@ -836,8 +869,7 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
   const otherWaitingMatches = lobbyTelemetry.waitingBattles.filter(
     (b) => b.hostUid && b.hostUid !== user?.uid
   );
-  const challengerCal = lobbyTelemetry.challengerTelemetry;
-  const canLaunchGhostInLobby = lobbyTelemetry.historicalGhostCount > 0;
+  const canLaunchGhostInLobby = lobbyTelemetry.ghostReplayAvailable === true;
 
   // --- RENDERERS ---
 
@@ -867,14 +899,14 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
                 </div>
                 <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-[11px] font-semibold text-emerald-400">
                   <Users size={12} />
-                  <span>{lobbyTelemetry.onlineCount} Online</span>
+                  <span>{lobbyTelemetry.onlineCount === null ? 'Checking presence...' : `${lobbyTelemetry.onlineCount} Online`}</span>
                 </div>
               </div>
               <h1 className="text-3xl sm:text-5xl font-black text-white tracking-tight italic uppercase">
                 The Arena
               </h1>
               <p className="text-slate-400 text-sm sm:text-base font-medium">
-                Battle classmates in real-time WebSocket duels, challenge recorded Ghost Replays, or test your speed against telemetry-calibrated challengers.
+                Battle classmates in live WebSocket duels or challenge a verified replay of an actual human battle.
               </p>
             </div>
 
@@ -898,7 +930,7 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
                   <Trophy size={24} />
                 </div>
                 <div>
-                  <div className="text-2xl font-black text-white">#{profile?.rank || '1'}</div>
+                  <div className="text-2xl font-black text-white">{Number.isInteger(profile?.rank) && profile.rank > 0 ? `#${profile.rank}` : 'Unavailable'}</div>
                   <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
                     Global Rank
                   </div>
@@ -916,161 +948,41 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
             </div>
           </header>
 
-          {/* LIVE ADAPTIVE AI CHALLENGER ([AI Challenger] Sparring Partner) & GHOST REPLAY PANEL */}
-          <div className="bg-gradient-to-br from-slate-900 via-slate-900 to-purple-950/40 border border-purple-500/30 rounded-[2.5rem] p-6 sm:p-8 shadow-2xl space-y-6">
+          {/* Only verified historical human replays are offered here. */}
+          <div className="bg-gradient-to-br from-slate-900 via-slate-900 to-emerald-950/30 border border-emerald-500/25 rounded-[2.5rem] p-6 sm:p-8 shadow-2xl space-y-5">
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-              <div className="space-y-1.5">
-                <div className="flex flex-wrap items-center gap-2.5">
-                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-purple-500/20 border border-purple-500/40 text-purple-300 text-xs font-black uppercase tracking-wider">
-                    <Bot size={14} />
-                    [AI Challenger] Sparring Partner
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-950 border border-slate-800 text-xs font-bold text-emerald-400">
-                    {challengerCal?.tierLabel || 'Beginner (<50% Course Mastery)'} •{' '}
-                    {challengerCal?.pacingRangeLabel || '12–15s / question'}
-                  </span>
+              <div className="space-y-2">
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-black uppercase tracking-wider">
+                  <History size={14} />
+                  Recorded Human Replay
                 </div>
                 <h2 className="text-xl sm:text-2xl font-black text-white">
-                  Live Adaptive AI Challenger &amp; Instant Sparring
+                  Replay a verified human battle
                 </h2>
                 <p className="text-xs sm:text-sm text-slate-400 max-w-3xl">
-                  If no historical human match exists yet for <strong className="text-white">{selectedCourseId || 'this course'}</strong>, launch an instant duel against your telemetry-calibrated <strong className="text-purple-300">[AI Challenger]</strong>. Instead of random timers, the server reads your actual database telemetry to calibrate response speed and accuracy, followed by a live AI <strong className="text-white">Post-Match Tactical Breakdown</strong> of any question you miss.
+                  Replay is enabled only when Neon contains a finished human-versus-human battle with its original questions, recorded answers, answer outcomes and valid timing. Missing history is never filled with generated moves or substitute questions.
                 </p>
               </div>
-
-              <div className="flex flex-wrap items-center gap-3 shrink-0">
-                <button
-                  onClick={() => startDirectSparring('ai_challenger')}
-                  disabled={!selectedCourseId || launchingSpar !== null}
-                  className="px-6 py-3.5 bg-purple-600 hover:bg-purple-500 text-white rounded-2xl font-black text-sm shadow-lg shadow-purple-600/30 transition-all active:scale-95 disabled:opacity-50 flex items-center gap-2.5 cursor-pointer"
-                >
-                  <Bot size={18} />
-                  {launchingSpar === 'ai_challenger'
-                    ? 'Calibrating AI Challenger...'
-                    : 'Spar with Adaptive AI Challenger'}
-                </button>
-
-                <button
-                  onClick={() => startDirectSparring('ghost_replay')}
-                  disabled={!selectedCourseId || !canLaunchGhostInLobby || launchingSpar !== null}
-                  className={`px-5 py-3.5 rounded-2xl font-black text-sm border transition-all flex items-center gap-2 ${
-                    canLaunchGhostInLobby
-                      ? 'bg-slate-950 border-emerald-500/50 text-emerald-300 hover:bg-emerald-950/40 cursor-pointer'
-                      : 'bg-slate-950/60 border-slate-800 text-slate-500 cursor-not-allowed'
-                  }`}
-                >
-                  <History size={17} />
-                  {canLaunchGhostInLobby
-                    ? `Challenge Ghost Replay (${lobbyTelemetry.historicalGhostCount})`
-                    : '0 Human Replays Yet'}
-                </button>
-              </div>
-            </div>
-
-            {/* Live Database Telemetry Calibration Breakdown */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-4">
-                <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                  Calibrated Course Mastery
-                </div>
-                <div className="text-2xl font-black text-purple-400 mt-1">
-                  {challengerCal?.calibratedMasteryPct ?? 0}%
-                </div>
-                <div className="text-[11px] text-slate-400 mt-1">
-                  Target AI Pacing: <strong className="text-white">{challengerCal?.pacingRangeLabel || '12–15s / question'}</strong>
-                </div>
-              </div>
-
-              <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-4">
-                <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                  Course Quiz Telemetry
-                </div>
-                <div className="text-2xl font-black text-white mt-1">
-                  {challengerCal?.quizScorePct !== null && challengerCal?.quizScorePct !== undefined
-                    ? `${challengerCal.quizScorePct}%`
-                    : '0%'}
-                </div>
-                <div className="text-[11px] text-slate-400 mt-1">
-                  {challengerCal?.attemptsSampled
-                    ? `${challengerCal.attemptsSampled} quiz(zes) • ${challengerCal.lessonsCompleted} lesson(s)`
-                    : `${challengerCal?.lessonsCompleted ?? 0} lesson(s) • No course quizzes yet`}
-                </div>
-              </div>
-
-              <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-4">
-                <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                  SRS Retention Rate
-                </div>
-                <div className="text-2xl font-black text-emerald-400 mt-1">
-                  {challengerCal?.srsRetentionPct !== null && challengerCal?.srsRetentionPct !== undefined
-                    ? `${challengerCal.srsRetentionPct}%`
-                    : '0%'}
-                </div>
-                <div className="text-[11px] text-slate-400 mt-1">
-                  {challengerCal?.srsCardsSampled
-                    ? `${challengerCal.srsCardsRetained}/${challengerCal.srsCardsSampled} SRS cards retained`
-                    : '0 SRS flashcards recorded for course'}
-                </div>
-              </div>
-
-              <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-4">
-                <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                  Course Arena W/L Ratio
-                </div>
-                <div className="text-2xl font-black text-amber-400 mt-1">
-                  {challengerCal?.courseWinRatePct !== null && challengerCal?.courseWinRatePct !== undefined
-                    ? `${challengerCal.courseWinRatePct}%`
-                    : '0%'}
-                </div>
-                <div className="text-[11px] text-slate-400 mt-1">
-                  {challengerCal?.arenaBattlesSampled
-                    ? `${challengerCal.courseWins}W – ${challengerCal.courseLosses}L in ${selectedCourseId}`
-                    : `0 past battles for ${selectedCourseId || 'course'}`}
-                </div>
-              </div>
-            </div>
-
-            {/* Adaptive Calibration Rules Summary */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1">
-              <div
-                className={`p-3.5 rounded-2xl border text-xs ${
-                  (challengerCal?.tier || 'beginner') === 'beginner'
-                    ? 'bg-emerald-950/30 border-emerald-500/50 text-emerald-200'
-                    : 'bg-slate-950/60 border-slate-800 text-slate-400'
-                }`}
+              <button
+                onClick={() => startDirectSparring()}
+                disabled={!selectedCourseId || lobbyTelemetry.ghostReplayAvailable !== true || launchingSpar !== null}
+                className="px-5 py-3.5 rounded-2xl font-black text-sm border transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed bg-slate-950 border-emerald-500/50 text-emerald-300 hover:bg-emerald-950/40"
               >
-                <div className="font-black text-white mb-0.5">
-                  Beginner Student (&lt;50% Course Mastery)
-                </div>
-                <div>
-                  AI Challenger paces answers at <strong>~12–15 seconds per question</strong> so you have time to read and think without getting instantly overwhelmed.
-                </div>
-              </div>
-
-              <div
-                className={`p-3.5 rounded-2xl border text-xs ${
-                  challengerCal?.tier === 'advanced'
-                    ? 'bg-purple-950/40 border-purple-500/60 text-purple-200'
-                    : 'bg-slate-950/60 border-slate-800 text-slate-400'
-                }`}
-              >
-                <div className="font-black text-white mb-0.5">
-                  Advanced Student (&gt;80% Course Mastery)
-                </div>
-                <div>
-                  AI Challenger paces answers at <strong>~6–8 seconds per question</strong> with high accuracy, creating an intense, exam-speed pressure test.
-                </div>
-              </div>
-
-              <div className="p-3.5 rounded-2xl border bg-slate-950/60 border-slate-800 text-xs text-slate-300">
-                <div className="font-black text-white mb-0.5">
-                  Post-Match Tactical Breakdown
-                </div>
-                <div>
-                  Powered by your live AI engine, <strong>[AI Challenger]</strong> provides a tactical explanation of any question missed during the duel.
-                </div>
-              </div>
+                <History size={17} />
+                {lobbyTelemetry.ghostReplayAvailable === null
+                  ? 'Checking verified recordings...'
+                  : lobbyTelemetry.ghostReplayAvailable
+                  ? 'Challenge Recorded Replay'
+                  : 'No Verified Replay Available'}
+              </button>
             </div>
+            {lobbyTelemetry.latestGhostMeta && (
+              <div className="rounded-2xl bg-slate-950/80 border border-slate-800 p-4 text-xs text-slate-300">
+                Latest verified source: <strong className="text-white">{lobbyTelemetry.latestGhostMeta.playerName}</strong>
+                {' '}• recorded {new Date(lobbyTelemetry.latestGhostMeta.recordedAt).toLocaleString()}
+                {' '}• source battle <span className="font-mono">{lobbyTelemetry.latestGhostMeta.battleId}</span>
+              </div>
+            )}
           </div>
 
           {/* Open Live Matchmaking Queue Banner (if any real student is waiting in any course) */}
@@ -1265,69 +1177,30 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
   }
 
   if (view === 'matching') {
-    const canLaunchGhost = lobbyTelemetry.historicalGhostCount > 0;
+    const canLaunchGhost = lobbyTelemetry.ghostReplayAvailable === true;
     const showFallbackHighlight = matchWaitSeconds >= 8;
 
-    // Dedicated Direct Sparring Initialization Screen (Never shows "Searching for a live classmate" or "Queue Elapsed")
+    // Direct replay initialization is shown while the server verifies recorded human events.
     if (launchingSpar !== null) {
-      const isAiSpar = launchingSpar === 'ai_challenger';
       return (
         <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 sm:p-6 pb-24 lg:pb-6 text-center">
           <motion.div
             animate={{ scale: [1, 1.08, 1] }}
             transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
-            className={`w-20 h-20 rounded-3xl flex items-center justify-center mb-6 border ${
-              isAiSpar
-                ? 'bg-purple-600/20 border-purple-500/50 text-purple-400 shadow-lg shadow-purple-500/20'
-                : 'bg-emerald-600/20 border-emerald-500/50 text-emerald-400 shadow-lg shadow-emerald-500/20'
-            }`}
+            className="w-20 h-20 rounded-3xl flex items-center justify-center mb-6 border bg-emerald-600/20 border-emerald-500/50 text-emerald-400 shadow-lg shadow-emerald-500/20"
           >
-            {isAiSpar ? <Bot size={44} /> : <History size={44} />}
+            <History size={44} />
           </motion.div>
 
-          <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-purple-950/60 border border-purple-500/40 text-xs font-black uppercase tracking-wider text-purple-300 mb-3">
-            <Sparkles size={13} />
-            <span>
-              {isAiSpar
-                ? `Direct Sparring • [AI Challenger] (${selectedCourseId})`
-                : `Direct Sparring • Recorded Ghost Replay (${selectedCourseId})`}
-            </span>
+          <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-emerald-950/60 border border-emerald-500/40 text-xs font-black uppercase tracking-wider text-emerald-300 mb-3">
+            <History size={13} />
+            <span>Recorded Human Replay • {selectedCourseId}</span>
           </div>
 
           <h2 className="text-2xl sm:text-3xl font-black text-white mb-2 max-w-xl">{matchStatus}</h2>
           <p className="text-slate-400 mb-6 max-w-md mx-auto text-sm">
-            {isAiSpar
-              ? `Direct 1v1 sparring mode — calibrating [AI Challenger] response speed and accuracy from your live ${selectedCourseId} telemetry in Neon PostgreSQL.`
-              : `Direct 1v1 sparring mode — loading verified historical moves recorded for ${selectedCourseId}.`}
+            The server checks the original human battle, its question set, answer log, outcomes and recorded timing before replaying any move.
           </p>
-
-          {isAiSpar && (
-            <div className="max-w-md w-full bg-slate-900/90 border border-purple-500/30 rounded-2xl p-4 mb-8 text-left">
-              <div className="text-[10px] font-black uppercase tracking-wider text-purple-400 mb-2">
-                Verified Telemetry Calibration ({selectedCourseId})
-              </div>
-              <div className="grid grid-cols-3 gap-2 text-center">
-                <div className="bg-slate-950 rounded-xl p-2.5 border border-slate-800">
-                  <div className="text-[10px] text-slate-400 uppercase font-bold">Mastery</div>
-                  <div className="text-sm font-black text-white mt-0.5">
-                    {challengerCal?.calibratedMasteryPct ?? 0}%
-                  </div>
-                </div>
-                <div className="bg-slate-950 rounded-xl p-2.5 border border-slate-800">
-                  <div className="text-[10px] text-slate-400 uppercase font-bold">AI Pacing</div>
-                  <div className="text-sm font-black text-amber-300 mt-0.5">
-                    {challengerCal?.pacingRangeLabel || '12–15s / q'}
-                  </div>
-                </div>
-                <div className="bg-slate-950 rounded-xl p-2.5 border border-slate-800">
-                  <div className="text-[10px] text-slate-400 uppercase font-bold">AI Accuracy</div>
-                  <div className="text-sm font-black text-emerald-300 mt-0.5">
-                    {challengerCal?.targetAccuracyPct ?? 65}%
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
 
           <button
             onClick={cancelMatchmaking}
@@ -1358,41 +1231,16 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
         <p className="text-slate-400 mb-8 max-w-md mx-auto text-sm">
           Searching for a live classmate queuing for <strong className="text-white">{selectedCourseId}</strong>.
           {showFallbackHighlight
-            ? ' No classmate joined this course queue yet — launch an instant sparring duel below or keep waiting:'
-            : ' You can wait for a live human or launch an instant sparring match at any time:'}
+            ? ' No classmate has joined yet. A recorded replay is offered only when the server verifies a real human recording.'
+            : ' Keep waiting for a live human opponent. A recorded replay is offered only when its source data is verified.'}
         </p>
 
         {battleId && (
-          <div className="max-w-xl w-full grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
+          <div className="max-w-xl w-full mb-8">
             <button
-              onClick={() => handleLaunchSparring('ai_challenger')}
-              disabled={launchingSpar !== null}
-              className={`p-5 rounded-2xl border text-left transition-all cursor-pointer ${
-                showFallbackHighlight
-                  ? 'bg-purple-950/50 border-purple-500 hover:bg-purple-900/50 shadow-lg shadow-purple-500/10'
-                  : 'bg-slate-900 border-slate-800 hover:border-purple-500/60'
-              }`}
-            >
-              <div className="flex items-center justify-between mb-2">
-                <div className="w-9 h-9 rounded-xl bg-purple-600/20 text-purple-400 flex items-center justify-center">
-                  <Bot size={20} />
-                </div>
-                <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300">
-                  {challengerCal?.pacingRangeLabel || '12–15s / question'}
-                </span>
-              </div>
-              <div className="text-sm font-black text-white mb-1">
-                Spar with Adaptive AI Challenger
-              </div>
-              <p className="text-xs text-slate-400">
-                Calibrated to your {selectedCourseId} mastery ({challengerCal?.calibratedMasteryPct ?? 0}% • {challengerCal?.tierLabel || 'Beginner Tier'}).
-              </p>
-            </button>
-
-            <button
-              onClick={() => handleLaunchSparring('ghost_replay')}
+              onClick={() => handleLaunchSparring()}
               disabled={!canLaunchGhost || launchingSpar !== null}
-              className={`p-5 rounded-2xl border text-left transition-all ${
+              className={`w-full p-5 rounded-2xl border text-left transition-all ${
                 canLaunchGhost
                   ? 'bg-slate-900 border-emerald-500/50 hover:bg-emerald-950/30 cursor-pointer'
                   : 'bg-slate-900/50 border-slate-800/70 opacity-60 cursor-not-allowed'
@@ -1403,20 +1251,20 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
                   <History size={20} />
                 </div>
                 <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300">
-                  {canLaunchGhost
-                    ? `${lobbyTelemetry.historicalGhostCount} Recorded`
-                    : '0 Recordings'}
+                  {lobbyTelemetry.ghostReplayAvailable === null
+                    ? 'Checking source records'
+                    : canLaunchGhost
+                    ? 'Verified source available'
+                    : 'No verified source'}
                 </span>
               </div>
               <div className="text-sm font-black text-white mb-1">
-                Fight Historical Ghost Replay
+                Fight a Recorded Human Replay
               </div>
               <p className="text-xs text-slate-400">
                 {canLaunchGhost && lobbyTelemetry.latestGhostMeta
-                  ? `Replay ${lobbyTelemetry.latestGhostMeta.playerName}'s real recorded match (${new Date(
-                      lobbyTelemetry.latestGhostMeta.recordedAt
-                    ).toLocaleDateString()}).`
-                  : `No recorded human battle exists for ${selectedCourseId} in PostgreSQL yet.`}
+                  ? `Replay ${lobbyTelemetry.latestGhostMeta.playerName}'s recorded match (${new Date(lobbyTelemetry.latestGhostMeta.recordedAt).toLocaleDateString()}).`
+                  : 'This option stays disabled until a complete historical human recording is verified.'}
               </p>
             </button>
           </div>
@@ -1439,10 +1287,10 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
     const currentQ = battleData.questions[me.currentQuestionIndex];
     const opponentBadge =
       battleData.opponentType === 'ghost_replay'
-        ? 'Ghost Replay'
-        : battleData.opponentType === 'ai_challenger'
-        ? '[AI Challenger]'
-        : 'Live Player';
+        ? 'Recorded Human Replay'
+        : battleData.opponentType === 'human'
+        ? 'Live Human Player'
+        : 'Unverified Legacy Opponent';
 
     return (
       <div className="min-h-screen bg-slate-900 flex flex-col relative overflow-hidden pb-24 lg:pb-0">
@@ -1452,11 +1300,13 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
           <div className="flex items-center gap-4 w-1/3">
             <div className="relative">
               <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-2xl bg-blue-600 border-4 border-slate-800 shadow-xl overflow-hidden">
-                <img
-                  src={me.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${me.uid}`}
-                  alt="Me"
-                  className="w-full h-full object-cover"
-                />
+                {typeof me.avatar === 'string' && me.avatar.trim() ? (
+                  <img src={me.avatar} alt="Your profile" className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-white text-xl font-black">
+                    {typeof me.name === 'string' && me.name.trim() ? me.name.trim().charAt(0).toUpperCase() : <Users size={22} />}
+                  </div>
+                )}
               </div>
               <div className="absolute -bottom-2 -right-2 bg-slate-800 text-white text-xs font-bold px-2 py-0.5 rounded-full border border-slate-700">
                 You
@@ -1515,14 +1365,13 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
             </div>
             <div className="relative">
               <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-2xl bg-red-600 border-4 border-slate-800 shadow-xl overflow-hidden">
-                <img
-                  src={
-                    opponent.avatar ||
-                    `https://api.dicebear.com/7.x/avataaars/svg?seed=${opponent.uid}`
-                  }
-                  alt="Opponent"
-                  className="w-full h-full object-cover"
-                />
+                {typeof opponent.avatar === 'string' && opponent.avatar.trim() ? (
+                  <img src={opponent.avatar} alt="Opponent profile" className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-white text-xl font-black">
+                    {typeof opponent.name === 'string' && opponent.name.trim() ? opponent.name.trim().charAt(0).toUpperCase() : <Users size={22} />}
+                  </div>
+                )}
               </div>
               <div className="absolute -bottom-2 -left-2 bg-slate-800 text-white text-[10px] font-bold px-2 py-0.5 rounded-full border border-slate-700 whitespace-nowrap">
                 {opponentBadge}
@@ -1618,6 +1467,10 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
     const enemyPlayer =
       battleData.player1.uid !== user?.uid ? battleData.player1 : battleData.player2;
     const missedQuestions = getMissedQuestionsFromBattle(battleData);
+    const recordedAttemptCount = Array.isArray(myPlayer?.actionLog) ? myPlayer.actionLog.length : 0;
+    const creditedXp = (battleData as any).xpRewards?.[user?.uid];
+    const hasVerifiedXpCredit =
+      typeof creditedXp === 'number' && Number.isSafeInteger(creditedXp) && creditedXp >= 0;
 
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-start p-4 sm:p-8 pb-24 lg:pb-12 overflow-y-auto">
@@ -1647,11 +1500,9 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
               {isWinner ? 'VICTORY!' : isDraw ? 'DRAW!' : 'DEFEAT'}
             </h1>
             <p className="text-slate-400 mb-6 font-medium text-sm">
-              {isWinner
-                ? '+100 XP Credited to Your Profile'
-                : isDraw
-                ? '+25 XP Credited to Your Profile'
-                : '+10 Participation XP Credited'}
+              {hasVerifiedXpCredit
+                ? `${creditedXp} XP credit confirmed in your persisted profile`
+                : 'XP credit was not confirmed in the returned battle record'}
             </p>
 
             <div className="grid grid-cols-2 gap-4 mb-6">
@@ -1688,7 +1539,7 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
             </button>
           </motion.div>
 
-          {/* POST-MATCH TACTICAL BREAKDOWN ([AI Challenger] Sparring Partner) */}
+          {/* AI-generated analysis based only on the recorded battle answers. */}
           <div className="bg-slate-900 border border-purple-500/30 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="flex items-center gap-3">
@@ -1697,7 +1548,7 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
                 </div>
                 <div>
                   <div className="text-xs font-black uppercase tracking-wider text-purple-400">
-                    [AI Challenger] Post-Match Breakdown
+                    AI-Generated Post-Match Review
                   </div>
                   <h3 className="text-lg font-black text-white">
                     Tactical Debrief of Missed Duel Questions
@@ -1721,14 +1572,25 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
             </div>
 
             {missedQuestions.length === 0 ? (
-              <div className="p-6 rounded-2xl bg-emerald-950/30 border border-emerald-500/40 text-center space-y-1">
-                <div className="text-base font-black text-emerald-300">
-                  Flawless Execution — 0 Missed Questions!
+              recordedAttemptCount > 0 ? (
+                <div className="p-6 rounded-2xl bg-emerald-950/30 border border-emerald-500/40 text-center space-y-1">
+                  <div className="text-base font-black text-emerald-300">
+                    All Recorded Answers Were Correct
+                  </div>
+                  <p className="text-xs text-slate-300">
+                    The server recorded {recordedAttemptCount} answer event(s), and none was marked incorrect. This describes recorded attempts only.
+                  </p>
                 </div>
-                <p className="text-xs text-slate-300">
-                  You answered every question you attempted accurately. Your course mastery telemetry has been updated.
-                </p>
-              </div>
+              ) : (
+                <div className="p-6 rounded-2xl bg-slate-900 border border-slate-700 text-center space-y-1">
+                  <div className="text-base font-black text-slate-200">
+                    No Answer Events Were Recorded
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    The available battle record contains no answer events for this player. Performance cannot be inferred from an empty record.
+                  </p>
+                </div>
+              )
             ) : (
               <div className="space-y-4">
                 {missedQuestions.map((item, idx) => (
@@ -1762,7 +1624,7 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
                     {item.curriculumExplanation && (
                       <div className="text-xs text-slate-300 bg-slate-900/90 p-3.5 rounded-xl border border-slate-800">
                         <span className="font-bold text-purple-300 block mb-1">
-                          Curriculum Verification Note:
+                          Stored Question Explanation (not independently verified):
                         </span>
                         <MarkdownRenderer content={item.curriculumExplanation} />
                       </div>
@@ -1770,11 +1632,11 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
                   </div>
                 ))}
 
-                {/* Live AI Challenger Tactical Synthesis */}
+                {/* Generated analysis, not an independent curriculum verification. */}
                 <div className="p-5 rounded-2xl bg-purple-950/25 border border-purple-500/40 space-y-3">
                   <div className="flex items-center gap-2 text-xs font-black uppercase tracking-wider text-purple-300">
                     <Bot size={15} />
-                    <span>Live [AI Challenger] Tactical Analysis</span>
+                    <span>AI-Generated Tactical Analysis</span>
                   </div>
                   {loadingDebrief ? (
                     <div className="flex items-center gap-2.5 text-xs text-slate-300 py-3">

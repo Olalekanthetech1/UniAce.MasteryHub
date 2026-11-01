@@ -50,8 +50,12 @@ class ArenaRealtimeManager {
 
   public async handleConnection(ws: WebSocket, req: IncomingMessage, getAdminApp: () => any) {
     try {
-      const host = req.headers.host || 'localhost:3000';
-      const url = new URL(req.url || '', `http://${host}`);
+      const host = req.headers.host;
+      if (typeof host !== 'string' || !host.trim() || typeof req.url !== 'string' || !req.url.trim()) {
+        ws.close(1011, 'WebSocket request context is incomplete');
+        return;
+      }
+      const url = new URL(req.url, `http://${host}`);
       const token = url.searchParams.get('token');
       const initialCourseId = url.searchParams.get('courseId') || null;
       const initialBattleId = url.searchParams.get('battleId') || null;
@@ -75,8 +79,14 @@ class ArenaRealtimeManager {
         return;
       }
 
-      const uid = decoded.uid;
-      const name = decoded.name || decoded.email?.split('@')[0] || 'Scholar';
+      const uid = typeof decoded.uid === 'string' ? decoded.uid.trim() : '';
+      const tokenName = typeof decoded.name === 'string' ? decoded.name.trim() : '';
+      const emailName = typeof decoded.email === 'string' ? decoded.email.split('@')[0].trim() : '';
+      const name = tokenName || emailName;
+      if (!uid || !name) {
+        ws.close(1008, 'Verified user identity and display name are required');
+        return;
+      }
       const nowMs = Date.now();
       const nowIso = new Date(nowMs).toISOString();
 
@@ -360,7 +370,7 @@ class ArenaRealtimeManager {
 
   public async settleExpiredBattle(battleId: string, nowMs = Date.now()) {
     const pool = getPostgresPool();
-    if (!pool) return null;
+    if (!pool) throw new Error('PostgreSQL is unavailable; expired battle settlement cannot be verified.');
 
     const client = await pool.connect();
     try {
@@ -371,14 +381,37 @@ class ArenaRealtimeManager {
         return null;
       }
 
-      const data = { ...(res.rows[0].data || {}), id: battleId };
+      const persistedData = res.rows[0].data;
+      if (!persistedData || typeof persistedData !== 'object' || Array.isArray(persistedData)) {
+        throw new Error('Expired battle has no verifiable persisted data object.');
+      }
+      const data = { ...persistedData, id: battleId };
       if (data.status === 'finished') {
         await client.query('COMMIT');
         return data;
       }
+      if (data.status !== 'active') {
+        await client.query('ROLLBACK');
+        return null;
+      }
 
-      const p1 = data.player1 || { score: 0, health: 100, uid: '' };
-      const p2 = data.player2 || { score: 0, health: 100, uid: '' };
+      const p1 = data.player1;
+      const p2 = data.player2;
+      if (
+        !p1 || typeof p1.uid !== 'string' || !p1.uid.trim() ||
+        !p2 || typeof p2.uid !== 'string' || !p2.uid.trim() ||
+        typeof p1.score !== 'number' || !Number.isFinite(p1.score) ||
+        typeof p2.score !== 'number' || !Number.isFinite(p2.score) ||
+        typeof p1.health !== 'number' || !Number.isFinite(p1.health) ||
+        typeof p2.health !== 'number' || !Number.isFinite(p2.health)
+      ) {
+        throw new Error('Expired battle has incomplete participant identity or score state.');
+      }
+      const expiresAtEpochMs = data.expiresAtEpochMs;
+      if (typeof expiresAtEpochMs !== 'number' || !Number.isFinite(expiresAtEpochMs) || nowMs < expiresAtEpochMs) {
+        await client.query('ROLLBACK');
+        return null;
+      }
 
       let winnerId = 'draw';
       if (p1.health <= 0 && p2.health > 0) {
@@ -431,45 +464,84 @@ class ArenaRealtimeManager {
   public async settlePlayersArenaStatsInTx(client: any, battleData: any) {
     const winnerId = battleData.winner;
     const players = [battleData.player1, battleData.player2].filter(
-      (p) => p && p.uid && !String(p.uid).startsWith('ghost_') && !String(p.uid).startsWith('ai_challenger_')
+      (player) =>
+        player &&
+        typeof player.uid === 'string' &&
+        player.uid.trim().length > 0 &&
+        player.opponentType === 'human'
     );
 
-    for (const p of players) {
-      const isWinner = winnerId === p.uid;
+    const xpRewards: Record<string, number> = {};
+
+    for (const player of players) {
+      const isWinner = winnerId === player.uid;
       const isDraw = winnerId === 'draw';
       const xpEarned = isWinner ? 100 : isDraw ? 25 : 10;
 
       const userRow = await client.query(
         `SELECT learning_profile FROM users WHERE uid = $1 FOR UPDATE`,
-        [p.uid]
+        [player.uid]
       );
-      if ((userRow.rowCount ?? 0) > 0) {
-        const lp = { ...(userRow.rows[0].learning_profile || {}) };
-        const prevXp = Number(lp.xp || 0);
-        const nextXp = prevXp + xpEarned;
-        const nextLevel = Math.max(1, Math.floor(nextXp / 1000) + 1);
-        const prevWins = Number(lp.arenaWins || 0);
-        const prevLosses = Number(lp.arenaLosses || 0);
-        const prevWinStreak = Number(lp.arenaWinStreak || 0);
-
-        lp.xp = nextXp;
-        lp.level = nextLevel;
-        if (isWinner) {
-          lp.arenaWins = prevWins + 1;
-          lp.arenaWinStreak = prevWinStreak + 1;
-          lp.bestArenaWinStreak = Math.max(Number(lp.bestArenaWinStreak || 0), lp.arenaWinStreak);
-        } else if (!isDraw) {
-          lp.arenaLosses = prevLosses + 1;
-          lp.arenaWinStreak = 0;
-        }
-        lp.lastArenaBattleAt = new Date().toISOString();
-
-        await client.query(
-          `UPDATE users SET learning_profile = $1::jsonb, updated_at = NOW() WHERE uid = $2`,
-          [JSON.stringify(lp), p.uid]
-        );
+      if ((userRow.rowCount ?? 0) !== 1) {
+        throw new Error(`Cannot settle Arena XP: authoritative user record is missing for participant ${player.uid}.`);
       }
+
+      const lp = { ...(userRow.rows[0].learning_profile || {}) };
+      const rawXp = lp.xp ?? 0;
+      const prevXp = Number(rawXp);
+      if (!Number.isSafeInteger(prevXp) || prevXp < 0) {
+        throw new Error(`Cannot settle Arena XP: persisted XP is invalid for participant ${player.uid}.`);
+      }
+
+      const nextXp = prevXp + xpEarned;
+      if (!Number.isSafeInteger(nextXp)) {
+        throw new Error(`Cannot settle Arena XP: resulting XP is outside the safe integer range for participant ${player.uid}.`);
+      }
+
+      const nextLevel = Math.max(1, Math.floor(nextXp / 1000) + 1);
+      const prevWins = Number(lp.arenaWins ?? 0);
+      const prevLosses = Number(lp.arenaLosses ?? 0);
+      const prevWinStreak = Number(lp.arenaWinStreak ?? 0);
+      const prevBestWinStreak = Number(lp.bestArenaWinStreak ?? 0);
+      if (![prevWins, prevLosses, prevWinStreak, prevBestWinStreak].every(value => Number.isSafeInteger(value) && value >= 0)) {
+        throw new Error(`Cannot settle Arena statistics: persisted battle counters are invalid for participant ${player.uid}.`);
+      }
+
+      lp.xp = nextXp;
+      lp.level = nextLevel;
+      if (isWinner) {
+        lp.arenaWins = prevWins + 1;
+        lp.arenaWinStreak = prevWinStreak + 1;
+        lp.bestArenaWinStreak = Math.max(prevBestWinStreak, lp.arenaWinStreak);
+      } else if (!isDraw) {
+        lp.arenaLosses = prevLosses + 1;
+        lp.arenaWinStreak = 0;
+      }
+      lp.lastArenaBattleAt = new Date().toISOString();
+
+      const updated = await client.query(
+        `UPDATE users
+         SET learning_profile = $1::jsonb, updated_at = NOW()
+         WHERE uid = $2
+         RETURNING learning_profile`,
+        [JSON.stringify(lp), player.uid]
+      );
+      if ((updated.rowCount ?? 0) !== 1) {
+        throw new Error(`Arena XP update did not persist for participant ${player.uid}.`);
+      }
+
+      const persistedProfile = updated.rows[0]?.learning_profile;
+      const persistedXp = Number(persistedProfile?.xp);
+      if (persistedXp !== nextXp) {
+        throw new Error(`Arena XP verification failed for participant ${player.uid}.`);
+      }
+
+      xpRewards[player.uid] = xpEarned;
     }
+
+    // The battle record reports rewards only after all participant profile updates
+    // have been verified inside the same transaction.
+    battleData.xpRewards = xpRewards;
   }
 }
 

@@ -42,6 +42,7 @@ import DraftCourseReviewPanel from './admin/DraftCourseReviewPanel';
 
 import { jsonrepair } from 'jsonrepair';
 import { safeFetchJson } from '../utils/safeFetch';
+import { resolveCourseGenerationTarget } from '../utils/courseTargeting';
 
 function parseFirestoreDate(val: any): Date | null {
   if (!val) return null;
@@ -194,11 +195,16 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
   };
-  const [systemStats, setSystemStats] = useState({
-    totalSparksConsumed: 0,
-    totalQuestionsAsked: 0,
-    averageMastery: 0,
-    popularCourse: 'N/A'
+  const [systemStats, setSystemStats] = useState<{
+    totalSparksConsumed: number | null;
+    totalQuestionsAsked: number | null;
+    averageMastery: number | null;
+    popularCourse: string | null;
+  }>({
+    totalSparksConsumed: null,
+    totalQuestionsAsked: null,
+    averageMastery: null,
+    popularCourse: null
   });
   const [aiProviderStatus, setAiProviderStatus] = useState<Record<string, { active: boolean; totalKeys: number; exhaustedKeys: number; usingEnv: boolean; usingDb: boolean }>>({
     gemini_direct: { active: false, totalKeys: 0, exhaustedKeys: 0, usingEnv: false, usingDb: false },
@@ -856,13 +862,21 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
           setPingResults(prev => ({ ...prev, ...data.pingResults }));
         }
         if (data.stats) {
-          setSystemStats(prev => ({
-            ...prev,
-            totalSparksConsumed: data.stats.totalSparksConsumed !== undefined ? Number(data.stats.totalSparksConsumed) : prev.totalSparksConsumed,
-            totalQuestionsAsked: data.stats.totalQuestions !== undefined ? Number(data.stats.totalQuestions) : prev.totalQuestionsAsked,
-            averageMastery: data.stats.averageMastery !== undefined ? Number(data.stats.averageMastery) : prev.averageMastery,
-            popularCourse: data.stats.popularCourse || prev.popularCourse
-          }));
+          const verified = data.stats.sourceStatus === 'verified';
+          setSystemStats({
+            totalSparksConsumed: verified && typeof data.stats.totalSparksConsumed === 'number'
+              ? data.stats.totalSparksConsumed
+              : null,
+            totalQuestionsAsked: verified && typeof data.stats.totalInteractions === 'number'
+              ? data.stats.totalInteractions
+              : null,
+            averageMastery: verified && typeof data.stats.averageMastery === 'number'
+              ? data.stats.averageMastery
+              : null,
+            popularCourse: verified && typeof data.stats.popularCourse === 'string'
+              ? data.stats.popularCourse
+              : null
+          });
         }
         setLastAiUpdate(new Date());
 
@@ -1122,14 +1136,21 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
     }
   };
 
+  const handleCourseScopeChange = (nextScope: CourseScope) => {
+    setCourseScope(nextScope);
+    setSelectedFaculties([]);
+    setSelectedDepartments([]);
+  };
+
   const handleGenerateSkeleton = async () => {
     if (!quickCourseName || !quickCourseCode) {
       showToast('Please provide both course code and name', 'error');
       return;
     }
-    const resolvedDept = quickDepartment || (selectedDepartments.length > 0 ? selectedDepartments[0] : (selectedFaculties.length > 0 ? selectedFaculties[0] : ''));
-    if (!resolvedDept) {
-      showToast('Please select a target Department for course generation', 'error');
+    const target = resolveCourseGenerationTarget(courseScope, selectedFaculties, selectedDepartments);
+    if (!target) {
+      const requiredTarget = courseScope === 'FACULTY' ? 'Faculty' : 'Department';
+      showToast(`Please select at least one target ${requiredTarget} for course generation`, 'error');
       return;
     }
 
@@ -1154,15 +1175,15 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
             [],
             quickLevel,
             quickSemester,
-            resolvedDept,
+            target.department,
             undefined, // curriculumBenchmark
             quickTone,
             quickDepth,
             sourceText,
             activeAcademicStandard,
             courseScope,
-            courseScope === 'FACULTY' ? selectedFaculties : [],
-            courseScope === 'DEPARTMENT' ? selectedDepartments : []
+            target.selectedFaculties,
+            target.selectedDepartments
           );
         } catch (err) {
           retries--;
@@ -1216,9 +1237,10 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
 
   const handleFinalizeGeneration = async (opts?: { resume?: boolean }) => {
     if (!courseSkeleton) return;
-    const resolvedDept = quickDepartment || (selectedDepartments.length > 0 ? selectedDepartments[0] : (selectedFaculties.length > 0 ? selectedFaculties[0] : ''));
-    if (!resolvedDept) {
-      showToast('Please select a target Department before generating full content', 'error');
+    const target = resolveCourseGenerationTarget(courseScope, selectedFaculties, selectedDepartments);
+    if (!target) {
+      const requiredTarget = courseScope === 'FACULTY' ? 'Faculty' : 'Department';
+      showToast(`Please select at least one target ${requiredTarget} before generating full content`, 'error');
       return;
     }
 
@@ -1254,15 +1276,15 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
           provider: aiProvider,
           level: quickLevel,
           semester: quickSemester,
-          department: resolvedDept,
+          department: target.department,
           tone: quickTone,
           depth: quickDepth,
           sourceText,
           academicStandard: activeAcademicStandard,
           subject: quickSubject,
           scope: courseScope,
-          selectedFaculties: courseScope === 'FACULTY' ? selectedFaculties : [],
-          selectedDepartments: courseScope === 'DEPARTMENT' ? selectedDepartments : [],
+          selectedFaculties: target.selectedFaculties,
+          selectedDepartments: target.selectedDepartments,
           approvedModules: courseSkeleton.modules,
           domainBrief: courseSkeleton.domainBrief,
           learningOutcomes: courseSkeleton.learningOutcomes,
@@ -1381,11 +1403,20 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
       if (!res.ok) return;
       const data = await res.json();
       if (data?.stats) {
+        const verified = data.stats.sourceStatus === 'verified';
         setSystemStats({
-          totalSparksConsumed: Number(data.stats.totalSparksConsumed ?? 0),
-          totalQuestionsAsked: Number(data.stats.totalQuestions ?? 0),
-          averageMastery: Number(data.stats.averageMastery ?? 0),
-          popularCourse: data.stats.popularCourse || 'N/A'
+          totalSparksConsumed: verified && typeof data.stats.totalSparksConsumed === 'number'
+            ? data.stats.totalSparksConsumed
+            : null,
+          totalQuestionsAsked: verified && typeof data.stats.totalInteractions === 'number'
+            ? data.stats.totalInteractions
+            : null,
+          averageMastery: verified && typeof data.stats.averageMastery === 'number'
+            ? data.stats.averageMastery
+            : null,
+          popularCourse: verified && typeof data.stats.popularCourse === 'string'
+            ? data.stats.popularCourse
+            : null
         });
       }
     } catch (error) {
@@ -2387,6 +2418,9 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   const handleFastTrackAIBuild = async (req: any) => {
     setActiveTab('courses');
     setQuickDepartment(req.department);
+    setCourseScope('DEPARTMENT');
+    setSelectedFaculties([]);
+    setSelectedDepartments(req.department ? [req.department as Department] : []);
     setQuickLevel(req.level);
     if (req.semester) {
       setQuickSemester(req.semester);
@@ -2980,7 +3014,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
                 <div className="bg-amber-100 dark:bg-amber-900/30 w-12 h-12 rounded-2xl flex items-center justify-center text-amber-600 dark:text-amber-400 mb-6">
                   <Zap size={24} fill="currentColor" />
                 </div>
-                <div className="text-4xl font-black text-slate-900 dark:text-white tracking-tight">{systemStats.totalSparksConsumed.toLocaleString()}</div>
+                <div className="text-4xl font-black text-slate-900 dark:text-white tracking-tight">{systemStats.totalSparksConsumed === null ? 'Unavailable' : systemStats.totalSparksConsumed.toLocaleString()}</div>
                 <div className="text-xs font-bold text-slate-500 uppercase tracking-widest mt-2">Sparks Consumed</div>
                 <div className="mt-6 flex items-center gap-2 text-sm font-medium text-emerald-600 dark:text-emerald-400">
                   <Activity size={16} />
@@ -2996,8 +3030,8 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
                 <div className="bg-blue-100 dark:bg-blue-900/30 w-12 h-12 rounded-2xl flex items-center justify-center text-blue-600 dark:text-blue-400 mb-6">
                   <Bot size={24} />
                 </div>
-                <div className="text-4xl font-black text-slate-900 dark:text-white tracking-tight">{systemStats.totalQuestionsAsked.toLocaleString()}</div>
-                <div className="text-xs font-bold text-slate-500 uppercase tracking-widest mt-2">AI Interactions</div>
+                <div className="text-4xl font-black text-slate-900 dark:text-white tracking-tight">{systemStats.totalQuestionsAsked === null ? 'Unavailable' : systemStats.totalQuestionsAsked.toLocaleString()}</div>
+                <div className="text-xs font-bold text-slate-500 uppercase tracking-widest mt-2">AI Interaction Events</div>
                 <div className="mt-6 flex items-center gap-2 text-sm font-medium text-emerald-600 dark:text-emerald-400">
                   <Activity size={16} />
                   <span>Live telemetry</span>
@@ -3012,11 +3046,17 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
                 <div className="bg-emerald-100 dark:bg-emerald-900/30 w-12 h-12 rounded-2xl flex items-center justify-center text-emerald-600 dark:text-emerald-400 mb-6">
                   <Trophy size={24} />
                 </div>
-                <div className="text-4xl font-black text-slate-900 dark:text-white tracking-tight">{systemStats.averageMastery}%</div>
-                <div className="text-xs font-bold text-slate-500 uppercase tracking-widest mt-2">Avg. Student Mastery</div>
-                <div className="mt-6 h-2 w-full bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
-                  <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${systemStats.averageMastery}%` }} />
+                <div className="text-4xl font-black text-slate-900 dark:text-white tracking-tight">
+                  {systemStats.averageMastery === null ? 'Unavailable' : `${systemStats.averageMastery}%`}
                 </div>
+                <div className="text-xs font-bold text-slate-500 uppercase tracking-widest mt-2">Average Recorded Quiz Score</div>
+                {systemStats.averageMastery !== null ? (
+                  <div className="mt-6 h-2 w-full bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+                    <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${Math.max(0, Math.min(100, systemStats.averageMastery))}%` }} />
+                  </div>
+                ) : (
+                  <div className="mt-6 text-xs text-slate-400">No verified quiz-score aggregate is available.</div>
+                )}
               </div>
 
               {/* Stat Card 4 */}
@@ -3043,8 +3083,10 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
                 <div className="bg-purple-100 dark:bg-purple-900/30 w-12 h-12 rounded-2xl flex items-center justify-center text-purple-600 dark:text-purple-400 mb-6">
                   <Star size={24} />
                 </div>
-                <div className="text-2xl font-black text-slate-900 dark:text-white tracking-tight truncate" title={systemStats.popularCourse}>{systemStats.popularCourse}</div>
-                <div className="text-xs font-bold text-slate-500 uppercase tracking-widest mt-2">Trending Course</div>
+                <div className="text-2xl font-black text-slate-900 dark:text-white tracking-tight truncate" title={systemStats.popularCourse || 'Unavailable'}>
+                  {systemStats.popularCourse || 'Unavailable'}
+                </div>
+                <div className="text-xs font-bold text-slate-500 uppercase tracking-widest mt-2">Most Tracked Course</div>
                 <div className="mt-6 flex items-center gap-2 text-sm font-medium text-purple-600 dark:text-purple-400">
                   <Users size={16} />
                   <span>High enrollment</span>
@@ -3485,25 +3527,12 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
                     </p>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-                    <div>
-                      <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Department</label>
-                      <select 
-                        value={quickDepartment}
-                        onChange={(e) => setQuickDepartment(e.target.value as Department)}
-                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      >
-                        <option value="">Select Department...</option>
-                        {DEPARTMENTS.map(dept => (
-                          <option key={dept} value={dept}>{dept}</option>
-                        ))}
-                      </select>
-                    </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
                     <div>
                       <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Course Scope</label>
                       <select 
                         value={courseScope}
-                        onChange={(e) => setCourseScope(e.target.value as CourseScope)}
+                        onChange={(e) => handleCourseScopeChange(e.target.value as CourseScope)}
                         className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                       >
                         <option value="GLOBAL">Global (All Students)</option>
@@ -7149,11 +7178,13 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
               </div>
               <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">AI Spark Intensity</div>
               <div className="text-3xl font-black text-slate-900 dark:text-white mt-1">
-                {systemStats.totalSparksConsumed.toLocaleString()}
+                {systemStats.totalSparksConsumed === null ? 'Unavailable' : systemStats.totalSparksConsumed.toLocaleString()}
               </div>
               <div className="mt-4 flex items-center gap-1.5 text-xs font-bold text-purple-500">
                 <span className="bg-purple-50 dark:bg-purple-950/40 px-2 py-0.5 rounded-md">
-                  {Math.round(systemStats.totalSparksConsumed / Math.max(users.length, 1)).toLocaleString()} avg
+                  {systemStats.totalSparksConsumed === null
+                    ? 'Unavailable'
+                    : `${Math.round(systemStats.totalSparksConsumed / Math.max(users.length, 1)).toLocaleString()} avg`}
                 </span>
                 <span className="text-slate-400">sparks per user</span>
               </div>

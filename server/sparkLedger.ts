@@ -494,11 +494,13 @@ export async function executeSparkPreAuth(
         isNewUserPg = true;
         const isUserAdmin = isAdminEmailFn(userEmail);
         const initialRole = isUserAdmin ? 'admin' : 'student';
-        const initialSparks =
-          configuredDailyFreeSparks !== null && configuredDailyFreeSparks > 0
-            ? configuredDailyFreeSparks
-            : 50;
-        const seedDisplayName = userEmail ? userEmail.split('@')[0] : 'Student';
+        if (configuredDailyFreeSparks === null ||
+            !Number.isFinite(configuredDailyFreeSparks) ||
+            configuredDailyFreeSparks < 0) {
+          throw new Error('New-user Spark provisioning is unavailable because the authoritative evaluation_policy.dailyFreeSparks value is missing or invalid.');
+        }
+        const initialSparks = configuredDailyFreeSparks;
+        const seedDisplayName = null;
 
         await client.query(
           `INSERT INTO users (
@@ -507,15 +509,13 @@ export async function executeSparkPreAuth(
            )
            VALUES ($1, $2, $3, $4, 'free', $5, '{}'::jsonb, NOW(), 'none', NOW(), NOW())
            ON CONFLICT (uid) DO NOTHING`,
-          [uid, userEmail || `${uid}@uniace.local`, seedDisplayName, initialRole, initialSparks]
+          [uid, typeof userEmail === 'string' && userEmail.trim() ? userEmail.trim() : null, seedDisplayName, initialRole, initialSparks]
         );
 
         await client.query(
           `INSERT INTO user_sparks_wallets (uid, balance, plan_type, last_spark_reset, updated_at)
            VALUES ($1, $2, 'free', NOW(), NOW())
-           ON CONFLICT (uid) DO UPDATE SET
-             balance = EXCLUDED.balance,
-             updated_at = NOW()`,
+           ON CONFLICT (uid) DO NOTHING`,
           [uid, initialSparks]
         );
 
@@ -573,7 +573,7 @@ export async function executeSparkPreAuth(
           bucketSource: bucketAccountingEnabled ? 'tracked' : 'legacy_off',
           plan,
           role,
-          displayName: userRow.display_name || 'Student',
+          displayName: userRow.display_name,
           learningProfile: userRow.learning_profile || null,
           isFreeUser,
           preAuthDeduction: Number(lockRow.amount_locked ?? 0),
@@ -2616,28 +2616,32 @@ export interface TransactionalPaymentSuccessResult {
 /**
  * Helper to dynamically parse numeric sparks from plan data
  */
-function parsePlanSparksValue(rawSparks: any, defaultSparks: number): number {
-  if (typeof rawSparks === 'number' && !isNaN(rawSparks) && rawSparks > 0) {
-    return rawSparks;
+function parsePlanSparksValue(rawSparks: unknown): number {
+  const parsed = typeof rawSparks === 'number'
+    ? rawSparks
+    : typeof rawSparks === 'string' && /^\s*[\d,]+\s*(?:sparks?)?\s*$/i.test(rawSparks)
+      ? Number(rawSparks.replace(/[^0-9]/g, ''))
+      : NaN;
+
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error('The selected live pricing plan does not contain a valid positive integer Spark allocation.');
   }
-  if (typeof rawSparks === 'string') {
-    const parsed = parseInt(rawSparks.replace(/[^0-9]/g, ''), 10);
-    if (!isNaN(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-  return defaultSparks;
+  return parsed;
 }
 
 /**
- * Helper to dynamically determine duration in days and whether it is a top-up
+ * Resolve subscription duration only from the selected configured plan.
  */
-function parsePlanDurationValue(durationStr: string, planId: string): { durationDays: number; isTopUp: boolean } {
-  const normPlanId = (planId || '').toLowerCase().trim();
-  const normDuration = (durationStr || '').toLowerCase().trim();
+function parsePlanDurationValue(durationStr: unknown, planId: unknown): { durationDays: number; isTopUp: boolean } {
+  if (typeof durationStr !== 'string' || !durationStr.trim() ||
+      typeof planId !== 'string' || !planId.trim()) {
+    throw new Error('The selected live pricing plan must define its identifier and subscription duration.');
+  }
+
+  const normPlanId = planId.toLowerCase().trim();
+  const normDuration = durationStr.toLowerCase().trim();
 
   if (
-    normPlanId === 'emergency_topup' ||
     normPlanId.includes('topup') ||
     normPlanId.includes('top_up') ||
     normDuration.includes('one-time') ||
@@ -2646,27 +2650,13 @@ function parsePlanDurationValue(durationStr: string, planId: string): { duration
     return { durationDays: 0, isTopUp: true };
   }
 
-  const daysMatch = normDuration.match(/(\d+)\s*(?:day|days)/);
-  if (daysMatch && daysMatch[1]) {
-    const days = parseInt(daysMatch[1], 10);
-    if (!isNaN(days) && days > 0) {
-      return { durationDays: days, isTopUp: false };
-    }
+  const daysMatch = normDuration.match(/^(\d+)\s*days?$/);
+  const days = daysMatch ? Number(daysMatch[1]) : NaN;
+  if (!Number.isSafeInteger(days) || days <= 0) {
+    throw new Error('The selected live pricing plan has an unsupported duration. Configure an explicit number of days or a one-time top-up.');
   }
 
-  if (normPlanId === 'semester' || normDuration.includes('semester')) {
-    return { durationDays: 120, isTopUp: false };
-  }
-
-  if (normPlanId === 'scholar' || normDuration.includes('month') || normDuration.includes('30')) {
-    return { durationDays: 30, isTopUp: false };
-  }
-
-  if (normDuration.includes('year') || normDuration.includes('annual')) {
-    return { durationDays: 365, isTopUp: false };
-  }
-
-  return { durationDays: 30, isTopUp: false };
+  return { durationDays: days, isTopUp: false };
 }
 
 /**
@@ -2689,7 +2679,7 @@ export async function executeTransactionalPaymentSuccess(params: {
   amount: number;
   planType: string;
   metadata?: any;
-  commissionRateOverride?: number;
+  commissionRateOverride?: number | null;
   simulateAffiliateFailureForTest?: boolean;
   sandboxNamespace?: string;
 }): Promise<TransactionalPaymentSuccessResult> {
@@ -2706,28 +2696,45 @@ export async function executeTransactionalPaymentSuccess(params: {
   } = params;
 
   const pool = getPostgresPool();
+  const normPlanType = typeof planType === 'string' ? planType.trim().toLowerCase() : '';
+  if (!normPlanType) {
+    throw new Error('A valid configured pricing plan identifier is required to process payment.');
+  }
+
+  let pricingData: Record<string, any> | null = null;
   if (pool && !sandboxNamespace) {
-    const CANONICAL_PLANS: Record<string, { sparks: number; duration: string; name: string }> = {
-      emergency_topup: { sparks: 500, duration: 'One-Time', name: 'Emergency Top-Up' },
-      scholar: { sparks: 2000, duration: '30 Days', name: 'Scholar' },
-      semester: { sparks: 6000, duration: '120 Days', name: 'Semester Bundle' }
-    };
+    pricingData = await getSystemConfigDoc('pricing');
+  } else {
+    const pricingDb = app.firestore();
+    const pricingCollection = getLedgerScopedCollection(pricingDb, 'system_config', sandboxNamespace);
+    const pricingSnapshot = await pricingCollection.doc('pricing').get();
+    pricingData = pricingSnapshot.exists ? pricingSnapshot.data() || null : null;
+  }
 
-    const normPlanType = (planType || 'scholar').toLowerCase().trim();
-    const canonicalFallback =
-      CANONICAL_PLANS[normPlanType] ||
-      (normPlanType.includes('semester')
-        ? CANONICAL_PLANS.semester
-        : normPlanType.includes('topup') || normPlanType.includes('emergency')
-        ? CANONICAL_PLANS.emergency_topup
-        : CANONICAL_PLANS.scholar);
+  if (!Array.isArray(pricingData?.plans)) {
+    throw new Error('Authoritative pricing configuration is unavailable; payment was not processed.');
+  }
 
-    const sparksToAdd = canonicalFallback.sparks;
-    const planName = canonicalFallback.name;
-    const isTopUp = normPlanType.includes('topup') || normPlanType.includes('emergency');
-    const durationDays = normPlanType.includes('semester') ? 120 : (isTopUp ? 0 : 30);
-    const amountNgn = Number(amount);
+  const matchedPlan = pricingData.plans.find((candidate: any) =>
+    candidate &&
+    typeof candidate.id === 'string' &&
+    typeof candidate.name === 'string' &&
+    candidate.id.trim().length > 0 &&
+    candidate.name.trim().length > 0 &&
+    (candidate.id.trim().toLowerCase() === normPlanType ||
+      candidate.name.trim().toLowerCase() === normPlanType)
+  );
 
+  if (!matchedPlan || matchedPlan.enabled === false) {
+    throw new Error('The requested pricing plan is not present or is disabled in the authoritative pricing configuration.');
+  }
+
+  const sparksToAdd = parsePlanSparksValue(matchedPlan.sparks);
+  const planName = matchedPlan.name.trim();
+  const { durationDays, isTopUp } = parsePlanDurationValue(matchedPlan.duration, matchedPlan.id);
+  const amountNgn = Number(amount);
+
+  if (pool && !sandboxNamespace) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -2879,46 +2886,7 @@ export async function executeTransactionalPaymentSuccess(params: {
   const policyRef = configCol.doc('evaluation_policy');
   const tokenPricingRef = configCol.doc('token_pricing');
 
-  // 1. Read-only dynamic plan resolution outside transaction
-  let matchedPlan: any = null;
-  try {
-    const pricingDoc = await configCol.doc('pricing').get();
-    if (pricingDoc.exists) {
-      const pricingData = pricingDoc.data();
-      if (Array.isArray(pricingData?.plans)) {
-        matchedPlan = pricingData.plans.find(
-          (p: any) =>
-            p.id === planType ||
-            p.id?.toLowerCase() === planType?.toLowerCase() ||
-            p.name?.toLowerCase() === planType?.toLowerCase()
-        );
-      }
-    }
-  } catch (err) {
-    console.warn('Could not fetch dynamic pricing config from Firestore, falling back to canonical defaults:', err);
-  }
-
-  const CANONICAL_PLANS: Record<string, { sparks: number; duration: string; name: string }> = {
-    emergency_topup: { sparks: 500, duration: 'One-Time', name: 'Emergency Top-Up' },
-    scholar: { sparks: 2000, duration: '30 Days', name: 'Scholar' },
-    semester: { sparks: 6000, duration: '120 Days', name: 'Semester Bundle' }
-  };
-
-  const normPlanType = (planType || 'scholar').toLowerCase().trim();
-  const canonicalFallback =
-    CANONICAL_PLANS[normPlanType] ||
-    (normPlanType.includes('semester')
-      ? CANONICAL_PLANS.semester
-      : normPlanType.includes('topup') || normPlanType.includes('emergency')
-      ? CANONICAL_PLANS.emergency_topup
-      : CANONICAL_PLANS.scholar);
-
-  const rawSparks = matchedPlan?.sparks ?? canonicalFallback.sparks;
-  const rawDuration = matchedPlan?.duration ?? canonicalFallback.duration;
-  const planName = matchedPlan?.name ?? canonicalFallback.name;
-
-  const sparksToAdd = parsePlanSparksValue(rawSparks, canonicalFallback.sparks);
-  const { durationDays, isTopUp } = parsePlanDurationValue(rawDuration, planType);
+  // Pricing has already been resolved and validated from the authoritative configuration.
 
   // 2. Core Payment & User Spark Credit Transaction (strictly isolated from affiliate/email side effects)
   const coreResult = await db.runTransaction(async (transaction) => {
@@ -3145,23 +3113,31 @@ export async function executeTransactionalPaymentSuccess(params: {
       }
 
       if (resolvedRefCode) {
-        let commissionRate = 0.30;
+        let commissionRate: number | null = null;
         if (typeof commissionRateOverride === 'number' && commissionRateOverride >= 0 && commissionRateOverride <= 1) {
           commissionRate = commissionRateOverride;
         } else {
           try {
             const settingsDoc = await settingsCol.doc('commissions').get();
             if (settingsDoc.exists) {
-              const data = settingsDoc.data();
-              if (typeof data?.rate === 'number' && data.rate > 0 && data.rate <= 1) {
-                commissionRate = data.rate;
-              } else if (typeof data?.rate === 'number' && data.rate > 1) {
-                commissionRate = data.rate / 100;
+              const configuredRate = settingsDoc.data()?.rate;
+              if (typeof configuredRate === 'number' && configuredRate >= 0 && configuredRate <= 1) {
+                commissionRate = configuredRate;
+              } else if (typeof configuredRate === 'number' && configuredRate > 1 && configuredRate <= 100) {
+                commissionRate = configuredRate / 100;
               }
             }
           } catch (err) {
-            console.warn('Error fetching commission rate settings, using 30% default:', err);
+            console.warn('[Commissions] Could not verify the configured commission rate:', err);
           }
+        }
+
+        if (commissionRate === null) {
+          await paymentDocRef.set({
+            referred_by: resolvedRefCode,
+            affiliate_status: 'pending_configuration'
+          }, { merge: true });
+          throw new Error('Affiliate commission was not calculated because no verified commission rate is configured. Core payment credit remains committed.');
         }
 
         commissionAmount = Number((coreResult.amountNgn * commissionRate).toFixed(2));

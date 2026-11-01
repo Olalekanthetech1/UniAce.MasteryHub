@@ -106,7 +106,7 @@ import { ensureCourseReviewSchema } from './server/services/courseReviewSchema.j
 // --- ADMIN AUTHORIZATION UTILITY ---
 export function isAdminEmail(email: string | undefined | null): boolean {
   if (!email) return false;
-  const adminEmails = (process.env.ADMIN_EMAILS || 'olalekan4565@gmail.com').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+  const adminEmails = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
   return adminEmails.includes(email.toLowerCase());
 }
 
@@ -166,6 +166,14 @@ import {
 } from './server/sparkRollups';
 import { probeNeonConnection } from './server/postgresPool';
 import { courseRepository } from './server/repositories/courseRepository';
+import {
+  evaluateStudentCourseAccess,
+  getLiveCourseAccessRecord,
+  getLiveCourseAccessUser,
+  getLiveInstitutionAccessConfig,
+  getLivePublishedCourseAccessRecords,
+  normalizeCourseTargetValue
+} from './server/services/courseAccess';
 import { catalogCache } from './server/cache/catalogCache';
 import { progressRepository } from './server/repositories/progressRepository';
 import { JobRepository } from './server/repositories/jobRepository';
@@ -1071,41 +1079,139 @@ app.get('/api/health', async (req, res) => {
 });
 
 
-// --- Optional Auth Middleware for Public Read Routes ---
-async function optionalAuth(req: any, res: any, next: any) {
-  if (req.user) return next();
-  const token = req.headers.authorization?.split('Bearer ')[1]?.trim();
-  if (!token || token === 'undefined' || token === 'null') {
-    return next();
+// Course access is derived from the authenticated UID, the live Neon user record,
+// and the current institution registry. Request query/body fields never grant access.
+async function loadCourseAccessContext(uid: string, email?: string) {
+  const configuredAdminUids = new Set(
+    (process.env.ADMIN_UIDS_OVERRIDE || '').split(',').map(value => value.trim()).filter(Boolean)
+  );
+  const configuredAdmin = configuredAdminUids.has(uid) || isAdminEmail(email);
+  const account = configuredAdmin ? null : await getLiveCourseAccessUser(uid);
+  const isAdmin = configuredAdmin || account?.role === 'admin';
+
+  if (isAdmin) {
+    return { isAdmin: true, account, institution: null };
   }
-  try {
-    const app = getAdminApp();
-    if (app) {
-      const decodedToken = await app.auth().verifyIdToken(token);
-      req.user = decodedToken;
-    }
-  } catch {
-    // Non-blocking for public catalog reads
+  if (!account) {
+    return { isAdmin: false, account: null, institution: null };
   }
-  next();
+
+  const institution = await getLiveInstitutionAccessConfig();
+  return { isAdmin: false, account, institution };
 }
 
-// --- Phase 1 Catalog Read Cutover Endpoints ---
-app.get('/api/catalog/full', optionalAuth, async (req: any, res: any) => {
-  const t0 = Date.now();
-  try {
-    const { courses, etag, maxUpdatedAt } = await courseRepository.getFullCatalogWithSyllabus();
+async function resolveCourseAccessForUser(uid: string, email: string | undefined, courseId: string) {
+  const course = await getLiveCourseAccessRecord(courseId);
+  if (!course) return { allowed: false, statusCode: 404, reason: 'course_not_found' as const, course: null };
 
-    res.set('Cache-Control', 'private, max-age=60');
+  const context = await loadCourseAccessContext(uid, email);
+  if (context.isAdmin) {
+    return { allowed: true, statusCode: 200, reason: 'admin' as const, course };
+  }
+  if (!context.account) {
+    return { allowed: false, statusCode: 403, reason: 'student_profile_unavailable' as const, course };
+  }
+  if (course.status !== 'published') {
+    return { allowed: false, statusCode: 404, reason: 'course_not_found' as const, course };
+  }
+
+  const decision = evaluateStudentCourseAccess(
+    course,
+    context.account.learning_profile,
+    context.institution!
+  );
+  return {
+    allowed: decision.allowed,
+    statusCode: decision.allowed ? 200 : 403,
+    reason: decision.reason,
+    course
+  };
+}
+
+async function requireCourseAccessFromBody(req: any, res: any, next: any) {
+  const courseId = typeof req.body?.courseId === 'string' ? req.body.courseId.trim() : '';
+  if (!courseId) return res.status(400).json({ error: 'A valid courseId is required.' });
+  req.params = { ...req.params, courseId };
+  return requireCourseAccess(req, res, next);
+}
+
+async function requireCourseAccess(req: any, res: any, next: any) {
+  const uid = req.user?.uid;
+  if (!uid) return res.status(401).json({ error: 'Authenticated student session required.' });
+
+  try {
+    const decision = await resolveCourseAccessForUser(uid, req.user?.email, req.params.courseId);
+    if (!decision.allowed) {
+      if (decision.statusCode === 404) return res.status(404).json({ error: 'Course not found.' });
+      return res.status(decision.statusCode).json({
+        error: decision.reason === 'student_profile_unavailable'
+          ? 'An authoritative student academic profile is required before course access can be granted.'
+          : 'This course is not available to the authenticated academic profile.'
+      });
+    }
+    req.courseAccessRecord = decision.course;
+    return next();
+  } catch (error: any) {
+    const statusCode = error?.message?.includes('unavailable') || error?.message?.includes('configuration')
+      ? 503
+      : 500;
+    logger.error({
+      error: error?.message || String(error),
+      uid,
+      courseId: req.params.courseId
+    }, '[Course access] Authorization could not be resolved from live sources');
+    return res.status(statusCode).json({
+      error: statusCode === 503
+        ? 'Course access is temporarily unavailable because an authoritative data source could not be verified.'
+        : 'Course access could not be verified.'
+    });
+  }
+}
+
+// --- Authenticated, server-filtered course catalog endpoints ---
+app.get('/api/catalog/full', verifyAuth, async (req: any, res: any) => {
+  const t0 = Date.now();
+  const uid = req.user?.uid;
+  if (!uid) return res.status(401).json({ error: 'Authenticated student session required.' });
+
+  try {
+    const accessContext = await loadCourseAccessContext(uid, req.user?.email);
+    if (!accessContext.isAdmin && !accessContext.account) {
+      return res.status(403).json({ error: 'An authoritative student academic profile is required before course access can be granted.' });
+    }
+
+    const { courses: catalogCourses, maxUpdatedAt } = await courseRepository.getFullCatalogWithSyllabus(true);
+    let courses = catalogCourses;
+    if (!accessContext.isAdmin) {
+      const liveAccessRecords = await getLivePublishedCourseAccessRecords();
+      const eligibleIds = new Set(
+        liveAccessRecords
+          .filter(record => evaluateStudentCourseAccess(
+            record,
+            accessContext.account!.learning_profile,
+            accessContext.institution!
+          ).allowed)
+          .map(record => record.id)
+      );
+      courses = catalogCourses.filter(course => eligibleIds.has(course.id));
+    }
+
+    const etag = `W/"${crypto.createHash('sha256').update(JSON.stringify(courses)).digest('hex').substring(0, 16)}"`;
+    res.set('Cache-Control', 'private, no-store');
+    res.set('Vary', 'Authorization');
     res.set('ETag', etag);
-    res.set('X-Catalog-Updated-At', maxUpdatedAt);
+    if (maxUpdatedAt) res.set('X-Catalog-Updated-At', maxUpdatedAt);
 
     const ifNoneMatch = req.get('If-None-Match');
     if (ifNoneMatch && ifNoneMatch === etag) {
       return res.status(304).end();
     }
 
-    const rawBuffer = Buffer.from(JSON.stringify({ courses, total: courses.length, latencyMs: Date.now() - t0 }));
+    const rawBuffer = Buffer.from(JSON.stringify({
+      courses,
+      total: courses.length,
+      latencyMs: Date.now() - t0
+    }));
     const acceptEncoding = req.get('Accept-Encoding') || '';
 
     if (acceptEncoding.includes('gzip')) {
@@ -1116,57 +1222,81 @@ app.get('/api/catalog/full', optionalAuth, async (req: any, res: any) => {
     }
 
     res.set('Content-Type', 'application/json');
-    res.send(rawBuffer);
+    return res.send(rawBuffer);
   } catch (err: any) {
-    logger.error({ err: err.message }, '[GET /api/catalog/full] Failed to fetch full catalog');
-    const statusCode = (err.message?.includes('Database service unavailable') || err.message?.includes('unreachable')) ? 503 : 500;
-    res.status(statusCode).json({ error: 'Failed to retrieve full catalog', message: err.message });
+    logger.error({ err: err.message, uid }, '[GET /api/catalog/full] Failed to fetch authorized catalog');
+    const statusCode = (err.message?.includes('Database service unavailable') ||
+      err.message?.includes('unavailable') || err.message?.includes('configuration') ||
+      err.message?.includes('unreachable')) ? 503 : 500;
+    return res.status(statusCode).json({
+      error: statusCode === 503
+        ? 'Course catalog access is temporarily unavailable because an authoritative data source could not be verified.'
+        : 'Failed to retrieve authorized course catalog.'
+    });
   }
 });
 
-/**
- * Draft/in-review course content is never served through public read routes.
- * Published courses remain publicly readable; non-published courses require
- * an authenticated administrator for course, module, lesson and formula reads.
- */
-async function requirePublishedCourseOrAdmin(req: any, res: any, next: any) {
-  try {
-    const course = await courseRepository.getCourseById(req.params.courseId);
-    if (!course) return res.status(404).json({ error: 'Course not found' });
-    if (course.status === 'published') return next();
-    return verifyAdmin(req, res, next);
-  } catch (error: any) {
-    const statusCode = error?.message?.includes('Database service unavailable') ? 503 : 500;
-    logger.error({ error: error?.message || String(error), courseId: req.params.courseId }, '[Course visibility] Failed');
-    return res.status(statusCode).json({ error: 'Could not verify course publication status' });
-  }
-}
-
-app.get('/api/courses', async (req, res) => {
+app.get('/api/courses', verifyAuth, async (req: any, res: any) => {
   const t0 = Date.now();
+  const uid = req.user?.uid;
+  if (!uid) return res.status(401).json({ error: 'Authenticated student session required.' });
+
   try {
-    const { department, level, status, limit } = req.query;
-    const courses = await courseRepository.listPublishedCourses({
-      department: typeof department === 'string' ? department : undefined,
-      level: typeof level === 'string' ? level : undefined,
-      status: typeof status === 'string' ? (status as any) : undefined,
-      limit: typeof limit === 'string' ? parseInt(limit, 10) : undefined
-    });
+    const accessContext = await loadCourseAccessContext(uid, req.user?.email);
+    if (!accessContext.isAdmin && !accessContext.account) {
+      return res.status(403).json({ error: 'An authoritative student academic profile is required before course access can be granted.' });
+    }
+
+    // The status query parameter is intentionally ignored. Student routes only return
+    // published records; a client cannot request drafts or in-review content.
+    const allPublishedCourses = await courseRepository.listPublishedCourses({ status: 'published' }, true);
+    let courses = allPublishedCourses;
+    if (!accessContext.isAdmin) {
+      const liveAccessRecords = await getLivePublishedCourseAccessRecords();
+      const eligibleIds = new Set(
+        liveAccessRecords
+          .filter(record => evaluateStudentCourseAccess(
+            record,
+            accessContext.account!.learning_profile,
+            accessContext.institution!
+          ).allowed)
+          .map(record => record.id)
+      );
+      courses = allPublishedCourses.filter(course => eligibleIds.has(course.id));
+    }
+
+    if (typeof req.query.level === 'string') {
+      const requestedLevel = normalizeCourseTargetValue(req.query.level);
+      courses = courses.filter(course => normalizeCourseTargetValue(course.level) === requestedLevel);
+    }
+    const requestedLimit = typeof req.query.limit === 'string' ? Number(req.query.limit) : null;
+    if (requestedLimit !== null && Number.isInteger(requestedLimit) && requestedLimit > 0) {
+      courses = courses.slice(0, requestedLimit);
+    }
+
+    res.set('Cache-Control', 'private, no-store');
+    res.set('Vary', 'Authorization');
     const latencyMs = Date.now() - t0;
-    res.json({
+    return res.json({
       courses,
       total: courses.length,
       flags: getFeatureFlags(),
       latencyMs
     });
   } catch (err: any) {
-    logger.error({ err: err.message }, '[GET /api/courses] Failed to fetch courses');
-    const statusCode = (err.message?.includes('Database service unavailable') || err.message?.includes('unreachable')) ? 503 : 500;
-    res.status(statusCode).json({ error: 'Failed to retrieve course catalog', message: err.message });
+    logger.error({ err: err.message, uid }, '[GET /api/courses] Failed to fetch authorized courses');
+    const statusCode = (err.message?.includes('Database service unavailable') ||
+      err.message?.includes('unavailable') || err.message?.includes('configuration') ||
+      err.message?.includes('unreachable')) ? 503 : 500;
+    return res.status(statusCode).json({
+      error: statusCode === 503
+        ? 'Course catalog access is temporarily unavailable because an authoritative data source could not be verified.'
+        : 'Failed to retrieve authorized course catalog.'
+    });
   }
 });
 
-app.get('/api/courses/:courseId', optionalAuth, requirePublishedCourseOrAdmin, async (req, res) => {
+app.get('/api/courses/:courseId', verifyAuth, requireCourseAccess, async (req, res) => {
   const t0 = Date.now();
   try {
     const { courseId } = req.params;
@@ -1183,7 +1313,7 @@ app.get('/api/courses/:courseId', optionalAuth, requirePublishedCourseOrAdmin, a
   }
 });
 
-app.get('/api/courses/:courseId/modules', optionalAuth, requirePublishedCourseOrAdmin, async (req, res) => {
+app.get('/api/courses/:courseId/modules', verifyAuth, requireCourseAccess, async (req, res) => {
   const t0 = Date.now();
   try {
     const { courseId } = req.params;
@@ -1205,7 +1335,7 @@ app.get('/api/courses/:courseId/modules', optionalAuth, requirePublishedCourseOr
   }
 });
 
-app.get('/api/courses/:courseId/modules/:moduleId/lessons', optionalAuth, requirePublishedCourseOrAdmin, async (req, res) => {
+app.get('/api/courses/:courseId/modules/:moduleId/lessons', verifyAuth, requireCourseAccess, async (req, res) => {
   const t0 = Date.now();
   try {
     const { courseId, moduleId } = req.params;
@@ -1296,8 +1426,33 @@ app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regen
     const course = courseResult.rows[0];
     const module = moduleResult.rows[0];
     const lesson = lessonResult.rows[0];
-    const courseName = String(course.title || course.code || courseId);
-    const level = String(course.level || 'undergraduate');
+
+    const courseName = typeof course.title === 'string' ? course.title.trim() : '';
+    const courseCode = typeof course.code === 'string' ? course.code.trim() : '';
+    const department = typeof course.department === 'string' ? course.department.trim() : '';
+    const level = typeof course.level === 'string' ? course.level.trim() : '';
+    const moduleTitle = typeof module.title === 'string' ? module.title.trim() : '';
+    const lessonTitle = typeof lesson.title === 'string' ? lesson.title.trim() : '';
+    const moduleOrderIndex = module.order_index;
+    const lessonOrderIndex = lesson.order_index;
+    const estimatedMinutes = module.estimated_minutes;
+    const learningOutcomes = Array.isArray(lesson.learning_outcomes)
+      ? lesson.learning_outcomes.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0)
+      : [];
+
+    if (
+      !courseName || !courseCode || !department || !level ||
+      !moduleTitle || !lessonTitle ||
+      typeof moduleOrderIndex !== 'number' || !Number.isSafeInteger(moduleOrderIndex) || moduleOrderIndex < 0 ||
+      typeof lessonOrderIndex !== 'number' || !Number.isSafeInteger(lessonOrderIndex) || lessonOrderIndex < 0 ||
+      typeof estimatedMinutes !== 'number' || !Number.isFinite(estimatedMinutes) || estimatedMinutes <= 0 ||
+      learningOutcomes.length === 0
+    ) {
+      return res.status(409).json({
+        error: 'Lesson regeneration requires verified course scope, module ordering, duration, and saved learning outcomes. Missing metadata was not inferred.'
+      });
+    }
+
     const requestedProvider = typeof req.body?.provider === 'string' && req.body.provider.trim()
       ? req.body.provider.trim()
       : undefined;
@@ -1309,10 +1464,10 @@ app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regen
         content: buildDomainBriefPrompt({
           courseId,
           courseName,
-          courseCode: String(course.code || courseId),
-          department: String(course.department || 'General Studies'),
+          courseCode,
+          department,
           level,
-          outline: `Module: ${module.title}\nLesson: ${lesson.title}`
+          outline: `Module: ${moduleTitle}\nLesson: ${lessonTitle}`
         })
       }],
       schema: DomainBriefSchema,
@@ -1320,18 +1475,15 @@ app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regen
       complexity: 'standard'
     });
 
-    const learningOutcomes = Array.isArray(lesson.learning_outcomes)
-      ? lesson.learning_outcomes.filter((value: any) => typeof value === 'string' && value.trim())
-      : [];
     const prompt = buildLessonPrompt(
-      String(lesson.title || lessonId),
-      String(module.title || moduleId),
-      Math.max(1, Number(module.order_index) || 1),
+      lessonTitle,
+      moduleTitle,
+      moduleOrderIndex,
       domainBrief,
       {
         courseId,
         courseName,
-        department: String(course.department || 'General Studies'),
+        department,
         level,
         depth: 'standard',
         scope: 'DEPARTMENT'
@@ -1398,16 +1550,16 @@ app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regen
       courseId,
       module: {
         id: moduleId,
-        title: String(module.title || moduleId),
-        description: String(module.description || ''),
-        orderIndex: Math.max(1, Number(module.order_index) || 1),
-        estimatedMinutes: Number(module.estimated_minutes) || 60
+        title: moduleTitle,
+        description: typeof module.description === 'string' ? module.description : undefined,
+        orderIndex: moduleOrderIndex,
+        estimatedMinutes
       },
       lesson: {
         id: lessonId,
-        title: String(generated.title || lesson.title || lessonId),
+        title: generated.title,
         contentMarkdown: markdown,
-        orderIndex: Math.max(1, Number(lesson.order_index) || 1),
+        orderIndex: lessonOrderIndex,
         learningOutcomes,
         instructionalContent
       }
@@ -1460,7 +1612,7 @@ app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regen
  * Persist a student's attempt before releasing the related comparison guide.
  * This is a learning self-check, not proctored grading or a secure examination.
  */
-app.post('/api/courses/:courseId/modules/:moduleId/lessons/:lessonId/attempts', verifyAuth, requirePublishedCourseOrAdmin, async (req: any, res: any) => {
+app.post('/api/courses/:courseId/modules/:moduleId/lessons/:lessonId/attempts', verifyAuth, requireCourseAccess, async (req: any, res: any) => {
   const { courseId, moduleId, lessonId } = req.params;
   const uid = req.user?.uid;
   if (!uid) return res.status(401).json({ error: 'Authenticated user required' });
@@ -1541,7 +1693,7 @@ app.post('/api/courses/:courseId/modules/:moduleId/lessons/:lessonId/attempts', 
   }
 });
 
-app.get('/api/courses/:courseId/formulas', optionalAuth, requirePublishedCourseOrAdmin, async (req, res) => {
+app.get('/api/courses/:courseId/formulas', verifyAuth, requireCourseAccess, async (req, res) => {
   const t0 = Date.now();
   try {
     const { courseId } = req.params;
@@ -1584,7 +1736,7 @@ app.post('/api/progress/sync', verifyAuth, async (req: any, res: any) => {
   }
 });
 
-app.get('/api/progress/:courseId', verifyAuth, async (req: any, res: any) => {
+app.get('/api/progress/:courseId', verifyAuth, requireCourseAccess, async (req: any, res: any) => {
   const t0 = Date.now();
   try {
     const user = req.user;
@@ -1602,58 +1754,12 @@ app.get('/api/progress/:courseId', verifyAuth, async (req: any, res: any) => {
   }
 });
 
-app.post('/api/progress/quiz-attempt', verifyAuth, async (req: any, res: any) => {
-  const t0 = Date.now();
-  try {
-    const user = req.user;
-    const {
-      courseId,
-      moduleId,
-      quizId,
-      attemptIdempotencyKey,
-      timeSpentSeconds,
-      answers,
-      canonicalQuestions,
-      passingScorePct
-    } = req.body || {};
-
-    if (!courseId || !quizId || !attemptIdempotencyKey) {
-      return res.status(400).json({ error: 'Missing required quiz attempt fields' });
-    }
-
-    // Use submitted canonicalQuestions or load from Neon PostgreSQL course syllabus
-    let questions = Array.isArray(canonicalQuestions) ? canonicalQuestions : [];
-    if (questions.length === 0) {
-      const courseData = await courseRepository.getCourseById(courseId).catch(() => null);
-      if (courseData && Array.isArray((courseData as any).modules)) {
-        const targetMod = (courseData as any).modules.find((m: any) => m.id === (moduleId || 'm1')) || (courseData as any).modules[0];
-        if (targetMod && Array.isArray(targetMod.quizzes) && targetMod.quizzes.length > 0) {
-          questions = targetMod.quizzes[0]?.questions || [];
-        } else if (targetMod && Array.isArray(targetMod.questions)) {
-          questions = targetMod.questions;
-        }
-      }
-    }
-
-    const attempt = await progressRepository.recordQuizAttempt({
-      uid: user.uid,
-      courseId,
-      moduleId: moduleId || 'general',
-      quizId,
-      attemptIdempotencyKey,
-      timeSpentSeconds: Number(timeSpentSeconds) || 0,
-      answers: Array.isArray(answers) ? answers : [],
-      canonicalQuestions: questions,
-      passingScorePct: typeof passingScorePct === 'number' ? passingScorePct : 70
-    });
-
-    const latencyMs = Date.now() - t0;
-    res.json({ attempt, latencyMs });
-  } catch (err: any) {
-    const statusCode = err?.statusCode || 500;
-    logger.error({ err: err.message, uid: req.user?.uid }, '[POST /api/progress/quiz-attempt] Failed');
-    res.status(statusCode).json({ error: err.message || 'Failed to record quiz attempt' });
-  }
+// This legacy endpoint accepted client-supplied answer keys and passing thresholds.
+// There is no server-owned persisted quiz definition for this route yet, so it fails closed.
+app.post('/api/progress/quiz-attempt', verifyAuth, requireCourseAccessFromBody, async (_req: any, res: any) => {
+  return res.status(503).json({
+    error: 'Server-authoritative quiz grading is unavailable because a persisted quiz definition and grading policy are not configured. No attempt was recorded.'
+  });
 });
 
 // Paystack Public Key Config Endpoint
@@ -1696,64 +1802,79 @@ app.get('/api/system/config/:key', async (req, res) => {
 app.post('/api/admin/system-config/:key', verifyAdmin, async (req, res) => {
   const { key } = req.params;
   const data = req.body;
+  const pool = getPostgresPool();
+  if (!pool) {
+    return res.status(503).json({ error: 'System configuration unavailable: PostgreSQL is not connected.' });
+  }
+
   try {
-    const pool = getPostgresPool();
-    if (pool) {
-      await pool.query(
-        'INSERT INTO system_config (key, data, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()',
-        [key, JSON.stringify(data)]
-      );
-      systemConfigCache.delete(key);
-    }
-    res.json({ success: true, key, data });
+    await pool.query(
+      'INSERT INTO system_config (key, data, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()',
+      [key, JSON.stringify(data)]
+    );
+    systemConfigCache.delete(key);
+    return res.json({ success: true, key, data });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    logger.error({ key, error: err?.message || String(err) }, '[System config] Persist failed');
+    return res.status(503).json({ error: 'System configuration could not be persisted to the authoritative database.' });
   }
 });
 
 app.get('/api/announcements/active', async (req, res) => {
+  const pool = getPostgresPool();
+  if (!pool) {
+    return res.status(503).json({ error: 'Announcements unavailable: PostgreSQL is not connected.' });
+  }
+
   try {
-    const pool = getPostgresPool();
-    if (!pool) return res.json({ announcements: [] });
     const result = await pool.query(`
       SELECT id, title, message, severity, audience, target_department, target_level, cta_label, cta_url, active, expires_at, created_at
       FROM announcements
       WHERE active = TRUE AND (expires_at IS NULL OR expires_at > NOW())
       ORDER BY created_at DESC
     `);
-    res.json({ announcements: result.rows });
+    return res.json({ announcements: result.rows });
   } catch (err: any) {
-    res.json({ announcements: [] });
+    logger.error({ error: err?.message || String(err) }, '[Announcements] Active announcements query failed');
+    return res.status(503).json({ error: 'Announcements could not be loaded from the authoritative database.' });
   }
 });
 
 app.get('/api/user/announcements/dismissals', verifyAuth, async (req, res) => {
   const uid = (req as any).user.uid;
+  const pool = getPostgresPool();
+  if (!pool) {
+    return res.status(503).json({ error: 'Announcement dismissals unavailable: PostgreSQL is not connected.' });
+  }
+
   try {
-    const pool = getPostgresPool();
-    if (!pool) return res.json({ dismissedIds: [] });
     const result = await pool.query('SELECT announcement_id FROM announcement_dismissals WHERE uid = $1', [uid]);
-    res.json({ dismissedIds: result.rows.map(r => r.announcement_id) });
+    return res.json({ dismissedIds: result.rows.map(r => r.announcement_id) });
   } catch (err: any) {
-    res.json({ dismissedIds: [] });
+    logger.error({ uid, error: err?.message || String(err) }, '[Announcements] Dismissal lookup failed');
+    return res.status(503).json({ error: 'Announcement dismissals could not be verified.' });
   }
 });
 
 app.post('/api/user/announcements/dismiss', verifyAuth, async (req, res) => {
   const uid = (req as any).user.uid;
-  const { announcementId } = req.body;
-  if (!announcementId) return res.status(400).json({ error: 'announcementId required' });
+  const announcementId = typeof req.body?.announcementId === 'string' ? req.body.announcementId.trim() : '';
+  if (!announcementId) return res.status(400).json({ error: 'A valid announcementId is required.' });
+
+  const pool = getPostgresPool();
+  if (!pool) {
+    return res.status(503).json({ error: 'Announcement dismissal unavailable: PostgreSQL is not connected.' });
+  }
+
   try {
-    const pool = getPostgresPool();
-    if (pool) {
-      await pool.query(
-        'INSERT INTO announcement_dismissals (uid, announcement_id, dismissed_at) VALUES ($1, $2, NOW()) ON CONFLICT (uid, announcement_id) DO NOTHING',
-        [uid, announcementId]
-      );
-    }
-    res.json({ success: true });
+    await pool.query(
+      'INSERT INTO announcement_dismissals (uid, announcement_id, dismissed_at) VALUES ($1, $2, NOW()) ON CONFLICT (uid, announcement_id) DO NOTHING',
+      [uid, announcementId]
+    );
+    return res.json({ success: true });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    logger.error({ uid, announcementId, error: err?.message || String(err) }, '[Announcements] Dismissal write failed');
+    return res.status(503).json({ error: 'Announcement dismissal could not be persisted.' });
   }
 });
 
@@ -1883,8 +2004,9 @@ app.post('/api/srs/record-review', verifyAuth, async (req, res) => {
   }
 });
 
-// Quiz Attempts Record
-app.post('/api/quiz/record-attempt', verifyAuth, async (req, res) => {
+// The legacy QuizGenerator calculates practice scores in the browser.
+// Store those values only as explicitly client-computed practice, never as verified exam grades.
+app.post('/api/quiz/record-attempt', verifyAuth, requireCourseAccessFromBody, async (req, res) => {
   const uid = (req as any).user.uid;
   const {
     courseId,
@@ -1893,32 +2015,51 @@ app.post('/api/quiz/record-attempt', verifyAuth, async (req, res) => {
     scorePct,
     passed,
     timeSpentSeconds,
-    answersBreakdown,
     attemptIdempotencyKey
   } = req.body || {};
+
+  if (typeof courseId !== 'string' || !courseId.trim() ||
+      typeof moduleId !== 'string' || !moduleId.trim() ||
+      typeof quizId !== 'string' || !quizId.trim() ||
+      typeof attemptIdempotencyKey !== 'string' || !attemptIdempotencyKey.trim()) {
+    return res.status(400).json({ error: 'courseId, moduleId, quizId, and attemptIdempotencyKey are required.' });
+  }
+  if (typeof scorePct !== 'number' || !Number.isFinite(scorePct) || scorePct < 0 || scorePct > 100 ||
+      typeof passed !== 'boolean') {
+    return res.status(400).json({ error: 'A valid client-computed practice score and pass result are required.' });
+  }
+  if (typeof timeSpentSeconds !== 'number' || !Number.isFinite(timeSpentSeconds) || timeSpentSeconds < 0) {
+    return res.status(400).json({ error: 'A measured non-negative practice duration is required.' });
+  }
+
+  const pool = getPostgresPool();
+  if (!pool) return res.status(503).json({ error: 'Quiz attempt persistence unavailable: PostgreSQL is not connected.' });
+
   try {
-    const pool = getPostgresPool();
-    if (!pool) return res.status(503).json({ error: 'DB unavailable' });
-    const effectiveCourseId = String(courseId || 'general').trim();
-    const effectiveModuleId = String(moduleId || 'cbt_exam').trim();
-    const effectiveQuizId = String(quizId || 'quiz_1').trim();
-    const effectiveIdempotencyKey = String(attemptIdempotencyKey || crypto.randomUUID()).trim();
-    const numericScore = Number.isFinite(Number(scorePct)) ? Number(Number(scorePct).toFixed(2)) : 0;
-    const isPassed = typeof passed === 'boolean' ? passed : numericScore >= 50;
-    const boundedTime = Math.max(0, Math.round(Number(timeSpentSeconds) || 0));
-    const breakdownPayload = Array.isArray(answersBreakdown)
-      ? answersBreakdown
-      : Array.isArray(answersBreakdown?.questions)
-        ? answersBreakdown.questions
-        : answersBreakdown && typeof answersBreakdown === 'object' && Object.keys(answersBreakdown).length > 0
-          ? [answersBreakdown]
-          : [];
+    const normalizedCourseId = courseId.trim();
+    const normalizedModuleId = moduleId.trim();
+    const normalizedQuizId = quizId.trim();
+    const normalizedAttemptKey = attemptIdempotencyKey.trim();
+    const numericScore = Number(scorePct.toFixed(2));
+    const boundedTime = Math.round(timeSpentSeconds);
+    const gradingMetadata = {
+      gradingSource: 'client_computed_practice',
+      verificationStatus: 'not_server_verified'
+    };
+    const resultSnapshot = {
+      courseId: normalizedCourseId,
+      moduleId: normalizedModuleId,
+      quizId: normalizedQuizId,
+      scorePct: numericScore,
+      passed,
+      gradingSource: gradingMetadata.gradingSource
+    };
     const snapshotHash = crypto
       .createHash('sha256')
-      .update(JSON.stringify({ quizId: effectiveQuizId, breakdownPayload }))
+      .update(JSON.stringify(resultSnapshot))
       .digest('hex');
 
-    const resRow = await pool.query(
+    const saved = await pool.query(
       `INSERT INTO user_quiz_attempts (
          uid, course_id, module_id, quiz_id, attempt_idempotency_key,
          score_pct, passed, time_spent_seconds, questions_snapshot_hash,
@@ -1926,36 +2067,37 @@ app.post('/api/quiz/record-attempt', verifyAuth, async (req, res) => {
        )
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, NOW())
        ON CONFLICT (uid, quiz_id, attempt_idempotency_key)
-       DO UPDATE SET
-         score_pct = EXCLUDED.score_pct,
-         passed = EXCLUDED.passed,
-         time_spent_seconds = EXCLUDED.time_spent_seconds,
-         answers_breakdown = EXCLUDED.answers_breakdown,
-         attempted_at = NOW()
+       DO UPDATE SET uid = EXCLUDED.uid
        RETURNING id, attempted_at`,
       [
         uid,
-        effectiveCourseId,
-        effectiveModuleId,
-        effectiveQuizId,
-        effectiveIdempotencyKey,
+        normalizedCourseId,
+        normalizedModuleId,
+        normalizedQuizId,
+        normalizedAttemptKey,
         numericScore,
-        isPassed,
+        passed,
         boundedTime,
         snapshotHash,
-        JSON.stringify(breakdownPayload)
+        JSON.stringify(gradingMetadata)
       ]
     );
-    res.json({
+
+    if (!saved.rows[0]) {
+      throw new Error('The database did not return the persisted quiz attempt record.');
+    }
+    return res.json({
       success: true,
-      attemptId: resRow.rows[0].id,
-      attemptedAt: resRow.rows[0].attempted_at
+      attemptId: saved.rows[0].id,
+      attemptedAt: saved.rows[0].attempted_at,
+      gradingSource: gradingMetadata.gradingSource,
+      verificationStatus: gradingMetadata.verificationStatus
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    logger.error({ uid, courseId, moduleId, quizId, error: err?.message || String(err) }, '[Quiz attempts] Persistence failed');
+    return res.status(503).json({ error: 'The practice attempt could not be persisted to the authoritative database.' });
   }
 });
-
 app.get('/api/quiz/recent-attempts', verifyAuth, async (req: any, res: any) => {
   const uid = req.user.uid;
   const courseId = req.query.courseId as string;
@@ -1978,7 +2120,8 @@ app.get('/api/quiz/recent-attempts', verifyAuth, async (req: any, res: any) => {
       score: Number(r.score_pct || 0),
       passed: Boolean(r.passed),
       timeSpent: Number(r.time_spent_seconds || 0),
-      answersBreakdown: r.answers_breakdown || {},
+      answersBreakdown: r.answers_breakdown ?? null,
+      gradingSource: r.answers_breakdown?.gradingSource ?? 'not_recorded',
       completedAt: r.attempted_at
     }));
     res.json({ success: true, attempts });
@@ -2252,87 +2395,35 @@ app.post('/api/paystack-webhook', async (req: any, res) => {
 });
 
 /**
- * Helper to dynamically parse numeric sparks from plan data
- */
-function parsePlanSparks(rawSparks: any, defaultSparks: number): number {
-  if (typeof rawSparks === 'number' && !isNaN(rawSparks) && rawSparks > 0) {
-    return rawSparks;
-  }
-  if (typeof rawSparks === 'string') {
-    const parsed = parseInt(rawSparks.replace(/[^0-9]/g, ''), 10);
-    if (!isNaN(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-  return defaultSparks;
-}
-
-/**
- * Helper to dynamically determine duration in days and whether it is a top-up
- */
-function parsePlanDuration(durationStr: string, planId: string): { durationDays: number; isTopUp: boolean } {
-  const normPlanId = (planId || '').toLowerCase().trim();
-  const normDuration = (durationStr || '').toLowerCase().trim();
-
-  if (
-    normPlanId === 'emergency_topup' || 
-    normPlanId.includes('topup') || 
-    normPlanId.includes('top_up') || 
-    normDuration.includes('one-time') || 
-    normDuration.includes('top-up')
-  ) {
-    return { durationDays: 0, isTopUp: true };
-  }
-
-  // Extract explicit number of days if present (e.g., "120 Days", "30 Days", "60 Days")
-  const daysMatch = normDuration.match(/(\d+)\s*(?:day|days)/);
-  if (daysMatch && daysMatch[1]) {
-    const days = parseInt(daysMatch[1], 10);
-    if (!isNaN(days) && days > 0) {
-      return { durationDays: days, isTopUp: false };
-    }
-  }
-
-  if (normPlanId === 'semester' || normDuration.includes('semester')) {
-    return { durationDays: 120, isTopUp: false };
-  }
-
-  if (normPlanId === 'scholar' || normDuration.includes('month') || normDuration.includes('30')) {
-    return { durationDays: 30, isTopUp: false };
-  }
-
-  if (normDuration.includes('year') || normDuration.includes('annual')) {
-    return { durationDays: 365, isTopUp: false };
-  }
-
-  return { durationDays: 30, isTopUp: false };
-}
-
-/**
  * In-Memory TTL Cache for dynamic commission rates (5-minute TTL)
  */
-let commissionRateCache: { rate: number; expiry: number } | null = null;
+let commissionRateCache: { rate: number | null; expiry: number } | null = null;
 
-async function getDynamicCommissionRate(): Promise<number> {
+async function getDynamicCommissionRate(): Promise<number | null> {
   const now = Date.now();
   if (commissionRateCache && commissionRateCache.expiry > now) {
     return commissionRateCache.rate;
   }
-  let rate = 0.30; // 30% default
+
   try {
     const data = (await getSystemConfigDoc('commissions')) || (await getSystemSettingsDoc('commissions'));
-    if (data) {
-      if (typeof data.rate === 'number' && data.rate > 0 && data.rate <= 1) {
-        rate = data.rate;
-      } else if (typeof data.rate === 'number' && data.rate > 1) {
-        rate = data.rate / 100; // normalize percentage e.g. 30 -> 0.30
-      }
+    const configuredRate = data?.rate;
+    const rate = typeof configuredRate === 'number' && configuredRate >= 0 && configuredRate <= 1
+      ? configuredRate
+      : typeof configuredRate === 'number' && configuredRate > 1 && configuredRate <= 100
+        ? configuredRate / 100
+        : null;
+
+    if (rate === null) {
+      console.warn('[Commissions] No valid commission rate is configured; affiliate credit will remain pending.');
     }
+    commissionRateCache = { rate, expiry: now + 5 * 60 * 1000 };
+    return rate;
   } catch (err) {
-    console.error('Error fetching commission rate settings, using 30% default:', err);
+    console.error('[Commissions] Could not verify the live commission rate; affiliate credit will remain pending:', err);
+    commissionRateCache = { rate: null, expiry: now + 60 * 1000 };
+    return null;
   }
-  commissionRateCache = { rate, expiry: now + 5 * 60 * 1000 }; // 5 min TTL
-  return rate;
 }
 
 /**
@@ -2497,20 +2588,6 @@ async function verifyAuth(req: express.Request, res: express.Response, next: exp
   
   const token = req.headers.authorization?.split('Bearer ')[1]?.trim();
   
-  // INTERNAL_TEST_KEY is strictly disabled in production
-  const testKey = process.env.INTERNAL_TEST_KEY;
-  if (
-    process.env.NODE_ENV !== 'production' &&
-    typeof testKey === 'string' &&
-    testKey.trim().length > 0 &&
-    typeof token === 'string' &&
-    token.trim().length > 0 &&
-    token === testKey
-  ) {
-    (req as any).user = { uid: 'jVPFtUUm1NM8yyabSRhnc8qRMNG3', email: 'olalekan4565@gmail.com', role: 'admin' };
-    return next();
-  }
-
   if (!token || token === 'undefined' || token === 'null') {
     return res.status(401).json({ error: 'Unauthorized: No token provided' });
   }
@@ -3506,12 +3583,12 @@ const ModuleQuizSchema = z.preprocess((val: any) => {
   }
   return val;
 }, z.object({
-  pedagogicalReasoning: z.string().optional(),
+  pedagogicalReasoning: z.string().trim().min(1),
   questions: z.array(z.object({
-    question: z.string().min(1),
-    options: z.array(z.string()).min(2),
-    answerIndex: z.number().int().min(0).optional().default(0),
-    explanation: z.string().optional().default('')
+    question: z.string().trim().min(1),
+    options: z.array(z.string().trim().min(1)).min(2),
+    answerIndex: z.number().int().min(0),
+    explanation: z.string().trim().min(1)
   })).min(1)
 }));
 
@@ -3521,26 +3598,29 @@ const CourseFormulaSchema = z.preprocess((val: any) => {
   }
   return val;
 }, z.object({
-  pedagogicalReasoning: z.string().optional(),
+  pedagogicalReasoning: z.string().trim().min(1),
   formulas: z.array(z.object({
-    id: z.string().optional(),
-    title: z.string(),
-    latex: z.string(),
-    description: z.string().optional().default('')
-  })).min(1)
+    id: z.string().trim().min(1),
+    title: z.string().trim().min(1),
+    latex: z.string().trim().min(1),
+    description: z.string().trim().min(1)
+  })).min(1).refine(
+    formulas => new Set(formulas.map(formula => formula.id)).size === formulas.length,
+    'Formula identifiers must be unique.'
+  )
 }));
 
 const VisionToQuizSchema = z.object({
-  summary: z.string().default('No summary provided.'),
+  summary: z.string().trim().min(1),
   quizzes: z.array(z.object({
-    question: z.string(),
-    options: z.array(z.string()),
-    answer: z.string()
-  })).default([]),
+    question: z.string().trim().min(1),
+    options: z.array(z.string().trim().min(1)).min(2),
+    answer: z.string().trim().min(1)
+  })).min(1),
   flashcards: z.array(z.object({
-    front: z.string(),
-    back: z.string()
-  })).default([])
+    front: z.string().trim().min(1),
+    back: z.string().trim().min(1)
+  })).min(1)
 });
 
 const StudySessionSchema = z.object({
@@ -3554,49 +3634,6 @@ const StudySessionSchema = z.object({
     courseId: z.string().optional(),
     description: z.string().optional()
   }))
-});
-
-const DomainInferenceSchema = z.object({
-  primaryDomain: z.string(),
-  subDisciplines: z.array(z.string()),
-  coreRequiredTopics: z.array(z.string()),
-  accreditationStandards: z.array(z.string()).optional().default(['ABET', 'Standard University Benchmarks']),
-  groundingReferences: z.array(z.string()).optional().default([])
-});
-
-const VerificationResultSchema = z.object({
-  isValid: z.boolean(),
-  reasoning: z.string(),
-  expectedTopics: z.array(z.string()).optional().default([]),
-  coveredTopics: z.array(z.string()).optional().default([]),
-  missingTopics: z.array(z.string()).optional().default([]),
-  genericFillerDetected: z.boolean(),
-  coverageScore: z.number().min(0).max(100).optional().default(0),
-  pedagogyAudit: z.object({
-    isSequencingValid: z.boolean(),
-    prerequisiteGaps: z.array(z.string()),
-    workloadAssessment: z.string()
-  }).optional(),
-  consistencyScore: z.number().min(0).max(100).optional().default(100),
-  confidenceState: z.enum(['verified', 'needs_review', 'failed']).optional().default('needs_review')
-});
-
-const ModuleTelemetrySchema = z.object({
-  regenerationCount: z.number().default(0),
-  editCount: z.number().default(0),
-  dropOffRate: z.number().default(0),
-  studentFeedbackScore: z.number().default(0)
-});
-
-const RegressionTestSchema = z.object({
-  testId: z.string(),
-  courseTitle: z.string(),
-  expectedDomain: z.string(),
-  status: z.enum(['passed', 'failed', 'pending']),
-  actualDomain: z.string().optional(),
-  coverageScore: z.number().optional(),
-  error: z.string().optional(),
-  timestamp: z.string()
 });
 
 const LearningProfileSchema = z.object({
@@ -4692,23 +4729,46 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
     courseName,
     courseCode,
     department,
-    scope = 'DEPARTMENT',
-    level = 'Undergraduate',
-    semester = 'Semester 1',
+    scope,
+    level,
+    semester,
     creditUnits,
     tone = 'academic',
     depth = 'standard',
     outline,
     sourceText,
-    academicStandard = 'Globally Adaptive (Universal University Standard)',
+    academicStandard,
     provider: requestedProvider,
     selectedFaculties = [],
-    selectedDepartments = []
+    selectedDepartments
   } = req.body;
 
   if (!courseName || typeof courseName !== 'string' || !courseName.trim()) {
     return res.status(400).json({ error: 'Valid courseName is required.' });
   }
+  if (typeof department !== 'string' || !department.trim()) {
+    return res.status(400).json({ error: 'A verified department is required.' });
+  }
+  if (typeof level !== 'string' || !level.trim()) {
+    return res.status(400).json({ error: 'An explicit academic level is required; no level will be assumed.' });
+  }
+  if (typeof scope !== 'string' || !['DEPARTMENT', 'FACULTY', 'GLOBAL', 'PUBLIC', 'ALL'].includes(scope.trim().toUpperCase())) {
+    return res.status(400).json({ error: 'A valid course audience scope is required.' });
+  }
+  if (typeof creditUnits !== 'number' || !Number.isInteger(creditUnits) || creditUnits <= 0) {
+    return res.status(400).json({ error: 'Verified course credit units are required.' });
+  }
+  if ((!outline || typeof outline !== 'string' || !outline.trim()) &&
+      (!sourceText || typeof sourceText !== 'string' || !sourceText.trim())) {
+    return res.status(400).json({ error: 'An admin-approved syllabus outline or source material is required for source-grounded course generation.' });
+  }
+  if (scope.trim().toUpperCase() === 'FACULTY' &&
+      (!Array.isArray(selectedFaculties) || selectedFaculties.length === 0)) {
+    return res.status(400).json({ error: 'At least one faculty must be selected for faculty-scoped generation.' });
+  }
+  const effectiveDepartments = Array.isArray(selectedDepartments) && selectedDepartments.length > 0
+    ? selectedDepartments
+    : [department.trim()];
 
   try {
     // 1. STAGE 1: INFER AUTHORITATIVE ACADEMIC DOMAIN & GROUNDING BRIEF
@@ -4756,7 +4816,7 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
         depth,
         scope,
         selectedFaculties,
-        selectedDepartments,
+        selectedDepartments: effectiveDepartments,
         outline,
         sourceText,
         academicStandard
@@ -4875,8 +4935,8 @@ async function updateCourseGenerationStateInPostgres(courseId: string, patch: Re
     try {
       const statusVal = typeof merged.status === 'string' ? merged.status : 'draft';
       await pool.query(
-        `INSERT INTO courses (id, code, title, description, level, department, faculty, semester, scope, status, version, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1, NOW(), NOW())
+`INSERT INTO courses (id, code, title, description, level, department, faculty, semester, scope, faculties, departments, status, version, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 1, NOW(), NOW())
          ON CONFLICT (id) DO UPDATE SET
            title = COALESCE(EXCLUDED.title, courses.title),
            description = COALESCE(EXCLUDED.description, courses.description),
@@ -4885,6 +4945,8 @@ async function updateCourseGenerationStateInPostgres(courseId: string, patch: Re
            faculty = COALESCE(EXCLUDED.faculty, courses.faculty),
            semester = COALESCE(EXCLUDED.semester, courses.semester),
            scope = COALESCE(EXCLUDED.scope, courses.scope),
+           faculties = COALESCE(EXCLUDED.faculties, courses.faculties),
+           departments = COALESCE(EXCLUDED.departments, courses.departments),
            status = EXCLUDED.status,
            updated_at = NOW()`,
         [
@@ -4897,6 +4959,8 @@ async function updateCourseGenerationStateInPostgres(courseId: string, patch: Re
           (Array.isArray(merged.faculties) && merged.faculties[0]) || merged.faculty || null,
           merged.semester || '1st Semester',
           merged.scope || 'DEPARTMENT',
+          Array.isArray(merged.faculties) ? merged.faculties : null,
+          Array.isArray(merged.departments) ? merged.departments : null,
           statusVal
         ]
       );
@@ -4926,7 +4990,7 @@ async function executeCoordinatedGenerationJob(
     tone = 'academic',
     depth = 'standard',
     sourceText,
-    academicStandard = 'Globally Adaptive (Universal University Standard)',
+    academicStandard,
     subject,
     scope,
     selectedFaculties = [],
@@ -4946,8 +5010,33 @@ async function executeCoordinatedGenerationJob(
     if (res) return res.status(400).json({ error: 'Department is required for course generation.' });
     return;
   }
+  if (typeof level !== 'string' || !level.trim()) {
+    if (res) return res.status(400).json({ error: 'An explicit academic level is required; no level will be assumed.' });
+    return;
+  }
+  if (typeof creditUnits !== 'number' || !Number.isInteger(creditUnits) || creditUnits <= 0) {
+    if (res) return res.status(400).json({ error: 'Verified course credit units are required.' });
+    return;
+  }
+  if (typeof scope !== 'string' || !['DEPARTMENT', 'FACULTY', 'GLOBAL', 'PUBLIC', 'ALL'].includes(scope.trim().toUpperCase())) {
+    if (res) return res.status(400).json({ error: 'A valid course audience scope is required.' });
+    return;
+  }
+  if ((!outline || typeof outline !== 'string' || !outline.trim()) &&
+      (!sourceText || typeof sourceText !== 'string' || !sourceText.trim())) {
+    if (res) return res.status(400).json({ error: 'An admin-approved syllabus outline or source material is required for source-grounded course generation.' });
+    return;
+  }
+  if (scope.trim().toUpperCase() === 'FACULTY' &&
+      (!Array.isArray(selectedFaculties) || selectedFaculties.length === 0)) {
+    if (res) return res.status(400).json({ error: 'At least one faculty must be selected for faculty-scoped generation.' });
+    return;
+  }
 
-  const rawDept = (department || '').trim();
+  const rawDept = department.trim();
+  const effectiveDepartments = Array.isArray(selectedDepartments) && selectedDepartments.length > 0
+    ? selectedDepartments
+    : [rawDept];
   const pool = getPostgresPool();
   if (!pool) {
     if (res) return res.status(503).json({ error: 'Neon PostgreSQL database service unavailable.' });
@@ -4955,6 +5044,7 @@ async function executeCoordinatedGenerationJob(
   }
 
   try {
+    await ensureCourseLearningSchema();
     const existingSnap = activeCoordinatedJobSnapshots.get(courseId);
     if (activeRunningCourseJobs.has(courseId) && existingSnap?.generationStatus === 'generating') {
       if (res && !res.headersSent) {
@@ -4969,17 +5059,19 @@ async function executeCoordinatedGenerationJob(
       id: courseId,
       code: courseId,
       title: courseName,
-      description: courseDescription || `A comprehensive university course on ${courseName}.`,
-      department: rawDept || 'Academic Studies',
-      subject: subject || 'General',
-      level: level || '100',
-      semester: semester || '1st Semester',
-      creditUnits: creditUnits || 3,
-      prerequisites: [],
-      scope: scope || 'DEPARTMENT',
+      description: typeof courseDescription === 'string' && courseDescription.trim()
+        ? courseDescription.trim()
+        : null,
+      department: rawDept,
+      subject: typeof subject === 'string' && subject.trim() ? subject.trim() : null,
+      level: level.trim(),
+      semester: typeof semester === 'string' && semester.trim() ? semester.trim() : null,
+      creditUnits,
+      prerequisites: Array.isArray(req.body.prerequisites) ? req.body.prerequisites : null,
+      scope: scope.trim().toUpperCase(),
       academicStandard,
       faculties: selectedFaculties,
-      departments: selectedDepartments,
+      departments: effectiveDepartments,
       isAIGenerated: true,
       createdAt: existingSnap?.createdAt || new Date().toISOString(),
       generationStatus: 'generating',
@@ -5042,9 +5134,11 @@ async function executeCoordinatedGenerationJob(
 
         if (Array.isArray(approvedModules) && approvedModules.length > 0) {
           skeleton = {
-            description: courseDescription || `A comprehensive university course on ${courseName} (${domainBrief.primaryDomain}).`,
+            description: typeof courseDescription === 'string' && courseDescription.trim()
+              ? courseDescription.trim()
+              : null,
             modules: approvedModules,
-            learningOutcomes: normalizeLearningOutcomes(req.body.learningOutcomes || []),
+            learningOutcomes: normalizeLearningOutcomes(req.body.learningOutcomes),
             pedagogyType: domainBrief.pedagogyType,
             creditHours: creditUnits
           };
@@ -5095,7 +5189,7 @@ async function executeCoordinatedGenerationJob(
               depth,
               scope,
               selectedFaculties,
-              selectedDepartments,
+              selectedDepartments: effectiveDepartments,
               outline,
               sourceText,
               academicStandard
@@ -5338,7 +5432,7 @@ async function executeCoordinatedGenerationJob(
                     courseName,
                     department: rawDept,
                     selectedFaculties,
-                    selectedDepartments,
+                    selectedDepartments: effectiveDepartments,
                     level,
                     tone,
                     depth,
@@ -5447,19 +5541,21 @@ async function executeCoordinatedGenerationJob(
           statusMessage: 'Generating mathematical and core concept sheets...'
         });
 
-        const formulaPrompt = `Generate a comprehensive reference sheet of 6 crucial governing equations, quantitative relationships, or core theoretical laws for: "${courseName}".
+        const formulaPrompt = `Using only the verified course material already generated for "${courseName}", identify the governing equations, quantitative relationships, and core theoretical laws actually supported by that material.
 Domain: ${domainBrief.primaryDomain}
 Pedagogy Type: ${domainBrief.pedagogyType}
 
+Do not invent a formula to fill a quota. Include every distinct relationship that is materially required to explain or solve the generated course content; do not duplicate equivalent equations. If the supplied course material does not support a reliable formula, fail this generation step rather than fabricate one.
+
 Return strictly a JSON object:
 {
-  "pedagogicalReasoning": "Rationale for selecting these core equations/principles",
+  "pedagogicalReasoning": "Explain why these relationships are present in the supplied course material",
   "formulas": [
     {
-      "id": "f1",
-      "title": "Law / Equation Name",
-      "latex": "Governing Equation in LaTeX (e.g. \\\\sigma = E \\\\epsilon or J = -D \\\\frac{dC}{dx})",
-      "description": "Definition of all variables, physical interpretation, and domain context"
+      "id": "A unique, stable identifier for this formula within this course",
+      "title": "The exact law or equation name",
+      "latex": "The governing equation in LaTeX",
+      "description": "Define every variable and state the physical or theoretical meaning grounded in the course material"
     }
   ]
 }`;
@@ -5481,7 +5577,7 @@ Return strictly a JSON object:
 
           if (formulaData && Array.isArray(formulaData.formulas)) {
             for (const f of formulaData.formulas) {
-              const fId = `form_${courseId}_${f.id || Math.random().toString(36).substring(7)}`;
+              const fId = `form_${courseId}_${f.id}`;
               await pool.query(
                 `INSERT INTO course_formulas (id, course_id, name, latex_expression, variables_breakdown, derivation_notes, created_at)
                  VALUES ($1, $2, $3, $4, $5::jsonb, $6, NOW())
@@ -5489,12 +5585,13 @@ Return strictly a JSON object:
                    name = EXCLUDED.name,
                    latex_expression = EXCLUDED.latex_expression,
                    derivation_notes = EXCLUDED.derivation_notes`,
-                [fId, courseId, f.title || 'Formula', f.latex || '', JSON.stringify({}), f.description || '']
-              ).catch(() => {});
+                [fId, courseId, f.title, f.latex, JSON.stringify({}), f.description]
+              );
             }
           }
         } catch (fErr) {
-          console.warn('[Coordinated Gen] Formula generation error:', fErr);
+          logger.error({ courseId, error: fErr instanceof Error ? fErr.message : String(fErr) }, '[Coordinated Gen] Formula generation failed');
+          throw new Error('Course generation stopped because its source-grounded formula sheet could not be generated and persisted.');
         }
 
         // STEP 4: Compile Final Syllabus from Neon PostgreSQL
@@ -6174,7 +6271,7 @@ async function resumeInterruptedCourseJobs(_db: admin.firestore.Firestore | null
   }
 }
 
-app.get('/api/courses/:courseId/health', async (req, res) => {
+app.get('/api/courses/:courseId/health', verifyAdmin, async (req, res) => {
   const { courseId } = req.params;
   try {
     const audit = await auditCourseHealthInPostgres(courseId);
@@ -6592,29 +6689,50 @@ app.get('/api/admin/ai-status', verifyAuth, async (req, res) => {
     }
 
     const stats: Record<string, any> = {
-      totalSparksConsumed: 0,
-      totalQuestions: 0,
-      averageMastery: 0,
-      popularCourse: 'N/A'
+      sourceStatus: 'unavailable',
+      totalSparksConsumed: null,
+      totalInteractions: null,
+      averageMastery: null,
+      popularCourse: null
     };
 
     const pool = getPostgresPool();
     if (pool) {
       try {
-        const [sparksRes, questionsRes, masteryRes, popularRes] = await Promise.all([
-          pool.query(`SELECT COALESCE(SUM(ABS(delta)), 0)::bigint AS consumed FROM spark_transactions_ledger WHERE delta < 0 AND type = 'SETTLE'`).catch(() => ({ rows: [{ consumed: 0 }] })),
-          pool.query(`SELECT COUNT(*)::int AS count FROM chat_analytics`).catch(() => ({ rows: [{ count: 0 }] })),
-          pool.query(`SELECT COALESCE(ROUND(AVG(score_pct)), 0)::int AS avg_score FROM user_quiz_attempts`).catch(() => ({ rows: [{ avg_score: 0 }] })),
-          pool.query(`SELECT course_id, COUNT(*)::int AS cnt FROM user_course_progress GROUP BY course_id ORDER BY cnt DESC LIMIT 1`).catch(() => ({ rows: [] }))
+        const [sparksRes, interactionsRes, masteryRes, popularRes] = await Promise.all([
+          pool.query(`SELECT COALESCE(SUM(ABS(delta)), 0)::bigint AS consumed
+                      FROM spark_transactions_ledger
+                      WHERE delta < 0 AND type = 'SETTLE'`),
+          pool.query(`SELECT COUNT(*)::int AS count FROM chat_analytics`),
+          pool.query(`SELECT ROUND(AVG(score_pct))::int AS avg_score FROM user_quiz_attempts`),
+          pool.query(`SELECT course_id, COUNT(*)::int AS cnt
+                      FROM user_course_progress
+                      GROUP BY course_id
+                      ORDER BY cnt DESC
+                      LIMIT 1`)
         ]);
-        stats.totalSparksConsumed = Number(sparksRes.rows[0]?.consumed || 0);
-        stats.totalQuestions = Number(questionsRes.rows[0]?.count || 0);
-        stats.averageMastery = Number(masteryRes.rows[0]?.avg_score || 0);
-        if (popularRes.rows[0]?.course_id) {
-          stats.popularCourse = String(popularRes.rows[0].course_id);
+
+        const consumed = sparksRes.rows[0]?.consumed;
+        const interactions = interactionsRes.rows[0]?.count;
+        const averageScore = masteryRes.rows[0]?.avg_score;
+        const popularCourse = popularRes.rows[0]?.course_id;
+
+        if (consumed === null || consumed === undefined ||
+            interactions === null || interactions === undefined) {
+          throw new Error('Required aggregate rows were not returned by the live analytics queries.');
         }
+
+        stats.sourceStatus = 'verified';
+        stats.totalSparksConsumed = Number(consumed);
+        stats.totalInteractions = Number(interactions);
+        stats.averageMastery = averageScore === null || averageScore === undefined
+          ? null
+          : Number(averageScore);
+        stats.popularCourse = typeof popularCourse === 'string' && popularCourse.trim()
+          ? popularCourse
+          : null;
       } catch (statsErr: any) {
-        console.warn('[ai-status] Live stats query warning:', statsErr.message);
+        logger.error({ error: statsErr?.message || String(statsErr) }, '[ai-status] Live stats could not be verified');
       }
     }
 
@@ -6964,7 +7082,7 @@ app.get('/api/admin/system-health', verifyAuth, async (req, res) => {
     const dbStart = Date.now();
     const [apiKeysData, kbRes] = await Promise.all([
       getSystemSettingsDoc('api_keys'),
-      pool.query('SELECT COUNT(*)::int as count FROM course_knowledge_chunks').catch(() => ({ rows: [{ count: 0 }] }))
+      pool.query('SELECT COUNT(*)::int as count FROM course_knowledge_chunks')
     ]);
     const dbLatencyMs = Date.now() - dbStart;
     const keysObj = apiKeysData || {};
@@ -7538,6 +7656,23 @@ app.post('/api/formulas/search', verifyAuth, async (req, res) => {
   try {
     const { query, courseId } = req.body;
     if (!query) return res.status(400).json({ error: 'Query is required' });
+    if (courseId !== undefined && (typeof courseId !== 'string' || !courseId.trim())) {
+      return res.status(400).json({ error: 'courseId must be a non-empty string when supplied.' });
+    }
+    if (typeof courseId === 'string') {
+      const access = await resolveCourseAccessForUser(
+        (req as any).user.uid,
+        (req as any).user.email,
+        courseId
+      );
+      if (!access.allowed) {
+        return res.status(access.statusCode).json({
+          error: access.statusCode === 404
+            ? 'Course not found.'
+            : 'Formula context is not available to the authenticated academic profile.'
+        });
+      }
+    }
 
     const systemInstruction = `You are the UniAce Formula Expert, a high-performance academic assistant. 
     Your task is to find or generate a list of 3-5 highly related mathematical or scientific formulas based on the student's query.
@@ -8051,94 +8186,132 @@ Requirements:
 });
 
 /**
- * Server-side helper to dynamically generate plausible, contextually grounded academic distractors
- * for multiple-choice questions using AI, ensuring they model real student misconceptions and sign errors.
+ * Generate distractors only from supplied lesson content. Invalid or incomplete
+ * provider output is an error; it is never converted into a successful empty list.
  */
 export async function generatePlausibleDistractorsServer(params: {
   question: string;
   correctAnswer: string;
   subtopicTitle?: string;
   subtopicContent: string;
-  count?: number;
+  count: number;
   subject?: string;
   rollingMasteryScore?: number;
 }): Promise<Array<{ text: string; feedback: string }>> {
   const {
     question,
     correctAnswer,
-    subtopicTitle = '',
+    subtopicTitle,
     subtopicContent,
-    count = 3,
-    subject = 'University Assessment',
-    rollingMasteryScore = 50
+    count,
+    subject,
+    rollingMasteryScore
   } = params;
 
+  if (!question.trim() || !correctAnswer.trim() || !subtopicContent.trim()) {
+    throw new Error('Question, correct answer, and source lesson content are required.');
+  }
+  if (!Number.isInteger(count) || count < 1 || count > 10) {
+    throw new Error('A valid distractor count from 1 to 10 is required.');
+  }
+  if (rollingMasteryScore !== undefined &&
+      (!Number.isFinite(rollingMasteryScore) || rollingMasteryScore < 0 || rollingMasteryScore > 100)) {
+    throw new Error('Rolling mastery must be a verified percentage between 0 and 100.');
+  }
+
+  const masteryDirective = rollingMasteryScore === undefined
+    ? 'Do not assume or infer the student mastery level.'
+    : (rollingMasteryScore >= 75
+      ? 'Generate subtle, sophisticated distractors appropriate for the supplied high mastery score.'
+      : 'Generate rigorous university-level distractors appropriate for the supplied mastery score.');
+
   const systemInstruction = `You are a university assessment psychometrician.
-Generate exactly ${count} highly PLAUSIBLE BUT INCORRECT "distractor" answer options for a multiple-choice question.
-Output strictly valid raw JSON starting with { and ending with }.${latexInstruction}
+Generate exactly ${count} plausible but incorrect distractor options for a multiple-choice question.
+Output strictly valid raw JSON starting with { and ending with }. ${latexInstruction}
 
 DISTRACTOR RIGOR RULES:
-1. Contextually Grounded: Every distractor MUST be strictly derived from the provided subtopic material.
-2. Model Real University Errors: Include sign inversions ($+ \\leftrightarrow -$), reciprocal fraction errors, forgotten constants, or adjacent phase/mechanism confusion.
-3. Every distractor MUST include a specific 'feedback' string explaining why an intelligent student might mistakenly choose it, and why it is actually false.
-4. Rigor Level: ${rollingMasteryScore >= 75 ? 'HIGH MASTERY (>=75%): Generate subtle, sophisticated distractors testing deep mechanical comprehension.' : 'Standard university exam caliber.'}
+1. Every distractor must be strictly derived from the supplied lesson material.
+2. Model realistic misconceptions without introducing concepts absent from the source.
+3. Every distractor must include specific feedback explaining why it is wrong.
+4. ${masteryDirective}
 
 Return JSON matching:
 {
   "distractors": [
     {
-      "text": "string (Plausible distractor text with $...$ math)",
-      "feedback": "string (Specific feedback on why this option is false)"
+      "text": "Plausible but incorrect option",
+      "feedback": "Source-grounded explanation of the misconception"
     }
   ]
 }`;
 
-  const userPrompt = `Question: "${question}"
-Correct Answer: "${correctAnswer}"
-Subtopic: "${subtopicTitle}"
-Domain/Subject: "${subject}"
-Student Mastery: ${rollingMasteryScore}%
-Content Excerpt:
-${(subtopicContent || '').slice(0, 4000)}`;
+  const contextLines = [
+    `Question: "${question}"`,
+    `Correct answer: "${correctAnswer}"`,
+    subtopicTitle ? `Subtopic: "${subtopicTitle}"` : '',
+    subject ? `Subject: "${subject}"` : '',
+    rollingMasteryScore === undefined ? '' : `Verified rolling mastery: ${rollingMasteryScore}%`,
+    `Source lesson content:\\n${subtopicContent.slice(0, 4000)}`
+  ].filter(Boolean);
 
-  try {
-    const parsed = await completeWithProviderJSON<{ distractors: Array<{ text: string; feedback: string }> }>({
-      type: 'quiz' as any,
-      messages: [
-        { role: 'system', content: systemInstruction },
-        { role: 'user', content: userPrompt }
-      ],
-      complexity: rollingMasteryScore >= 75 ? 'high' : 'standard'
-    });
+  const parsed = await completeWithProviderJSON<{ distractors: Array<{ text: string; feedback: string }> }>({
+    type: 'quiz' as any,
+    messages: [
+      { role: 'system', content: systemInstruction },
+      { role: 'user', content: contextLines.join('\\n\\n') }
+    ],
+    complexity: rollingMasteryScore !== undefined && rollingMasteryScore >= 75 ? 'high' : 'standard'
+  });
 
-    const list = Array.isArray(parsed?.distractors) ? parsed.distractors : [];
-    return list
-      .filter((d) => d && typeof d.text === 'string' && d.text.trim().toLowerCase() !== correctAnswer.trim().toLowerCase())
-      .slice(0, count);
-  } catch (err: any) {
-    logger.warn({ err: err.message }, '[generatePlausibleDistractorsServer] Distractor fallback notice');
-    return [];
+  if (!Array.isArray(parsed?.distractors) || parsed.distractors.length !== count) {
+    throw new Error(`The provider did not return exactly ${count} distractors. The incomplete result was rejected.`);
   }
+
+  const seen = new Set<string>([correctAnswer.trim().toLocaleLowerCase()]);
+  const validated = parsed.distractors.map((item, index) => {
+    const textValue = typeof item?.text === 'string' ? item.text.trim() : '';
+    const feedback = typeof item?.feedback === 'string' ? item.feedback.trim() : '';
+    const normalized = textValue.toLocaleLowerCase();
+    if (!textValue || !feedback || seen.has(normalized)) {
+      throw new Error(`Distractor ${index + 1} is missing, duplicated, or identical to the correct answer.`);
+    }
+    seen.add(normalized);
+    return { text: textValue, feedback };
+  });
+
+  return validated;
 }
 
 app.post('/api/quiz/generate-distractors', verifyAuth, async (req, res) => {
   const { question, correctAnswer, subtopicTitle, subtopicContent, count, subject, rollingMasteryScore } = req.body || {};
-  if (!question || !correctAnswer || !subtopicContent) {
-    return res.status(400).json({ error: 'question, correctAnswer, and subtopicContent are required' });
+  if (typeof question !== 'string' || typeof correctAnswer !== 'string' ||
+      typeof subtopicContent !== 'string' || !question.trim() ||
+      !correctAnswer.trim() || !subtopicContent.trim()) {
+    return res.status(400).json({ error: 'Question, correct answer, and source lesson content are required.' });
   }
+  if (!Number.isInteger(count) || count < 1 || count > 10) {
+    return res.status(400).json({ error: 'A valid distractor count from 1 to 10 is required.' });
+  }
+  if (rollingMasteryScore !== undefined &&
+      (typeof rollingMasteryScore !== 'number' || !Number.isFinite(rollingMasteryScore) ||
+       rollingMasteryScore < 0 || rollingMasteryScore > 100)) {
+    return res.status(400).json({ error: 'Rolling mastery must be a verified percentage between 0 and 100.' });
+  }
+
   try {
     const distractors = await generatePlausibleDistractorsServer({
       question,
       correctAnswer,
-      subtopicTitle,
+      subtopicTitle: typeof subtopicTitle === 'string' ? subtopicTitle : undefined,
       subtopicContent,
-      count: Number(count) || 3,
-      subject,
-      rollingMasteryScore: Number(rollingMasteryScore) || 50
+      count,
+      subject: typeof subject === 'string' ? subject : undefined,
+      rollingMasteryScore
     });
     return res.json({ success: true, distractors });
   } catch (error: any) {
-    return res.status(500).json({ error: 'Failed to generate distractors', details: error.message });
+    logger.error({ error: error?.message || String(error) }, '[Quiz distractors] Generation failed');
+    return res.status(503).json({ error: 'Verified source-grounded distractors could not be generated.' });
   }
 });
 
@@ -8183,17 +8356,11 @@ function isExerciseAlreadySeen(ex: any, avoidSet: string[]): boolean {
  * - Strictly excludes all previously seen exercises (avoidPrompts / seenIds) so practicing again NEVER repeats questions.
  * - Dynamically scales Concept Review card count (6-10+ cards) to match the depth of the lesson.
  */
-app.post('/api/skill-session/generate', verifyAuth, async (req, res) => {
+app.post('/api/skill-session/generate', verifyAuth, requireCourseAccessFromBody, async (req, res) => {
   const {
     courseId,
-    courseTitle,
-    moduleId,
-    moduleTitle,
     skillId,
     skillTitle,
-    skillContent,
-    rollingMastery = 50,
-    sessionAttempt = 1,
     avoidPrompts = [],
     forceFresh = false
   } = req.body || {};
@@ -8213,37 +8380,65 @@ app.post('/api/skill-session/generate', verifyAuth, async (req, res) => {
     let dbKeyTerms: string[] = [];
     let dbLearningOutcomes: string[] = [];
     let existingBank: any[] = [];
-    let matchedLessonId = skillId || '';
+    const uid = (req as any).user?.uid;
+    if (!uid) return res.status(401).json({ error: 'Authenticated student session required.' });
 
     const lessonQuery = await pool.query(
-      `SELECT id, title, content_markdown, key_terms, learning_outcomes, skill_bank
-       FROM course_lessons 
-       WHERE course_id = $1 AND (id = $2 OR LOWER(title) = LOWER($3))
+      `SELECT lesson.id, lesson.course_id, lesson.module_id, lesson.title,
+              lesson.content_markdown, lesson.key_terms, lesson.learning_outcomes,
+              lesson.skill_bank, course.title AS course_title, module.title AS module_title
+       FROM course_lessons AS lesson
+       JOIN courses AS course ON course.id = lesson.course_id
+       JOIN course_modules AS module ON module.id = lesson.module_id AND module.course_id = lesson.course_id
+       WHERE lesson.course_id = $1 AND (lesson.id = $2 OR LOWER(lesson.title) = LOWER($3))
        LIMIT 1`,
-      [courseId, skillId || '', skillTitle]
-    ).catch(() => ({ rows: [] as any[] }));
-
-    if (lessonQuery.rows.length > 0) {
-      const row = lessonQuery.rows[0];
-      matchedLessonId = row.id || matchedLessonId;
-      dbLessonMarkdown = String(row.content_markdown || '');
-      dbKeyTerms = Array.isArray(row.key_terms) ? row.key_terms : [];
-      dbLearningOutcomes = Array.isArray(row.learning_outcomes) ? row.learning_outcomes : [];
-      if (Array.isArray(row.skill_bank) && row.skill_bank.length > 0) {
-        existingBank = row.skill_bank;
-      }
+      [courseId, typeof skillId === 'string' ? skillId : '', skillTitle]
+    );
+    if (lessonQuery.rows.length === 0) {
+      return res.status(404).json({ error: 'The requested lesson does not exist in the live course catalog.' });
     }
 
-    const masteryScore = Number(rollingMastery) || 50;
-    const attempt = Math.max(1, Number(sessionAttempt) || 1);
-    const isHighMastery = masteryScore >= 75;
+    const liveLesson = lessonQuery.rows[0];
+    const matchedLessonId = liveLesson.id;
+    const liveModuleId = liveLesson.module_id;
+    const liveCourseTitle = liveLesson.course_title;
+    const liveModuleTitle = liveLesson.module_title;
+    const liveSkillTitle = liveLesson.title;
+    if (typeof liveLesson.content_markdown !== 'string' || !liveLesson.content_markdown.trim()) {
+      return res.status(503).json({ error: 'The live lesson has no persisted teaching content. Skill practice was not generated.' });
+    }
+    dbLessonMarkdown = liveLesson.content_markdown;
+    dbKeyTerms = Array.isArray(liveLesson.key_terms) ? liveLesson.key_terms : [];
+    dbLearningOutcomes = Array.isArray(liveLesson.learning_outcomes) ? liveLesson.learning_outcomes : [];
+    existingBank = Array.isArray(liveLesson.skill_bank) ? liveLesson.skill_bank : [];
+
+    const historyRes = await pool.query(
+      `SELECT COUNT(*)::int AS attempt_count,
+              AVG(score_pct)::float AS average_score
+       FROM user_quiz_attempts
+       WHERE uid = $1 AND course_id = $2 AND quiz_id = $3`,
+      [uid, courseId, matchedLessonId]
+    );
+    const recordedAttemptCount = Number(historyRes.rows[0]?.attempt_count);
+    if (!Number.isInteger(recordedAttemptCount) || recordedAttemptCount < 0) {
+      throw new Error('Recorded quiz-attempt history could not be verified.');
+    }
+    const rawAverageScore = historyRes.rows[0]?.average_score;
+    const masteryScore = rawAverageScore === null || rawAverageScore === undefined
+      ? null
+      : Number(rawAverageScore);
+    if (masteryScore !== null && (!Number.isFinite(masteryScore) || masteryScore < 0 || masteryScore > 100)) {
+      throw new Error('Persisted practice-score history contains an invalid value.');
+    }
+    const attempt = recordedAttemptCount + 1;
+    const isHighMastery = masteryScore !== null && masteryScore >= 75;
 
     const cleanAvoidList = Array.isArray(avoidPrompts)
       ? avoidPrompts.map((p: any) => String(p || '').toLowerCase().replace(/\s+/g, ' ').trim()).filter((s: string) => s.length >= 4)
       : [];
 
     // Dynamically compute session exercise count & mastery target based on lesson richness & student level
-    const rawContentText = dbLessonMarkdown || String(skillContent || '');
+    const rawContentText = dbLessonMarkdown;
     const formulaMatches = (rawContentText.match(/\$[^\$]+\$/g) || []).length;
     const headingMatches = (rawContentText.match(/^#{1,4}\s+/gm) || []).length;
     const conceptDensityScore =
@@ -8287,10 +8482,10 @@ app.post('/api/skill-session/generate', verifyAuth, async (req, res) => {
         rollingMastery: masteryScore,
         session: {
           courseId,
-          moduleId: moduleId || 'unit_1',
-          skillId: matchedLessonId || skillTitle,
-          skillTitle,
-          learnSummary: dbLessonMarkdown.slice(0, 1600) || `Core principles of ${skillTitle}.`,
+          moduleId: liveModuleId,
+          skillId: matchedLessonId,
+          skillTitle: liveSkillTitle,
+          learnSummary: dbLessonMarkdown.slice(0, 1600),
           recommendedMasteryTarget: dynamicMasteryTarget,
           exercises: selected
         }
@@ -8307,22 +8502,21 @@ app.post('/api/skill-session/generate', verifyAuth, async (req, res) => {
     ];
 
     const combinedLessonContext = [
-      `Course: ${courseId} — ${courseTitle || courseId}`,
-      moduleTitle ? `Unit: ${moduleTitle}` : '',
-      `Skill Topic: ${skillTitle}`,
+      `Course: ${courseId} — ${liveCourseTitle}`,
+      `Unit: ${liveModuleTitle}`,
+      `Skill Topic: ${liveSkillTitle}`,
       `Practice Attempt #: ${attempt}`,
-      `Student Rolling Mastery: ${masteryScore}% (${isHighMastery ? 'High Mastery: Focus on advanced conceptual synthesis, multi-word error spotting, and derivations' : 'Foundational to Intermediate Mastery progression'})`,
+      `Recorded practice history: ${masteryScore === null ? 'No quiz attempts are recorded for this lesson; do not infer a mastery level.' : `Average recorded client-computed practice score: ${masteryScore.toFixed(2)}%; this is not a server-verified examination grade.`} ${isHighMastery ? 'Use greater conceptual depth as a generation preference.' : ''}`,
       dbKeyTerms.length > 0 ? `Key Terms (${dbKeyTerms.length}): ${dbKeyTerms.join(', ')}` : '',
       dbLearningOutcomes.length > 0 ? `Learning Outcomes: ${dbLearningOutcomes.join('; ')}` : '',
       dbLessonMarkdown ? `Authoritative Lesson Content:\n${dbLessonMarkdown.slice(0, 4200)}` : '',
-      skillContent ? `Additional Topic Notes:\n${String(skillContent).slice(0, 2200)}` : '',
       priorQuestionsSummary.length > 0
         ? `STRICT NON-REPETITION RULE (Attempt #${attempt}) — DO NOT repeat or reuse any of these previously seen questions, scenarios, passages, or examples:\n${priorQuestionsSummary.map((q, idx) => `${idx + 1}. ${String(q).slice(0, 140)}`).join('\n')}`
         : ''
     ].filter(Boolean).join('\n\n');
 
     const systemInstruction = `You are the UniAce Interactive Skill Mastery Architect.
-Build a dynamically sized pool of ${dynamicInitialBatchCount} to ${dynamicInitialBatchCount + 2} 100% NEW, UNREPEATED interactive skill exercises for "${skillTitle}" in ${courseId}.
+Build a dynamically sized pool of ${dynamicInitialBatchCount} to ${dynamicInitialBatchCount + 2} 100% NEW, UNREPEATED interactive skill exercises for "${liveSkillTitle}" in ${courseId}.
 Output strictly valid raw JSON starting with { and ending with }.${latexInstruction}
 
 DYNAMIC EXERCISE POOL REQUIREMENTS (${dynamicInitialBatchCount} TO ${dynamicInitialBatchCount + 2} ITEMS):
@@ -8418,14 +8612,15 @@ Return STRICT JSON matching:
     // 4. Append new unseen exercises to Neon PostgreSQL course_lessons skill_bank (capped at 40 items)
     if (matchedLessonId) {
       const mergedBank = [...existingBank, ...stampedPool].slice(-40);
-      await pool.query(
+      const saveResult = await pool.query(
         `UPDATE course_lessons 
          SET skill_bank = $1::jsonb, updated_at = NOW()
          WHERE course_id = $2 AND (id = $3 OR LOWER(title) = LOWER($4))`,
-        [JSON.stringify(mergedBank), courseId, matchedLessonId, skillTitle]
-      ).catch((saveErr) => {
-        logger.warn({ err: saveErr.message }, '[POST /api/skill-session/generate] Notice saving skill_bank to Neon');
-      });
+        [JSON.stringify(mergedBank), courseId, matchedLessonId, liveSkillTitle]
+      );
+      if (saveResult.rowCount !== 1) {
+        throw new Error('Generated skill exercises were not persisted to the authoritative lesson record.');
+      }
     }
 
     return res.json({
@@ -8435,10 +8630,10 @@ Return STRICT JSON matching:
       rollingMastery: masteryScore,
       session: {
         courseId,
-        moduleId: moduleId || 'unit_1',
-        skillId: matchedLessonId || skillTitle,
-        skillTitle: parsed.skillTitle || skillTitle,
-        learnSummary: parsed.learnSummary || dbLessonMarkdown.slice(0, 1600) || `Core principles of ${skillTitle}.`,
+        moduleId: liveModuleId,
+        skillId: matchedLessonId,
+        skillTitle: parsed.skillTitle || liveSkillTitle,
+        learnSummary: parsed.learnSummary || dbLessonMarkdown.slice(0, 1600),
         recommendedMasteryTarget: Number(parsed.recommendedMasteryTarget) || dynamicMasteryTarget,
         exercises: stampedPool
       }
@@ -8458,16 +8653,11 @@ Return STRICT JSON matching:
  * and student rolling mastery on the fly, ensuring infinite adaptive practice without hardcoded lengths
  * and zero repeated questions.
  */
-app.post('/api/skill-session/next-exercise', verifyAuth, async (req, res) => {
+app.post('/api/skill-session/next-exercise', verifyAuth, requireCourseAccessFromBody, async (req, res) => {
   const {
     courseId,
-    courseTitle,
-    moduleId,
-    moduleTitle,
     skillId,
     skillTitle,
-    skillContent,
-    rollingMastery = 50,
     avoidPrompts = [],
     preferredType,
     isFinalChallenge = false
@@ -8487,24 +8677,54 @@ app.post('/api/skill-session/next-exercise', verifyAuth, async (req, res) => {
     let dbLessonMarkdown = '';
     let dbKeyTerms: string[] = [];
     let existingBank: any[] = [];
-    let matchedLessonId = skillId || '';
+    const uid = (req as any).user?.uid;
+    if (!uid) return res.status(401).json({ error: 'Authenticated student session required.' });
 
     const lessonQuery = await pool.query(
-      `SELECT id, title, content_markdown, key_terms, skill_bank
-       FROM course_lessons 
-       WHERE course_id = $1 AND (id = $2 OR LOWER(title) = LOWER($3))
+      `SELECT lesson.id, lesson.course_id, lesson.module_id, lesson.title,
+              lesson.content_markdown, lesson.key_terms, lesson.skill_bank,
+              course.title AS course_title, module.title AS module_title
+       FROM course_lessons AS lesson
+       JOIN courses AS course ON course.id = lesson.course_id
+       JOIN course_modules AS module ON module.id = lesson.module_id AND module.course_id = lesson.course_id
+       WHERE lesson.course_id = $1 AND (lesson.id = $2 OR LOWER(lesson.title) = LOWER($3))
        LIMIT 1`,
-      [courseId, skillId || '', skillTitle]
-    ).catch(() => ({ rows: [] as any[] }));
+      [courseId, typeof skillId === 'string' ? skillId : '', skillTitle]
+    );
+    if (lessonQuery.rows.length === 0) {
+      return res.status(404).json({ error: 'The requested lesson does not exist in the live course catalog.' });
+    }
 
-    if (lessonQuery.rows.length > 0) {
-      const row = lessonQuery.rows[0];
-      matchedLessonId = row.id || matchedLessonId;
-      dbLessonMarkdown = String(row.content_markdown || '');
-      dbKeyTerms = Array.isArray(row.key_terms) ? row.key_terms : [];
-      if (Array.isArray(row.skill_bank) && row.skill_bank.length > 0) {
-        existingBank = row.skill_bank;
-      }
+    const liveLesson = lessonQuery.rows[0];
+    const matchedLessonId = liveLesson.id;
+    const liveModuleId = liveLesson.module_id;
+    const liveCourseTitle = liveLesson.course_title;
+    const liveModuleTitle = liveLesson.module_title;
+    const liveSkillTitle = liveLesson.title;
+    if (typeof liveLesson.content_markdown !== 'string' || !liveLesson.content_markdown.trim()) {
+      return res.status(503).json({ error: 'The live lesson has no persisted teaching content. Practice generation was not performed.' });
+    }
+    dbLessonMarkdown = liveLesson.content_markdown;
+    dbKeyTerms = Array.isArray(liveLesson.key_terms) ? liveLesson.key_terms : [];
+    existingBank = Array.isArray(liveLesson.skill_bank) ? liveLesson.skill_bank : [];
+
+    const historyRes = await pool.query(
+      `SELECT COUNT(*)::int AS attempt_count,
+              AVG(score_pct)::float AS average_score
+       FROM user_quiz_attempts
+       WHERE uid = $1 AND course_id = $2 AND quiz_id = $3`,
+      [uid, courseId, matchedLessonId]
+    );
+    const recordedAttemptCount = Number(historyRes.rows[0]?.attempt_count);
+    if (!Number.isInteger(recordedAttemptCount) || recordedAttemptCount < 0) {
+      throw new Error('Recorded quiz-attempt history could not be verified.');
+    }
+    const rawAverageScore = historyRes.rows[0]?.average_score;
+    const masteryScore = rawAverageScore === null || rawAverageScore === undefined
+      ? null
+      : Number(rawAverageScore);
+    if (masteryScore !== null && (!Number.isFinite(masteryScore) || masteryScore < 0 || masteryScore > 100)) {
+      throw new Error('Persisted practice-score history contains an invalid value.');
     }
 
     const avoidList = Array.isArray(avoidPrompts)
@@ -8517,7 +8737,7 @@ app.post('/api/skill-session/next-exercise', verifyAuth, async (req, res) => {
       : existingBank.filter((ex) => ex && !isExerciseAlreadySeen(ex, avoidList));
 
     if (availableFromBank.length > 0) {
-      const isHighMastery = Number(rollingMastery) >= 75;
+      const isHighMastery = masteryScore !== null && masteryScore >= 75;
       const sorted = [...availableFromBank].sort((a, b) => {
         if (preferredType && a.type === preferredType) return -1;
         if (preferredType && b.type === preferredType) return 1;
@@ -8533,14 +8753,13 @@ app.post('/api/skill-session/next-exercise', verifyAuth, async (req, res) => {
 
     // 2. Otherwise dynamically generate a fresh exercise grounded strictly in Lesson Content via AI
     const combinedLessonContext = [
-      `Course: ${courseId} — ${courseTitle || courseId}`,
-      moduleTitle ? `Unit: ${moduleTitle}` : '',
-      `Skill Subtopic: ${skillTitle}`,
-      `Rolling Mastery: ${rollingMastery}%`,
+      `Course: ${courseId} — ${liveCourseTitle}`,
+      `Unit: ${liveModuleTitle}`,
+      `Skill Subtopic: ${liveSkillTitle}`,
+      `Recorded practice history: ${masteryScore === null ? 'No quiz attempts are recorded for this lesson; do not infer a mastery level.' : `Average recorded client-computed practice score: ${masteryScore.toFixed(2)}%; this is not a server-verified examination grade.`}`,
       isFinalChallenge ? `STAGE: FINAL SYNTHESIS MASTERY CHALLENGE (Tier 3 Rigor — test deep conceptual mastery before skill level-up)` : '',
       dbKeyTerms.length > 0 ? `Key Terms: ${dbKeyTerms.join(', ')}` : '',
       dbLessonMarkdown ? `Authoritative Lesson Content:\n${dbLessonMarkdown.slice(0, 3600)}` : '',
-      skillContent ? `Lesson Content Summary:\n${String(skillContent).slice(0, 2000)}` : '',
       avoidList.length > 0 ? `STRICT NON-REPETITION RULE — DO NOT duplicate or paraphrase any of these previously presented questions/passages:\n${avoidList.slice(0, 15).join('\n')}` : ''
     ].filter(Boolean).join('\n\n');
 
@@ -8552,7 +8771,7 @@ app.post('/api/skill-session/next-exercise', verifyAuth, async (req, res) => {
       : poolTypes[Math.floor(Math.random() * poolTypes.length)];
 
     const systemInstruction = `You are the UniAce Interactive Skill Mastery Generator.
-Generate EXACTLY 1 brand-new, unrepeated interactive exercise for "${skillTitle}" grounded in the lesson content.
+Generate EXACTLY 1 brand-new, unrepeated interactive exercise for "${liveSkillTitle}" grounded in the lesson content.
 Selected format: "${chosenType}".
 Output strictly valid raw JSON starting with { and ending with }.
 ${latexInstruction}
@@ -8611,7 +8830,7 @@ Return JSON matching:
         { role: 'system', content: systemInstruction },
         { role: 'user', content: userPrompt }
       ],
-      complexity: isFinalChallenge || Number(rollingMastery) >= 75 ? 'high' : 'standard'
+      complexity: isFinalChallenge || (masteryScore !== null && masteryScore >= 75) ? 'high' : 'standard'
     });
 
     const rawExercise = parsed?.exercise || parsed;
@@ -8628,12 +8847,15 @@ Return JSON matching:
     // Append to existing bank in PostgreSQL asynchronously for persistence
     if (matchedLessonId) {
       const updatedBank = [...existingBank, newExercise].slice(-40);
-      pool.query(
+      const saveResult = await pool.query(
         `UPDATE course_lessons 
          SET skill_bank = $1::jsonb, updated_at = NOW()
          WHERE course_id = $2 AND (id = $3 OR LOWER(title) = LOWER($4))`,
-        [JSON.stringify(updatedBank), courseId, matchedLessonId, skillTitle]
-      ).catch(() => {});
+        [JSON.stringify(updatedBank), courseId, matchedLessonId, liveSkillTitle]
+      );
+      if (saveResult.rowCount !== 1) {
+        throw new Error('Generated skill exercise was not persisted to the authoritative lesson record.');
+      }
     }
 
     return res.json({
@@ -9441,6 +9663,15 @@ app.post('/api/user/enroll-course', verifyAuth, async (req, res) => {
   }
 
   try {
+    const access = await resolveCourseAccessForUser(uid, (req as any).user?.email, courseId);
+    if (!access.allowed) {
+      return res.status(access.statusCode).json({
+        error: access.statusCode === 404
+          ? 'Course not found.'
+          : 'Enrollment is unavailable because this course is not assigned to the authenticated academic profile.'
+      });
+    }
+
     await pool.query(
       `INSERT INTO user_course_progress (id, uid, course_id, total_study_seconds, completed_lessons_count, completed_modules_count, version, updated_at)
        VALUES ($1, $2, $3, 0, 0, 0, 1, NOW())

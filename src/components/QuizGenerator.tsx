@@ -68,6 +68,7 @@ export default function QuizGenerator({
   
   // Exam Mode State
   const [timeLeft, setTimeLeft] = useState(0); // in seconds
+  const [quizStartedAt, setQuizStartedAt] = useState<number | null>(null);
   const [flaggedQuestions, setFlaggedQuestions] = useState<Record<string, boolean>>({});
   const [showPalette, setShowPalette] = useState(false);
 
@@ -98,48 +99,48 @@ export default function QuizGenerator({
     try {
       const isAdaptive = mode === 'adaptive';
       
-      // Fetch user skill level for adaptive quizzes
-      let userSkillLevel = 3; // Default to medium
-      if (isAdaptive && user && courseId && subTopic) {
-        try {
-          const srsRecord = await SRSService.getSRSRecord(user.uid, courseId, subTopic.id);
-          if (srsRecord) {
-            // Map repetitions to a skill level (1-5)
-            // 0 reps = level 1, 1-2 reps = level 2, 3-4 reps = level 3, 5-6 reps = level 4, 7+ reps = level 5
-            userSkillLevel = Math.min(5, Math.max(1, Math.floor(srsRecord.repetitions / 2) + 1));
-          }
-        } catch (error) {
-          console.error("Failed to fetch user skill level:", error);
+      // Adaptive difficulty requires an actual persisted mastery record.
+      let userSkillLevel: number | undefined;
+      if (isAdaptive) {
+        if (!user || !courseId || !subTopic) {
+          throw new Error('Adaptive quizzes require an authenticated student, course, and lesson.');
         }
+        const srsRecord = await SRSService.getSRSRecord(user.uid, courseId, subTopic.id);
+        if (!srsRecord || !Number.isFinite(srsRecord.repetitions) || srsRecord.repetitions < 0) {
+          throw new Error('No verified mastery record exists for this lesson. Complete a recorded practice attempt before using adaptive mode.');
+        }
+        // Convert the persisted review count into the adaptive engine's supported tier.
+        userSkillLevel = Math.min(5, Math.max(1, Math.floor(srsRecord.repetitions / 2) + 1));
       }
 
       // Lazy Load Content for Quiz Generation if missing
       let moduleForQuiz = { ...module };
       let subTopicForQuiz = subTopic ? { ...subTopic } : undefined;
 
-      if (courseId) {
-        try {
-          const { CourseService } = await import('../services/courseService');
-          const lessons = await CourseService.getLessons(courseId, module.id);
-          
-          if (subTopicForQuiz && !subTopicForQuiz.content) {
-            const target = lessons.find(l => l.id === subTopicForQuiz.id || (subTopicForQuiz.id.includes('-') && l.id === subTopicForQuiz.id.split('-')[1]));
-            if (target && target.content) {
-              subTopicForQuiz.content = target.content;
-            }
-          } else if (!subTopicForQuiz) {
-            const lessonsContentMap: Record<string, string> = {};
-            lessons.forEach(l => {
-              if (l.content) lessonsContentMap[l.id] = l.content;
-            });
-            moduleForQuiz.subTopics = moduleForQuiz.subTopics.map(st => ({
-              ...st,
-              content: st.content || lessonsContentMap[st.id] || lessonsContentMap[st.id.split('-')[1] || ''] || ''
-            }));
+      if (courseId && !(subTopicForQuiz?.id || '').startsWith('custom-subtopic-')) {
+        const { CourseService } = await import('../services/courseService');
+        const lessons = await CourseService.getLessons(courseId, module.id);
+
+        if (subTopicForQuiz) {
+          const target = lessons.find(lesson => lesson.id === subTopicForQuiz!.id);
+          if (!target || typeof target.content !== 'string' || !target.content.trim()) {
+            throw new Error('The selected lesson could not be verified against the live course catalog.');
           }
-        } catch (lErr) {
-          console.warn('[QuizGenerator] Failed to load lesson content via API:', lErr);
+          subTopicForQuiz = { ...subTopicForQuiz, content: target.content };
+        } else {
+          const lessonsById = new Map(lessons.map(lesson => [lesson.id, lesson]));
+          moduleForQuiz.subTopics = moduleForQuiz.subTopics.map(topic => {
+            const liveLesson = lessonsById.get(topic.id);
+            if (!liveLesson || typeof liveLesson.content !== 'string' || !liveLesson.content.trim()) {
+              throw new Error(`Live lesson content is missing for "${topic.title}". Quiz generation was stopped.`);
+            }
+            return { ...topic, content: liveLesson.content };
+          });
         }
+      }
+
+      if (subTopicForQuiz?.id.startsWith('custom-subtopic-') && !subTopicForQuiz.content?.trim()) {
+        throw new Error('Custom quiz source material is required; no synthetic lesson content is permitted.');
       }
           
 
@@ -150,13 +151,15 @@ export default function QuizGenerator({
         throw new Error("No lesson content found. Please read or generate the lessons first before taking a quiz.");
       }
 
-      const rollingMastery = typeof userSkillLevel === 'number' ? Math.round((userSkillLevel / 5) * 100) : 50;
+      const rollingMastery = typeof userSkillLevel === 'number'
+        ? Math.round((userSkillLevel / 5) * 100)
+        : undefined;
       const data = await AIService.generateQuiz(
-        moduleForQuiz, 
-        subTopicForQuiz, 
-        numQuestions, 
-        questionType, 
-        isAdaptive, 
+        moduleForQuiz,
+        subTopicForQuiz,
+        numQuestions,
+        questionType,
+        isAdaptive,
         userSkillLevel,
         profile?.academic_level,
         profile?.department,
@@ -172,13 +175,14 @@ export default function QuizGenerator({
         setAdaptiveQuestions(data);
         const firstQ = data.find((q: any) => q.difficulty === userSkillLevel) || data[0];
         setQuestions([firstQ]);
-        setCurrentDifficulty(firstQ.difficulty || userSkillLevel);
+        setCurrentDifficulty(firstQ.difficulty);
       } else {
         setQuestions(data);
         if (mode === 'exam') {
           setTimeLeft(numQuestions * 90); // 1.5 minutes per question
         }
       }
+      setQuizStartedAt(Date.now());
       setStep('quiz');
     } catch (error: any) {
       console.error("Quiz generation error:", error);
@@ -338,10 +342,15 @@ export default function QuizGenerator({
       triggerMilestoneCelebration();
     }
 
-    // Persist Quiz Attempt to Neon API
+    // Persist the measured practice result. Its provenance is explicitly recorded as
+    // client-computed practice, not represented as a server-verified examination.
     if (user && courseId) {
-      user.getIdToken().then(token => {
-        fetch('/api/quiz/record-attempt', {
+      try {
+        if (quizStartedAt === null) {
+          throw new Error('Quiz start time was not recorded; the attempt cannot be persisted accurately.');
+        }
+        const token = await user.getIdToken();
+        const response = await fetch('/api/quiz/record-attempt', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -350,12 +359,21 @@ export default function QuizGenerator({
           body: JSON.stringify({
             courseId,
             moduleId: module.id,
-            quizId: subTopic?.id || 'default',
+            quizId: subTopic?.id || module.id,
+            attemptIdempotencyKey: crypto.randomUUID(),
             scorePct: percentage,
-            passed: percentage >= 70
+            passed: percentage >= 70,
+            timeSpentSeconds: Math.max(0, Math.round((Date.now() - quizStartedAt) / 1000)),
+            gradingSource: 'client_computed_practice'
           })
-        }).catch(err => console.warn("Could not record quiz attempt:", err));
-      }).catch(err => console.warn("Could not get idToken for quiz attempt:", err));
+        });
+        if (!response.ok) {
+          throw new Error(`Quiz attempt persistence failed with HTTP ${response.status}.`);
+        }
+      } catch (err) {
+        console.error('Could not persist quiz attempt:', err);
+        toast.error('Your practice result could not be saved to the live record.');
+      }
     }
 
     // Update Spaced Repetition System
@@ -383,7 +401,7 @@ export default function QuizGenerator({
     }
 
     // PHASE 3: Automated Weakness Targeting
-    if (percentage < 70 && user) {
+    if (percentage < 70 && user && courseId) {
       const failedQuestions = questions.filter(q => {
         if (q.type === 'multiple-choice') {
           return userAnswers[q.id]?.toLowerCase().trim() !== q.correctAnswer.toLowerCase().trim();
@@ -407,7 +425,7 @@ export default function QuizGenerator({
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                 body: JSON.stringify({
                   cardId: c.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'c_' + Date.now()),
-                  courseId: courseId || module.id,
+                  courseId,
                   rating: 1,
                   front: c.front,
                   back: c.back,

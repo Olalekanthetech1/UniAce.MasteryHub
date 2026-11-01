@@ -72,10 +72,10 @@ export class UserRepository {
       const displayName = params.display_name || null;
       const role = params.role === 'admin' ? 'admin' : 'student';
       const planType = params.plan_type === 'scholar' ? 'scholar' : 'free';
-      const aiSparks =
-        typeof params.ai_sparks === 'number' && Number.isFinite(params.ai_sparks)
-          ? Math.max(0, Math.round(params.ai_sparks))
-          : 50;
+      if (typeof params.ai_sparks !== 'number' || !Number.isFinite(params.ai_sparks) || params.ai_sparks < 0) {
+        throw new Error('[UserRepository] An authoritative non-negative AI spark balance is required; refusing to seed a fabricated balance.');
+      }
+      const aiSparks = Math.round(params.ai_sparks);
       const learningProfile = JSON.stringify(params.learning_profile || {});
       const createdAt = params.createdAt ? new Date(params.createdAt) : new Date();
       const updatedAt = params.updatedAt ? new Date(params.updatedAt) : new Date();

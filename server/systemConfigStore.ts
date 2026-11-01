@@ -31,7 +31,9 @@ export async function getSystemConfigDoc(
   }
 
   const pool = getPostgresPool();
-  if (!pool) return null;
+  if (!pool) {
+    throw new Error(`Cannot verify system configuration '${key}': Neon PostgreSQL is unavailable.`);
+  }
 
   try {
     const res = await pool.query<{ data: Record<string, any> }>(
@@ -41,9 +43,9 @@ export async function getSystemConfigDoc(
     const data = res.rows.length > 0 && res.rows[0].data ? res.rows[0].data : null;
     configMemoryCache.set(key, { data, fetchedAt: now });
     return data ? { ...data } : null;
-  } catch (err) {
-    console.warn(`[SystemConfigStore] Failed to read system_config key '${key}' from Neon:`, err);
-    return null;
+  } catch (err: any) {
+    console.error(`[SystemConfigStore] Cannot verify system_config key '${key}' from Neon:`, err);
+    throw new Error(`Cannot verify system configuration '${key}' from the authoritative database: ${err?.message || String(err)}`);
   }
 }
 

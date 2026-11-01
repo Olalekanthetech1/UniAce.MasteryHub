@@ -8,7 +8,7 @@
  *   - Bounded exponential retries (3 attempts, max 1500ms) failing fast to HTTP 503 on persistent outage.
  *   - Monotonic audit logging to entity_change_log.
  * - When ENABLE_POSTGRES_PROGRESS is false:
- *   - Routes through Firestore baseline.
+ *   - Fails closed with HTTP 503; Firestore fallback is disabled.
  */
 
 import crypto from 'crypto';
@@ -54,7 +54,7 @@ export interface QuizAttemptSubmission {
     explanation?: string;
     latex_proof?: string;
   }>;
-  passingScorePct?: number;
+  passingScorePct: number;
 }
 
 export interface QuizAttemptResult {
@@ -101,6 +101,13 @@ export class ProgressRepository {
   async recordStudyBatch(input: ProgressSyncInput): Promise<ProgressSyncResult> {
     const { uid, courseId, batchId, deltaSeconds = 0, completedLessonId, moduleId, clientTimestamp } = input;
     const flags = getFeatureFlags();
+    if (!flags.ENABLE_POSTGRES_PROGRESS) {
+      const unavailable: any = new Error(
+        'Progress storage is unavailable because Neon PostgreSQL progress storage is disabled. Firestore fallback is not permitted.'
+      );
+      unavailable.statusCode = 503;
+      throw unavailable;
+    }
 
     if (flags.ENABLE_POSTGRES_PROGRESS) {
       return executeWithRetry(async () => {
@@ -292,6 +299,13 @@ export class ProgressRepository {
    */
   async getCourseProgress(uid: string, courseId: string): Promise<UserCourseProgressEntity | null> {
     const flags = getFeatureFlags();
+    if (!flags.ENABLE_POSTGRES_PROGRESS) {
+      const unavailable: any = new Error(
+        'Progress storage is unavailable because Neon PostgreSQL progress storage is disabled. Firestore fallback is not permitted.'
+      );
+      unavailable.statusCode = 503;
+      throw unavailable;
+    }
 
     if (flags.ENABLE_POSTGRES_PROGRESS) {
       return executeWithRetry(async () => {
@@ -326,8 +340,10 @@ export class ProgressRepository {
     if (!app) throw new Error('Database connection unavailable');
     const db = app.firestore();
 
-    const snap = await db.collection('user_course_progress').doc(`${uid}_${courseId}`).get().catch(() => null);
-    if (!snap || !snap.exists) return null;
+    // A missing document is a legitimate empty-progress state; a database
+    // read failure is not. Let Firestore errors propagate to the API boundary.
+    const snap = await db.collection('user_course_progress').doc(`${uid}_${courseId}`).get();
+    if (!snap.exists) return null;
 
     const data = snap.data() || {};
     return {
@@ -349,6 +365,13 @@ export class ProgressRepository {
    */
   async getUserLessonCompletions(uid: string, courseId: string): Promise<string[]> {
     const flags = getFeatureFlags();
+    if (!flags.ENABLE_POSTGRES_PROGRESS) {
+      const unavailable: any = new Error(
+        'Progress storage is unavailable because Neon PostgreSQL progress storage is disabled. Firestore fallback is not permitted.'
+      );
+      unavailable.statusCode = 503;
+      throw unavailable;
+    }
 
     if (flags.ENABLE_POSTGRES_PROGRESS) {
       return executeWithRetry(async () => {
@@ -361,14 +384,15 @@ export class ProgressRepository {
     }
 
     const app = getAdminApp();
-    if (!app) return [];
+    if (!app) {
+      throw new Error('Lesson-completion data unavailable: no authoritative database connection is available.');
+    }
     const db = app.firestore();
     const snap = await db
       .collection('user_lesson_completions')
       .where('uid', '==', uid)
       .where('course_id', '==', courseId)
-      .get()
-      .catch(() => ({ docs: [] } as any));
+      .get();
 
     return snap.docs.map((d: any) => d.data().lesson_id).filter(Boolean);
   }
@@ -386,29 +410,78 @@ export class ProgressRepository {
       timeSpentSeconds,
       answers,
       canonicalQuestions,
-      passingScorePct = 70
+      passingScorePct
     } = submission;
 
-    // 1. Authoritative grading against canonical questions
-    const questionMap = new Map<string, (typeof canonicalQuestions)[0]>();
-    canonicalQuestions.forEach((q) => questionMap.set(q.id, q));
+    if (!Array.isArray(canonicalQuestions) || canonicalQuestions.length === 0) {
+      throw new Error('Server-owned canonical quiz questions are required; refusing to record an ungrounded attempt.');
+    }
+    if (!Array.isArray(answers)) {
+      throw new Error('Submitted answers must be an array of recorded question responses.');
+    }
+    if (typeof passingScorePct !== 'number' || !Number.isFinite(passingScorePct) ||
+        passingScorePct < 0 || passingScorePct > 100) {
+      throw new Error('A valid server-owned passing threshold between 0 and 100 is required.');
+    }
+    if (typeof timeSpentSeconds !== 'number' || !Number.isFinite(timeSpentSeconds) || timeSpentSeconds < 0) {
+      throw new Error('A finite, non-negative recorded quiz duration is required.');
+    }
+    if (typeof attemptIdempotencyKey !== 'string' || !attemptIdempotencyKey.trim()) {
+      throw new Error('A non-empty attempt idempotency key is required.');
+    }
 
+    // Validate the full server-owned question set before grading any submitted answer.
+    const questionMap = new Map<string, (typeof canonicalQuestions)[0]>();
+    for (const question of canonicalQuestions) {
+      if (
+        !question ||
+        typeof question.id !== 'string' ||
+        !question.id.trim() ||
+        questionMap.has(question.id) ||
+        !Array.isArray(question.options) ||
+        question.options.length < 2 ||
+        !question.options.every(option => typeof option === 'string' && option.trim().length > 0) ||
+        !Number.isInteger(question.correct_option_index) ||
+        question.correct_option_index < 0 ||
+        question.correct_option_index >= question.options.length
+      ) {
+        throw new Error('The server-owned canonical quiz contains an invalid or ambiguous question record.');
+      }
+      questionMap.set(question.id, question);
+    }
+
+    const submittedQuestionIds = new Set<string>();
     let correctCount = 0;
-    const answersBreakdown = answers.map((ans) => {
-      const canonical = questionMap.get(ans.questionId);
-      const isCorrect = canonical ? canonical.correct_option_index === ans.selectedOptionIndex : false;
+    const answersBreakdown = answers.map((answer) => {
+      if (
+        !answer ||
+        typeof answer.questionId !== 'string' ||
+        !questionMap.has(answer.questionId) ||
+        submittedQuestionIds.has(answer.questionId) ||
+        !Number.isInteger(answer.selectedOptionIndex)
+      ) {
+        throw new Error('A submitted answer references an unknown, duplicate, or malformed quiz question.');
+      }
+
+      const canonical = questionMap.get(answer.questionId)!;
+      if (answer.selectedOptionIndex < 0 || answer.selectedOptionIndex >= canonical.options.length) {
+        throw new Error('A submitted answer index is outside the canonical question option range.');
+      }
+
+      submittedQuestionIds.add(answer.questionId);
+      const isCorrect = canonical.correct_option_index === answer.selectedOptionIndex;
       if (isCorrect) correctCount++;
       return {
-        questionId: ans.questionId,
-        selectedOptionIndex: ans.selectedOptionIndex,
-        correctOptionIndex: canonical ? canonical.correct_option_index : -1,
+        questionId: answer.questionId,
+        selectedOptionIndex: answer.selectedOptionIndex,
+        correctOptionIndex: canonical.correct_option_index,
         isCorrect,
-        explanation: canonical?.explanation || null,
-        latexProof: canonical?.latex_proof || null
+        explanation: canonical.explanation || null,
+        latexProof: canonical.latex_proof || null
       };
     });
 
-    const totalQuestions = canonicalQuestions.length > 0 ? canonicalQuestions.length : 1;
+    const totalQuestions = canonicalQuestions.length;
     const rawScore = (correctCount / totalQuestions) * 100;
     const scorePct = Number(rawScore.toFixed(2));
     const passed = scorePct >= passingScorePct;
@@ -418,6 +491,13 @@ export class ProgressRepository {
       .digest('hex');
 
     const flags = getFeatureFlags();
+    if (!flags.ENABLE_POSTGRES_PROGRESS) {
+      const unavailable: any = new Error(
+        'Progress storage is unavailable because Neon PostgreSQL progress storage is disabled. Firestore fallback is not permitted.'
+      );
+      unavailable.statusCode = 503;
+      throw unavailable;
+    }
 
     if (flags.ENABLE_POSTGRES_PROGRESS) {
       return executeWithRetry(async () => {
@@ -441,7 +521,7 @@ export class ProgressRepository {
           attemptIdempotencyKey,
           scorePct,
           passed,
-          Math.max(0, timeSpentSeconds || 0),
+          Math.round(timeSpentSeconds),
           questionsSnapshotHash,
           JSON.stringify(answersBreakdown)
         ]);
@@ -453,7 +533,7 @@ export class ProgressRepository {
           `INSERT INTO entity_change_log (event_id, entity_type, entity_id, operation, entity_version, payload, transaction_boundary_id, recorded_at)
            VALUES (gen_random_uuid()::varchar, 'user_quiz_attempts', $1 || ':' || $2, 'QUIZ_SUBMIT', 1, $3::jsonb, $4, NOW());`,
           [uid, quizId, JSON.stringify({ scorePct, passed, questionsSnapshotHash }), attemptIdempotencyKey]
-        ).catch(() => {});
+);
 
         return {
           id: row.id,

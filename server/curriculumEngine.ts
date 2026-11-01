@@ -193,8 +193,14 @@ export function validateLessonSyntax(content: string, pedagogyType: DisciplinePe
  */
 export function buildDomainBriefPrompt(options: CurriculumGenerationOptions): string {
   const { courseName, courseCode, department, level, outline, sourceText } = options;
-  const normalizedLevel = (level || '100').trim();
-  return `Analyze the course title "${courseName}" ${courseCode ? `(Code: ${courseCode})` : ''} at Academic Level "${normalizedLevel} Level" within the department "${department || 'General Studies'}".
+  if (typeof level !== 'string' || !level.trim()) {
+    throw new Error('An explicit academic level is required; curriculum generation will not assume 100 Level.');
+  }
+  const normalizedLevel = level.trim();
+  const departmentContext = typeof department === 'string' && department.trim()
+    ? department.trim()
+    : 'not supplied; do not infer a department';
+  return `Analyze the course title "${courseName}" ${courseCode ? `(Code: ${courseCode})` : ''} at Academic Level "${normalizedLevel} Level" within the department "${departmentContext}".
 ${outline && outline.trim() ? `\n[ADMIN-PROVIDED SYLLABUS OUTLINE (MANDATORY PRIMARY AUTHORITY)]:\n${outline.trim()}\n` : ''}
 ${sourceText && sourceText.trim() ? `\n[SOURCE REFERENCE MATERIAL]:\n${sourceText.substring(0, 2000)}\n` : ''}
 
@@ -224,9 +230,7 @@ Return strictly a JSON object:
   "subDisciplines": ["Sub-discipline 1", "Sub-discipline 2", "Sub-discipline 3"],
   "pedagogyType": "STEM_MATHEMATICAL",
   "courseLevelFramework": "${normalizedLevel} Level University Curriculum Standard",
-  "recommendedCreditHours": 3,
-  "targetModuleCountRange": { "min": 6, "max": 10 },
-  "canonicalCourseReferences": ["Authoritative Textbook 1", "Accredited University Syllabus Benchmark"],
+  "canonicalCourseReferences": ["Only references explicitly present in the supplied source material; return an empty array when none are supplied"],
   "foundationalAxioms": [
     "Foundational Principle 1",
     "Foundational Principle 2",
@@ -260,17 +264,33 @@ export function buildCurriculumSkeletonPrompt(
     tone = 'academic',
     depth = 'standard',
     creditUnits,
-    scope = 'DEPARTMENT',
+    scope,
     selectedFaculties = [],
     selectedDepartments = [],
     outline,
     sourceText,
-    academicStandard = 'Globally Adaptive (Universal University Standard)'
+    academicStandard
   } = options;
 
-  const normalizedLevel = (level || '100').trim();
-  const params = deriveCurriculumParameters(normalizedLevel, semester, creditUnits || domainBrief.recommendedCreditHours, depth);
-  const normalizedScope = scope.toUpperCase();
+  if (typeof level !== 'string' || !level.trim()) {
+    throw new Error('An explicit academic level is required; curriculum generation will not assume 100 Level.');
+  }
+  if (typeof scope !== 'string' || !scope.trim()) {
+    throw new Error('An explicit course audience scope is required; department scope will not be assumed.');
+  }
+
+  const normalizedLevel = level.trim();
+  const normalizedSemester = typeof semester === 'string' && semester.trim()
+    ? semester.trim()
+    : 'not supplied; do not infer a semester';
+  const normalizedAcademicStandard = typeof academicStandard === 'string' && academicStandard.trim()
+    ? academicStandard.trim()
+    : 'not supplied; do not infer an accreditation or university standard';
+  if (typeof creditUnits !== 'number' || !Number.isInteger(creditUnits) || creditUnits <= 0) {
+    throw new Error('Verified course credit units are required; curriculum workload will not be inferred from an AI recommendation.');
+  }
+  const params = deriveCurriculumParameters(normalizedLevel, semester, creditUnits, depth);
+  const normalizedScope = scope.trim().toUpperCase();
 
   let levelCalibrationDirective = '';
   if (normalizedLevel.includes('100')) {
@@ -297,11 +317,11 @@ export function buildCurriculumSkeletonPrompt(
     audienceDirective = `AUDIENCE: MULTIDISCIPLINARY COHORT.
 - Pedagogical Directive: Teach the core discipline of "${domainBrief.primaryDomain}" with clear conceptual scaffolding, intuitive analogies, and accessible real-world examples before introducing complex formal models.`;
   } else if (normalizedScope === 'FACULTY') {
-    const facs = selectedFaculties.length > 0 ? selectedFaculties.join(', ') : 'Faculty Students';
+    const facs = selectedFaculties.length > 0 ? selectedFaculties.join(', ') : 'Faculty scope; specific faculty not supplied';
     audienceDirective = `AUDIENCE: FACULTY-WIDE (${facs}).
 - Pedagogical Directive: Anchor concepts and case studies in interdisciplinary technical applications relevant across ${facs}, emphasizing practical problem-solving in ${domainBrief.primaryDomain}.`;
   } else {
-    const depts = selectedDepartments.length > 0 ? selectedDepartments.join(', ') : domainBrief.primaryDomain;
+    const depts = selectedDepartments.length > 0 ? selectedDepartments.join(', ') : 'Department scope; specific department not supplied';
     audienceDirective = `AUDIENCE: DEPARTMENTAL SPECIALISTS (${depts}).
 - Pedagogical Directive: Teach "${domainBrief.primaryDomain}" with full theoretical rigor, discipline-standard formulations, formal proofs, and specialized professional case studies.`;
   }
@@ -313,7 +333,7 @@ Design a complete, comprehensive ${normalizedLevel} Level university syllabus sk
 
 AUTHORITATIVE DOMAIN: ${domainBrief.primaryDomain}
 PEDAGOGY TYPE: ${domainBrief.pedagogyType}
-TARGET ACADEMIC LEVEL: ${normalizedLevel} Level (${domainBrief.courseLevelFramework || 'University Standard'})
+TARGET ACADEMIC LEVEL: ${normalizedLevel} Level (${domainBrief.courseLevelFramework || 'not supplied; do not infer'})
 GROUNDING REFERENCES: ${domainBrief.canonicalCourseReferences.join('; ')}
 REQUIRED CORE TOPICS: ${domainBrief.coreCourseTopics.join(', ')}
 
@@ -346,10 +366,10 @@ STRICT OUTLINE ADHERENCE DIRECTIVE:
 ${feedbackCritique ? `\n[AUDIT FEEDBACK FROM PREVIOUS REVIEW TO REMEDY]:\n${feedbackCritique}\n` : ''}
 
 Level: ${normalizedLevel} Level
-Semester: ${semester || '1st Semester'}
+Semester: ${normalizedSemester}
 Tone: ${tone}
 Depth: ${depth}
-Academic Standard: ${academicStandard}
+Academic Standard: ${normalizedAcademicStandard}
 ${sourceText ? `Source Reference: ${sourceText.substring(0, 3000)}` : ''}
 
 Return strictly a JSON object:
@@ -384,7 +404,10 @@ export function buildOutlineCriticPrompt(
   options: CurriculumGenerationOptions
 ): string {
   const { courseName, courseCode, level, outline } = options;
-  const normalizedLevel = (level || '100').trim();
+  if (typeof level !== 'string' || !level.trim()) {
+    throw new Error('An explicit academic level is required for curriculum auditing.');
+  }
+  const normalizedLevel = level.trim();
   const moduleSummary = (proposedSkeleton.modules || []).map((m, idx) => 
     `Module ${idx + 1}: "${m.title}" -> Lessons: ${(m.lessonTitles || m.topics || []).join(', ')}`
   ).join('\n');
@@ -433,13 +456,17 @@ export function buildLessonPrompt(
   options: CurriculumGenerationOptions,
   learningOutcomeText?: string
 ): string {
-  const { courseName, department, level = 'Undergraduate', tone = 'academic', depth = 'standard',
-    scope = 'DEPARTMENT', academicStandard = 'Globally Adaptive (Universal University Standard)', sourceText } = options;
+  const { courseName, department, level, tone = 'academic', depth = 'standard',
+    scope, academicStandard, sourceText } = options;
+  if (typeof level !== 'string' || !level.trim()) {
+    throw new Error('An explicit academic level is required for lesson generation.');
+  }
   const audience = Array.from(new Set([
     ...(Array.isArray(options.selectedDepartments) ? options.selectedDepartments : []),
     ...(options.department ? [options.department] : []),
     ...(Array.isArray(options.selectedFaculties) ? options.selectedFaculties : [])
-  ].map(v => String(v).trim()).filter(Boolean))).join(', ') || department || domainBrief.primaryDomain;
+  ].map(v => String(v).trim()).filter(Boolean))).join(', ') ||
+    (typeof department === 'string' && department.trim() ? department.trim() : 'Department not supplied; do not infer');
 
   const disciplineDirectives: Record<DomainBrief['pedagogyType'], string> = {
     STEM_MATHEMATICAL: 'Build physical intuition, state governing assumptions, derive equations from established laws, define symbols and SI units, explain mathematical transformations, and check numerical reasonableness. Never invent experimental values.',
@@ -456,9 +483,9 @@ Discipline: ${domainBrief.primaryDomain}
 Discipline engine: ${domainBrief.pedagogyType}
 Audience: ${audience}
 Level: ${level}
-Standard: ${academicStandard}
+Standard: ${typeof academicStandard === 'string' && academicStandard.trim() ? academicStandard.trim() : 'not supplied; do not infer an accreditation or university standard'}
 Tone/depth: ${tone} / ${depth}
-Scope: ${scope}
+Scope: ${typeof scope === 'string' && scope.trim() ? scope.trim() : 'not supplied; do not infer an audience scope'}
 Target learning outcome: ${learningOutcomeText || 'Derive measurable objectives only from approved course outcomes and this topic.'}
 ${sourceText ? `ADMIN-SUPPLIED SOURCE MATERIAL (primary grounding):\n${sourceText.substring(0, 3500)}` : 'No additional source material was supplied. Do not fabricate quotations, citations, page numbers, textbooks or empirical findings.'}
 

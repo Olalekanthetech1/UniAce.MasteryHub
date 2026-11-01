@@ -18,12 +18,17 @@ import {
   autoHealQuestion
 } from './validators/aiSchemas';
 
-const getAuthToken = async () => {
-  try {
-    return await auth?.currentUser?.getIdToken(true);
-  } catch (e) {
-    return null;
+const getAuthToken = async (): Promise<string> => {
+  const currentUser = auth?.currentUser;
+  if (!currentUser) {
+    throw new Error('Authentication is required before requesting AI services.');
   }
+
+  const token = await currentUser.getIdToken(true);
+  if (typeof token !== 'string' || !token.trim()) {
+    throw new Error('The authenticated session did not provide a valid access token.');
+  }
+  return token;
 };
 
 export const callAI = async (prompt: any, systemInstruction?: string, responseFormat?: 'json', maxTokens?: number, complexity: 'standard' | 'high' | 'quiz' = 'standard', taskType: string = 'chat', preferredProvider?: string) => {
@@ -64,6 +69,9 @@ export const callAI = async (prompt: any, systemInstruction?: string, responseFo
       }
 
       const data = await response.json();
+      if (typeof data?.text !== 'string' || !data.text.trim()) {
+        throw new Error('AI service returned no generated content.');
+      }
       return { text: data.text, meta: data.meta };
     } catch (err: any) {
       lastErr = err;
@@ -81,7 +89,9 @@ export const callAI = async (prompt: any, systemInstruction?: string, responseFo
 };
 
 const extractJSON = (text: string) => {
-  if (!text) return {};
+  if (typeof text !== 'string' || !text.trim()) {
+    throw new Error('Cannot parse an empty AI response.');
+  }
   
   // 1. Remove markdown code blocks if present
   let cleaned = text.replace(/```(?:json)?\s*([\s\S]*?)\s*```/g, '$1').trim();
@@ -139,7 +149,7 @@ const extractJSON = (text: string) => {
   }
 };
 
-const ensureArray = (data: any, fallback: any[] = []): any[] => {
+const ensureArray = (data: any): any[] => {
   if (Array.isArray(data)) return data;
   if (data && typeof data === 'object') {
     // Look for common keys like 'questions', 'quiz', 'data', 'flashcards', 'formulas'
@@ -165,7 +175,7 @@ const ensureArray = (data: any, fallback: any[] = []): any[] => {
        }
     }
   }
-  return fallback;
+  throw new Error('AI response did not contain a usable array of generated records.');
 };
 
 import { sanitizeLatex } from './aiCourseGenerator';
@@ -347,7 +357,7 @@ SECURITY RULES:
 
     // All AI queries route through the backend server to prevent API key exposure and manage billing
     const response = await callAI({ parts }, systemInstruction, undefined, undefined, 'standard', 'chat', fastMode ? 'groq' : undefined);
-    const modelText = response.text || "I'm sorry, I couldn't process that.";
+    const modelText = response.text;
     
     // Sanitize LaTeX for better rendering
     const sanitizedText = sanitizeLatex(modelText);
@@ -390,14 +400,14 @@ Student Profile:
       prompt = `
 CURRENT STUDY TOPIC: ${subTopic.title}
 MODULE: ${module.title}
-STUDENT LEVEL: ${level || 'University Level'}
-DEPARTMENT: ${department || 'General Academic'}
+STUDENT LEVEL: ${level?.trim() || 'not supplied; do not infer'}
+DEPARTMENT: ${department?.trim() || 'not supplied; do not infer'}
 CONTENT CONTEXT: ${truncatedContent}
 ${profileStr}
 
 The student is currently studying the topic above. You are their proactive AI tutor.
 STRICTLY write a short, engaging check-in message that is exactly 2-3 sentences long.
-CRITICAL: Calibrate the tone and complexity to the student's level (${level || 'University Level'}).
+CRITICAL: Calibrate the tone and complexity to the student's level (${level?.trim() || 'not supplied; do not infer'}).
 CRITICAL: Your message MUST be about the CURRENT STUDY TOPIC (${subTopic.title}). 
 CRITICAL: You MUST acknowledge the topic in your VERY FIRST sentence. For example: "Hey! I see you're diving into ${subTopic.title}—how's it going?" or "Ready to master ${subTopic.title}? I'm here if you need a hand!"
 STRICT NEGATIVE CONSTRAINT: Do NOT provide any explanation, summary, or facts about the topic. Do NOT teach. Do NOT include LaTeX formulas.
@@ -411,13 +421,13 @@ Use emojis. Format using Markdown.
       prompt = `
 Topic: ${subTopic.title}
 Module: ${module.title}
-Student Level: ${level || 'University Level'}
-Department: ${department || 'General Academic'}
+Student Level: ${level?.trim() || 'not supplied; do not infer'}
+Department: ${department?.trim() || 'not supplied; do not infer'}
 Content Context: ${truncatedContent}
 
 The student has been reading this for a while and might be stuck. 
 Explain this concept AS SIMPLY AS POSSIBLE. 
-CRITICAL: Calibrate the explanation to the student's level (${level || 'University Level'}).
+CRITICAL: Calibrate the explanation to the student's level (${level?.trim() || 'not supplied; do not infer'}).
 CRITICAL: You MUST acknowledge the topic in your VERY FIRST sentence.
 - THE "WHY" BEFORE THE "HOW": Introduce this concept by explaining why understanding it is essential for professionals in the field, establishing practical importance first.
 - Use a real-world analogy.
@@ -429,13 +439,13 @@ Format the output beautifully using Markdown and LaTeX for math.
       prompt = `
 Topic: ${subTopic.title}
 Module: ${module.title}
-Student Level: ${level || 'University Level'}
-Department: ${department || 'General Academic'}
+Student Level: ${level?.trim() || 'not supplied; do not infer'}
+Department: ${department?.trim() || 'not supplied; do not infer'}
 Content Context: ${truncatedContent}
 
 The student wants a quick practice check.
 Generate a quick 3-question multiple-choice practice quiz to test understanding of this concept.
-CRITICAL: Calibrate the difficulty to the student's level (${level || 'University Level'}).
+CRITICAL: Calibrate the difficulty to the student's level (${level?.trim() || 'not supplied; do not infer'}).
 - Provide the 3 questions first.
 - Provide the answer key and brief explanations at the very end.
 Format the output beautifully using Markdown and LaTeX for math.
@@ -444,8 +454,8 @@ Format the output beautifully using Markdown and LaTeX for math.
       prompt = `
 Topic: ${subTopic.title}
 Module: ${module.title}
-Student Level: ${level || 'University Level'}
-Department: ${department || 'General Academic'}
+Student Level: ${level?.trim() || 'not supplied; do not infer'}
+Department: ${department?.trim() || 'not supplied; do not infer'}
 Difficulty: ${difficulty}
 Content Context: ${truncatedContent}
 
@@ -457,7 +467,7 @@ Generate a structured mini-lesson following this exact format:
 - 1 worked example showing step-by-step execution.
 - 2 practice questions for the student to solve.
 
-CRITICAL: Calibrate the depth and complexity to the student's level (${level || 'University Level'}).
+CRITICAL: Calibrate the depth and complexity to the student's level (${level?.trim() || 'not supplied; do not infer'}).
 CRITICAL: You MUST acknowledge the topic in your VERY FIRST sentence.
 CRITICAL: Ensure Markdown tables are valid and not compressed into single lines.
 Format the output beautifully using Markdown and LaTeX for math.
@@ -472,8 +482,8 @@ You are part of the UniAce app. NEVER recommend external websites, third-party p
 [CURRENT STUDY CONTEXT]
 Topic: ${subTopic.title}
 Module: ${module.title}
-Level: ${level || 'University Level'}
-Department: ${department || 'General Academic'}
+Level: ${level?.trim() || 'not supplied; do not infer'}
+Department: ${department?.trim() || 'not supplied; do not infer'}
 Student Name: ${studentName || 'Student'}
 
 CRITICAL: Use the student's actual name provided above. NEVER use placeholders like "[Student Name]" or "[Name]". If the name is unknown, just say "Student" or "there".
@@ -579,23 +589,41 @@ MATH & EQUATIONS (CRITICAL):
     correctAnswer: string;
     subtopicTitle?: string;
     subtopicContent: string;
-    count?: number;
+    count: number;
     subject?: string;
     rollingMasteryScore?: number;
   }): Promise<string[]> => {
     const {
       question,
       correctAnswer,
-      subtopicTitle = '',
+      subtopicTitle,
       subtopicContent,
-      count = 3,
-      subject = 'University Assessment',
-      rollingMasteryScore = 50
+      count,
+      subject,
+      rollingMasteryScore
     } = params;
+
+    if (!question.trim() || !correctAnswer.trim() || !subtopicContent.trim()) {
+      throw new Error('Question, correct answer, and lesson source material are required.');
+    }
+    if (!Number.isInteger(count) || count < 1 || count > 10) {
+      throw new Error('A valid distractor count from 1 to 10 is required.');
+    }
+    if (rollingMasteryScore !== undefined &&
+        (!Number.isFinite(rollingMasteryScore) || rollingMasteryScore < 0 || rollingMasteryScore > 100)) {
+      throw new Error('Rolling mastery must be a verified percentage between 0 and 100.');
+    }
+
+    const masteryContext = rollingMasteryScore === undefined
+      ? 'No verified mastery score was supplied; do not infer the student mastery level.'
+      : `Verified rolling mastery: ${rollingMasteryScore}%`;
+    const rigorDirective = rollingMasteryScore !== undefined && rollingMasteryScore >= 75
+      ? 'Generate sophisticated distractors appropriate for the supplied high mastery score.'
+      : 'Generate rigorous university-level distractors from the source lesson.';
 
     const distractorPrompt = `INSTRUCTIONS:
 You are an expert university examiner and psychometrician.
-Generate exactly ${count} highly PLAUSIBLE BUT INCORRECT "distractor" answer options for a multiple-choice question.
+Generate exactly ${count} plausible but incorrect distractor answer options.
 
 QUESTION:
 "${question}"
@@ -604,43 +632,40 @@ CORRECT ANSWER:
 "${correctAnswer}"
 
 SUBTOPIC CONTEXT:
-Topic: "${subtopicTitle}"
-Subject / Domain: "${subject}"
-Student Rolling Mastery: ${rollingMasteryScore}%
+Topic: "${subtopicTitle || 'Not supplied; do not infer a topic title'}"
+Subject / Domain: "${subject || 'Not supplied; do not infer a subject'}"
+${masteryContext}
 Content Material:
-${(subtopicContent || '').slice(0, 4500)}
+${subtopicContent.slice(0, 4500)}
 
-DISTRACTOR RIGOR REQUIREMENTS:
-1. Contextually Grounded: Every distractor MUST be strictly derived from the provided subtopic content. Do NOT introduce unrelated terms.
-2. Common Misconceptions: Model real university student errors:
-   - For mathematical/physics questions: sign inversion ($+ \\leftrightarrow -$), reciprocal fraction errors, forgotten integration constants, or flipped matrix indices.
-   - For engineering/scientific topics: adjacent thermodynamic phases, conflated kinetic mechanisms, or inverted cause-and-effect relationships.
-   - For humanities/social science: plausible alternative historical interpretations or conflated frameworks.
-3. High Plausibility: Distractors must have similar length, tone, grammatical structure, and technical depth as the correct answer. NEVER provide silly or obviously false choices.
-4. Rigor Level: ${rollingMasteryScore >= 75 ? 'HIGH MASTERY: Generate sophisticated, subtle distractors that penalize superficial memorization and test deep mechanics.' : 'Standard university exam caliber.'}
+DISTRACTOR REQUIREMENTS:
+1. Every distractor must be strictly derived from the supplied source material.
+2. Model realistic misconceptions without introducing absent concepts.
+3. Every distractor must be distinct from the correct answer and from the other distractors.
+4. ${rigorDirective}
 
-Return your response strictly as a JSON object matching:
-{
-  "distractors": [
-    "string (Plausible distractor 1)",
-    "string (Plausible distractor 2)",
-    "string (Plausible distractor 3)"
-  ]
-}`;
+Return a JSON object containing a "distractors" array of exactly ${count} strings.`;
 
-    try {
-      const response = await callAI(distractorPrompt, undefined, 'json', 900, 'standard', 'quiz');
-      const raw = extractJSON(response.text || '{}');
-      const distractors = Array.isArray(raw?.distractors) ? raw.distractors : [];
-      const validDistractors = distractors
-        .map((d: any) => String(d || '').trim())
-        .filter((d: string) => d.length > 0 && d.toLowerCase() !== correctAnswer.trim().toLowerCase());
-
-      return validDistractors.slice(0, count);
-    } catch (err) {
-      console.warn('[AIService] Distractor generation fallback notice:', err);
-      return [];
+    const response = await callAI(distractorPrompt, undefined, 'json', 900, 'standard', 'quiz');
+    if (typeof response?.text !== 'string' || !response.text.trim()) {
+      throw new Error('The AI provider returned no distractor content.');
     }
+
+    const raw = extractJSON(response.text);
+    if (!Array.isArray(raw?.distractors) || raw.distractors.length !== count) {
+      throw new Error(`The AI provider returned an incomplete distractor set; exactly ${count} are required.`);
+    }
+
+    const seen = new Set<string>([correctAnswer.trim().toLocaleLowerCase()]);
+    return raw.distractors.map((value: unknown, index: number) => {
+      const distractor = typeof value === 'string' ? value.trim() : '';
+      const normalized = distractor.toLocaleLowerCase();
+      if (!distractor || seen.has(normalized)) {
+        throw new Error(`Distractor ${index + 1} is missing, duplicated, or identical to the correct answer.`);
+      }
+      seen.add(normalized);
+      return distractor;
+    });
   },
 
   generateQuiz: async (
@@ -649,24 +674,39 @@ Return your response strictly as a JSON object matching:
     numQuestions: number, 
     questionType: QuestionType,
     adaptive: boolean = false,
-    userSkillLevel: number = 3,
+    userSkillLevel?: number,
     level?: string,
     department?: string,
     studentName?: string,
     rollingMasteryScore?: number
   ): Promise<QuizQuestion[]> => {
+    if (adaptive && (typeof userSkillLevel !== 'number' || !Number.isInteger(userSkillLevel) || userSkillLevel < 1 || userSkillLevel > 5)) {
+      throw new Error('Adaptive quiz generation requires a verified student skill level from the live mastery record.');
+    }
+
+    const lessonSourceSegments = subTopic
+      ? [subTopic.content]
+      : module.subTopics.map(topic => topic.content);
+    if (!lessonSourceSegments.some(content => typeof content === 'string' && content.trim().length > 0)) {
+      throw new Error('Quiz generation requires non-empty lesson source material from the live course record.');
+    }
+
+    const sourceMaterial = subTopic
+      ? `Subtopic Title: "${subTopic.title}"\nContent: ${subTopic.content}`
+      : `Module Title: "${module.title}"\n${module.subTopics.map(topic => `--- Subtopic: ${topic.title} ---\n${topic.content}`).join('\n\n')}`;
+
     const isHighMastery = typeof rollingMasteryScore === 'number' && rollingMasteryScore >= 75;
     const isFoundationMastery = typeof rollingMasteryScore === 'number' && rollingMasteryScore < 50;
 
     const prompt = `INSTRUCTIONS:
 Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the entire module'}.
-    Student Name: ${studentName || 'Student'}
-    Student Level: ${level || 'University Level'}
-    Department: ${department || 'General Academic'}
+    Student Name: ${studentName || 'Not provided; do not infer a name'}
+    Student Level: ${level || 'Not provided; do not infer an academic level'}
+    Department: ${department || 'Not provided; do not infer a department'}
     ${typeof rollingMasteryScore === 'number' ? `Student Rolling Mastery Score: ${rollingMasteryScore}%` : ''}
     
-    ${adaptive 
-      ? `Generate exactly 15 questions, 3 for each difficulty level from 1 (very easy) to 5 (very hard). Ensure the difficulty field is set correctly. The user's current estimated skill level is ${userSkillLevel} out of 5.` 
+    ${adaptive
+      ? `Generate exactly 15 questions, 3 for each difficulty level from 1 (very easy) to 5 (very hard). Ensure the difficulty field is set correctly. The user's verified current skill level from the live mastery record is ${userSkillLevel} out of 5.`
       : `Number of questions: ${numQuestions}.`}
     Question type: ${questionType}.
 
@@ -693,7 +733,7 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
        - The 'correctAnswer' field should represent a comprehensive Model Answer / Grading Rubric outlining the key technical points, core variables, or conceptual steps that a perfect answer should cover.
     
     Ensure questions are technically accurate and mathematically rigorous for the given subject (Math, Physics, Zoology, GST, etc.) as detailed in the content material.
-    CRITICAL: Calibrate the difficulty and complexity to the student's level (${level || 'University Level'}).
+    CRITICAL: Calibrate difficulty only when the student's academic level is supplied (${level || 'not supplied; do not infer'}).
     Include mathematical formulas in LaTeX format.
     LATEX SQUARE ROOTS: You MUST use \\\\sqrt{...} for all square roots. NEVER use the Unicode symbol √.
     IMPORTANT: You are generating a JSON string. Use $ for inline LaTeX (e.g., $x$) and $$ for block LaTeX (e.g., $$x^2$$). For any LaTeX commands that use a backslash (e.g., \\\\mathbf), you MUST output them with double backslashes (e.g., \\\\\\\\mathbf).
@@ -722,58 +762,51 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
     }
     
     CONTENT MATERIAL TO BASE QUIZ ON:
-    ${subTopic 
-      ? `Subtopic Title: "${subTopic.title}"
-         Content: ${subTopic.content ? subTopic.content.substring(0, 12000) : ''}`
-      : `Module Title: "${module.title}"
-         Module Content: ${module.subTopics.map(st => `--- Subtopic: ${st.title} ---\n${st.content ? st.content.substring(0, 3000) : ''}`).join('\n\n')}`
-    }`;
+    ${sourceMaterial}`;
 
     const response = await callAI(prompt, undefined, 'json', 2500, isHighMastery ? 'high' : 'standard', 'quiz');
-    try {
-      const rawData = extractJSON(response.text || "[]");
-      let dataToValidate: any = rawData;
-      if (rawData && typeof rawData === 'object' && !Array.isArray(rawData) && rawData.questions) {
-        // Already structured correctly
-      } else {
-        const arr = ensureArray(rawData);
-        dataToValidate = { questions: arr };
-      }
-
-      const validated = safeParseAIResponse(
-        QuizQuestionsResponseSchema,
-        dataToValidate,
-        { questions: [] }
-      );
-
-      const questions = validated.questions;
-      
-      if (questions.length === 0) {
-         console.error("DEBUG AI: questions is empty. data extracted was:", rawData);
-         console.error("DEBUG AI: raw response text was:", response.text);
-      }
-      
-      // Sanitize LaTeX in all question fields and apply dynamic mathematical corrections and auto-heal options
-      const defaultSource = subTopic ? `${module.title} → ${subTopic.title}` : module.title;
-      return questions.map((q: any) => {
-        if (!q || typeof q !== 'object') return q;
-        const sanitized = {
-          ...q,
-          question: sanitizeLatex(q.question),
-          options: Array.isArray(q.options) ? q.options.map((opt: any) => sanitizeLatex(opt)) : q.options,
-          correctAnswer: sanitizeLatex(q.correctAnswer),
-          explanation: sanitizeLatex(q.explanation),
-          hint: sanitizeLatex(q.hint),
-          sourceReference: q.sourceReference || defaultSource,
-          bloomLevel: q.bloomLevel || 'applying',
-          verifiedGrounded: true
-        };
-        return autoHealQuestion(sanitized);
-      });
-    } catch (e: any) {
-      console.error("Quiz generation error (extractJSON threw an error):", e);
-      throw e;
+    if (typeof response?.text !== 'string' || !response.text.trim()) {
+      throw new Error('Quiz generation provider returned no response content.');
     }
+
+    const rawData = extractJSON(response.text);
+    const validated = QuizQuestionsResponseSchema.parse(rawData);
+    const questions = validated.questions;
+    if (!Number.isInteger(numQuestions) || numQuestions < 1 || numQuestions > 100) {
+      throw new Error('Quiz question count must be an integer between 1 and 100.');
+    }
+    const requiredQuestionCount = adaptive ? 15 : numQuestions;
+    if (questions.length !== requiredQuestionCount) {
+      throw new Error(`Quiz generator returned ${questions.length} questions; ${requiredQuestionCount} were required. The incomplete result was rejected.`);
+    }
+    if (adaptive) {
+      const difficultyCounts = new Map<number, number>();
+      for (const question of questions) {
+        difficultyCounts.set(question.difficulty, (difficultyCounts.get(question.difficulty) || 0) + 1);
+      }
+      for (let difficulty = 1; difficulty <= 5; difficulty++) {
+        if (difficultyCounts.get(difficulty) !== 3) {
+          throw new Error(`Adaptive quiz output must contain exactly three questions at difficulty ${difficulty}.`);
+        }
+      }
+    }
+
+    const sourceText = sourceMaterial.toLocaleLowerCase();
+    const unsupportedReferences = questions
+      .map((question: any) => question.sourceReference)
+      .filter((reference: string) => !sourceText.includes(reference.toLocaleLowerCase()));
+    if (unsupportedReferences.length > 0) {
+      throw new Error(`Quiz generator cited source references not present in the supplied lesson: ${unsupportedReferences.join(', ')}`);
+    }
+
+    return questions.map((q: any) => ({
+      ...q,
+      question: sanitizeLatex(q.question),
+      options: Array.isArray(q.options) ? q.options.map((opt: any) => sanitizeLatex(opt)) : [],
+      correctAnswer: sanitizeLatex(q.correctAnswer),
+      explanation: sanitizeLatex(q.explanation),
+      hint: sanitizeLatex(q.hint)
+    }));
   },
 
   evaluateWrittenAnswer: async (
@@ -805,7 +838,7 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
 
     try {
       const response = await callAI(prompt, undefined, 'json', 1500, 'standard', 'quiz-eval');
-      const data = extractJSON(response.text || "{}");
+      const data = extractJSON(response.text);
       const validated = safeParseAIResponse(EvaluateWrittenAnswerSchema, data);
       return validated;
     } catch (e) {
@@ -817,11 +850,11 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
   generateQuickCheck: async (subTopic: SubTopic, level?: string, department?: string): Promise<QuizQuestion> => {
     const prompt = `INSTRUCTIONS:
     Generate a single, high-quality multiple-choice "Quick Check" question for the provided subtopic.
-    Student Level: ${level || 'University Level'}
-    Department: ${department || 'General Academic'}
+    Student Level: ${level?.trim() || 'not supplied; do not infer'}
+    Department: ${department?.trim() || 'not supplied; do not infer'}
     
     The question should test a key concept from the content. 
-    CRITICAL: Calibrate the difficulty and complexity to the student's level (${level || 'University Level'}).
+    CRITICAL: Calibrate the difficulty and complexity to the student's level (${level?.trim() || 'not supplied; do not infer'}).
     LATEX SQUARE ROOTS: You MUST use \\\\sqrt{...} for all square roots. NEVER use the Unicode symbol √.
     Provide 4 options, the correct answer, and a short, helpful explanation.
     Return the response as a VALID JSON object.
@@ -844,11 +877,13 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
 
     const response = await callAI(prompt, undefined, 'json', 1000, 'quiz', 'quiz');
     try {
-      const rawData = extractJSON(response.text || "{}");
+      if (typeof response?.text !== 'string' || !response.text.trim()) {
+        throw new Error('Quick-check generation returned no provider content.');
+      }
+      const rawData = extractJSON(response.text);
       const validated = safeParseAIResponse(QuickCheckSchema, rawData);
       return {
         ...validated,
-        id: validated.id || `quick-check-${subTopic.id}`,
         question: sanitizeLatex(validated.question),
         options: validated.options.map((opt: any) => sanitizeLatex(opt)),
         correctAnswer: sanitizeLatex(validated.correctAnswer),
@@ -868,16 +903,19 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
     Focus on the logic or a specific formula they should use. Be encouraging.`;
 
     const response = await callAI(prompt, undefined, undefined, undefined, 'standard', 'chat');
-    return response.text || "Try breaking the problem into smaller parts.";
+    if (typeof response?.text !== 'string' || !response.text.trim()) {
+      throw new Error('Hint generation returned no provider content.');
+    }
+    return response.text;
   },
 
   generateFlashcards: async (module: Module, subTopic?: SubTopic, numCards: number = 10, level?: string, department?: string): Promise<Flashcard[]> => {
     const prompt = `INSTRUCTIONS:
     Generate ${numCards} spaced-repetition flashcards for ${subTopic ? 'the specific subtopic' : 'the entire module'}.
-    Student Level: ${level || 'University Level'}
-    Department: ${department || 'General Academic'}
+    Student Level: ${level?.trim() || 'not supplied; do not infer'}
+    Department: ${department?.trim() || 'not supplied; do not infer'}
     Create high-quality flashcards suitable for university-level learning.
-    CRITICAL: Calibrate the depth and complexity to the student's level (${level || 'University Level'}).
+    CRITICAL: Calibrate the depth and complexity to the student's level (${level?.trim() || 'not supplied; do not infer'}).
     The "front" should be a clear, concise question, concept name, or formula prompt.
     The "back" should be the precise answer, definition, or formula.
     Use LaTeX formatting for mathematical expressions. 
@@ -908,7 +946,10 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
 
     const response = await callAI(prompt, undefined, 'json', 2000, 'standard', 'flashcard');
     try {
-      const rawData = extractJSON(response.text || "[]");
+      if (typeof response?.text !== 'string' || !response.text.trim()) {
+        throw new Error('Flashcard generation returned no provider content.');
+      }
+      const rawData = extractJSON(response.text);
       let dataToValidate: any = rawData;
       if (rawData && typeof rawData === 'object' && !Array.isArray(rawData) && rawData.flashcards) {
         // Already structured correctly
@@ -917,11 +958,7 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
         dataToValidate = { flashcards: arr };
       }
 
-      const validated = safeParseAIResponse(
-        FlashcardsResponseSchema,
-        dataToValidate,
-        { flashcards: [] }
-      );
+      const validated = safeParseAIResponse(FlashcardsResponseSchema, dataToValidate);
 
       const cards = validated.flashcards;
       
@@ -967,7 +1004,10 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
 
     const response = await callAI(prompt, undefined, 'json', 2000, 'standard', 'flashcard');
     try {
-      const rawData = extractJSON(response.text || "[]");
+      if (typeof response?.text !== 'string' || !response.text.trim()) {
+        throw new Error('Flashcard generation returned no provider content.');
+      }
+      const rawData = extractJSON(response.text);
       let dataToValidate: any = rawData;
       if (rawData && typeof rawData === 'object' && !Array.isArray(rawData) && rawData.flashcards) {
         // Already structured correctly
@@ -976,11 +1016,7 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
         dataToValidate = { flashcards: arr };
       }
 
-      const validated = safeParseAIResponse(
-        FlashcardsResponseSchema,
-        dataToValidate,
-        { flashcards: [] }
-      );
+      const validated = safeParseAIResponse(FlashcardsResponseSchema, dataToValidate);
 
       const cards = validated.flashcards;
       
@@ -1031,7 +1067,7 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
 
     const response = await callAI(prompt, undefined, 'json', undefined, 'standard', 'recommendation');
     try {
-      const rawData = extractJSON(response.text || "null");
+      const rawData = extractJSON(response.text);
       return safeParseAIResponse(RecommendationSchema, rawData);
     } catch (e) {
       console.error("Smart recommendation error:", e);
@@ -1096,7 +1132,7 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
 
     const response = await callAI(prompt, undefined, 'json', undefined, 'standard', 'recommendation');
     try {
-      const rawData = extractJSON(response.text || "null");
+      const rawData = extractJSON(response.text);
       return safeParseAIResponse(ExamReadinessSchema, rawData);
     } catch (e) {
       console.error("Exam readiness prediction error:", e);
@@ -1128,7 +1164,10 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
     Output ONLY the markdown content. Do not include any other text or conversational filler.`;
 
     const response = await callAI(prompt, undefined, undefined, 4000, 'high', 'lesson');
-    return sanitizeLatex(response.text || "Failed to generate lesson content.");
+    if (typeof response?.text !== 'string' || !response.text.trim()) {
+      throw new Error('The AI provider returned no lesson content.');
+    }
+    return sanitizeLatex(response.text);
   },
 
   generateTTS: async (text: string) => {
@@ -1166,7 +1205,7 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
     Student Progress:
     - Mastery Levels: ${JSON.stringify(masteryData)}
     - Level: ${progress.level}
-    - Target Exam Date: ${targetDate || 'Next 30 days'}
+    - Target Exam Date: ${targetDate || 'Not supplied; do not infer a date or planning horizon'}
     
     Syllabus Structure:
     ${(syllabus || []).map(m => `- ${m?.title || 'Module'}: ${(m?.subTopics || []).map(st => st?.title || 'Topic').join(', ')}`).join('\n')}
@@ -1184,7 +1223,7 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
 
     const response = await callAI(prompt, undefined, 'json', undefined, 'standard', 'recommendation');
     try {
-      const rawData = extractJSON(response.text || "null");
+      const rawData = extractJSON(response.text);
       return safeParseAIResponse(StudyPlanSchema, rawData);
     } catch (e) {
       console.error("Study plan generation error:", e);
@@ -1208,7 +1247,7 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
     }`;
     const response = await callAI(prompt, undefined, 'json', undefined, 'standard', 'recommendation');
     try {
-      const rawData = extractJSON(response.text || "null");
+      const rawData = extractJSON(response.text);
       return safeParseAIResponse(BoosterLessonSchema, rawData);
     } catch (e) {
       console.error("Booster lesson generation error:", e);
@@ -1216,24 +1255,56 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
     }
   },
 
-  generateFastTrackPlan: async (progress: UserProgress, syllabus: Module[], fastTrackTopicTitle: string) => {
-    const masteryData = Object.entries(progress?.mastery || {}).map(([id, score]) => {
-      const topic = (syllabus || []).flatMap(m => m?.subTopics || []).find(st => st?.id === id);
-      return { title: topic?.title || id, score };
+  generateFastTrackPlan: async (
+    progress: UserProgress,
+    syllabus: Module[],
+    fastTrackTopicTitle: string,
+    targetDate?: string
+  ) => {
+    if (!Array.isArray(syllabus) || syllabus.length === 0) {
+      throw new Error('Fast-track planning requires the persisted course syllabus.');
+    }
+    if (typeof fastTrackTopicTitle !== 'string' || !fastTrackTopicTitle.trim()) {
+      throw new Error('A topic from the persisted syllabus is required for fast-track planning.');
+    }
+
+    const topics = syllabus.flatMap(module => module.subTopics);
+    const matchedTopics = topics.filter(topic =>
+      topic.title.trim().toLocaleLowerCase() === fastTrackTopicTitle.trim().toLocaleLowerCase()
+    );
+    if (matchedTopics.length !== 1) {
+      throw new Error('The fast-track topic could not be uniquely resolved in the persisted syllabus.');
+    }
+    const masteredTopic = matchedTopics[0];
+    const recordedMastery = progress.mastery[masteredTopic.id];
+    if (typeof recordedMastery !== 'number' || recordedMastery !== 100) {
+      throw new Error('Fast-track planning requires a recorded 100% mastery value for the selected topic.');
+    }
+
+    const masteryData = Object.entries(progress.mastery).map(([id, score]) => {
+      const topic = topics.find(item => item.id === id);
+      if (!topic) {
+        throw new Error(`Mastery record ${id} does not map to a persisted syllabus topic.`);
+      }
+      return { title: topic.title, score };
     });
+
+    const syllabusContext = syllabus.map(module =>
+      `- ${module.title}: ${module.subTopics.map(topic => topic.title).join(', ')}`
+    ).join('\\n');
 
     const prompt = `As an expert academic strategist, generate a fast-track, advanced study plan for this student.
     
-    The student has achieved perfect 100% mastery in "${fastTrackTopicTitle}"!
-    We want to fast-track them to advanced topics, skipping introductory material for this subject.
+    The persisted mastery record for "${masteredTopic.title}" is exactly ${recordedMastery}%.
+    Generate advanced study activities for this topic without claiming mastery for any other topic.
     
     Student Progress:
     - Mastery Levels: ${JSON.stringify(masteryData)}
     - Level: ${progress.level}
-    - Target Exam Date: Next 30 days
+    - Target Exam Date: ${targetDate || 'Not supplied; do not infer a date or planning horizon'}
     
     Syllabus Structure:
-    ${(syllabus || []).map(m => `- ${m?.title || 'Module'}: ${(m?.subTopics || []).map(st => st?.title || 'Topic').join(', ')}`).join('\n')}
+    ${syllabusContext}
     
     CRITICAL: Output ONLY the JSON object. Do not include any other text, markdown formatting, or explanations.
     Return a JSON object with the following structure:
@@ -1247,15 +1318,12 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
     }`;
 
     const response = await callAI(prompt, undefined, 'json', undefined, 'standard', 'recommendation');
-    try {
-      const rawData = extractJSON(response.text || "null");
-      return safeParseAIResponse(StudyPlanSchema, rawData);
-    } catch (e) {
-      console.error("Fast track plan generation error:", e);
-      throw e;
+    if (typeof response?.text !== 'string' || !response.text.trim()) {
+      throw new Error('The AI provider returned no fast-track study plan.');
     }
+    const rawData = extractJSON(response.text);
+    return safeParseAIResponse(StudyPlanSchema, rawData);
   },
-
   claimReward: async (subTopicId: string, rewardType: 'proactive_quiz' = 'proactive_quiz') => {
     try {
       const token = await getAuthToken();
@@ -1297,28 +1365,23 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
   },
 
   getStruggleAnalytics: async () => {
-    try {
-      const token = await getAuthToken();
-      const response = await fetch('/api/admin/struggle-analytics', {
-        headers: {
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        }
-      });
-      if (!response.ok) {
-        console.warn(`Failed to fetch struggle analytics (${response.status})`);
-        return [];
-      }
-      const ct = response.headers.get('content-type');
-      if (!ct || !ct.includes('application/json')) {
-        console.warn(`Struggle analytics: Expected JSON response, got ${ct || 'unknown'}`);
-        return [];
-      }
-      const data = await response.json();
-      return Array.isArray(data.analytics) ? data.analytics : [];
-    } catch (error: any) {
-      console.warn('Get Struggle Analytics Warning:', error?.message || error);
-      return [];
+    const token = await getAuthToken();
+    if (!token) throw new Error('Authenticated admin credentials are required for struggle analytics.');
+    const response = await fetch('/api/admin/struggle-analytics', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!response.ok) {
+      throw new Error(`Struggle analytics request failed with HTTP ${response.status}.`);
     }
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      throw new Error(`Struggle analytics returned unexpected content type: ${contentType || 'missing'}.`);
+    }
+    const data = await response.json();
+    if (!Array.isArray(data?.analytics)) {
+      throw new Error('Struggle analytics response did not contain a verified analytics array.');
+    }
+    return data.analytics;
   },
 
   getChatAnalytics: async () => {
