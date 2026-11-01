@@ -82,6 +82,9 @@ import {
   getLessonOrderIndex,
   sortCourseSyllabus,
   normalizeLessonMarkdownContent,
+  normalizeMathBody,
+  normalizeMathUnicodeInMarkdown,
+  normalizeNestedMathUnicode,
   isGenericLessonTitle,
   isBareDiagramOrFragment
 } from './src/shared/courseSchemas.js';
@@ -3582,10 +3585,11 @@ async function purgeCourseSubcollections(db: admin.firestore.Firestore, courseId
 
 // Zod Schemas for Validation
 const ModuleQuizSchema = z.preprocess((val: any) => {
-  if (Array.isArray(val)) {
-    return { questions: val };
+  const normalizedVal = normalizeNestedMathUnicode(val);
+  if (Array.isArray(normalizedVal)) {
+    return { questions: normalizedVal };
   }
-  return val;
+  return normalizedVal;
 }, z.object({
   pedagogicalReasoning: z.string().trim().min(1),
   questions: z.array(z.object({
@@ -3597,10 +3601,20 @@ const ModuleQuizSchema = z.preprocess((val: any) => {
 }));
 
 const CourseFormulaSchema = z.preprocess((val: any) => {
-  if (Array.isArray(val)) {
-    return { formulas: val };
+  const baseVal = Array.isArray(val) ? { formulas: val } : val;
+  if (!baseVal || typeof baseVal !== 'object') return baseVal;
+  const normalizedObj = normalizeNestedMathUnicode(baseVal) as Record<string, any>;
+  if (Array.isArray(normalizedObj.formulas)) {
+    normalizedObj.formulas = normalizedObj.formulas.map((f: any) => {
+      if (!f || typeof f !== 'object') return f;
+      return {
+        ...f,
+        latex: typeof f.latex === 'string' ? normalizeMathBody(f.latex) : f.latex,
+        description: typeof f.description === 'string' ? normalizeMathUnicodeInMarkdown(f.description) : f.description
+      };
+    });
   }
-  return val;
+  return normalizedObj;
 }, z.object({
   pedagogicalReasoning: z.string().trim().min(1),
   formulas: z.array(z.object({
@@ -3614,18 +3628,21 @@ const CourseFormulaSchema = z.preprocess((val: any) => {
   )
 }));
 
-const VisionToQuizSchema = z.object({
-  summary: z.string().trim().min(1),
-  quizzes: z.array(z.object({
-    question: z.string().trim().min(1),
-    options: z.array(z.string().trim().min(1)).min(2),
-    answer: z.string().trim().min(1)
-  })).min(1),
-  flashcards: z.array(z.object({
-    front: z.string().trim().min(1),
-    back: z.string().trim().min(1)
-  })).min(1)
-});
+const VisionToQuizSchema = z.preprocess(
+  (val: unknown) => normalizeNestedMathUnicode(val),
+  z.object({
+    summary: z.string().trim().min(1),
+    quizzes: z.array(z.object({
+      question: z.string().trim().min(1),
+      options: z.array(z.string().trim().min(1)).min(2),
+      answer: z.string().trim().min(1)
+    })).min(1),
+    flashcards: z.array(z.object({
+      front: z.string().trim().min(1),
+      back: z.string().trim().min(1)
+    })).min(1)
+  })
+);
 
 const StudySessionSchema = z.object({
   sessions: z.array(z.object({
@@ -7757,7 +7774,15 @@ app.post('/api/formulas/search', verifyAuth, async (req, res) => {
     }
 
     const data = parseRobustJSON(aiResponse.text);
-    const formulas = Array.isArray(data?.formulas) ? data.formulas : (Array.isArray(data) ? data : []);
+    const rawFormulas = Array.isArray(data?.formulas) ? data.formulas : (Array.isArray(data) ? data : []);
+    const formulas = rawFormulas.map((formula: any) => {
+      if (!formula || typeof formula !== 'object') return formula;
+      return {
+        ...formula,
+        latex: typeof formula.latex === 'string' ? normalizeMathBody(formula.latex) : formula.latex,
+        description: typeof formula.description === 'string' ? normalizeMathUnicodeInMarkdown(formula.description) : formula.description
+      };
+    });
 
     if (formulas.length === 0) {
       return res.status(404).json({ error: 'No related formulas found' });

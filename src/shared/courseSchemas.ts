@@ -101,7 +101,8 @@ for (let index = 0; index < 10; index += 1) {
   ['ₐ', 'a'], ['ₑ', 'e'], ['ₕ', 'h'], ['ᵢ', 'i'], ['ⱼ', 'j'],
   ['ₖ', 'k'], ['ₗ', 'l'], ['ₘ', 'm'], ['ₙ', 'n'], ['ₒ', 'o'],
   ['ₚ', 'p'], ['ᵣ', 'r'], ['ₛ', 's'], ['ₜ', 't'], ['ᵤ', 'u'],
-  ['ᵥ', 'v'], ['ₓ', 'x']
+  ['ᵥ', 'v'], ['ₓ', 'x'],
+  ['ᵦ', '\\beta'], ['ᵧ', '\\gamma'], ['ᵨ', '\\rho'], ['ᵩ', '\\phi'], ['ᵪ', '\\chi']
 ].forEach(([glyph, replacement]) => unicodeSubscriptMap.set(glyph, replacement));
 
 [
@@ -110,8 +111,51 @@ for (let index = 0; index < 10; index += 1) {
   ['ᵈ', 'd'], ['ᵉ', 'e'], ['ᶠ', 'f'], ['ᵍ', 'g'], ['ʰ', 'h'],
   ['ʲ', 'j'], ['ᵏ', 'k'], ['ˡ', 'l'], ['ᵐ', 'm'], ['ᵒ', 'o'],
   ['ᵖ', 'p'], ['ʳ', 'r'], ['ˢ', 's'], ['ᵗ', 't'], ['ᵘ', 'u'],
-  ['ᵛ', 'v'], ['ʷ', 'w'], ['ˣ', 'x'], ['ʸ', 'y'], ['ᶻ', 'z']
+  ['ᵛ', 'v'], ['ʷ', 'w'], ['ˣ', 'x'], ['ʸ', 'y'], ['ᶻ', 'z'],
+  ['ᴬ', 'A'], ['ᴮ', 'B'], ['ᴰ', 'D'], ['ᴱ', 'E'], ['ᴳ', 'G'],
+  ['ᴴ', 'H'], ['ᴵ', 'I'], ['ᴶ', 'J'], ['ᴷ', 'K'], ['ᴸ', 'L'],
+  ['ᴹ', 'M'], ['ᴺ', 'N'], ['ᴼ', 'O'], ['ᴾ', 'P'], ['ᴿ', 'R'],
+  ['ᵀ', 'T'], ['ᵁ', 'U'], ['ⱽ', 'V'], ['ᵂ', 'W'],
+  ['ᵝ', '\\beta'], ['ᵞ', '\\gamma'], ['ᵟ', '\\delta'], ['ᵠ', '\\phi'], ['ᵡ', '\\chi'], ['ᶿ', '\\theta']
 ].forEach(([glyph, replacement]) => unicodeSuperscriptMap.set(glyph, replacement));
+
+const LATEX_TEXT_MODE_COMMANDS = [
+  '\\textnormal',
+  '\\textrm',
+  '\\textbf',
+  '\\textit',
+  '\\textsf',
+  '\\texttt',
+  '\\text',
+  '\\mbox',
+  '\\hbox'
+] as const;
+
+export interface MathUnicodeNormalizationEvent {
+  originalGlyph: string;
+  codePoint: string;
+  normalizedReplacement: string;
+  mode: 'math' | 'text';
+  command?: string;
+}
+
+export interface UnsupportedMathUnicodeGlyph {
+  glyph: string;
+  codePoint: string;
+}
+
+export interface MathUnicodeInspectionResult {
+  normalizedText: string;
+  changed: boolean;
+  source: string;
+  events: MathUnicodeNormalizationEvent[];
+  unsupportedCharacters: UnsupportedMathUnicodeGlyph[];
+}
+
+function formatCodePoint(glyph: string): string {
+  const cp = glyph.codePointAt(0);
+  return cp !== undefined ? `U+${cp.toString(16).toUpperCase().padStart(4, '0')}` : 'U+0000';
+}
 
 function getUnicodeScript(glyph: string): { marker: '_' | '^'; value: string } | undefined {
   const subscript = unicodeSubscriptMap.get(glyph);
@@ -123,11 +167,31 @@ function getUnicodeScript(glyph: string): { marker: '_' | '^'; value: string } |
   return undefined;
 }
 
+function isUnmappedUnicodeScriptCodepoint(glyph: string): boolean {
+  if (getUnicodeScript(glyph)) return false;
+  const cp = glyph.codePointAt(0);
+  if (cp === undefined) return false;
+  // Superscripts and Subscripts block (U+2070..U+209F) or Phonetic subscript block (U+1D62..U+1D6A)
+  return (cp >= 0x2070 && cp <= 0x209F) || (cp >= 0x1D62 && cp <= 0x1D6A);
+}
+
+function appendScriptPiece(accumulated: string, nextPiece: string): string {
+  if (!accumulated) return nextPiece;
+  // Separate a LaTeX control word (e.g. \beta) from a following ASCII letter so TeX does not merge them
+  if (/\\[a-zA-Z]+$/.test(accumulated) && /^[a-zA-Z]/.test(nextPiece)) {
+    return accumulated + ' ' + nextPiece;
+  }
+  return accumulated + nextPiece;
+}
+
 /**
  * Converts consecutive Unicode subscript/superscript runs into grouped LaTeX scripts.
- * In text mode, ordinary text is kept in separate \text{...} groups around each script.
+ * In text mode, ordinary text is kept in separate \text*{...} groups around each script.
  */
-function normalizeUnicodeScriptRuns(value: string): string {
+function normalizeUnicodeScriptRuns(
+  value: string,
+  events?: MathUnicodeNormalizationEvent[]
+): string {
   let output = '';
   let index = 0;
 
@@ -142,9 +206,18 @@ function normalizeUnicodeScriptRuns(value: string): string {
     const marker = script.marker;
     let scriptValue = '';
     while (index < value.length) {
-      const nextScript = getUnicodeScript(value[index]);
+      const currentGlyph = value[index];
+      const nextScript = getUnicodeScript(currentGlyph);
       if (!nextScript || nextScript.marker !== marker) break;
-      scriptValue += nextScript.value;
+      scriptValue = appendScriptPiece(scriptValue, nextScript.value);
+      if (events) {
+        events.push({
+          originalGlyph: currentGlyph,
+          codePoint: formatCodePoint(currentGlyph),
+          normalizedReplacement: `${marker}{${nextScript.value}}`,
+          mode: 'math'
+        });
+      }
       index += 1;
     }
 
@@ -154,15 +227,19 @@ function normalizeUnicodeScriptRuns(value: string): string {
   return output;
 }
 
-/** Converts Unicode scripts inside a \text{...} argument without nesting text groups. */
-function normalizeTextCommandBody(value: string): string {
+/** Converts Unicode scripts inside a \text*{...} argument without nesting text groups. */
+function normalizeTextCommandBody(
+  value: string,
+  commandName = '\\text',
+  events?: MathUnicodeNormalizationEvent[]
+): string {
   let output = '';
   let textBuffer = '';
   let index = 0;
 
   const flushText = () => {
     if (textBuffer.length === 0) return;
-    output += '\\text{' + textBuffer + '}';
+    output += commandName + '{' + textBuffer + '}';
     textBuffer = '';
   };
 
@@ -178,9 +255,19 @@ function normalizeTextCommandBody(value: string): string {
     const marker = script.marker;
     let scriptValue = '';
     while (index < value.length) {
-      const nextScript = getUnicodeScript(value[index]);
+      const currentGlyph = value[index];
+      const nextScript = getUnicodeScript(currentGlyph);
       if (!nextScript || nextScript.marker !== marker) break;
-      scriptValue += nextScript.value;
+      scriptValue = appendScriptPiece(scriptValue, nextScript.value);
+      if (events) {
+        events.push({
+          originalGlyph: currentGlyph,
+          codePoint: formatCodePoint(currentGlyph),
+          normalizedReplacement: `${marker}{${nextScript.value}}`,
+          mode: 'text',
+          command: commandName
+        });
+      }
       index += 1;
     }
 
@@ -188,7 +275,7 @@ function normalizeTextCommandBody(value: string): string {
   }
 
   flushText();
-  return output.length === 0 ? '\\text{}' : output;
+  return output.length === 0 ? commandName + '{}' : output;
 }
 
 /** Finds a balanced closing brace while respecting escaped braces. */
@@ -211,27 +298,56 @@ function findMatchingMathBrace(value: string, openingBraceIndex: number): number
   return -1;
 }
 
+function matchLatexTextCommandAt(
+  value: string,
+  index: number
+): { commandName: string; openingBraceIndex: number } | undefined {
+  if (value[index] !== '\\' || (index > 0 && value[index - 1] === '\\')) {
+    return undefined;
+  }
+
+  for (const commandName of LATEX_TEXT_MODE_COMMANDS) {
+    if (!value.startsWith(commandName, index)) continue;
+    const afterCommand = index + commandName.length;
+    // Ensure we didn't match a prefix of a longer command (e.g. \text vs \textbf)
+    if (afterCommand < value.length && /[a-zA-Z]/.test(value[afterCommand])) {
+      continue;
+    }
+    let cursor = afterCommand;
+    while (cursor < value.length && (value[cursor] === ' ' || value[cursor] === '\t')) {
+      cursor += 1;
+    }
+    if (value[cursor] === '{') {
+      return { commandName, openingBraceIndex: cursor };
+    }
+  }
+
+  return undefined;
+}
+
 /**
- * Normalizes Unicode scripts inside a math expression. \text{...} is parsed as a
- * balanced group so chemical/text notation becomes e.g. \text{H}_{2}\text{O}.
+ * Normalizes Unicode scripts inside a math expression. \text{...} and related
+ * text-mode commands are parsed as balanced groups so chemical/text notation
+ * becomes e.g. \text{H}_{2}\text{O}.
  */
-function normalizeMathBody(value: string): string {
+export function normalizeMathBody(
+  value: string,
+  events?: MathUnicodeNormalizationEvent[]
+): string {
+  if (typeof value !== 'string' || !value) return '';
   let output = '';
   let plainStart = 0;
   let index = 0;
 
   while (index < value.length) {
-    if (
-      value.startsWith('\\text{', index) &&
-      (index === 0 || value[index - 1] !== '\\')
-    ) {
-      const openingBraceIndex = index + 5;
-      const closingBraceIndex = findMatchingMathBrace(value, openingBraceIndex);
+    const matchedTextCmd = matchLatexTextCommandAt(value, index);
+    if (matchedTextCmd) {
+      const closingBraceIndex = findMatchingMathBrace(value, matchedTextCmd.openingBraceIndex);
 
       if (closingBraceIndex >= 0) {
-        output += normalizeUnicodeScriptRuns(value.slice(plainStart, index));
-        const textBody = value.slice(openingBraceIndex + 1, closingBraceIndex);
-        output += normalizeTextCommandBody(textBody);
+        output += normalizeUnicodeScriptRuns(value.slice(plainStart, index), events);
+        const textBody = value.slice(matchedTextCmd.openingBraceIndex + 1, closingBraceIndex);
+        output += normalizeTextCommandBody(textBody, matchedTextCmd.commandName, events);
         index = closingBraceIndex + 1;
         plainStart = index;
         continue;
@@ -241,12 +357,45 @@ function normalizeMathBody(value: string): string {
     index += 1;
   }
 
-  output += normalizeUnicodeScriptRuns(value.slice(plainStart));
+  output += normalizeUnicodeScriptRuns(value.slice(plainStart), events);
   return output;
 }
 
+/**
+ * Detects any unmapped/unsupported Unicode script characters inside math expressions
+ * so validation fails transparently rather than silently corrupting or ignoring them.
+ */
+export function detectUnsupportedMathUnicode(markdownOrMath: string): UnsupportedMathUnicodeGlyph[] {
+  if (typeof markdownOrMath !== 'string' || !markdownOrMath) return [];
+  const mathBlockPattern = /(\$\$[\s\S]*?\$\$|(?<!\\)\$(?!\$)(?:\\[\s\S]|[^$\\])*?(?<!\\)\$(?!\$)|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\])/g;
+  const codeSegmentPattern = /(\x60{3}[\s\S]*?\x60{3}|~~~[\s\S]*?~~~|\x60+[^\x60\n]*\x60+)/g;
+
+  const found = new Map<string, UnsupportedMathUnicodeGlyph>();
+  const inspectMathSlice = (slice: string) => {
+    for (const ch of slice) {
+      if (isUnmappedUnicodeScriptCodepoint(ch) && !found.has(ch)) {
+        found.set(ch, { glyph: ch, codePoint: formatCodePoint(ch) });
+      }
+    }
+  };
+
+  markdownOrMath.split(codeSegmentPattern).forEach((segment, segmentIndex) => {
+    if (segmentIndex % 2 === 1) return;
+    let match: RegExpExecArray | null;
+    while ((match = mathBlockPattern.exec(segment)) !== null) {
+      inspectMathSlice(match[0]);
+    }
+  });
+
+  return Array.from(found.values());
+}
+
 /** Applies Unicode-to-LaTeX normalization only to recognized Markdown math delimiters. */
-function normalizeMathUnicodeInMarkdown(value: string): string {
+export function normalizeMathUnicodeInMarkdown(
+  value: string,
+  events?: MathUnicodeNormalizationEvent[]
+): string {
+  if (typeof value !== 'string' || !value) return '';
   const mathBlockPattern = /(\$\$[\s\S]*?\$\$|(?<!\\)\$(?!\$)(?:\\[\s\S]|[^$\\])*?(?<!\\)\$(?!\$)|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\])/g;
   const codeSegmentPattern = /(\x60{3}[\s\S]*?\x60{3}|~~~[\s\S]*?~~~|\x60+[^\x60\n]*\x60+)/g;
 
@@ -256,21 +405,51 @@ function normalizeMathUnicodeInMarkdown(value: string): string {
 
     return segment.replace(mathBlockPattern, (mathBlock) => {
       if (mathBlock.startsWith('$$')) {
-        return '$$' + normalizeMathBody(mathBlock.slice(2, -2)) + '$$';
+        return '$$' + normalizeMathBody(mathBlock.slice(2, -2), events) + '$$';
       }
       if (mathBlock.startsWith('$')) {
-        return '$' + normalizeMathBody(mathBlock.slice(1, -1)) + '$';
+        return '$' + normalizeMathBody(mathBlock.slice(1, -1), events) + '$';
       }
       if (mathBlock.startsWith('\\(')) {
-        return '\\(' + normalizeMathBody(mathBlock.slice(2, -2)) + '\\)';
+        return '\\(' + normalizeMathBody(mathBlock.slice(2, -2), events) + '\\)';
       }
-      return '\\[' + normalizeMathBody(mathBlock.slice(2, -2)) + '\\]';
+      return '\\[' + normalizeMathBody(mathBlock.slice(2, -2), events) + '\\]';
     });
   }).join('');
 }
 
+/**
+ * Normalizes Markdown math Unicode and returns a structured telemetry/audit report
+ * detailing every character transformation and any unsupported Unicode glyphs.
+ */
+export function inspectAndNormalizeMathUnicode(
+  raw: string,
+  source = 'markdown'
+): MathUnicodeInspectionResult {
+  if (typeof raw !== 'string' || !raw) {
+    return {
+      normalizedText: '',
+      changed: false,
+      source,
+      events: [],
+      unsupportedCharacters: []
+    };
+  }
+  const events: MathUnicodeNormalizationEvent[] = [];
+  const normalizedText = normalizeMathUnicodeInMarkdown(raw, events);
+  const unsupportedCharacters = detectUnsupportedMathUnicode(normalizedText);
+
+  return {
+    normalizedText,
+    changed: normalizedText !== raw,
+    source,
+    events,
+    unsupportedCharacters
+  };
+}
+
 /** Recursively normalizes math-bearing strings in structured generated lesson data. */
-function normalizeNestedMathUnicode(value: unknown): unknown {
+export function normalizeNestedMathUnicode(value: unknown): unknown {
   if (typeof value === 'string') return normalizeMathUnicodeInMarkdown(value);
   if (Array.isArray(value)) return value.map((item) => normalizeNestedMathUnicode(item));
 

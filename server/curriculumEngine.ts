@@ -7,10 +7,19 @@ import {
   CourseSkeleton, 
   OutlineCriticRubric, 
   deriveCurriculumParameters,
+  inspectAndNormalizeMathUnicode,
   isBareDiagramOrFragment,
-  normalizeLessonMarkdownContent
+  normalizeLessonMarkdownContent,
+  MathUnicodeNormalizationEvent
 } from '../src/shared/courseSchemas.js';
 import { LATEX_INSTRUCTION } from '../src/shared/prompts.js';
+
+function katexStrictDiagnosticPolicy(errorCode: string): 'error' | 'ignore' {
+  if (errorCode === 'unknownSymbol' || errorCode === 'unicodeTextInMathMode') {
+    return 'error';
+  }
+  return 'ignore';
+}
 
 const curriculumMarkedValidator = new Marked({
   gfm: true,
@@ -22,7 +31,7 @@ curriculumMarkedValidator.use(
     throwOnError: true,
     nonStandard: true,
     output: 'htmlAndMathml',
-    strict: false,
+    strict: katexStrictDiagnosticPolicy,
   })
 );
 
@@ -49,13 +58,29 @@ export interface CurriculumGenerationOptions {
  * Enforces balanced KaTeX delimiters, valid AST tokenization (>= 3 headings & >= 3 substantive prose blocks),
  * equation-level katex.renderToString({ throwOnError: true }) verification, and valid markdown table structure.
  */
-export function validateLessonSyntax(content: string, pedagogyType: DisciplinePedagogyType = 'STEM_MATHEMATICAL'): { isValid: boolean; errors: string[] } {
+export function validateLessonSyntax(
+  content: string,
+  pedagogyType: DisciplinePedagogyType = 'STEM_MATHEMATICAL'
+): {
+  isValid: boolean;
+  errors: string[];
+  normalizationEvents?: MathUnicodeNormalizationEvent[];
+} {
   const errors: string[] = [];
   if (!content || typeof content !== 'string') {
     return { isValid: false, errors: ['Lesson content is empty or null.'] };
   }
 
-  const trimmed = normalizeLessonMarkdownContent(content);
+  const unicodeInspection = inspectAndNormalizeMathUnicode(content, 'lesson_validation');
+  const trimmed = normalizeLessonMarkdownContent(unicodeInspection.normalizedText);
+
+  if (unicodeInspection.unsupportedCharacters.length > 0) {
+    const formatted = unicodeInspection.unsupportedCharacters
+      .map((item) => `'${item.glyph}' (${item.codePoint})`)
+      .join(', ');
+    errors.push(`Unsupported mathematical Unicode character(s) inside LaTeX delimiters cannot be safely normalized: ${formatted}. Use standard LaTeX syntax.`);
+  }
+
   if (trimmed.length < 800) {
     errors.push(`Lesson content is too brief (${trimmed.length} chars). Expected a comprehensive university lesson (>= 800 chars).`);
   }
@@ -93,7 +118,11 @@ export function validateLessonSyntax(content: string, pedagogyType: DisciplinePe
     const mathExpr = rawBlock.slice(2, -2).trim();
     if (!mathExpr) continue;
     try {
-      katex.renderToString(mathExpr, { throwOnError: true, displayMode: true, strict: false });
+      katex.renderToString(mathExpr, {
+        throwOnError: true,
+        displayMode: true,
+        strict: katexStrictDiagnosticPolicy
+      });
     } catch (kErr: any) {
       errors.push(`KaTeX display equation syntax error: ${kErr?.message || String(kErr)}`);
     }
@@ -108,7 +137,11 @@ export function validateLessonSyntax(content: string, pedagogyType: DisciplinePe
     // Skip currency ranges like "$100 and $200" that are not LaTeX math
     if (/^\d[\d,.]*\s+[a-zA-Z]/.test(mathExpr) && !/[\\^_{}=]/.test(mathExpr)) continue;
     try {
-      katex.renderToString(mathExpr, { throwOnError: true, displayMode: false, strict: false });
+      katex.renderToString(mathExpr, {
+        throwOnError: true,
+        displayMode: false,
+        strict: katexStrictDiagnosticPolicy
+      });
     } catch (kErr: any) {
       errors.push(`KaTeX inline equation syntax error in "$${mathExpr}$": ${kErr?.message || String(kErr)}`);
     }
@@ -183,7 +216,8 @@ export function validateLessonSyntax(content: string, pedagogyType: DisciplinePe
 
   return {
     isValid: errors.length === 0,
-    errors
+    errors,
+    normalizationEvents: unicodeInspection.events
   };
 }
 

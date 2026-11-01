@@ -1,5 +1,7 @@
+import { normalizeMathBody, normalizeMathUnicodeInMarkdown } from './courseSchemas.js';
+
 /**
- * Shared math delimiter normalization for generation, lesson display and review.
+ * Shared math delimiter and Unicode script normalization for generation, lesson display and review.
  * Fenced code and inline code are protected so source examples remain literal.
  */
 export function normalizeMathDelimiters(raw: string): string {
@@ -11,7 +13,7 @@ export function normalizeMathDelimiters(raw: string): string {
     (match, leading: string, _fence: string, info: string, body: string) => {
       const language = String(info || '').trim().toLowerCase().split(/\s+/)[0];
       if (language === 'math' || language === 'latex') {
-        return leading + '\n\n$$\n' + body.trim() + '\n$$\n\n';
+        return leading + '\n\n$$\n' + normalizeMathBody(body.trim()) + '\n$$\n\n';
       }
       const marker = '\u0000UNIACE_CODE_BLOCK_' + protectedBlocks.length + '\u0000';
       protectedBlocks.push(match);
@@ -22,9 +24,10 @@ export function normalizeMathDelimiters(raw: string): string {
   const segments = fenced.split(/(\x60[^\n\x60]*\x60)/g);
   const normalized = segments.map((segment, index) => {
     if (index % 2 === 1) return segment;
-    return segment
-      .replace(/\\\[([\s\S]+?)\\\]/g, (_match, body: string) => '\n\n$$\n' + body.trim() + '\n$$\n\n')
-      .replace(/\\\(([\s\S]+?)\\\)/g, (_match, body: string) => '$' + body.trim() + '$');
+    const withStandardDelimiters = segment
+      .replace(/\\\[([\s\S]+?)\\\]/g, (_match, body: string) => '\n\n$$\n' + normalizeMathBody(body.trim()) + '\n$$\n\n')
+      .replace(/\\\(([\s\S]+?)\\\)/g, (_match, body: string) => '$' + normalizeMathBody(body.trim()) + '$');
+    return normalizeMathUnicodeInMarkdown(withStandardDelimiters);
   }).join('');
 
   return normalized.replace(/\u0000UNIACE_CODE_BLOCK_(\d+)\u0000/g, (_match, index: string) => {
@@ -42,5 +45,5 @@ export function asDisplayMath(latex: string): string {
     .replace(/^\\\[([\s\S]*)\\\]$/, '$1')
     .replace(/^\\\(([\s\S]*)\\\)$/, '$1')
     .trim();
-  return '$$\n' + unwrapped + '\n$$';
+  return '$$\n' + normalizeMathBody(unwrapped) + '\n$$';
 }
