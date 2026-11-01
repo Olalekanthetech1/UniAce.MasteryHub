@@ -469,7 +469,8 @@ class ArenaRealtimeManager {
       const prevWins = Number(lp.arenaWins ?? 0);
       const prevLosses = Number(lp.arenaLosses ?? 0);
       const prevWinStreak = Number(lp.arenaWinStreak ?? 0);
-      if (![prevWins, prevLosses, prevWinStreak].every(value => Number.isSafeInteger(value) && value >= 0)) {
+      const prevBestWinStreak = Number(lp.bestArenaWinStreak ?? 0);
+      if (![prevWins, prevLosses, prevWinStreak, prevBestWinStreak].every(value => Number.isSafeInteger(value) && value >= 0)) {
         throw new Error(`Cannot settle Arena statistics: persisted battle counters are invalid for participant ${player.uid}.`);
       }
 
@@ -478,7 +479,7 @@ class ArenaRealtimeManager {
       if (isWinner) {
         lp.arenaWins = prevWins + 1;
         lp.arenaWinStreak = prevWinStreak + 1;
-        lp.bestArenaWinStreak = Math.max(Number(lp.bestArenaWinStreak ?? 0), lp.arenaWinStreak);
+        lp.bestArenaWinStreak = Math.max(prevBestWinStreak, lp.arenaWinStreak);
       } else if (!isDraw) {
         lp.arenaLosses = prevLosses + 1;
         lp.arenaWinStreak = 0;
