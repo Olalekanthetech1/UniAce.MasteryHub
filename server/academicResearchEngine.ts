@@ -22,10 +22,10 @@ import {
 } from './academic/academicConfigStore.js';
 import { searchTavilyAcademicSources } from './academic/tavilyAdapter.js';
 
-interface ActiveAcademicConfig extends AcademicResearchConfigRecord['settings'] {
+type ActiveAcademicConfig = AcademicResearchConfigRecord['settings'] & {
   semanticScholarApiKey?: string;
   tavilyApiKey?: string;
-}
+};
 
 let activeConfig: ActiveAcademicConfig = {
   ...DEFAULT_ACADEMIC_RESEARCH_SETTINGS,
