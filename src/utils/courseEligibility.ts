@@ -1,6 +1,6 @@
 import { Course, UserProfile, CourseId, Semester } from '../types';
 import { isSameDepartment, normalizeLevel, normalizeSemester } from './normalization';
-import { DEPARTMENT_TO_FACULTY } from '../constants';
+
 
 export type ProgramStatus = 'current_program' | 'global_core' | 'elective' | 'outside_program' | 'unmapped';
 
@@ -16,63 +16,12 @@ export interface EligibilityResult {
  * to seamlessly accommodate new departments without manual code updates.
  */
 export const resolveUserFaculty = (
-  department?: string | null,
+  _department?: string | null,
   explicitFaculty?: string | null
 ): string => {
-  if (explicitFaculty && explicitFaculty.trim()) {
-    return explicitFaculty.trim();
-  }
-  if (!department) return '';
-
-  const trimmedDept = department.trim();
-
-  // 1. Exact or case-insensitive registry lookup
-  if (DEPARTMENT_TO_FACULTY[trimmedDept]) {
-    return DEPARTMENT_TO_FACULTY[trimmedDept];
-  }
-  const lowerDept = trimmedDept.toLowerCase();
-  for (const [dept, fac] of Object.entries(DEPARTMENT_TO_FACULTY)) {
-    if (dept.toLowerCase() === lowerDept || isSameDepartment(dept, trimmedDept)) {
-      return fac;
-    }
-  }
-
-  // 2. Dynamic higher-education structural inference for new departments
-  if (/\b(engineering|eng|aero|tech|technology|mechatronics|robotics|metallurgy)\b/i.test(lowerDept)) {
-    return 'Engineering';
-  }
-  if (/\b(medicine|medical|surgery|nursing|pharmacy|dentistry|dental|health|physiolog|anatom|patholog|biomed|clinic)\b/i.test(lowerDept)) {
-    return 'Medicine & Health Sciences';
-  }
-  if (/\b(science|physics|chemistry|biology|biological|mathematics|math|statistic|computer|computing|zoology|botany|microbiology|biochem|biochemistry|geology|intelligence|data|cyber)\b/i.test(lowerDept)) {
-    return 'Science';
-  }
-  if (/\b(general studies|gst|gns)\b/i.test(lowerDept)) {
-    return 'General Studies';
-  }
-  if (/\b(law|jurisprudence|legal)\b/i.test(lowerDept)) {
-    return 'Law';
-  }
-  if (/\b(agric|agriculture|agronomy|crop|soil|forestry|fisheries)\b/i.test(lowerDept)) {
-    return 'Agriculture';
-  }
-  if (/\b(arts|humanities|history|philosophy|english|french|linguistics|literature|theatre|music)\b/i.test(lowerDept)) {
-    return 'Arts & Humanities';
-  }
-  if (/\b(social|economics|sociology|political|psychology|geography|mass comm)\b/i.test(lowerDept)) {
-    return 'Social Sciences';
-  }
-  if (/\b(management|business|admin|accounting|finance|banking|marketing|insurance)\b/i.test(lowerDept)) {
-    return 'Management Sciences';
-  }
-  if (/\b(environmental|architecture|building|surveying|estate|urban)\b/i.test(lowerDept)) {
-    return 'Environmental Sciences';
-  }
-  if (/\b(education)\b/i.test(lowerDept)) {
-    return 'Education';
-  }
-
-  return '';
+  // A department-to-faculty relationship is used only when supplied by the live user/institution record.
+  // No department-name heuristics are used to infer institutional structure.
+  return typeof explicitFaculty === 'string' ? explicitFaculty.trim() : '';
 };
 
 /**
