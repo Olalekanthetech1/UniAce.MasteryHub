@@ -16,8 +16,7 @@ import { getPostgresPool } from './postgresPool.js';
 import { getSystemSettingsDoc, setSystemSettingsDoc } from './systemConfigStore.js';
 import {
   decryptAcademicCredential,
-  encryptAcademicCredential,
-  type EncryptedAcademicCredential
+  encryptAcademicCredential
 } from './academic/credentialVault.js';
 import { z } from 'zod';
 

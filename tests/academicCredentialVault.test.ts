@@ -6,7 +6,7 @@ import {
 } from '../server/academic/credentialVault';
 
 const originalEncryptionKey = process.env.ACADEMIC_RESEARCH_ENCRYPTION_KEY;
-const testEncryptionKey = Buffer.from('uniace-academic-research-test-key').toString('base64');
+const testEncryptionKey = Buffer.from('uniace-research-key-2026-32-byte').toString('base64');
 
 test.before(() => {
   process.env.ACADEMIC_RESEARCH_ENCRYPTION_KEY = testEncryptionKey;
@@ -42,7 +42,7 @@ test('rejects credentials encrypted with a different key or altered authenticati
   const encrypted = encryptAcademicCredential('integrity-protected-secret');
   const originalKey = process.env.ACADEMIC_RESEARCH_ENCRYPTION_KEY;
 
-  process.env.ACADEMIC_RESEARCH_ENCRYPTION_KEY = Buffer.from('different-32-byte-academic-key!').toString('base64');
+  process.env.ACADEMIC_RESEARCH_ENCRYPTION_KEY = Buffer.from('different-32-byte-academic-key!!').toString('base64');
   assert.throws(() => decryptAcademicCredential(encrypted), /could not be decrypted/);
 
   process.env.ACADEMIC_RESEARCH_ENCRYPTION_KEY = originalKey;

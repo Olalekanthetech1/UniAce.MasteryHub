@@ -18,6 +18,7 @@ import {
   Code2,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { auth } from '../../firebase';
 
 interface Paper {
   id: string;
@@ -46,10 +47,9 @@ interface ProviderHealth {
 interface AcademicConfig {
   enabled: boolean;
   cacheTtlHours: number;
-  semanticScholarApiKey?: string;
+  semanticScholarApiKeyConfigured: boolean;
   openAlexEmail?: string;
   arxivMaxResults: number;
-  defaultCourseAlignment: string;
   providersEnabled: {
     arxiv: boolean;
     semanticScholar: boolean;
@@ -75,10 +75,9 @@ export const AcademicMCPDashboard: React.FC = () => {
   const [config, setConfig] = useState<AcademicConfig>({
     enabled: true,
     cacheTtlHours: 24,
-    semanticScholarApiKey: '',
-    openAlexEmail: 'uniace.support@gmail.com',
+    semanticScholarApiKeyConfigured: false,
+    openAlexEmail: '',
     arxivMaxResults: 5,
-    defaultCourseAlignment: 'Global University Benchmark Syllabus (Adaptive)',
     providersEnabled: {
       arxiv: true,
       semanticScholar: true,
@@ -86,11 +85,23 @@ export const AcademicMCPDashboard: React.FC = () => {
     },
   });
   const [totalQueries, setTotalQueries] = useState<number>(0);
+  const [semanticScholarApiKeyInput, setSemanticScholarApiKeyInput] = useState<string>('');
+
+  const getAuthHeaders = async (): Promise<Record<string, string>> => {
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      throw new Error('Your administrator session is unavailable. Sign in again and retry.');
+    }
+    const idToken = await currentUser.getIdToken();
+    return { Authorization: `Bearer ${idToken}` };
+  };
 
   // Fetch Stats & Config
   const fetchStatsAndConfig = async () => {
     try {
-      const res = await fetch('/api/academic/stats');
+      const res = await fetch('/api/admin/academic/stats', {
+        headers: await getAuthHeaders()
+      });
       if (res.ok) {
         const data = await res.json();
         if (data.providerHealth) setProviderHealth(data.providerHealth);
@@ -114,9 +125,9 @@ export const AcademicMCPDashboard: React.FC = () => {
     setSelectedPaper(null);
 
     try {
-      const res = await fetch('/api/academic/search', {
+      const res = await fetch('/api/admin/academic/search', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(await getAuthHeaders()) },
         body: JSON.stringify({
           query: searchQuery,
           fieldOfStudy,
@@ -132,7 +143,7 @@ export const AcademicMCPDashboard: React.FC = () => {
 
       const data = await res.json();
       setPapers(data.papers || []);
-      toast.success(`Found ${data.papers?.length || 0} peer-reviewed papers in ${data.latencyMs}ms`);
+      toast.success(`Found ${data.papers?.length || 0} academic records in ${data.latencyMs}ms`);
     } catch (err) {
       toast.error((err as Error).message || 'Failed to query academic registries');
     } finally {
@@ -144,9 +155,9 @@ export const AcademicMCPDashboard: React.FC = () => {
   const handleGenerateCitation = async (paper: Paper) => {
     setSelectedPaper(paper);
     try {
-      const res = await fetch('/api/academic/citation', {
+      const res = await fetch('/api/admin/academic/citation', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(await getAuthHeaders()) },
         body: JSON.stringify({ identifier: paper.doi || paper.title }),
       });
 
@@ -175,18 +186,26 @@ export const AcademicMCPDashboard: React.FC = () => {
   // Save Config
   const handleSaveConfig = async () => {
     try {
+      const apiKey = semanticScholarApiKeyInput.trim();
+      const payload = {
+        ...config,
+        ...(apiKey ? { semanticScholarApiKey: apiKey } : {})
+      };
       const res = await fetch('/api/admin/academic/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
+        headers: { 'Content-Type': 'application/json', ...(await getAuthHeaders()) },
+        body: JSON.stringify(payload),
       });
 
-      if (res.ok) {
-        toast.success('Academic Engine Configuration updated live!');
-        fetchStatsAndConfig();
-      } else {
-        toast.error('Failed to save configuration');
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.message || data.error || 'Failed to persist academic research configuration.');
       }
+
+      if (data.config) setConfig(data.config);
+      setSemanticScholarApiKeyInput('');
+      toast.success('Academic research configuration saved to Neon.');
+      fetchStatsAndConfig();
     } catch (err) {
       toast.error('Error saving academic config');
     }
@@ -317,10 +336,7 @@ export const AcademicMCPDashboard: React.FC = () => {
           {papers.length > 0 && (
             <div className="space-y-4">
               <div className="flex items-center justify-between text-xs text-slate-400">
-                <span>Returned {papers.length} peer-reviewed results from arXiv, Semantic Scholar, and OpenAlex:</span>
-                <span className="text-emerald-400 flex items-center gap-1">
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Zero-Mock Live API Verification Passed
-                </span>
+                <span>Returned {papers.length} academic records from configured scholarly registries:</span>
               </div>
 
               <div className="space-y-3">
@@ -489,14 +505,20 @@ export const AcademicMCPDashboard: React.FC = () => {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
             <div className="space-y-1">
-              <label className="text-slate-400">Semantic Scholar API Key (Optional for High Throughput)</label>
+              <label className="text-slate-400">Semantic Scholar API Key</label>
               <input
                 type="password"
-                value={config.semanticScholarApiKey || ''}
-                onChange={(e) => setConfig({ ...config, semanticScholarApiKey: e.target.value })}
-                placeholder="Enter Semantic Scholar API key"
+                autoComplete="new-password"
+                value={semanticScholarApiKeyInput}
+                onChange={(e) => setSemanticScholarApiKeyInput(e.target.value)}
+                placeholder={config.semanticScholarApiKeyConfigured ? 'Enter a replacement key; leave blank to keep the stored key' : 'Enter API key'}
                 className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white"
               />
+              <p className="text-[11px] text-slate-500">
+                {config.semanticScholarApiKeyConfigured
+                  ? 'A credential is stored encrypted on the server. Its value is never returned to this dashboard.'
+                  : 'No Semantic Scholar credential is currently stored. A key is optional.'}
+              </p>
             </div>
 
             <div className="space-y-1">
@@ -519,17 +541,6 @@ export const AcademicMCPDashboard: React.FC = () => {
               />
             </div>
 
-            <div className="space-y-1">
-              <label className="text-slate-400">Default Benchmark Syllabus Standard (Globally Adaptive)</label>
-              <input
-                type="text"
-                value={config.defaultCourseAlignment}
-                onChange={(e) => setConfig({ ...config, defaultCourseAlignment: e.target.value })}
-                placeholder="e.g., Global University Benchmark Syllabus (Adaptive)"
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white"
-              />
-              <p className="text-[11px] text-slate-500">Dynamically adapts course syllabi and scholarly references across accredited global academic standards (e.g., ABET, ACM/IEEE, ECTS, Global University Benchmarks).</p>
-            </div>
           </div>
 
           <div className="pt-3 flex justify-end">

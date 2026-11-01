@@ -82,7 +82,7 @@ router.post('/definitions', async (req: Request, res: Response) => {
 router.get('/stats', async (req: Request, res: Response) => {
   try {
     const health = await checkAcademicProvidersHealth();
-    const config = getAcademicConfig();
+    const config = await getAcademicConfig();
 
     let totalLogCount = 0;
     const pool = getPostgresPool();
@@ -108,17 +108,31 @@ router.get('/stats', async (req: Request, res: Response) => {
 });
 
 // 5. Admin Config GET
-router.get('/config', (req: Request, res: Response) => {
-  res.json(getAcademicConfig());
+router.get('/config', async (_req: Request, res: Response) => {
+  try {
+    res.json(await getAcademicConfig());
+  } catch (error) {
+    console.error('Academic config read failed:', error);
+    res.status(503).json({
+      error: 'Academic research configuration is unavailable from the authoritative database.'
+    });
+  }
 });
 
 // 6. Admin Config POST
-router.post('/config', (req: Request, res: Response) => {
+router.post('/config', async (req: Request, res: Response) => {
   try {
-    const updated = updateAcademicConfig(req.body);
-    res.json({ message: 'Academic Config updated successfully', config: updated });
+    const updated = await updateAcademicConfig(req.body);
+    res.json({ message: 'Academic research configuration persisted successfully.', config: updated });
   } catch (error) {
-    res.status(400).json({ error: 'Failed to update academic config', details: (error as Error).message });
+    const message = (error as Error).message;
+    const isValidationError = message.startsWith('Invalid academic research configuration') ||
+      message.startsWith('At least one academic research provider') ||
+      message.startsWith('A Semantic Scholar API key');
+    res.status(isValidationError ? 400 : 503).json({
+      error: 'Failed to persist academic research configuration.',
+      message
+    });
   }
 });
 
