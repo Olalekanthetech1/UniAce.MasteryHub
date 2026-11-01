@@ -17,6 +17,7 @@ export interface CourseEntity {
   departments?: string[] | null;
   scope?: string | null;
   semester: string | null;
+  credit_units?: number | null;
   thumbnail_url: string | null;
   author_id: string | null;
   status: 'draft' | 'in_review' | 'published' | 'archived';
