@@ -35,9 +35,28 @@ export function validateRecordedHumanReplay(row: unknown): VerifiedRecordedHuman
   if (!isRecord(row) || typeof row.id !== 'string' || !row.id.trim()) return null;
   if (!isRecord(row.data) || row.data.status !== 'finished' || row.data.opponentType !== 'human') return null;
 
+  // The replay query must prove that both participant UIDs exist in the
+  // authoritative users table; JSON fields alone are not proof of identity.
+  const verifiedPlayer1Uid = row.verified_player1_uid;
+  const verifiedPlayer2Uid = row.verified_player2_uid;
+  if (
+    typeof verifiedPlayer1Uid !== 'string' ||
+    typeof verifiedPlayer2Uid !== 'string' ||
+    !verifiedPlayer1Uid.trim() ||
+    !verifiedPlayer2Uid.trim() ||
+    verifiedPlayer1Uid === verifiedPlayer2Uid ||
+    row.data.player1?.uid !== verifiedPlayer1Uid ||
+    row.data.player2?.uid !== verifiedPlayer2Uid
+  ) return null;
+
   const recordedAt = toValidTimestamp(row.updated_at);
   if (!recordedAt) return null;
   const recordedAtMs = new Date(recordedAt).getTime();
+
+  const startedAtEpochMs = row.data.startedAtEpochMs;
+  if (typeof startedAtEpochMs !== 'number' || !Number.isFinite(startedAtEpochMs) || startedAtEpochMs <= 0) {
+    return null;
+  }
 
   const durationSeconds = row.data.durationSeconds;
   if (typeof durationSeconds !== 'number' || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
@@ -48,6 +67,8 @@ export function validateRecordedHumanReplay(row: unknown): VerifiedRecordedHuman
   if (!Array.isArray(questions) || questions.length === 0) return null;
   if (!questions.every(question =>
     isRecord(question) &&
+    typeof question.question === 'string' &&
+    question.question.trim().length > 0 &&
     typeof question.correctAnswer === 'string' &&
     question.correctAnswer.trim().length > 0 &&
     Array.isArray(question.options) &&
@@ -104,7 +125,9 @@ export function validateRecordedHumanReplay(row: unknown): VerifiedRecordedHuman
         elapsedMs > durationSeconds * 1000 ||
         !timestamp ||
         !Number.isFinite(timestampMs) ||
+        timestampMs < startedAtEpochMs ||
         timestampMs > recordedAtMs ||
+        Math.abs(timestampMs - (startedAtEpochMs + elapsedMs)) > 5000 ||
         timestampMs < previousTimestampMs
       ) {
         valid = false;
