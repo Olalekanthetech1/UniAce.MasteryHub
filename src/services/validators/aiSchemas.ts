@@ -82,11 +82,6 @@ export function autoHealQuestion(q: any): any {
     correctAnswer = matchedOption;
   }
 
-  const difficulty = q.difficulty;
-  if (typeof difficulty !== 'number' || !Number.isInteger(difficulty) || difficulty < 1 || difficulty > 5) {
-    throw new Error('Quiz question is missing a valid generated difficulty from 1 to 5.');
-  }
-
   return {
     ...q,
     type,
@@ -95,8 +90,7 @@ export function autoHealQuestion(q: any): any {
     correctAnswer,
     answer: correctAnswer,
     explanation: typeof q.explanation === 'string' ? q.explanation.trim() : '',
-    hint: typeof q.hint === 'string' ? q.hint.trim() : '',
-    difficulty
+    hint: typeof q.hint === 'string' ? q.hint.trim() : ''
   };
 }
 
@@ -128,7 +122,7 @@ export const EvaluateWrittenAnswerSchema = z.object({
 // 3. Quick Check Schema
 export const QuickCheckSchema = z.object({
   id: z.string().optional().or(z.null()).transform((val) => val || `qc-${Math.random().toString(36).substring(2, 11)}`),
-  type: z.literal('multiple-choice').default('multiple-choice'),
+  type: z.literal('multiple-choice'),
   question: z.string().min(1, 'Question text cannot be empty'),
   options: z.array(z.string()).min(2, 'Multiple-choice questions need at least 2 options'),
   correctAnswer: z.string().min(1, 'Correct answer cannot be empty'),
@@ -141,8 +135,8 @@ export const FlashcardSchema = z.object({
   id: z.string().optional().or(z.null()).transform((val) => val || `fc-${Math.random().toString(36).substring(2, 11)}`),
   front: z.string().min(1, 'Front cannot be empty'),
   back: z.string().min(1, 'Back cannot be empty'),
-  moduleId: z.string().optional().default(''),
-  subTopicId: z.string().optional().default(''),
+  moduleId: z.string().optional(),
+  subTopicId: z.string().optional(),
 });
 
 export const FlashcardsResponseSchema = z.object({
@@ -153,9 +147,9 @@ export const FlashcardsResponseSchema = z.object({
 export const RecommendationSchema = z.object({
   title: z.string().min(1, 'Title cannot be empty'),
   reason: z.string().min(1, 'Reason cannot be empty'),
-  moduleId: z.string().optional().default(''),
-  subTopicId: z.string().optional().default(''),
-  type: z.enum(['review', 'new', 'mastery']).default('review'),
+  moduleId: z.string().optional(),
+  subTopicId: z.string().optional(),
+  type: z.enum(['review', 'new', 'mastery']),
 });
 
 // 6. Exam Readiness Prediction Schema
