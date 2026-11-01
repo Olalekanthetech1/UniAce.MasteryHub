@@ -2028,7 +2028,8 @@ app.post('/api/srs/record-review', verifyAuth, async (req, res) => {
   }
 });
 
-// Quiz Attempts Record
+// The legacy QuizGenerator calculates practice scores in the browser.
+// Store those values only as explicitly client-computed practice, never as verified exam grades.
 app.post('/api/quiz/record-attempt', verifyAuth, requireCourseAccessFromBody, async (req, res) => {
   const uid = (req as any).user.uid;
   const {
@@ -2038,32 +2039,51 @@ app.post('/api/quiz/record-attempt', verifyAuth, requireCourseAccessFromBody, as
     scorePct,
     passed,
     timeSpentSeconds,
-    answersBreakdown,
     attemptIdempotencyKey
   } = req.body || {};
+
+  if (typeof courseId !== 'string' || !courseId.trim() ||
+      typeof moduleId !== 'string' || !moduleId.trim() ||
+      typeof quizId !== 'string' || !quizId.trim() ||
+      typeof attemptIdempotencyKey !== 'string' || !attemptIdempotencyKey.trim()) {
+    return res.status(400).json({ error: 'courseId, moduleId, quizId, and attemptIdempotencyKey are required.' });
+  }
+  if (typeof scorePct !== 'number' || !Number.isFinite(scorePct) || scorePct < 0 || scorePct > 100 ||
+      typeof passed !== 'boolean') {
+    return res.status(400).json({ error: 'A valid client-computed practice score and pass result are required.' });
+  }
+  if (typeof timeSpentSeconds !== 'number' || !Number.isFinite(timeSpentSeconds) || timeSpentSeconds < 0) {
+    return res.status(400).json({ error: 'A measured non-negative practice duration is required.' });
+  }
+
+  const pool = getPostgresPool();
+  if (!pool) return res.status(503).json({ error: 'Quiz attempt persistence unavailable: PostgreSQL is not connected.' });
+
   try {
-    const pool = getPostgresPool();
-    if (!pool) return res.status(503).json({ error: 'DB unavailable' });
-    const effectiveCourseId = String(courseId || 'general').trim();
-    const effectiveModuleId = String(moduleId || 'cbt_exam').trim();
-    const effectiveQuizId = String(quizId || 'quiz_1').trim();
-    const effectiveIdempotencyKey = String(attemptIdempotencyKey || crypto.randomUUID()).trim();
-    const numericScore = Number.isFinite(Number(scorePct)) ? Number(Number(scorePct).toFixed(2)) : 0;
-    const isPassed = typeof passed === 'boolean' ? passed : numericScore >= 50;
-    const boundedTime = Math.max(0, Math.round(Number(timeSpentSeconds) || 0));
-    const breakdownPayload = Array.isArray(answersBreakdown)
-      ? answersBreakdown
-      : Array.isArray(answersBreakdown?.questions)
-        ? answersBreakdown.questions
-        : answersBreakdown && typeof answersBreakdown === 'object' && Object.keys(answersBreakdown).length > 0
-          ? [answersBreakdown]
-          : [];
+    const normalizedCourseId = courseId.trim();
+    const normalizedModuleId = moduleId.trim();
+    const normalizedQuizId = quizId.trim();
+    const normalizedAttemptKey = attemptIdempotencyKey.trim();
+    const numericScore = Number(scorePct.toFixed(2));
+    const boundedTime = Math.round(timeSpentSeconds);
+    const gradingMetadata = {
+      gradingSource: 'client_computed_practice',
+      verificationStatus: 'not_server_verified'
+    };
+    const resultSnapshot = {
+      courseId: normalizedCourseId,
+      moduleId: normalizedModuleId,
+      quizId: normalizedQuizId,
+      scorePct: numericScore,
+      passed,
+      gradingSource: gradingMetadata.gradingSource
+    };
     const snapshotHash = crypto
       .createHash('sha256')
-      .update(JSON.stringify({ quizId: effectiveQuizId, breakdownPayload }))
+      .update(JSON.stringify(resultSnapshot))
       .digest('hex');
 
-    const resRow = await pool.query(
+    const saved = await pool.query(
       `INSERT INTO user_quiz_attempts (
          uid, course_id, module_id, quiz_id, attempt_idempotency_key,
          score_pct, passed, time_spent_seconds, questions_snapshot_hash,
@@ -2071,36 +2091,37 @@ app.post('/api/quiz/record-attempt', verifyAuth, requireCourseAccessFromBody, as
        )
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, NOW())
        ON CONFLICT (uid, quiz_id, attempt_idempotency_key)
-       DO UPDATE SET
-         score_pct = EXCLUDED.score_pct,
-         passed = EXCLUDED.passed,
-         time_spent_seconds = EXCLUDED.time_spent_seconds,
-         answers_breakdown = EXCLUDED.answers_breakdown,
-         attempted_at = NOW()
+       DO UPDATE SET uid = EXCLUDED.uid
        RETURNING id, attempted_at`,
       [
         uid,
-        effectiveCourseId,
-        effectiveModuleId,
-        effectiveQuizId,
-        effectiveIdempotencyKey,
+        normalizedCourseId,
+        normalizedModuleId,
+        normalizedQuizId,
+        normalizedAttemptKey,
         numericScore,
-        isPassed,
+        passed,
         boundedTime,
         snapshotHash,
-        JSON.stringify(breakdownPayload)
+        JSON.stringify(gradingMetadata)
       ]
     );
-    res.json({
+
+    if (!saved.rows[0]) {
+      throw new Error('The database did not return the persisted quiz attempt record.');
+    }
+    return res.json({
       success: true,
-      attemptId: resRow.rows[0].id,
-      attemptedAt: resRow.rows[0].attempted_at
+      attemptId: saved.rows[0].id,
+      attemptedAt: saved.rows[0].attempted_at,
+      gradingSource: gradingMetadata.gradingSource,
+      verificationStatus: gradingMetadata.verificationStatus
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    logger.error({ uid, courseId, moduleId, quizId, error: err?.message || String(err) }, '[Quiz attempts] Persistence failed');
+    return res.status(503).json({ error: 'The practice attempt could not be persisted to the authoritative database.' });
   }
 });
-
 app.get('/api/quiz/recent-attempts', verifyAuth, async (req: any, res: any) => {
   const uid = req.user.uid;
   const courseId = req.query.courseId as string;
@@ -2123,7 +2144,8 @@ app.get('/api/quiz/recent-attempts', verifyAuth, async (req: any, res: any) => {
       score: Number(r.score_pct || 0),
       passed: Boolean(r.passed),
       timeSpent: Number(r.time_spent_seconds || 0),
-      answersBreakdown: r.answers_breakdown || {},
+      answersBreakdown: r.answers_breakdown ?? null,
+      gradingSource: r.answers_breakdown?.gradingSource ?? 'not_recorded',
       completedAt: r.attempted_at
     }));
     res.json({ success: true, attempts });
