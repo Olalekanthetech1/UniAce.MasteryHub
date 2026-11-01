@@ -5749,6 +5749,58 @@ app.all('/api/course/generate*', (req, res, next) => {
   next();
 });
 
+// Live routing contract: only provider choices explicitly stored in Neon may be executed.
+async function requireLiveRoutingConfig(): Promise<Record<string, any>> {
+  const config = await getSystemConfigDoc('routing', true);
+  if (!config || typeof config !== 'object' || Object.keys(config).length === 0) {
+    throw new Error('AI routing is unavailable: no authoritative routing configuration is stored.');
+  }
+  return config;
+}
+
+function resolveLiveProviderQueue(
+  routingConfig: Record<string, any>,
+  taskType: string,
+  providerMap: Record<string, any>,
+  requestedProvider?: string,
+  strictMode = false
+): string[] {
+  const primary = String(
+    requestedProvider ||
+    routingConfig.global_provider ||
+    routingConfig[taskType] ||
+    ''
+  ).trim().toLowerCase();
+
+  if (!primary) {
+    throw new Error(`AI routing is unavailable: no primary provider is configured for task "${taskType}".`);
+  }
+  if (!Object.prototype.hasOwnProperty.call(providerMap, primary)) {
+    throw new Error(`AI routing configuration references unsupported provider "${primary}".`);
+  }
+
+  const fallbackMap = routingConfig.fallbacksByTask;
+  const configuredFallbacks = fallbackMap?.[taskType];
+  if (configuredFallbacks !== undefined && !Array.isArray(configuredFallbacks)) {
+    throw new Error(`AI routing configuration has an invalid fallback list for task "${taskType}".`);
+  }
+
+  const names = [primary];
+  if (!strictMode && routingConfig.autoFallback !== false) {
+    for (const fallback of configuredFallbacks || []) {
+      if (typeof fallback !== 'string' || !fallback.trim()) {
+        throw new Error(`AI routing configuration contains an invalid fallback for task "${taskType}".`);
+      }
+      const name = fallback.trim().toLowerCase();
+      if (!Object.prototype.hasOwnProperty.call(providerMap, name)) {
+        throw new Error(`AI routing configuration references unsupported fallback provider "${name}".`);
+      }
+      if (!names.includes(name)) names.push(name);
+    }
+  }
+  return names;
+}
+
 // Centralized Provider LLM Completion Helper with Schema Validation & Zero-Fallback Enforcement
 interface CompleteProviderOptions<T> {
   type: 'skeleton' | 'module' | 'lesson' | 'default' | 'formulas';
