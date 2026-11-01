@@ -10142,46 +10142,51 @@ async function checkAndSendAbsenceStudyReminders(_firestore: any) {
   }
 }
 
-// Public Leaderboard Endpoint (Sanitized, zero PII - Neon PostgreSQL)
+// Public leaderboard uses only recorded profile metrics; no derived XP, level or streak assumptions.
 app.get('/api/leaderboard', async (req, res) => {
   const pool = getPostgresPool();
-  if (!pool) {
-    return res.status(503).json({ error: 'Service unavailable' });
-  }
+  if (!pool) return res.status(503).json({ error: 'Leaderboard service unavailable.' });
 
   try {
     const result = await pool.query(
-      `SELECT u.uid, u.display_name, u.learning_profile,
-              COALESCE(SUM(p.completed_lessons_count), 0)::int as completed_lessons,
-              COALESCE(SUM(p.total_study_seconds), 0)::int as total_study_seconds
+      `SELECT
+         u.uid,
+         u.display_name,
+         u.learning_profile
        FROM users u
-       LEFT JOIN user_course_progress p ON u.uid = p.uid
-       GROUP BY u.uid, u.display_name, u.learning_profile
-       LIMIT 25`
+       WHERE u.role = 'student'
+         AND NULLIF(BTRIM(u.display_name), '') IS NOT NULL
+         AND u.learning_profile->>'xp' ~ '^[0-9]+$'
+         AND u.learning_profile->>'level' ~ '^[0-9]+$'
+       ORDER BY (u.learning_profile->>'xp')::int DESC, u.uid ASC
+       LIMIT 50`
     );
 
-    const leaders = result.rows
-      .map((r: any) => {
-        const lp = r.learning_profile || {};
-        const computedXp = Number(r.completed_lessons || 0) * 50 + Math.floor(Number(r.total_study_seconds || 0) / 60);
-        const xp = Math.max(Number(lp.xp || 0), computedXp);
-        return {
-          uid: r.uid,
-          displayName: r.display_name || 'Scholar',
-          photoURL: lp.photoURL || '',
-          xp,
-          level: Math.max(Number(lp.level || 1), Math.floor(Math.sqrt(xp / 100)) + 1),
-          streak: Number(lp.streak || 1)
-        };
-      })
-      .sort((a, b) => b.xp - a.xp)
-      .slice(0, 10)
-      .map((item, idx) => ({ ...item, rank: idx + 1 }));
+    const leaders = result.rows.map((row: any, index: number) => {
+      const profile = row.learning_profile && typeof row.learning_profile === 'object'
+        ? row.learning_profile
+        : {};
+      const photoURL = typeof profile.avatar === 'string' && profile.avatar.trim()
+        ? profile.avatar
+        : (typeof profile.photoURL === 'string' && profile.photoURL.trim() ? profile.photoURL : null);
+      const rawStreak = profile.streak;
+      const streak = Number.isInteger(rawStreak) && rawStreak >= 0 ? rawStreak : null;
 
-    res.json({ leaders, leaderboard: leaders });
+      return {
+        uid: row.uid,
+        displayName: row.display_name,
+        photoURL,
+        xp: Number(profile.xp),
+        level: Number(profile.level),
+        streak,
+        rank: index + 1
+      };
+    });
+
+    return res.json({ leaders, leaderboard: leaders });
   } catch (error: any) {
     console.error('Error fetching public leaderboard:', error);
-    res.status(500).json({ error: error.message });
+    return res.status(503).json({ error: 'Recorded leaderboard data could not be verified.' });
   }
 });
 
