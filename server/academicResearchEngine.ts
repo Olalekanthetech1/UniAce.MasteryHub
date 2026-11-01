@@ -14,6 +14,7 @@ import { fetchFromArxiv } from './academic/arxivAdapter.js';
 import { fetchFromSemanticScholar, lookupPaperSemanticScholar } from './academic/semanticScholarAdapter.js';
 import { fetchFromOpenAlex, fetchOpenAlexConceptDefinitions } from './academic/openAlexAdapter.js';
 import { getPostgresPool } from './postgresPool.js';
+import { createHash } from 'crypto';
 import {
   DEFAULT_ACADEMIC_RESEARCH_SETTINGS,
   loadAcademicResearchConfig,
@@ -206,12 +207,12 @@ function calculateRelevanceScore(paper: AcademicPaper, queryTerms: string[]): nu
   }
 
   // Logarithmic citation weight
-  const citationBonus = Math.log(1 + (paper.citationCount || 0)) * 0.4;
+  const citationBonus = paper.citationCount != null ? Math.log(1 + paper.citationCount) * 0.4 : 0;
 
   // Exponential recency decay
   const currentYear = new Date().getFullYear();
-  const age = paper.year ? Math.max(0, currentYear - paper.year) : 10;
-  const recencyBonus = Math.exp(-0.05 * age) * 2.0;
+  const age = paper.year != null ? Math.max(0, currentYear - paper.year) : null;
+  const recencyBonus = age !== null ? Math.exp(-0.05 * age) * 2.0 : 0;
 
   // DOI verified paper bonus
   const doiBonus = paper.doi ? 0.5 : 0;
@@ -303,10 +304,11 @@ export async function searchAcademicPapers(
   await ensureAcademicConfig();
   const startTime = Date.now();
   const parsed = SearchAcademicPapersInputSchema.parse(input);
-  const { query, fieldOfStudy, limit, courseCode } = parsed;
+  const { query, fieldOfStudy, limit, minYear, courseCode } = parsed;
+  if (!activeConfig.enabled) throw new Error('Academic research is disabled in system settings.');
 
   const normalizedQuery = `${query} ${fieldOfStudy || ''}`.trim().toLowerCase();
-  const cacheKey = Buffer.from(normalizedQuery).toString('base64').slice(0, 64);
+  const cacheKey = createHash('sha256').update(JSON.stringify({ normalizedQuery, limit, minYear, courseCode })).digest('hex');
 
   // Check Cache
   const cached = await getCachedSearch(cacheKey);
@@ -320,7 +322,7 @@ export async function searchAcademicPapers(
 
   if (activeConfig.providersEnabled.arxiv) {
     tasks.push(
-      fetchFromArxiv(normalizedQuery, limit)
+      fetchFromArxiv(normalizedQuery, Math.min(limit, activeConfig.arxivMaxResults))
         .then(({ papers, latencyMs }) => {
           providerBreakdown.arxiv = { count: papers.length, latencyMs, status: 'ok' };
           allPapers.push(...papers);
@@ -360,12 +362,14 @@ export async function searchAcademicPapers(
     );
   }
 
+  if (tasks.length === 0) {
+    throw new Error('No academic search providers are enabled. Enable at least one live provider in Academic Research settings.');
+  }
   await Promise.allSettled(tasks);
 
-  // If ALL providers failed, throw clean status
-  if (allPapers.length === 0) {
-    const errorMsg = 'Academic Research APIs currently unavailable or query returned 0 matches across arXiv, Semantic Scholar, and OpenAlex.';
-    throw new Error(errorMsg);
+  const successfulProviders = Object.values(providerBreakdown).filter(provider => provider.status === 'ok').length;
+  if (allPapers.length === 0 && successfulProviders === 0) {
+    throw new Error('All enabled academic search providers failed. No results were fabricated or substituted.');
   }
 
   // Deduplication by DOI and Title similarity
@@ -373,6 +377,7 @@ export async function searchAcademicPapers(
   const seenDois = new Set<string>();
 
   for (const paper of allPapers) {
+    if (minYear !== undefined && (paper.year == null || paper.year < minYear)) continue;
     if (paper.doi && seenDois.has(paper.doi.toLowerCase())) {
       continue;
     }
@@ -442,16 +447,27 @@ export async function getCitationAndAbstract(input: GetCitationInput): Promise<C
     throw new Error(`Academic paper with identifier '${identifier}' could not be located in live registries.`);
   }
 
-  const primaryAuthor = paper.authors[0] || 'Author';
-  const authorLastName = primaryAuthor.split(' ').pop() || primaryAuthor;
+  const primaryAuthor = paper.authors[0] || '';
+  const authorLastName = primaryAuthor ? primaryAuthor.split(' ').pop() || primaryAuthor : 'entry';
   const etAl = paper.authors.length > 1 ? ' et al.' : '';
-  const yearStr = paper.year ? ` (${paper.year}).` : ' (n.d.).';
-  const doiStr = paper.doi ? ` https://doi.org/${paper.doi}` : ` ${paper.url}`;
+  const yearStr = paper.year != null ? `(${paper.year})` : '(n.d.)';
+  const sourcePart = paper.venue ? ` ${paper.venue}.` : '';
+  const doiStr = paper.doi ? ` https://doi.org/${paper.doi}` : paper.url ? ` ${paper.url}` : '';
 
-  const apa = `${primaryAuthor}${etAl}${yearStr} ${paper.title}. ${paper.venue || 'Academic Journal'}.${doiStr}`;
+  const apa = paper.authors.length
+    ? `${primaryAuthor}${etAl} ${yearStr}. ${paper.title}.${sourcePart}${doiStr}`
+    : `${paper.title}. ${yearStr}.${sourcePart}${doiStr}`;
 
-  const bibtexKey = `${authorLastName.toLowerCase()}${paper.year || 'nd'}${paper.title.slice(0, 8).toLowerCase().replace(/[^a-z]/g, '')}`;
-  const bibtex = `@article{${bibtexKey},\n  author = {${paper.authors.join(' and ')}},\n  title = {${paper.title}},\n  journal = {${paper.venue || 'Academic Repository'}},\n  year = {${paper.year || 'n.d.'}},\n  doi = {${paper.doi || ''}},\n  url = {${paper.url}}\n}`;
+  const bibtexKey = `${authorLastName.toLowerCase()}${paper.year ?? 'nd'}${paper.title.slice(0, 8).toLowerCase().replace(/[^a-z]/g, '')}`;
+  const bibtexFields = [
+    ...(paper.authors.length ? [`  author = {${paper.authors.join(' and ')}},`] : []),
+    `  title = {${paper.title}},`,
+    ...(paper.venue ? [`  howpublished = {${paper.venue}},`] : []),
+    ...(paper.year != null ? [`  year = {${paper.year}},`] : []),
+    ...(paper.doi ? [`  doi = {${paper.doi}},`] : []),
+    ...(paper.url ? [`  url = {${paper.url}},`] : []),
+  ];
+  const bibtex = `@misc{${bibtexKey},\n${bibtexFields.join('\n')}\n}`;
 
   return {
     identifier,
