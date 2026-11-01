@@ -153,38 +153,77 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
           updatedAt: u.updated_at
         };
       } else {
-        const nowIso = new Date().toISOString();
-        // Initialize new user in PostgreSQL directly from Firebase Auth token identity (zero Firestore read)
-        profile = {
-          uid,
-          email: user.email || '',
-          displayName: user.name || 'Scholar',
-          role: 'student',
-          plan_type: 'free',
-          subscription_status: 'none',
-          created_at: nowIso,
-          ai_sparks: 100,
-          learningProfile: {},
-          sessionId: null,
-          sessionVersion: 1,
-          updatedAt: nowIso
-        };
-        await pool.query(
+        const policyResult = await pool.query(
+          'SELECT data FROM system_config WHERE key = $1 LIMIT 1',
+          ['evaluation_policy']
+        );
+        const policyData = policyResult.rows[0]?.data;
+        const dailyFreeSparks = policyData?.dailyFreeSparks;
+        if (typeof dailyFreeSparks !== 'number' || !Number.isFinite(dailyFreeSparks) || dailyFreeSparks < 0) {
+          return res.status(503).json({
+            error: 'Account provisioning is unavailable because the authoritative evaluation_policy.dailyFreeSparks value is missing or invalid.'
+          });
+        }
+
+        const email = typeof user.email === 'string' && user.email.trim() ? user.email.trim() : null;
+        const displayName = typeof user.name === 'string' && user.name.trim() ? user.name.trim() : null;
+        const inserted = await pool.query(
           'INSERT INTO users (uid, email, display_name, role, plan_type, ai_sparks, learning_profile, created_at, updated_at) ' +
           'VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW()) ' +
-          'ON CONFLICT (uid) DO UPDATE SET display_name = EXCLUDED.display_name, updated_at = NOW()',
+          'ON CONFLICT (uid) DO NOTHING ' +
+          'RETURNING uid, email, display_name, role, plan_type, ai_sparks, learning_profile, created_at, updated_at',
           [
             uid,
-            profile.email,
-            profile.displayName,
-            profile.role,
-            profile.plan_type,
-            profile.ai_sparks,
-            JSON.stringify(profile.learningProfile)
+            email,
+            displayName,
+            'student',
+            'free',
+            dailyFreeSparks,
+            JSON.stringify({})
           ]
-        ).catch((err: any) => {
-          logger.warn({ uid, error: err.message }, '[StudentRoutes] Failed to ensure user in Neon users');
-        });
+        );
+        if (inserted.rows.length === 0) {
+          // Another request may have provisioned this user between the initial read
+          // and insert. Re-read the authoritative row rather than manufacturing values.
+          const concurrentUser = await pool.query(
+            'SELECT uid, email, display_name, role, plan_type, ai_sparks, learning_profile, created_at, updated_at FROM users WHERE uid = $1',
+            [uid]
+          );
+          if (concurrentUser.rows.length === 0) {
+            throw new Error('User provisioning did not return an authoritative persisted account record.');
+          }
+          const row = concurrentUser.rows[0];
+          profile = {
+            uid: row.uid,
+            email: row.email,
+            displayName: row.display_name,
+            role: row.role,
+            plan_type: row.plan_type,
+            subscription_status: 'none',
+            created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
+            ai_sparks: row.ai_sparks,
+            learningProfile: typeof row.learning_profile === 'string' ? JSON.parse(row.learning_profile) : row.learning_profile,
+            sessionId: null,
+            sessionVersion: 1,
+            updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null
+          };
+        } else {
+          const row = inserted.rows[0];
+          profile = {
+            uid: row.uid,
+            email: row.email,
+            displayName: row.display_name,
+            role: row.role,
+            plan_type: row.plan_type,
+            subscription_status: 'none',
+            created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
+            ai_sparks: row.ai_sparks,
+            learningProfile: typeof row.learning_profile === 'string' ? JSON.parse(row.learning_profile) : row.learning_profile,
+            sessionId: null,
+            sessionVersion: 1,
+            updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null
+          };
+        }
       }
 
       // 3. Fetch Course Progress from Neon
