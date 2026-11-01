@@ -389,37 +389,50 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
 
   /**
    * GET /api/leaderboard
-   * Returns top learners by completed lessons / XP from Neon
+   * Returns only stored, verified student XP and level metrics from Neon.
    */
   app.get('/api/leaderboard', async (req, res) => {
     const pool = getPostgresPool();
-    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+    if (!pool) return res.status(503).json({ error: 'Leaderboard service unavailable.' });
 
     try {
       const result = await pool.query(
-        'SELECT u.uid, u.display_name, u.role, ' +
-        'COALESCE(SUM(p.completed_lessons_count), 0)::int as completed_lessons, ' +
-        'COALESCE(SUM(p.total_study_seconds), 0)::int as total_study_seconds, ' +
-        '(COALESCE(SUM(p.completed_lessons_count), 0) * 50 + COALESCE(SUM(p.total_study_seconds), 0) / 60)::int as xp ' +
-        'FROM users u ' +
-        'LEFT JOIN user_course_progress p ON u.uid = p.uid ' +
-        'GROUP BY u.uid, u.display_name, u.role ' +
-        'ORDER BY xp DESC LIMIT 25'
+        `SELECT uid, display_name, learning_profile
+         FROM users
+         WHERE role = 'student'
+           AND NULLIF(BTRIM(display_name), '') IS NOT NULL
+           AND learning_profile->>'xp' ~ '^[0-9]+$'
+           AND learning_profile->>'level' ~ '^[0-9]+$'
+         ORDER BY (learning_profile->>'xp')::int DESC, uid ASC
+         LIMIT 25`
       );
 
-      const leaders = result.rows.map((r: any, i: number) => ({
-        uid: r.uid,
-        displayName: r.display_name || 'Scholar',
-        xp: Number(r.xp || 0),
-        rank: i + 1,
-        level: Math.floor(Math.sqrt((r.xp || 0) / 100)) + 1,
-        streak: 1
-      }));
+      const leaders = result.rows.map((row: any, index: number) => {
+        const profile = row.learning_profile && typeof row.learning_profile === 'object'
+          ? row.learning_profile
+          : {};
+        const photoURL = typeof profile.avatar === 'string' && profile.avatar.trim()
+          ? profile.avatar
+          : (typeof profile.photoURL === 'string' && profile.photoURL.trim() ? profile.photoURL : null);
+        const streak = Number.isInteger(profile.streak) && profile.streak >= 0
+          ? profile.streak
+          : null;
+        return {
+          uid: row.uid,
+          displayName: row.display_name,
+          photoURL,
+          xp: Number(profile.xp),
+          level: Number(profile.level),
+          streak,
+          rank: index + 1
+        };
+      });
 
       res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=120');
       return res.json({ leaderboard: leaders, leaders });
-    } catch (err: any) {
-      return res.status(500).json({ error: 'Failed to fetch leaderboard' });
+    } catch (error: any) {
+      console.error('[Leaderboard] Failed to read recorded student metrics:', error);
+      return res.status(503).json({ error: 'Recorded leaderboard metrics could not be verified.' });
     }
   });
 
