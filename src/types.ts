@@ -1,8 +1,8 @@
 
 export type Department = string;
 export type Subject = string;
-export type Level = '100' | '200' | '300' | '400' | '500' | '600';
-export type Semester = '1st Semester' | '2nd Semester';
+export type Level = string;
+export type Semester = string;
 
 export type CourseId = string;
 
