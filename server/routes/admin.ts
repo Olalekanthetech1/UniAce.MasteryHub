@@ -17,6 +17,8 @@ import { runProgressDeltaCatchUp, runProgressParityAudit } from '../services/pro
 import { runSparksParityAudit } from '../services/sparksParityService';
 import { clearBootstrapCache } from './student';
 import { catalogCache } from '../cache/catalogCache';
+import { ensureCourseLearningSchema } from '../services/courseLearningSchema';
+import { ensureCourseReviewSchema } from '../services/courseReviewSchema';
 import {
   getSystemConfigDoc,
   setSystemConfigDoc,
@@ -1168,6 +1170,152 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
     }
   });
 
+  // Draft course review APIs. Draft material remains outside the public catalog.
+  app.get('/api/admin/courses/drafts', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    if (!(await checkIsAdmin(user.uid, user.email))) return res.status(403).json({ error: 'Admin privileges required' });
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+    try {
+      await ensureCourseReviewSchema();
+      const result = await pool.query(
+        "SELECT c.id, c.code, c.title, c.description, c.department, c.faculty, c.level, c.semester, c.scope, " +
+        "c.status, c.review_status, c.review_notes, c.created_at, c.updated_at, " +
+        "(SELECT COUNT(*) FROM course_modules cm WHERE cm.course_id = c.id AND COALESCE(cm.is_archived, FALSE) = FALSE)::int AS module_count, " +
+        "(SELECT COUNT(*) FROM course_lessons cl WHERE cl.course_id = c.id)::int AS lesson_count " +
+        "FROM courses c WHERE c.status = 'draft' ORDER BY c.updated_at DESC NULLS LAST"
+      );
+      return res.json({ success: true, courses: result.rows });
+    } catch (error: any) {
+      return res.status(500).json({ error: error?.message || 'Failed to load draft review queue' });
+    }
+  });
+
+  app.get('/api/admin/courses/:id/review', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    if (!(await checkIsAdmin(user.uid, user.email))) return res.status(403).json({ error: 'Admin privileges required' });
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+    try {
+      await ensureCourseReviewSchema();
+      await ensureCourseLearningSchema();
+      const courseResult = await pool.query(
+        "SELECT id, code, title, description, department, faculty, level, semester, scope, status, " +
+        "review_status, review_notes, reviewed_by, reviewed_at, created_at, updated_at " +
+        "FROM courses WHERE id = $1 AND status = 'draft' LIMIT 1",
+        [req.params.id]
+      );
+      if (courseResult.rows.length === 0) return res.status(404).json({ error: 'Draft course not found.' });
+
+      const modulesResult = await pool.query(
+        "SELECT id, title, description, order_index FROM course_modules " +
+        "WHERE course_id = $1 AND COALESCE(is_archived, FALSE) = FALSE ORDER BY order_index ASC",
+        [req.params.id]
+      );
+      const lessonsResult = await pool.query(
+        "SELECT l.id, l.module_id, l.title, l.content_markdown, l.instructional_content, l.order_index " +
+        "FROM course_lessons l INNER JOIN course_modules m ON m.id = l.module_id AND m.course_id = l.course_id " +
+        "WHERE l.course_id = $1 AND COALESCE(m.is_archived, FALSE) = FALSE " +
+        "ORDER BY l.module_id, l.order_index ASC",
+        [req.params.id]
+      );
+      const formulasResult = await pool.query(
+        "SELECT id, name, latex_expression, variables_breakdown, derivation_notes FROM course_formulas WHERE course_id = $1 ORDER BY name ASC",
+        [req.params.id]
+      );
+      const historyResult = await pool.query(
+        "SELECT event_id, action, from_status, to_status, notes, actor_email, created_at " +
+        "FROM course_review_events WHERE course_id = $1 ORDER BY created_at DESC, event_id DESC",
+        [req.params.id]
+      );
+      const lessonsByModule = new Map<string, any[]>();
+      for (const lesson of lessonsResult.rows) {
+        const key = String(lesson.module_id);
+        const existing = lessonsByModule.get(key) || [];
+        existing.push(lesson);
+        lessonsByModule.set(key, existing);
+      }
+      const modules = modulesResult.rows.map((module: any) => ({
+        ...module,
+        lessons: lessonsByModule.get(String(module.id)) || []
+      }));
+      return res.json({
+        success: true,
+        course: courseResult.rows[0],
+        modules,
+        formulas: formulasResult.rows,
+        reviewHistory: historyResult.rows
+      });
+    } catch (error: any) {
+      return res.status(500).json({ error: error?.message || 'Failed to load draft course review' });
+    }
+  });
+
+  app.post('/api/admin/courses/:id/review-status', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    if (!(await checkIsAdmin(user.uid, user.email))) return res.status(403).json({ error: 'Admin privileges required' });
+    const action = req.body?.action;
+    const notes = typeof req.body?.notes === 'string' ? req.body.notes.trim() : '';
+    const transitions: Record<string, { from: string[]; to: string }> = {
+      start_review: { from: ['pending', 'needs_revision'], to: 'in_review' },
+      request_revision: { from: ['in_review'], to: 'needs_revision' },
+      approve: { from: ['in_review'], to: 'approved' }
+    };
+    const transition = transitions[action];
+    if (!transition) return res.status(400).json({ error: 'Unsupported review action.' });
+    if (action === 'request_revision' && (notes.length < 10 || notes.length > 5000)) {
+      return res.status(400).json({ error: 'Revision notes must contain between 10 and 5000 characters.' });
+    }
+    if (notes.length > 5000) return res.status(400).json({ error: 'Reviewer notes cannot exceed 5000 characters.' });
+
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+    let client: any;
+    try {
+      await ensureCourseReviewSchema();
+      client = await pool.connect();
+      await client.query('BEGIN');
+      const currentResult = await client.query(
+        "SELECT status, review_status FROM courses WHERE id = $1 FOR UPDATE",
+        [req.params.id]
+      );
+      if (currentResult.rows.length === 0) {
+        const error: any = new Error('Course not found.');
+        error.statusCode = 404;
+        throw error;
+      }
+      const current = currentResult.rows[0];
+      if (current.status !== 'draft') {
+        const error: any = new Error('Only unpublished draft courses can enter the review workflow.');
+        error.statusCode = 409;
+        throw error;
+      }
+      if (!transition.from.includes(current.review_status)) {
+        const error: any = new Error('This review action is not valid from the current review status.');
+        error.statusCode = 409;
+        throw error;
+      }
+      await client.query(
+        "UPDATE courses SET review_status = $1, review_notes = CASE WHEN $2::text IS NULL THEN review_notes ELSE $2 END, " +
+        "reviewed_by = $3, reviewed_at = NOW(), updated_at = NOW() WHERE id = $4",
+        [transition.to, notes || null, user.uid, req.params.id]
+      );
+      await client.query(
+        "INSERT INTO course_review_events (course_id, actor_uid, actor_email, action, from_status, to_status, notes, created_at) " +
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())",
+        [req.params.id, user.uid, user.email || null, action, current.review_status, transition.to, notes || null]
+      );
+      await client.query('COMMIT');
+      catalogCache.invalidateAll();
+      return res.json({ success: true, courseId: req.params.id, reviewStatus: transition.to });
+    } catch (error: any) {
+      if (client) await client.query('ROLLBACK').catch(() => undefined);
+      return res.status(error?.statusCode || 500).json({ error: error?.message || 'Failed to save course review decision' });
+    } finally {
+      client?.release();
+    }
+  });
+
   // Admin Course Archive, Restore, Publish, and Permanent Delete Endpoints via Neon PostgreSQL
   app.get('/api/admin/courses/archived', verifyAuth, async (req: any, res: any) => {
     const user = req.user;
@@ -1236,26 +1384,49 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
 
   app.post('/api/admin/courses/:id/publish', verifyAuth, async (req: any, res: any) => {
     const user = req.user;
-    const isAdmin = await checkIsAdmin(user.uid, user.email);
-    if (!isAdmin) return res.status(403).json({ error: 'Admin privileges required' });
-
+    if (!(await checkIsAdmin(user.uid, user.email))) {
+      return res.status(403).json({ error: 'Admin privileges required' });
+    }
     const { id } = req.params;
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
-
+    let client: any;
     try {
-      await validateCourseForPublication(pool, id);
-      const result = await pool.query(
-        `UPDATE courses
-         SET status = 'published', version = COALESCE(version, 1) + 1, updated_at = NOW()
-         WHERE id = $1`,
+      await ensureCourseReviewSchema();
+      client = await pool.connect();
+      await client.query('BEGIN');
+      const reviewResult = await client.query(
+        "SELECT status, review_status FROM courses WHERE id = $1 FOR UPDATE",
         [id]
       );
-      if ((result.rowCount ?? 0) === 0) return res.status(404).json({ error: 'Course not found.' });
+      if (reviewResult.rows.length === 0) {
+        const error: any = new Error('Course not found.');
+        error.statusCode = 404;
+        throw error;
+      }
+      if (reviewResult.rows[0].status !== 'draft' || reviewResult.rows[0].review_status !== 'approved') {
+        const error: any = new Error('Course must complete admin review and be approved before publishing.');
+        error.statusCode = 409;
+        throw error;
+      }
+      await validateCourseForPublication(client, id);
+      await client.query(
+        "UPDATE courses SET status = 'published', version = COALESCE(version, 1) + 1, updated_at = NOW() WHERE id = $1",
+        [id]
+      );
+      await client.query(
+        "INSERT INTO course_review_events (course_id, actor_uid, actor_email, action, from_status, to_status, created_at) " +
+        "VALUES ($1, $2, $3, 'publish', 'approved', 'published', NOW())",
+        [id, user.uid, user.email || null]
+      );
+      await client.query('COMMIT');
       catalogCache.invalidateAll();
       return res.json({ success: true, courseId: id, status: 'published' });
-    } catch (err: any) {
-      return res.status(err.statusCode || 500).json({ error: err.message || 'Failed to publish course' });
+    } catch (error: any) {
+      if (client) await client.query('ROLLBACK').catch(() => undefined);
+      return res.status(error?.statusCode || 500).json({ error: error?.message || 'Failed to publish course' });
+    } finally {
+      client?.release();
     }
   });
 
