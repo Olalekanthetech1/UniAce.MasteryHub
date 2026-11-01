@@ -908,17 +908,42 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
     }
   });
 
-  // Admin Course Creation Endpoint via Neon
+  // Admin Course Creation Endpoint via Neon. New records remain drafts until explicitly validated and published.
   app.post('/api/admin/courses', verifyAuth, async (req: any, res: any) => {
     const user = req.user;
     const isAdmin = await checkIsAdmin(user.uid, user.email);
-    if (!isAdmin) {
-      return res.status(403).json({ error: 'Admin privileges required' });
-    }
+    if (!isAdmin) return res.status(403).json({ error: 'Admin privileges required' });
 
-    const { id, code, title, description, level, department, faculty, semester, scope, syllabus } = req.body;
-    if (!id || !title) {
-      return res.status(400).json({ error: 'Course id and title are required' });
+    const { id, code, title, description, level, department, faculty, semester, scope, syllabus } = req.body || {};
+    const requiredFields = { id, title, level, department, semester, scope };
+    const missingFields = Object.entries(requiredFields)
+      .filter(([, value]) => typeof value !== 'string' || !value.trim())
+      .map(([key]) => key);
+    if (missingFields.length > 0) {
+      return res.status(400).json({
+        error: 'Course creation requires source-supplied academic metadata.',
+        missingFields
+      });
+    }
+    if (syllabus !== undefined && !Array.isArray(syllabus)) {
+      return res.status(400).json({ error: 'Syllabus must be an array supplied by the course author or generation process.' });
+    }
+    if (Array.isArray(syllabus)) {
+      for (let moduleIndex = 0; moduleIndex < syllabus.length; moduleIndex++) {
+        const module = syllabus[moduleIndex];
+        if (!module || typeof module.title !== 'string' || !module.title.trim()) {
+          return res.status(400).json({ error: 'Every supplied module must contain an actual title.', moduleIndex });
+        }
+        const lessons = module.subTopics || module.lessons || [];
+        if (!Array.isArray(lessons)) {
+          return res.status(400).json({ error: 'Module lessons must be an array.', moduleIndex });
+        }
+        for (let lessonIndex = 0; lessonIndex < lessons.length; lessonIndex++) {
+          if (!lessons[lessonIndex] || typeof lessons[lessonIndex].title !== 'string' || !lessons[lessonIndex].title.trim()) {
+            return res.status(400).json({ error: 'Every supplied lesson must contain an actual title.', moduleIndex, lessonIndex });
+          }
+        }
+      }
     }
 
     const pool = getPostgresPool();
@@ -927,74 +952,52 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-
-      const courseCode = code || id;
+      const courseCode = typeof code === 'string' && code.trim() ? code.trim() : id.trim();
       await client.query(
         `INSERT INTO courses (id, code, title, description, level, department, faculty, semester, scope, status, version, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'published', 1, NOW(), NOW())
-         ON CONFLICT (id) DO UPDATE SET
-           code = EXCLUDED.code,
-           title = EXCLUDED.title,
-           description = EXCLUDED.description,
-           level = EXCLUDED.level,
-           department = EXCLUDED.department,
-           faculty = EXCLUDED.faculty,
-           semester = EXCLUDED.semester,
-           scope = EXCLUDED.scope,
-           updated_at = NOW()`,
-        [id, courseCode, title, description || null, level || '100', department || null, faculty || null, semester || '1st Semester', scope || 'GLOBAL']
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'draft', 1, NOW(), NOW())`,
+        [id.trim(), courseCode, title.trim(), typeof description === 'string' ? description : null, level, department, faculty || null, semester, scope]
       );
 
       if (Array.isArray(syllabus)) {
         for (let mIdx = 0; mIdx < syllabus.length; mIdx++) {
-          const m = syllabus[mIdx];
-          const modId = m.id || `mod_${id}_${mIdx + 1}`;
+          const module = syllabus[mIdx];
+          const moduleId = module.id || `mod_${id.trim()}_${mIdx + 1}`;
           await client.query(
             `INSERT INTO course_modules (id, course_id, title, description, order_index, is_archived, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, FALSE, NOW(), NOW())
-             ON CONFLICT (course_id, id) DO UPDATE SET
-               title = EXCLUDED.title,
-               description = EXCLUDED.description,
-               order_index = EXCLUDED.order_index,
-               updated_at = NOW()`,
-            [modId, id, m.title || `Module ${mIdx + 1}`, m.description || null, m.order ?? mIdx + 1]
+             VALUES ($1, $2, $3, $4, $5, FALSE, NOW(), NOW())`,
+            [moduleId, id.trim(), module.title.trim(), module.description || null, module.order ?? mIdx + 1]
           );
 
-          const subTopics = m.subTopics || m.lessons || [];
-          if (Array.isArray(subTopics)) {
-            for (let lIdx = 0; lIdx < subTopics.length; lIdx++) {
-              const l = subTopics[lIdx];
-              const lessId = l.id || `less_${modId}_${lIdx + 1}`;
-              await client.query(
-                `INSERT INTO course_lessons (id, course_id, module_id, title, content_markdown, order_index, created_at, updated_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
-                 ON CONFLICT (course_id, module_id, id) DO UPDATE SET
-                   title = EXCLUDED.title,
-                   content_markdown = COALESCE(EXCLUDED.content_markdown, course_lessons.content_markdown),
-                   order_index = EXCLUDED.order_index,
-                   updated_at = NOW()`,
-                [lessId, id, modId, l.title || `Lesson ${lIdx + 1}`, l.content || l.content_markdown || '', l.order ?? lIdx + 1]
-              );
-            }
+          const lessons = module.subTopics || module.lessons || [];
+          for (let lIdx = 0; lIdx < lessons.length; lIdx++) {
+            const lesson = lessons[lIdx];
+            const lessonId = lesson.id || `less_${moduleId}_${lIdx + 1}`;
+            await client.query(
+              `INSERT INTO course_lessons (id, course_id, module_id, title, content_markdown, order_index, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())`,
+              [lessonId, id.trim(), moduleId, lesson.title.trim(), lesson.content ?? lesson.content_markdown ?? '', lesson.order ?? lIdx + 1]
+            );
           }
         }
       }
 
       await client.query('COMMIT');
       catalogCache.invalidateAll();
-
       await recordBackendSystemLog(
         'info',
         'admin',
-        `Admin ${user.email || user.uid} created/updated course ${id} via Neon`,
-        { courseId: id },
+        `Admin ${user.email || user.uid} created draft course ${id} via Neon`,
+        { courseId: id, status: 'draft' },
         { uid: user.uid, email: user.email }
       );
-
-      res.json({ success: true, courseId: id });
+      res.status(201).json({ success: true, courseId: id, status: 'draft' });
     } catch (err: any) {
       await client.query('ROLLBACK');
-      res.status(500).json({ error: 'Failed to save course', details: err.message });
+      if (err?.code === '23505') {
+        return res.status(409).json({ error: `Course identifier "${id}" already exists. Use the update workflow instead of silently overwriting it.` });
+      }
+      res.status(500).json({ error: 'Failed to create draft course', details: err.message });
     } finally {
       client.release();
     }
