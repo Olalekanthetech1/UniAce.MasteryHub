@@ -31,7 +31,7 @@ import { AIService } from '../services/ai';
 import { generateCourseContent, generateCourseSkeleton, generateModuleContent, generateCourseFormulas } from '../services/aiCourseGenerator';
 import { CourseService, sanitizeForFirestore } from '../services/courseService';
 import { Course, UserProgress, CourseId, Department, Level, Semester, Subject, CourseScope } from '../types';
-import { LEVELS, SEMESTERS } from '../constants';
+
 import { LogService, SystemLog } from '../services/logService';
 import { CurriculumIntegrityService } from '../services/curriculumIntegrity';
 import { usePermissions } from '../hooks/usePermissions';
@@ -295,8 +295,8 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   const [quickCourseName, setQuickCourseName] = useState('');
   const [quickCourseCode, setQuickCourseCode] = useState('');
   const [quickSubject, setQuickSubject] = useState<Subject>('General Studies');
-  const [quickLevel, setQuickLevel] = useState<Level>('100');
-  const [quickSemester, setQuickSemester] = useState<Semester>('1st Semester');
+  const [quickLevel, setQuickLevel] = useState<Level>('');
+  const [quickSemester, setQuickSemester] = useState<Semester>('');
   const [quickDepartment, setQuickDepartment] = useState<Department | ''>('');
   const [courseScope, setCourseScope] = useState<CourseScope>('DEPARTMENT');
   const [selectedFaculties, setSelectedFaculties] = useState<string[]>([]);
@@ -2521,10 +2521,11 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
 
   const renderCurriculumHealth = () => {
     // Group issues by dept and level
+    const liveLevels = Array.from(new Set(integrityIssues.map((issue: any) => typeof issue.level === 'string' ? issue.level.trim() : '').filter(Boolean))).sort();
     const heatmapData: Record<string, Record<string, number>> = {};
     DEPARTMENTS.forEach(dept => {
       heatmapData[dept] = {};
-      LEVELS.forEach(level => {
+      liveLevels.forEach(level => {
         heatmapData[dept][level] = 0;
       });
     });
@@ -2552,15 +2553,20 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
           </button>
         </div>
 
-        {/* Heatmap Grid */}
+        {/* Heatmap columns are derived only from observed curriculum-health records. */}
+        {liveLevels.length === 0 || DEPARTMENTS.length === 0 ? (
+          <div className="bg-white dark:bg-slate-800 p-8 rounded-[2.5rem] border border-slate-200 dark:border-slate-700 shadow-sm text-sm text-slate-500">
+            No verified curriculum-health records are available for configured departments and levels.
+          </div>
+        ) : (
         <div className="bg-white dark:bg-slate-800 p-8 rounded-[2.5rem] border border-slate-200 dark:border-slate-700 shadow-sm overflow-x-auto">
           <div className="min-w-[800px]">
             <div 
               className="grid gap-4 mb-6"
-              style={{ gridTemplateColumns: `200px repeat(${LEVELS.length}, 1fr)` }}
+              style={{ gridTemplateColumns: `200px repeat(${liveLevels.length}, 1fr)` }}
             >
               <div className="font-bold text-slate-400 text-xs uppercase tracking-widest text-left">Department</div>
-              {LEVELS.map(level => (
+              {liveLevels.map(level => (
                 <div key={level} className="text-center font-bold text-slate-400 text-xs uppercase tracking-widest">
                   Level {level}
                 </div>
@@ -2571,10 +2577,10 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
               <div 
                 key={dept} 
                 className="grid gap-4 mb-4"
-                style={{ gridTemplateColumns: `200px repeat(${LEVELS.length}, 1fr)` }}
+                style={{ gridTemplateColumns: `200px repeat(${liveLevels.length}, 1fr)` }}
               >
                 <div className="flex items-center font-bold text-slate-700 dark:text-slate-300 text-sm">{dept}</div>
-                {LEVELS.map(level => {
+                {liveLevels.map(level => {
                   const count = heatmapData[dept][level];
                   let bgColor = 'bg-slate-50 dark:bg-slate-900/50';
                   let textColor = 'text-slate-400';
@@ -2616,6 +2622,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
             ))}
           </div>
         </div>
+        )}
 
         {/* Drill-down Section */}
         <AnimatePresence>
@@ -3503,27 +3510,23 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
                     </div>
                     <div>
                       <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Level</label>
-                      <select 
+                      <input
+                        type="text"
                         value={quickLevel}
-                        onChange={(e) => setQuickLevel(e.target.value as Level)}
+                        onChange={(e) => setQuickLevel(e.target.value)}
+                        placeholder="Enter actual course level"
                         className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      >
-                        {LEVELS.map(level => (
-                          <option key={level} value={level}>{level}</option>
-                        ))}
-                      </select>
+                      />
                     </div>
                     <div>
                       <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Semester</label>
-                      <select 
+                      <input
+                        type="text"
                         value={quickSemester}
-                        onChange={(e) => setQuickSemester(e.target.value as Semester)}
+                        onChange={(e) => setQuickSemester(e.target.value)}
+                        placeholder="Enter actual semester"
                         className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      >
-                        {SEMESTERS.map(sem => (
-                          <option key={sem} value={sem}>{sem}</option>
-                        ))}
-                      </select>
+                      />
                     </div>
                   </div>
 
@@ -3843,30 +3846,23 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
               </div>
               <div>
                 <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Level</label>
-                <select
+                <input
+                  type="text"
                   value={quickLevel}
-                  onChange={(e) => setQuickLevel(e.target.value as any)}
+                  onChange={(e) => setQuickLevel(e.target.value)}
+                  placeholder="Enter actual course level"
                   className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                >
-                  <option value="100">100 Level</option>
-                  <option value="200">200 Level</option>
-                  <option value="300">300 Level</option>
-                  <option value="400">400 Level</option>
-                  <option value="500">500 Level</option>
-                </select>
+                />
               </div>
               <div>
                 <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Semester</label>
-                <select
+                <input
+                  type="text"
                   value={quickSemester}
-                  onChange={(e) => setQuickSemester(e.target.value as Semester)}
+                  onChange={(e) => setQuickSemester(e.target.value)}
+                  placeholder="Enter actual semester"
                   className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                >
-                  <option value="">Select semester...</option>
-                  {SEMESTERS.map(sem => (
-                    <option key={sem} value={sem}>{sem}</option>
-                  ))}
-                </select>
+                />
               </div>
               <div>
                 <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Department</label>
