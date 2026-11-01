@@ -435,7 +435,8 @@ export async function generateCourseSkeleton(
   scope?: string,
   selectedFaculties: string[] = [],
   selectedDepartments: string[] = [],
-  courseCode?: string
+  courseCode?: string,
+  creditUnits?: number
 ): Promise<any> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 600000); // 10 minutes for multi-agent audit
@@ -458,6 +459,7 @@ export async function generateCourseSkeleton(
             scope,
             level,
             semester,
+            creditUnits,
             tone,
             depth,
             outline,
