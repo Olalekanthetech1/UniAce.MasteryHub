@@ -4064,13 +4064,15 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
         </div>
 
           {/* Existing Courses List */}
-          <DraftCourseReviewPanel
-            refreshKey={draftReviewRefreshKey}
-            onCoursePublished={() => {
-              void refreshCourses();
-              setDraftReviewRefreshKey((value) => value + 1);
-            }}
-          />
+          {isAdmin && (
+            <DraftCourseReviewPanel
+              refreshKey={draftReviewRefreshKey}
+              onCoursePublished={() => {
+                void refreshCourses();
+                setDraftReviewRefreshKey((value) => value + 1);
+              }}
+            />
+          )}
 
           <div className="bg-white dark:bg-slate-800 rounded-3xl p-8 shadow-sm border border-slate-200 dark:border-slate-700">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
