@@ -175,24 +175,9 @@ export default function LandingPage() {
               Free tier available • No credit card required
             </p>
 
-            {/* Trust Signal */}
-            <div className="pt-4 flex items-center gap-4 text-sm text-slate-500 dark:text-zinc-400 font-medium">
-              <div className="flex -space-x-2.5">
-                {[1, 2, 3, 4].map((i) => (
-                  <div key={i} className="w-8 h-8 rounded-full border-2 border-white dark:border-zinc-900 bg-slate-200 dark:bg-zinc-800 overflow-hidden shadow-xs">
-                    <img 
-                      src={`https://api.dicebear.com/7.x/avataaars/svg?seed=student_${i + 12}`} 
-                      alt="Student Avatar" 
-                      className="w-full h-full object-cover" 
-                      referrerPolicy="no-referrer" 
-                    />
-                  </div>
-                ))}
-              </div>
-              <p className="text-xs sm:text-sm font-semibold text-slate-700 dark:text-zinc-300">
-                Trusted by students in <span className="text-slate-900 dark:text-white font-bold">20+ universities</span>
-              </p>
-            </div>
+            <p className="pt-4 text-xs sm:text-sm text-slate-500 dark:text-zinc-400 font-medium">
+              Built to support university students with course-based learning and guided practice.
+            </p>
           </motion.div>
 
           {/* Hero Visual Preview */}
@@ -205,14 +190,14 @@ export default function LandingPage() {
             <div className="absolute top-0 right-0 w-[450px] h-[450px] bg-emerald-500/10 rounded-full blur-3xl -z-10" />
             
             <div className="relative bg-white dark:bg-zinc-900 rounded-[2rem] shadow-xl shadow-slate-200/60 dark:shadow-none border border-slate-200/80 dark:border-zinc-800 p-5 sm:p-6">
-              {/* Floating Streak Badge */}
+              {/* Product capability label; no user activity is implied. */}
               <div className="absolute -top-4 -right-4 bg-white dark:bg-zinc-800 px-3.5 py-2.5 rounded-2xl shadow-lg border border-slate-100 dark:border-zinc-700 flex items-center gap-2.5">
-                <div className="w-8 h-8 bg-amber-50 dark:bg-amber-950/40 rounded-xl flex items-center justify-center text-amber-600 dark:text-amber-400">
-                  <Trophy size={16} />
+                <div className="w-8 h-8 bg-emerald-50 dark:bg-emerald-950/40 rounded-xl flex items-center justify-center text-emerald-600 dark:text-emerald-400">
+                  <BookOpen size={16} />
                 </div>
                 <div>
-                  <p className="text-[10px] text-slate-400 dark:text-zinc-500 font-bold uppercase tracking-wider">Study Streak</p>
-                  <p className="text-sm font-black text-slate-900 dark:text-white">12 Days Active 🔥</p>
+                  <p className="text-[10px] text-slate-400 dark:text-zinc-500 font-bold uppercase tracking-wider">Learning tools</p>
+                  <p className="text-sm font-black text-slate-900 dark:text-white">Course-based practice</p>
                 </div>
               </div>
 
@@ -232,28 +217,22 @@ export default function LandingPage() {
                   </span>
                 </div>
                 
-                {/* Product Preview Card */}
                 <div className="space-y-3">
-                  <div className="bg-white dark:bg-zinc-900 p-3.5 rounded-xl rounded-tl-none shadow-xs border border-slate-200/60 dark:border-zinc-800 max-w-[90%]">
-                    <p className="text-xs text-slate-700 dark:text-zinc-300 leading-relaxed">
-                      Let's break down the integration by parts formula:
+                  <div className="bg-white dark:bg-zinc-900 p-4 rounded-xl shadow-xs border border-slate-200/60 dark:border-zinc-800">
+                    <h4 className="text-sm font-bold text-slate-900 dark:text-white mb-2">Study workflow</h4>
+                    <p className="text-xs text-slate-600 dark:text-zinc-400 leading-relaxed">
+                      Select a course, explore its lessons, practise with guided questions, and review progress from recorded activity.
                     </p>
-                    <div className="mt-1.5 px-2.5 py-1 bg-slate-100 dark:bg-zinc-800 rounded-md font-mono text-xs text-emerald-700 dark:text-emerald-300">
-                      ∫ u dv = u v - ∫ v du
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-xl bg-white dark:bg-zinc-900 p-3 border border-slate-200/60 dark:border-zinc-800">
+                      <BookOpen size={18} className="text-emerald-500 mb-2" />
+                      <p className="text-xs font-semibold text-slate-700 dark:text-zinc-300">Course lessons</p>
                     </div>
-                  </div>
-                  <div className="bg-emerald-600 dark:bg-emerald-600 p-3 rounded-xl rounded-tr-none shadow-xs text-white ml-auto max-w-[85%] text-xs font-medium">
-                    <p>Show me the proof for finding the derivative of this step.</p>
-                  </div>
-                </div>
-
-                <div className="pt-2">
-                  <div className="flex justify-between text-[11px] font-semibold text-slate-500 dark:text-zinc-400 mb-1">
-                    <span>Topic Mastery</span>
-                    <span className="text-emerald-600 dark:text-emerald-400">84%</span>
-                  </div>
-                  <div className="h-2 bg-slate-200 dark:bg-zinc-800 rounded-full overflow-hidden">
-                    <div className="h-full w-[84%] bg-emerald-500 rounded-full" />
+                    <div className="rounded-xl bg-white dark:bg-zinc-900 p-3 border border-slate-200/60 dark:border-zinc-800">
+                      <Brain size={18} className="text-emerald-500 mb-2" />
+                      <p className="text-xs font-semibold text-slate-700 dark:text-zinc-300">Guided practice</p>
+                    </div>
                   </div>
                 </div>
               </div>
