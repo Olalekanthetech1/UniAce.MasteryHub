@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Save } from 'lucide-react';
 import { Course, Module, Department, Level, Semester, CourseScope } from '../types';
-import { LEVELS, SEMESTERS } from '../constants';
+
 import { useInstitution } from '../context/InstitutionContext';
 import { normalizeDeptId } from '../utils/normalization';
 
@@ -143,25 +143,23 @@ export default function CourseCreateModal({ onClose, onSave }: CourseCreateModal
             </div>
             <div>
               <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Level</label>
-              <select
+              <input
+                type="text"
                 value={level}
-                onChange={(e) => setLevel(e.target.value as Level)}
+                onChange={(e) => setLevel(e.target.value)}
+                placeholder="Enter the institution's course level"
                 className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white"
-              >
-                <option value="">-- Select Level --</option>
-                {LEVELS.map(l => <option key={l} value={l}>{l}</option>)}
-              </select>
+              />
             </div>
             <div>
               <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Semester</label>
-              <select
+              <input
+                type="text"
                 value={semester}
-                onChange={(e) => setSemester(e.target.value as Semester)}
+                onChange={(e) => setSemester(e.target.value)}
+                placeholder="Enter the institution's semester"
                 className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white"
-              >
-                <option value="">-- Select Semester --</option>
-                {SEMESTERS.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
+              />
             </div>
             <div>
               <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Scope</label>
