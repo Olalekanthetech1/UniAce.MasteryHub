@@ -940,42 +940,77 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
    * Append a support chat message in Neon PostgreSQL
    */
   app.post('/api/support/chats/:chatId/messages', verifyAuth, async (req, res) => {
-    try {
-      const user = (req as any).user;
-      const pool = getPostgresPool();
-      if (!pool) return res.status(503).json({ error: 'Database unavailable' });
-      const chatId = req.params.chatId;
-      const text = String(req.body?.text || '').trim();
-      const senderName = String(req.body?.senderName || user.name || user.email || 'Student');
-      const userName = String(req.body?.userName || senderName);
-      if (!text) return res.status(400).json({ error: 'Message text required' });
+    const user = (req as any).user;
+    const chatId = typeof req.params.chatId === 'string' ? req.params.chatId.trim() : '';
+    const messageText = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
+    if (!chatId) return res.status(400).json({ error: 'A valid chatId is required.' });
+    if (!messageText) return res.status(400).json({ error: 'A non-empty message is required.' });
 
-      const newMsg = {
-        id: `msg_${Date.now()}_${crypto.randomUUID().slice(0, 6)}`,
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Support messaging unavailable: PostgreSQL is not connected.' });
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const existing = await client.query(
+        `SELECT user_id, user_name, user_email, messages
+         FROM support_chats
+         WHERE id = $1
+         FOR UPDATE`,
+        [chatId]
+      );
+      if (existing.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Support chat does not exist.' });
+      }
+      const chat = existing.rows[0];
+      if (chat.user_id !== user.uid) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Support chat does not exist for the authenticated user.' });
+      }
+      if (!Array.isArray(chat.messages)) {
+        throw new Error('Persisted support chat messages are missing or invalid.');
+      }
+      const senderName = typeof chat.user_name === 'string' && chat.user_name.trim()
+        ? chat.user_name
+        : (typeof user.name === 'string' && user.name.trim()
+          ? user.name
+          : (typeof user.email === 'string' && user.email.trim() ? user.email : null));
+      if (!senderName) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'A verified sender identity is required to send a support message.' });
+      }
+
+      const newMessage = {
+        id: `msg_${Date.now()}_${crypto.randomUUID()}`,
         senderId: user.uid,
         senderName,
-        text,
+        text: messageText,
         timestamp: new Date().toISOString()
       };
-
-      const existing = await pool.query(`SELECT messages FROM support_chats WHERE id = $1`, [chatId]);
-      const currentMessages = Array.isArray(existing.rows[0]?.messages) ? existing.rows[0].messages : [];
-      const updatedMessages = [...currentMessages, newMsg];
-
-      await pool.query(
-        `INSERT INTO support_chats (id, user_id, user_name, user_email, status, last_message, messages, updated_at)
-         VALUES ($1, $2, $3, $4, 'active', $5, $6::jsonb, NOW())
-         ON CONFLICT (id) DO UPDATE SET
-           last_message = EXCLUDED.last_message,
-           messages = EXCLUDED.messages,
-           status = 'active',
-           updated_at = NOW()`,
-        [chatId, user.uid, userName, user.email || null, text, JSON.stringify(updatedMessages)]
+      const updatedMessages = [...chat.messages, newMessage];
+      const updated = await client.query(
+        `UPDATE support_chats
+         SET last_message = $1, messages = $2::jsonb, status = 'active', updated_at = NOW()
+         WHERE id = $3 AND user_id = $4
+         RETURNING id`,
+        [messageText, JSON.stringify(updatedMessages), chatId, user.uid]
       );
-
-      return res.json({ success: true, message: newMsg, messages: updatedMessages });
+      if (updated.rowCount !== 1) {
+        throw new Error('The support message update did not persist to the owned chat.');
+      }
+      await client.query('COMMIT');
+      return res.json({ success: true, message: newMessage, messages: updatedMessages });
     } catch (err: any) {
-      return res.status(500).json({ error: err.message || 'Failed to send message' });
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError: any) {
+        logger.error({ chatId, error: rollbackError?.message || String(rollbackError) }, '[StudentRoutes] Support chat rollback failed');
+      }
+      logger.error({ uid: user.uid, chatId, error: err?.message || String(err) }, '[StudentRoutes] Support message could not be persisted');
+      return res.status(503).json({ error: 'Support message could not be persisted to the authoritative database.' });
+    } finally {
+      client.release();
     }
   });
 
@@ -984,31 +1019,53 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
    * Create a support ticket in Neon PostgreSQL
    */
   app.post('/api/support/tickets', verifyAuth, async (req, res) => {
+    const user = (req as any).user;
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Support ticket service unavailable: PostgreSQL is not connected.' });
+
+    const subject = typeof req.body?.subject === 'string' ? req.body.subject.trim() : '';
+    const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+    const requestedName = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    const name = requestedName ||
+      (typeof user.name === 'string' && user.name.trim() ? user.name : '') ||
+      (typeof user.email === 'string' && user.email.trim() ? user.email : '');
+    const email = typeof req.body?.email === 'string' && req.body.email.trim()
+      ? req.body.email.trim()
+      : (typeof user.email === 'string' && user.email.trim() ? user.email : null);
+
+    if (!subject || !message) {
+      return res.status(400).json({ error: 'A non-empty support subject and message are required.' });
+    }
+    if (!name) {
+      return res.status(400).json({ error: 'A verified name or account email is required for the support ticket.' });
+    }
+
     try {
-      const user = (req as any).user;
-      const pool = getPostgresPool();
-      if (!pool) return res.status(503).json({ error: 'Database unavailable' });
-      const { name = '', email = '', subject = '', message = '' } = req.body || {};
-      const id = `tkt_${Date.now()}_${crypto.randomUUID().slice(0, 6)}`;
+      const id = `tkt_${Date.now()}_${crypto.randomUUID()}`;
       const createdAt = new Date().toISOString();
       const payload = {
         id,
         userId: user.uid,
-        name: name || user.name || 'Student',
-        email: email || user.email || '',
+        name,
+        email,
         subject,
         message,
         status: 'open',
         createdAt
       };
-      await pool.query(
+      const inserted = await pool.query(
         `INSERT INTO support_tickets (id, user_id, user_email, user_name, subject, message, status, data, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, 'open', $7::jsonb, NOW(), NOW())`,
-        [id, user.uid, payload.email, payload.name, subject, message, JSON.stringify(payload)]
+         VALUES ($1, $2, $3, $4, $5, $6, 'open', $7::jsonb, NOW(), NOW())
+         RETURNING id`,
+        [id, user.uid, email, name, subject, message, JSON.stringify(payload)]
       );
+      if (inserted.rowCount !== 1 || inserted.rows[0]?.id !== id) {
+        throw new Error('Support ticket insert was not confirmed by the database.');
+      }
       return res.json({ success: true, ticket: payload });
     } catch (err: any) {
-      return res.status(500).json({ error: err.message || 'Failed to submit support ticket' });
+      logger.error({ uid: user.uid, error: err?.message || String(err) }, '[StudentRoutes] Support ticket write failed');
+      return res.status(503).json({ error: 'Support ticket could not be persisted to the authoritative database.' });
     }
   });
 
