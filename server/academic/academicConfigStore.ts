@@ -110,13 +110,22 @@ function normalizeSettings(value: unknown): AcademicResearchSettings {
   const stored = value && typeof value === 'object' ? value as Partial<AcademicResearchSettings> : {};
   const providers = stored.providersEnabled || {};
   const settings: AcademicResearchSettings = {
-    ...DEFAULT_ACADEMIC_RESEARCH_SETTINGS,
-    ...stored,
+    enabled: typeof stored.enabled === 'boolean' ? stored.enabled : DEFAULT_ACADEMIC_RESEARCH_SETTINGS.enabled,
+    cacheTtlHours: typeof stored.cacheTtlHours === 'number' ? stored.cacheTtlHours : DEFAULT_ACADEMIC_RESEARCH_SETTINGS.cacheTtlHours,
+    arxivMaxResults: typeof stored.arxivMaxResults === 'number' ? stored.arxivMaxResults : DEFAULT_ACADEMIC_RESEARCH_SETTINGS.arxivMaxResults,
+    defaultCourseAlignment: typeof stored.defaultCourseAlignment === 'string'
+      ? stored.defaultCourseAlignment
+      : DEFAULT_ACADEMIC_RESEARCH_SETTINGS.defaultCourseAlignment,
+    ...(typeof stored.openAlexEmail === 'string' ? { openAlexEmail: stored.openAlexEmail } : {}),
     providersEnabled: {
-      ...DEFAULT_ACADEMIC_RESEARCH_SETTINGS.providersEnabled,
-      ...providers,
+      arxiv: typeof providers.arxiv === 'boolean' ? providers.arxiv : DEFAULT_ACADEMIC_RESEARCH_SETTINGS.providersEnabled.arxiv,
+      semanticScholar: typeof providers.semanticScholar === 'boolean' ? providers.semanticScholar : DEFAULT_ACADEMIC_RESEARCH_SETTINGS.providersEnabled.semanticScholar,
+      openAlex: typeof providers.openAlex === 'boolean' ? providers.openAlex : DEFAULT_ACADEMIC_RESEARCH_SETTINGS.providersEnabled.openAlex,
+      tavily: typeof providers.tavily === 'boolean' ? providers.tavily : DEFAULT_ACADEMIC_RESEARCH_SETTINGS.providersEnabled.tavily,
     },
     researchDepth: 'adaptive',
+    adaptiveMaxQueries: typeof stored.adaptiveMaxQueries === 'number' ? stored.adaptiveMaxQueries : DEFAULT_ACADEMIC_RESEARCH_SETTINGS.adaptiveMaxQueries,
+    minimumUsefulSources: typeof stored.minimumUsefulSources === 'number' ? stored.minimumUsefulSources : DEFAULT_ACADEMIC_RESEARCH_SETTINGS.minimumUsefulSources,
   };
   if (
     typeof settings.enabled !== 'boolean' ||
@@ -167,10 +176,15 @@ export async function saveAcademicResearchConfig(
 ): Promise<AcademicResearchConfigRecord> {
   const existing = await getSystemConfigDoc(CONFIG_KEY, true);
   const current = await loadAcademicResearchConfig(true);
-  const incomingProviders = input.providersEnabled || {};
+  const {
+    tavilyApiKey: incomingTavilyApiKey,
+    semanticScholarApiKey: incomingSemanticScholarApiKey,
+    ...settingsInput
+  } = input;
+  const incomingProviders = settingsInput.providersEnabled || {};
   const settings = normalizeSettings({
     ...current.settings,
-    ...input,
+    ...settingsInput,
     providersEnabled: {
       ...current.settings.providersEnabled,
       ...incomingProviders,
@@ -181,8 +195,8 @@ export async function saveAcademicResearchConfig(
     ? { ...(existing.credentials as Record<string, unknown>) }
     : {};
 
-  const tavilyApiKey = typeof input.tavilyApiKey === 'string' ? input.tavilyApiKey.trim() : '';
-  const semanticScholarApiKey = typeof input.semanticScholarApiKey === 'string' ? input.semanticScholarApiKey.trim() : '';
+  const tavilyApiKey = typeof incomingTavilyApiKey === 'string' ? incomingTavilyApiKey.trim() : '';
+  const semanticScholarApiKey = typeof incomingSemanticScholarApiKey === 'string' ? incomingSemanticScholarApiKey.trim() : '';
   if (tavilyApiKey) credentials.tavilyApiKey = encryptSecret(tavilyApiKey);
   if (semanticScholarApiKey) credentials.semanticScholarApiKey = encryptSecret(semanticScholarApiKey);
 
