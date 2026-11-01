@@ -1351,14 +1351,42 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
     }
   });
 
-  app.post('/api/arena/matchmake', verifyAuth, async (req, res) => {
+  app.post('/api/arena/matchmake', verifyAuth, async (req: any, res) => {
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database unavailable' });
 
-    const user = (req as any).user;
-    const { topicId, player, questions = [], targetBattleId, skipQueueJoin = false } = req.body || {};
-    if (!topicId || !player) {
-      return res.status(400).json({ error: 'topicId and player required' });
+    const user = req.user;
+    const body = req.body || {};
+    const topicId = typeof body.topicId === 'string' ? body.topicId.trim() : '';
+    const player = body.player;
+    const questions = body.questions;
+    const targetBattleId = typeof body.targetBattleId === 'string' ? body.targetBattleId.trim() : '';
+    const skipQueueJoin = body.skipQueueJoin === true;
+
+    if (!topicId || !player || typeof player.name !== 'string' || !player.name.trim() ||
+        ['gladiator', 'scholar'].includes(player.name.trim().toLowerCase())) {
+      return res.status(400).json({ error: 'A live course reference and verified student display name are required.' });
+    }
+    if (!Array.isArray(questions)) {
+      return res.status(400).json({ error: 'A question array is required; missing question data is not replaced with defaults.' });
+    }
+
+    const hasVerifiedQuestionSet = questions.length > 0 && questions.every((question: any) =>
+      question &&
+      typeof question.question === 'string' &&
+      question.question.trim().length > 0 &&
+      Array.isArray(question.options) &&
+      question.options.length >= 2 &&
+      question.options.every((option: unknown) => typeof option === 'string' && option.trim().length > 0) &&
+      typeof question.correctAnswer === 'string' &&
+      question.options.includes(question.correctAnswer)
+    );
+
+    if (!skipQueueJoin && !targetBattleId && !hasVerifiedQuestionSet) {
+      return res.status(400).json({ error: 'A complete question set with answer choices and matching correct answers is required to open a human match.' });
+    }
+    if (skipQueueJoin && targetBattleId) {
+      return res.status(400).json({ error: 'A direct replay room cannot also target another waiting battle.' });
     }
 
     const client = await pool.connect();
@@ -1367,43 +1395,64 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
 
       let validRow: any = null;
       if (!skipQueueJoin) {
-        let waitingQuery = `
-          SELECT id, topic, data
-          FROM arena_battles
-          WHERE status = 'waiting' AND topic = $1
-          ORDER BY created_at ASC
-          LIMIT 5
-          FOR UPDATE SKIP LOCKED
-        `;
-        let queryParams: any[] = [topicId];
-
-        if (targetBattleId && typeof targetBattleId === 'string') {
-          waitingQuery = `
-            SELECT id, topic, data
-            FROM arena_battles
-            WHERE status = 'waiting' AND id = $1
-            FOR UPDATE SKIP LOCKED
-          `;
-          queryParams = [targetBattleId];
-        }
-
+        const waitingQuery = targetBattleId
+          ? `
+              SELECT id, topic, data
+              FROM arena_battles
+              WHERE status = 'waiting'
+                AND id = $1
+                AND topic = $2
+                AND jsonb_typeof(data->'questions') = 'array'
+                AND jsonb_array_length(data->'questions') > 0
+              FOR UPDATE SKIP LOCKED
+            `
+          : `
+              SELECT id, topic, data
+              FROM arena_battles
+              WHERE status = 'waiting'
+                AND topic = $1
+                AND jsonb_typeof(data->'questions') = 'array'
+                AND jsonb_array_length(data->'questions') > 0
+              ORDER BY created_at ASC
+              LIMIT 5
+              FOR UPDATE SKIP LOCKED
+            `;
+        const queryParams = targetBattleId ? [targetBattleId, topicId] : [topicId];
         const waitingRes = await client.query(waitingQuery, queryParams);
         validRow = waitingRes.rows.find(
-          (r) => r.data?.player1?.uid && r.data.player1.uid !== user.uid
+          (row: any) => typeof row.data?.player1?.uid === 'string' && row.data.player1.uid !== user.uid
         );
+
+        if (targetBattleId && !validRow) {
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: 'The selected waiting human battle is no longer available for this course.' });
+        }
       }
 
       const nowMs = Date.now();
       const nowIso = new Date(nowMs).toISOString();
 
       if (validRow) {
-        const questionList = Array.isArray(validRow.data?.questions) && validRow.data.questions.length > 0
-          ? validRow.data.questions
-          : questions;
+        const questionList = validRow.data?.questions;
+        const existingQuestionSetIsValid = Array.isArray(questionList) && questionList.length > 0 &&
+          questionList.every((question: any) =>
+            question &&
+            typeof question.question === 'string' &&
+            question.question.trim().length > 0 &&
+            Array.isArray(question.options) &&
+            question.options.length >= 2 &&
+            question.options.every((option: unknown) => typeof option === 'string' && option.trim().length > 0) &&
+            typeof question.correctAnswer === 'string' &&
+            question.options.includes(question.correctAnswer)
+          );
+        if (!existingQuestionSetIsValid) {
+          await client.query('ROLLBACK');
+          return res.status(409).json({ error: 'The waiting battle does not contain a verifiable question set.' });
+        }
+
         const durationSeconds = 60;
         const expiresAtEpochMs = nowMs + durationSeconds * 1000;
         const expiresAt = new Date(expiresAtEpochMs).toISOString();
-
         const sanitizedPlayer2 = {
           ...player,
           uid: user.uid,
@@ -1418,7 +1467,7 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
         const updatedBattle = {
           ...validRow.data,
           id: validRow.id,
-          topicId: validRow.topic || topicId,
+          topicId: validRow.topic,
           player1: {
             ...validRow.data.player1,
             status: 'playing',
@@ -1461,6 +1510,7 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
       const newBattle = {
         id: battleId,
         status: 'waiting',
+        opponentType: 'human',
         player1: {
           ...player,
           uid: user.uid,
@@ -1497,7 +1547,8 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
       });
     } catch (err: any) {
       await client.query('ROLLBACK').catch(() => {});
-      return res.status(500).json({ error: err.message || 'Failed to matchmake battle' });
+      logger.error({ uid: user?.uid, topicId, error: err?.message || String(err) }, '[Arena] Matchmaking failed');
+      return res.status(500).json({ error: 'Failed to create or join the requested human battle.' });
     } finally {
       client.release();
     }
