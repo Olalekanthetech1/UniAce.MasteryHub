@@ -50,8 +50,12 @@ class ArenaRealtimeManager {
 
   public async handleConnection(ws: WebSocket, req: IncomingMessage, getAdminApp: () => any) {
     try {
-      const host = req.headers.host || 'localhost:3000';
-      const url = new URL(req.url || '', `http://${host}`);
+      const host = req.headers.host;
+      if (typeof host !== 'string' || !host.trim() || typeof req.url !== 'string' || !req.url.trim()) {
+        ws.close(1011, 'WebSocket request context is incomplete');
+        return;
+      }
+      const url = new URL(req.url, `http://${host}`);
       const token = url.searchParams.get('token');
       const initialCourseId = url.searchParams.get('courseId') || null;
       const initialBattleId = url.searchParams.get('battleId') || null;
@@ -75,8 +79,14 @@ class ArenaRealtimeManager {
         return;
       }
 
-      const uid = decoded.uid;
-      const name = decoded.name || decoded.email?.split('@')[0] || 'Scholar';
+      const uid = typeof decoded.uid === 'string' ? decoded.uid.trim() : '';
+      const tokenName = typeof decoded.name === 'string' ? decoded.name.trim() : '';
+      const emailName = typeof decoded.email === 'string' ? decoded.email.split('@')[0].trim() : '';
+      const name = tokenName || emailName;
+      if (!uid || !name) {
+        ws.close(1008, 'Verified user identity and display name are required');
+        return;
+      }
       const nowMs = Date.now();
       const nowIso = new Date(nowMs).toISOString();
 
@@ -360,7 +370,7 @@ class ArenaRealtimeManager {
 
   public async settleExpiredBattle(battleId: string, nowMs = Date.now()) {
     const pool = getPostgresPool();
-    if (!pool) return null;
+    if (!pool) throw new Error('PostgreSQL is unavailable; expired battle settlement cannot be verified.');
 
     const client = await pool.connect();
     try {
@@ -371,14 +381,37 @@ class ArenaRealtimeManager {
         return null;
       }
 
-      const data = { ...(res.rows[0].data || {}), id: battleId };
+      const persistedData = res.rows[0].data;
+      if (!persistedData || typeof persistedData !== 'object' || Array.isArray(persistedData)) {
+        throw new Error('Expired battle has no verifiable persisted data object.');
+      }
+      const data = { ...persistedData, id: battleId };
       if (data.status === 'finished') {
         await client.query('COMMIT');
         return data;
       }
+      if (data.status !== 'active') {
+        await client.query('ROLLBACK');
+        return null;
+      }
 
-      const p1 = data.player1 || { score: 0, health: 100, uid: '' };
-      const p2 = data.player2 || { score: 0, health: 100, uid: '' };
+      const p1 = data.player1;
+      const p2 = data.player2;
+      if (
+        !p1 || typeof p1.uid !== 'string' || !p1.uid.trim() ||
+        !p2 || typeof p2.uid !== 'string' || !p2.uid.trim() ||
+        typeof p1.score !== 'number' || !Number.isFinite(p1.score) ||
+        typeof p2.score !== 'number' || !Number.isFinite(p2.score) ||
+        typeof p1.health !== 'number' || !Number.isFinite(p1.health) ||
+        typeof p2.health !== 'number' || !Number.isFinite(p2.health)
+      ) {
+        throw new Error('Expired battle has incomplete participant identity or score state.');
+      }
+      const expiresAtEpochMs = data.expiresAtEpochMs;
+      if (typeof expiresAtEpochMs !== 'number' || !Number.isFinite(expiresAtEpochMs) || nowMs < expiresAtEpochMs) {
+        await client.query('ROLLBACK');
+        return null;
+      }
 
       let winnerId = 'draw';
       if (p1.health <= 0 && p2.health > 0) {
