@@ -70,14 +70,12 @@ export async function fetchFromOpenAlex(
       const pdfUrl = item.primary_location?.pdf_url || null;
       const url = item.primary_location?.landing_page_url || (item.doi ? item.doi : item.id);
 
-      const conceptTags = item.concepts ? item.concepts.slice(0, 3).map((c) => c.display_name || '').filter(Boolean) : [];
-
       papers.push({
         id: `openalex_${item.id.replace(/^https?:\/\/openalex\.org\//, '')}`,
         title: item.title,
         authors,
         abstract,
-        year: item.publication_year || null,
+        year: item.publication_year ?? null,
         ...(item.primary_location?.source?.display_name ? { venue: item.primary_location.source.display_name } : {}),
         doi: cleanDoi,
         url,
@@ -85,7 +83,7 @@ export async function fetchFromOpenAlex(
         citationCount: item.cited_by_count ?? null,
         source: 'openalex',
         relevanceScore: 0,
-        syllabusTags: conceptTags,
+        syllabusTags: [],
       });
     }
   }
