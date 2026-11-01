@@ -60,6 +60,10 @@ function mapCourseRecord(row: any): CourseEntity {
     throw new Error(`Course ${row.id} has an invalid persisted semester value.`);
   }
 
+  const creditUnits = row.credit_units == null ? null : Number(row.credit_units);
+  if (creditUnits !== null && (!Number.isInteger(creditUnits) || creditUnits < 1 || creditUnits > 12)) {
+    throw new Error(`Course ${row.id} has invalid persisted credit units.`);
+  }
   const generationStatuses = ['none', 'queued', 'generating', 'completed', 'failed'] as const;
   if (row.generation_status != null && !generationStatuses.includes(row.generation_status)) {
     throw new Error(`Course ${row.id} has an invalid persisted generation status.`);
@@ -77,6 +81,7 @@ function mapCourseRecord(row: any): CourseEntity {
     departments: Array.isArray(row.departments) ? row.departments : null,
     scope: typeof row.scope === 'string' ? row.scope : null,
     semester: semester as CourseEntity['semester'],
+    credit_units: creditUnits,
     thumbnail_url: typeof row.thumbnail_url === 'string' ? row.thumbnail_url : null,
     author_id: typeof row.author_id === 'string' && row.author_id.trim() ? row.author_id : null,
     status: row.status,
@@ -108,7 +113,7 @@ export class CourseRepository {
     if (flags.ENABLE_POSTGRES_CATALOG) {
       try {
         let sql = `
-          SELECT id, code, title, description, level, department, faculty, semester, faculties, departments, scope,
+          SELECT id, code, title, description, level, department, faculty, semester, credit_units, faculties, departments, scope,
                  thumbnail_url, author_id, status, version, created_at, updated_at
           FROM courses
           WHERE 1=1
@@ -169,7 +174,7 @@ export class CourseRepository {
     if (flags.ENABLE_POSTGRES_CATALOG) {
       try {
         const sql = `
-          SELECT id, code, title, description, level, department, faculty, semester, faculties, departments, scope,
+          SELECT id, code, title, description, level, department, faculty, semester, credit_units, faculties, departments, scope,
                  thumbnail_url, author_id, status, version, created_at, updated_at
           FROM courses
           WHERE id = $1
@@ -420,7 +425,7 @@ export class CourseRepository {
     if (flags.ENABLE_POSTGRES_CATALOG) {
       try {
         const coursesRes = await queryPostgres<any>(
-          `SELECT id, title, description, department, faculty, faculties, departments, level, semester, status, scope, updated_at
+          `SELECT id, title, description, department, faculty, faculties, departments, level, semester, credit_units, status, scope, updated_at
            FROM courses
            WHERE status = 'published'
            ORDER BY id ASC`
@@ -466,6 +471,10 @@ export class CourseRepository {
 
         const fullCourses = coursesRes.rows.map(c => {
           if (c.updated_at && c.updated_at > maxUpdatedAt) maxUpdatedAt = c.updated_at;
+          const creditUnits = c.credit_units == null ? null : Number(c.credit_units);
+          if (creditUnits !== null && (!Number.isInteger(creditUnits) || creditUnits < 1 || creditUnits > 12)) {
+            throw new Error(`Course ${c.id} has invalid persisted credit units.`);
+          }
           const cMods = (modulesByCourse[c.id] || []).map(m => {
             const mKey = `${c.id}:${m.id}`;
             const rawLessons = (lessonsByModule[mKey] || []).sort((a, b) => (a.order || 0) - (b.order || 0));
@@ -486,6 +495,7 @@ export class CourseRepository {
             departments: Array.isArray(c.departments) ? c.departments : null,
             level: c.level ?? null,
             semester: typeof c.semester === 'string' && c.semester.trim() ? ((c.semester.toLowerCase().includes('2') || c.semester.toLowerCase().includes('second')) ? '2nd Semester' : ((c.semester.toLowerCase().includes('1') || c.semester.toLowerCase().includes('first')) ? '1st Semester' : c.semester)) : null,
+            creditUnits,
             scope: typeof c.scope === 'string' ? c.scope : null,
             status: c.status,
             syllabus: sortCourseSyllabus(cMods)
