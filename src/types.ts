@@ -213,6 +213,7 @@ export interface SubTopic {
   relatedTo?: string[];
   groundingReferences?: string[];
   confidenceState?: 'verified' | 'needs_review' | 'failed';
+  instructionalContent?: import('./shared/courseSchemas').InstructionalContent;
 }
 
 export interface Module {
