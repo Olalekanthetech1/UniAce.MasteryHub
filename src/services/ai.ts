@@ -649,24 +649,35 @@ Return your response strictly as a JSON object matching:
     numQuestions: number, 
     questionType: QuestionType,
     adaptive: boolean = false,
-    userSkillLevel: number = 3,
+    userSkillLevel?: number,
     level?: string,
     department?: string,
     studentName?: string,
     rollingMasteryScore?: number
   ): Promise<QuizQuestion[]> => {
+    if (adaptive && (typeof userSkillLevel !== 'number' || !Number.isInteger(userSkillLevel) || userSkillLevel < 1 || userSkillLevel > 5)) {
+      throw new Error('Adaptive quiz generation requires a verified student skill level from the live mastery record.');
+    }
+
+    const sourceMaterial = subTopic
+      ? `Subtopic Title: "${subTopic.title}"\\nContent: ${subTopic.content || ''}`
+      : `Module Title: "${module.title}"\\n${module.subTopics.map(st => `--- Subtopic: ${st.title} ---\\n${st.content || ''}`).join('\\n\\n')}`;
+    if (!sourceMaterial.replace(/Subtopic Title:|Module Title:|--- Subtopic:|---/g, '').trim()) {
+      throw new Error('Quiz generation requires non-empty lesson source material from the live course record.');
+    }
+
     const isHighMastery = typeof rollingMasteryScore === 'number' && rollingMasteryScore >= 75;
     const isFoundationMastery = typeof rollingMasteryScore === 'number' && rollingMasteryScore < 50;
 
     const prompt = `INSTRUCTIONS:
 Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the entire module'}.
-    Student Name: ${studentName || 'Student'}
-    Student Level: ${level || 'University Level'}
-    Department: ${department || 'General Academic'}
+    Student Name: ${studentName || 'Not provided; do not infer a name'}
+    Student Level: ${level || 'Not provided; do not infer an academic level'}
+    Department: ${department || 'Not provided; do not infer a department'}
     ${typeof rollingMasteryScore === 'number' ? `Student Rolling Mastery Score: ${rollingMasteryScore}%` : ''}
     
-    ${adaptive 
-      ? `Generate exactly 15 questions, 3 for each difficulty level from 1 (very easy) to 5 (very hard). Ensure the difficulty field is set correctly. The user's current estimated skill level is ${userSkillLevel} out of 5.` 
+    ${adaptive
+      ? `Generate exactly 15 questions, 3 for each difficulty level from 1 (very easy) to 5 (very hard). Ensure the difficulty field is set correctly. The user's verified current skill level from the live mastery record is ${userSkillLevel} out of 5.`
       : `Number of questions: ${numQuestions}.`}
     Question type: ${questionType}.
 
@@ -722,58 +733,37 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
     }
     
     CONTENT MATERIAL TO BASE QUIZ ON:
-    ${subTopic 
-      ? `Subtopic Title: "${subTopic.title}"
-         Content: ${subTopic.content ? subTopic.content.substring(0, 12000) : ''}`
-      : `Module Title: "${module.title}"
-         Module Content: ${module.subTopics.map(st => `--- Subtopic: ${st.title} ---\n${st.content ? st.content.substring(0, 3000) : ''}`).join('\n\n')}`
-    }`;
+    ${sourceMaterial}`;
 
     const response = await callAI(prompt, undefined, 'json', 2500, isHighMastery ? 'high' : 'standard', 'quiz');
-    try {
-      const rawData = extractJSON(response.text || "[]");
-      let dataToValidate: any = rawData;
-      if (rawData && typeof rawData === 'object' && !Array.isArray(rawData) && rawData.questions) {
-        // Already structured correctly
-      } else {
-        const arr = ensureArray(rawData);
-        dataToValidate = { questions: arr };
-      }
-
-      const validated = safeParseAIResponse(
-        QuizQuestionsResponseSchema,
-        dataToValidate,
-        { questions: [] }
-      );
-
-      const questions = validated.questions;
-      
-      if (questions.length === 0) {
-         console.error("DEBUG AI: questions is empty. data extracted was:", rawData);
-         console.error("DEBUG AI: raw response text was:", response.text);
-      }
-      
-      // Sanitize LaTeX in all question fields and apply dynamic mathematical corrections and auto-heal options
-      const defaultSource = subTopic ? `${module.title} → ${subTopic.title}` : module.title;
-      return questions.map((q: any) => {
-        if (!q || typeof q !== 'object') return q;
-        const sanitized = {
-          ...q,
-          question: sanitizeLatex(q.question),
-          options: Array.isArray(q.options) ? q.options.map((opt: any) => sanitizeLatex(opt)) : q.options,
-          correctAnswer: sanitizeLatex(q.correctAnswer),
-          explanation: sanitizeLatex(q.explanation),
-          hint: sanitizeLatex(q.hint),
-          sourceReference: q.sourceReference || defaultSource,
-          bloomLevel: q.bloomLevel || 'applying',
-          verifiedGrounded: true
-        };
-        return autoHealQuestion(sanitized);
-      });
-    } catch (e: any) {
-      console.error("Quiz generation error (extractJSON threw an error):", e);
-      throw e;
+    if (typeof response?.text !== 'string' || !response.text.trim()) {
+      throw new Error('Quiz generation provider returned no response content.');
     }
+
+    const rawData = extractJSON(response.text);
+    const validated = QuizQuestionsResponseSchema.parse(rawData);
+    const questions = validated.questions;
+    const requiredQuestionCount = adaptive ? 15 : numQuestions;
+    if (questions.length !== requiredQuestionCount) {
+      throw new Error(`Quiz generator returned ${questions.length} questions; ${requiredQuestionCount} were required. The incomplete result was rejected.`);
+    }
+
+    const sourceText = sourceMaterial.toLocaleLowerCase();
+    const unsupportedReferences = questions
+      .map((question: any) => question.sourceReference)
+      .filter((reference: string) => !sourceText.includes(reference.toLocaleLowerCase()));
+    if (unsupportedReferences.length > 0) {
+      throw new Error(`Quiz generator cited source references not present in the supplied lesson: ${unsupportedReferences.join(', ')}`);
+    }
+
+    return questions.map((q: any) => ({
+      ...q,
+      question: sanitizeLatex(q.question),
+      options: Array.isArray(q.options) ? q.options.map((opt: any) => sanitizeLatex(opt)) : [],
+      correctAnswer: sanitizeLatex(q.correctAnswer),
+      explanation: sanitizeLatex(q.explanation),
+      hint: sanitizeLatex(q.hint)
+    }));
   },
 
   evaluateWrittenAnswer: async (
