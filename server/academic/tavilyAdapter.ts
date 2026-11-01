@@ -76,7 +76,6 @@ export async function searchTavilyAcademicSources(
       include_raw_content: 'markdown',
       include_published_date: true,
       include_usage: true,
-      safe_search: true,
     }),
     signal: AbortSignal.timeout(30000),
   });
