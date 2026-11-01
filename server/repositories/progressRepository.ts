@@ -416,27 +416,68 @@ export class ProgressRepository {
     if (!Array.isArray(canonicalQuestions) || canonicalQuestions.length === 0) {
       throw new Error('Server-owned canonical quiz questions are required; refusing to record an ungrounded attempt.');
     }
+    if (!Array.isArray(answers)) {
+      throw new Error('Submitted answers must be an array of recorded question responses.');
+    }
     if (typeof passingScorePct !== 'number' || !Number.isFinite(passingScorePct) ||
         passingScorePct < 0 || passingScorePct > 100) {
       throw new Error('A valid server-owned passing threshold between 0 and 100 is required.');
     }
+    if (typeof timeSpentSeconds !== 'number' || !Number.isFinite(timeSpentSeconds) || timeSpentSeconds < 0) {
+      throw new Error('A finite, non-negative recorded quiz duration is required.');
+    }
+    if (typeof attemptIdempotencyKey !== 'string' || !attemptIdempotencyKey.trim()) {
+      throw new Error('A non-empty attempt idempotency key is required.');
+    }
 
-    // Grade only against canonical questions supplied by a trusted server-side caller.
+    // Validate the full server-owned question set before grading any submitted answer.
     const questionMap = new Map<string, (typeof canonicalQuestions)[0]>();
-    canonicalQuestions.forEach((q) => questionMap.set(q.id, q));
+    for (const question of canonicalQuestions) {
+      if (
+        !question ||
+        typeof question.id !== 'string' ||
+        !question.id.trim() ||
+        questionMap.has(question.id) ||
+        !Array.isArray(question.options) ||
+        question.options.length < 2 ||
+        !question.options.every(option => typeof option === 'string' && option.trim().length > 0) ||
+        !Number.isInteger(question.correct_option_index) ||
+        question.correct_option_index < 0 ||
+        question.correct_option_index >= question.options.length
+      ) {
+        throw new Error('The server-owned canonical quiz contains an invalid or ambiguous question record.');
+      }
+      questionMap.set(question.id, question);
+    }
 
+    const submittedQuestionIds = new Set<string>();
     let correctCount = 0;
-    const answersBreakdown = answers.map((ans) => {
-      const canonical = questionMap.get(ans.questionId);
-      const isCorrect = canonical ? canonical.correct_option_index === ans.selectedOptionIndex : false;
+    const answersBreakdown = answers.map((answer) => {
+      if (
+        !answer ||
+        typeof answer.questionId !== 'string' ||
+        !questionMap.has(answer.questionId) ||
+        submittedQuestionIds.has(answer.questionId) ||
+        !Number.isInteger(answer.selectedOptionIndex)
+      ) {
+        throw new Error('A submitted answer references an unknown, duplicate, or malformed quiz question.');
+      }
+
+      const canonical = questionMap.get(answer.questionId)!;
+      if (answer.selectedOptionIndex < 0 || answer.selectedOptionIndex >= canonical.options.length) {
+        throw new Error('A submitted answer index is outside the canonical question option range.');
+      }
+
+      submittedQuestionIds.add(answer.questionId);
+      const isCorrect = canonical.correct_option_index === answer.selectedOptionIndex;
       if (isCorrect) correctCount++;
       return {
-        questionId: ans.questionId,
-        selectedOptionIndex: ans.selectedOptionIndex,
-        correctOptionIndex: canonical ? canonical.correct_option_index : -1,
+        questionId: answer.questionId,
+        selectedOptionIndex: answer.selectedOptionIndex,
+        correctOptionIndex: canonical.correct_option_index,
         isCorrect,
-        explanation: canonical?.explanation || null,
-        latexProof: canonical?.latex_proof || null
+        explanation: canonical.explanation || null,
+        latexProof: canonical.latex_proof || null
       };
     });
 
@@ -480,7 +521,7 @@ export class ProgressRepository {
           attemptIdempotencyKey,
           scorePct,
           passed,
-          Math.max(0, timeSpentSeconds || 0),
+          Math.round(timeSpentSeconds),
           questionsSnapshotHash,
           JSON.stringify(answersBreakdown)
         ]);
