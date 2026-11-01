@@ -13,13 +13,38 @@ import { fetchFromArxiv } from './academic/arxivAdapter.js';
 import { fetchFromSemanticScholar, lookupPaperSemanticScholar } from './academic/semanticScholarAdapter.js';
 import { fetchFromOpenAlex, fetchOpenAlexConceptDefinitions } from './academic/openAlexAdapter.js';
 import { getPostgresPool } from './postgresPool.js';
+import { getSystemConfigDoc, setSystemConfigDoc } from './systemConfigStore.js';
+import { z } from 'zod';
 
-// Default Admin Configuration
-let activeConfig: AcademicConfig = {
+const ACADEMIC_CONFIG_KEY = 'academic_research_config';
+const AcademicConfigSchema = z.object({
+  enabled: z.boolean(),
+  cacheTtlHours: z.number().min(0).max(720),
+  arxivMaxResults: z.number().int().min(1).max(20),
+  researchDepth: z.literal('adaptive'),
+  providersEnabled: z.object({
+    arxiv: z.boolean(),
+    semanticScholar: z.boolean(),
+    openAlex: z.boolean(),
+  }),
+});
+const AcademicConfigUpdateSchema = z.object({
+  enabled: z.boolean().optional(),
+  cacheTtlHours: z.number().min(0).max(720).optional(),
+  arxivMaxResults: z.number().int().min(1).max(20).optional(),
+  researchDepth: z.literal('adaptive').optional(),
+  providersEnabled: z.object({
+    arxiv: z.boolean().optional(),
+    semanticScholar: z.boolean().optional(),
+    openAlex: z.boolean().optional(),
+  }).optional(),
+}).strict();
+
+const DEFAULT_ACADEMIC_CONFIG: AcademicConfig = {
   enabled: true,
   cacheTtlHours: 24,
   arxivMaxResults: 5,
-  defaultCourseAlignment: 'Global University Benchmark Syllabus (Adaptive)',
+  researchDepth: 'adaptive',
   providersEnabled: {
     arxiv: true,
     semanticScholar: true,
@@ -27,20 +52,72 @@ let activeConfig: AcademicConfig = {
   },
 };
 
-export function getAcademicConfig(): AcademicConfig {
-  return activeConfig;
+let activeConfig: AcademicConfig = { ...DEFAULT_ACADEMIC_CONFIG };
+let configInitialized = false;
+let configInitialization: Promise<AcademicConfig> | null = null;
+
+function copyAcademicConfig(): AcademicConfig {
+  return {
+    ...activeConfig,
+    providersEnabled: { ...activeConfig.providersEnabled },
+  };
 }
 
-export function updateAcademicConfig(newConfig: Partial<AcademicConfig>): AcademicConfig {
-  activeConfig = {
+export function getAcademicConfig(): AcademicConfig {
+  return copyAcademicConfig();
+}
+
+export async function initializeAcademicConfig(): Promise<AcademicConfig> {
+  if (configInitialized) return getAcademicConfig();
+  if (configInitialization) return configInitialization;
+
+  configInitialization = (async () => {
+    const stored = await getSystemConfigDoc(ACADEMIC_CONFIG_KEY, true);
+    const candidate = {
+      ...DEFAULT_ACADEMIC_CONFIG,
+      ...(stored || {}),
+      providersEnabled: {
+        ...DEFAULT_ACADEMIC_CONFIG.providersEnabled,
+        ...(stored?.providersEnabled || {}),
+      },
+    };
+    const parsed = AcademicConfigSchema.safeParse(candidate);
+    if (!parsed.success) {
+      throw new Error('Persisted academic research configuration is invalid; configuration was not silently replaced.');
+    }
+
+    activeConfig = parsed.data;
+    if (!stored) {
+      await setSystemConfigDoc(ACADEMIC_CONFIG_KEY, activeConfig, false);
+    }
+    configInitialized = true;
+    return getAcademicConfig();
+  })();
+
+  try {
+    return await configInitialization;
+  } catch (error) {
+    configInitialization = null;
+    throw error;
+  }
+}
+
+export async function updateAcademicConfig(newConfig: Partial<AcademicConfig>): Promise<AcademicConfig> {
+  await initializeAcademicConfig();
+  const patch = AcademicConfigUpdateSchema.parse(newConfig);
+  const nextConfig = AcademicConfigSchema.parse({
     ...activeConfig,
-    ...newConfig,
+    ...patch,
     providersEnabled: {
       ...activeConfig.providersEnabled,
-      ...(newConfig.providersEnabled || {}),
+      ...(patch.providersEnabled || {}),
     },
-  };
-  return activeConfig;
+  });
+
+  // Persist first; do not report a configuration update until Neon confirms the write.
+  await setSystemConfigDoc(ACADEMIC_CONFIG_KEY, nextConfig, false);
+  activeConfig = nextConfig;
+  return getAcademicConfig();
 }
 
 // Levenshtein distance for fuzzy title deduplication
@@ -189,8 +266,16 @@ export async function searchAcademicPapers(
   const parsed = SearchAcademicPapersInputSchema.parse(input);
   const { query, fieldOfStudy, limit, courseCode } = parsed;
 
+  await initializeAcademicConfig();
+  if (!activeConfig.enabled) throw new Error('Academic research is disabled in the persisted engine configuration.');
+
   const normalizedQuery = `${query} ${fieldOfStudy || ''}`.trim().toLowerCase();
-  const cacheKey = Buffer.from(normalizedQuery).toString('base64').slice(0, 64);
+  const cacheKey = Buffer.from(JSON.stringify({
+    query: normalizedQuery,
+    courseCode: courseCode || null,
+    minYear: parsed.minYear ?? null,
+    limit,
+  })).toString('base64').slice(0, 64);
 
   // Check Cache
   const cached = await getCachedSearch(cacheKey);
@@ -218,7 +303,7 @@ export async function searchAcademicPapers(
 
   if (activeConfig.providersEnabled.semanticScholar) {
     tasks.push(
-      fetchFromSemanticScholar(normalizedQuery, limit, activeConfig.semanticScholarApiKey)
+      fetchFromSemanticScholar(normalizedQuery, limit, process.env.SEMANTIC_SCHOLAR_API_KEY)
         .then(({ papers, latencyMs }) => {
           providerBreakdown.semantic_scholar = { count: papers.length, latencyMs, status: 'ok' };
           allPapers.push(...papers);
@@ -232,7 +317,7 @@ export async function searchAcademicPapers(
 
   if (activeConfig.providersEnabled.openAlex) {
     tasks.push(
-      fetchFromOpenAlex(normalizedQuery, limit, activeConfig.openAlexEmail)
+      fetchFromOpenAlex(normalizedQuery, limit, process.env.OPENALEX_EMAIL)
         .then(({ papers, latencyMs }) => {
           providerBreakdown.openalex = { count: papers.length, latencyMs, status: 'ok' };
           allPapers.push(...papers);
@@ -246,10 +331,10 @@ export async function searchAcademicPapers(
 
   await Promise.allSettled(tasks);
 
-  // If ALL providers failed, throw clean status
-  if (allPapers.length === 0) {
-    const errorMsg = 'Academic Research APIs currently unavailable or query returned 0 matches across arXiv, Semantic Scholar, and OpenAlex.';
-    throw new Error(errorMsg);
+  // Distinguish a successful zero-result search from a total provider outage.
+  const successfulProviders = Object.values(providerBreakdown).filter((entry) => entry.status === 'ok').length;
+  if (successfulProviders === 0) {
+    throw new Error('All enabled academic research providers failed; no search result can be verified.');
   }
 
   // Deduplication by DOI and Title similarity
@@ -269,12 +354,8 @@ export async function searchAcademicPapers(
 
     if (paper.doi) seenDois.add(paper.doi.toLowerCase());
 
-    // Tag Course Code Alignment
-    paper.syllabusTags = [
-      activeConfig.defaultCourseAlignment,
-      courseCode || `${(fieldOfStudy || query).slice(0, 3).toUpperCase()} 101`,
-    ];
-
+    // Keep only tags supplied by the source adapter. A course code or benchmark
+    // is not evidence that a paper belongs to an official course syllabus.
     uniquePapers.push(paper);
   }
 
@@ -308,11 +389,12 @@ export async function searchAcademicPapers(
 
 // --- CITATION GENERATOR ---
 export async function getCitationAndAbstract(input: GetCitationInput): Promise<CitationResult> {
+  await initializeAcademicConfig();
   const { identifier } = input;
   let paper: AcademicPaper | null = null;
 
   // Try direct lookup via Semantic Scholar
-  paper = await lookupPaperSemanticScholar(identifier, activeConfig.semanticScholarApiKey);
+  paper = await lookupPaperSemanticScholar(identifier, process.env.SEMANTIC_SCHOLAR_API_KEY);
 
   // If not found, run live search
   if (!paper) {
@@ -326,16 +408,27 @@ export async function getCitationAndAbstract(input: GetCitationInput): Promise<C
     throw new Error(`Academic paper with identifier '${identifier}' could not be located in live registries.`);
   }
 
-  const primaryAuthor = paper.authors[0] || 'Author';
-  const authorLastName = primaryAuthor.split(' ').pop() || primaryAuthor;
-  const etAl = paper.authors.length > 1 ? ' et al.' : '';
-  const yearStr = paper.year ? ` (${paper.year}).` : ' (n.d.).';
+  const authors = paper.authors.filter((author) => author.trim().length > 0);
+  const primaryAuthor = authors[0] || '';
+  const authorLastName = primaryAuthor.split(' ').pop() || '';
+  const etAl = authors.length > 1 ? ' et al.' : '';
+  const authorPart = primaryAuthor ? `${primaryAuthor}${etAl}` : '';
+  const yearPart = typeof paper.year === 'number' ? ` (${paper.year}).` : '';
   const doiStr = paper.doi ? ` https://doi.org/${paper.doi}` : ` ${paper.url}`;
+  const venuePart = paper.venue ? ` ${paper.venue}.` : '';
+  const apa = `${authorPart}${yearPart} ${paper.title}.${venuePart}${doiStr}`.replace(/\\s+/g, ' ').trim();
 
-  const apa = `${primaryAuthor}${etAl}${yearStr} ${paper.title}. ${paper.venue || 'Academic Journal'}.${doiStr}`;
-
-  const bibtexKey = `${authorLastName.toLowerCase()}${paper.year || 'nd'}${paper.title.slice(0, 8).toLowerCase().replace(/[^a-z]/g, '')}`;
-  const bibtex = `@article{${bibtexKey},\n  author = {${paper.authors.join(' and ')}},\n  title = {${paper.title}},\n  journal = {${paper.venue || 'Academic Repository'}},\n  year = {${paper.year || 'n.d.'}},\n  doi = {${paper.doi || ''}},\n  url = {${paper.url}}\n}`;
+  const titleKey = paper.title.slice(0, 12).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const bibtexKey = `${authorLastName.toLowerCase()}${paper.year || ''}${titleKey}` || paper.id.replace(/[^a-zA-Z0-9]/g, '').slice(-24);
+  const bibtexFields = [
+    ...(authors.length ? [`  author = {${authors.join(' and ')}}`] : []),
+    `  title = {${paper.title}}`,
+    ...(paper.venue ? [`  journal = {${paper.venue}}`] : []),
+    ...(typeof paper.year === 'number' ? [`  year = {${paper.year}}`] : []),
+    ...(paper.doi ? [`  doi = {${paper.doi}}`] : []),
+    `  url = {${paper.url}}`,
+  ];
+  const bibtex = `@article{${bibtexKey},\\n${bibtexFields.join(',\\n')}\\n}`;
 
   return {
     identifier,
@@ -355,31 +448,15 @@ export async function getCitationAndAbstract(input: GetCitationInput): Promise<C
 // --- CANONICAL DEFINITIONS ---
 export async function extractCanonicalDefinitions(
   subject: string,
-  topic: string,
-  courseCode?: string
-): Promise<CanonicalDefinition> {
-  const concept = await fetchOpenAlexConceptDefinitions(subject, topic, courseCode);
-
-  if (concept) return concept;
-
-  return {
-    topic,
-    subject,
-    canonicalDefinition: `Canonical scientific definition and academic theory governing ${topic} within ${subject}.`,
-    sourceTextbooks: [
-      'Standard Benchmark Textbooks (e.g. Halliday & Resnick, Stewart Calculus, Cormen Algorithms)',
-      'Accredited Global University Curricula Guide',
-    ],
-    keyEquations: [topic],
-    courseAlignment: {
-      curriculumBenchmark: `Grounded in accredited global university benchmark standards for ${subject}`,
-      courseCode: courseCode || `${subject.slice(0, 3).toUpperCase()} 101`,
-    },
-  };
+  topic: string
+): Promise<CanonicalDefinition | null> {
+  await initializeAcademicConfig();
+  return fetchOpenAlexConceptDefinitions(subject, topic);
 }
 
 // --- HEALTH CHECK FUNCTION ---
 export async function checkAcademicProvidersHealth(): Promise<AcademicProviderHealth[]> {
+  await initializeAcademicConfig();
   const providers: Array<'arxiv' | 'semantic_scholar' | 'openalex'> = ['arxiv', 'semantic_scholar', 'openalex'];
   const results: AcademicProviderHealth[] = [];
 
@@ -389,9 +466,9 @@ export async function checkAcademicProvidersHealth(): Promise<AcademicProviderHe
       if (provider === 'arxiv') {
         await fetchFromArxiv('physics', 1);
       } else if (provider === 'semantic_scholar') {
-        await fetchFromSemanticScholar('mathematics', 1, activeConfig.semanticScholarApiKey);
+        await fetchFromSemanticScholar('mathematics', 1, process.env.SEMANTIC_SCHOLAR_API_KEY);
       } else if (provider === 'openalex') {
-        await fetchFromOpenAlex('computer science', 1, activeConfig.openAlexEmail);
+        await fetchFromOpenAlex('computer science', 1, process.env.OPENALEX_EMAIL);
       }
 
       results.push({
