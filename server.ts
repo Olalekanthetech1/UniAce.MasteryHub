@@ -2454,28 +2454,33 @@ function parsePlanDuration(durationStr: string, planId: string): { durationDays:
 /**
  * In-Memory TTL Cache for dynamic commission rates (5-minute TTL)
  */
-let commissionRateCache: { rate: number; expiry: number } | null = null;
+let commissionRateCache: { rate: number | null; expiry: number } | null = null;
 
-async function getDynamicCommissionRate(): Promise<number> {
+async function getDynamicCommissionRate(): Promise<number | null> {
   const now = Date.now();
   if (commissionRateCache && commissionRateCache.expiry > now) {
     return commissionRateCache.rate;
   }
-  let rate = 0.30; // 30% default
+
   try {
     const data = (await getSystemConfigDoc('commissions')) || (await getSystemSettingsDoc('commissions'));
-    if (data) {
-      if (typeof data.rate === 'number' && data.rate > 0 && data.rate <= 1) {
-        rate = data.rate;
-      } else if (typeof data.rate === 'number' && data.rate > 1) {
-        rate = data.rate / 100; // normalize percentage e.g. 30 -> 0.30
-      }
+    const configuredRate = data?.rate;
+    const rate = typeof configuredRate === 'number' && configuredRate >= 0 && configuredRate <= 1
+      ? configuredRate
+      : typeof configuredRate === 'number' && configuredRate > 1 && configuredRate <= 100
+        ? configuredRate / 100
+        : null;
+
+    if (rate === null) {
+      console.warn('[Commissions] No valid commission rate is configured; affiliate credit will remain pending.');
     }
+    commissionRateCache = { rate, expiry: now + 5 * 60 * 1000 };
+    return rate;
   } catch (err) {
-    console.error('Error fetching commission rate settings, using 30% default:', err);
+    console.error('[Commissions] Could not verify the live commission rate; affiliate credit will remain pending:', err);
+    commissionRateCache = { rate: null, expiry: now + 60 * 1000 };
+    return null;
   }
-  commissionRateCache = { rate, expiry: now + 5 * 60 * 1000 }; // 5 min TTL
-  return rate;
 }
 
 /**
