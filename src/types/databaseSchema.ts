@@ -10,13 +10,13 @@ export interface CourseEntity {
   code: string;
   title: string;
   description: string | null;
-  level: '100L' | '200L' | '300L' | '400L' | 'undergraduate' | 'postgraduate';
+  level: string;
   department: string | null;
   faculty: string | null;
   faculties?: string[] | null;
   departments?: string[] | null;
   scope?: string | null;
-  semester: 'first' | 'second' | null;
+  semester: string | null;
   thumbnail_url: string | null;
   author_id: string | null;
   status: 'draft' | 'in_review' | 'published' | 'archived';
