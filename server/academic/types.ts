@@ -13,7 +13,7 @@ export const AcademicPaperSchema = z.object({
   citationCount: z.number().nullable().optional(),
   source: z.enum(['arxiv', 'semantic_scholar', 'openalex']),
   relevanceScore: z.number().default(0),
-  syllabusTags: z.array(z.string()).default([]),
+  conceptTags: z.array(z.string()).default([]),
 });
 
 export type AcademicPaper = z.infer<typeof AcademicPaperSchema>;
