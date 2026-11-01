@@ -99,12 +99,12 @@ test('rejects fallback identities and actions whose recorded time exceeds the or
   assert.equal(validateRecordedHumanReplay(lateAction), null);
 });
 
-test('does not switch to a shorter participant log when the selected primary recording is invalid', () => {
+test('uses another independently valid human recording when the first candidate is invalid', () => {
   const row = validRow();
   row.data.player1.actionLog[0].timestamp = '';
 
-  // The validator selects the participant with the most complete recorded
-  // history. If that primary source fails validation, it fails closed instead
-  // of substituting another participant's shorter recording.
-  assert.equal(validateRecordedHumanReplay(row), null);
+  const replay = validateRecordedHumanReplay(row);
+  assert.ok(replay);
+  assert.equal(replay.sourcePlayer.uid, 'firebase-user-002');
+  assert.equal(replay.actions.length, 1);
 });
