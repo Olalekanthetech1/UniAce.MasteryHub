@@ -7,6 +7,7 @@ export interface AcademicResearchSettings {
   cacheTtlHours: number;
   arxivMaxResults: number;
   defaultCourseAlignment: string;
+  openAlexEmail?: string;
   providersEnabled: {
     arxiv: boolean;
     semanticScholar: boolean;
@@ -121,9 +122,10 @@ function normalizeSettings(value: unknown): AcademicResearchSettings {
     typeof settings.enabled !== 'boolean' ||
     !Number.isInteger(settings.cacheTtlHours) || settings.cacheTtlHours < 1 || settings.cacheTtlHours > 720 ||
     !Number.isInteger(settings.arxivMaxResults) || settings.arxivMaxResults < 1 || settings.arxivMaxResults > 20 ||
-    !Number.isInteger(settings.adaptiveMaxQueries) || settings.adaptiveMaxQueries < 1 || settings.adaptiveMaxQueries > 3 ||
+    !Number.isInteger(settings.adaptiveMaxQueries) || settings.adaptiveMaxQueries < 1 || settings.adaptiveMaxQueries > 2 ||
     !Number.isInteger(settings.minimumUsefulSources) || settings.minimumUsefulSources < 1 || settings.minimumUsefulSources > 10 ||
     typeof settings.defaultCourseAlignment !== 'string' ||
+    (settings.openAlexEmail !== undefined && typeof settings.openAlexEmail !== 'string') ||
     Object.values(settings.providersEnabled).some(flag => typeof flag !== 'boolean')
   ) {
     throw new Error('Academic research configuration contains invalid settings.');
