@@ -108,7 +108,9 @@ function decryptSecret(value: unknown): string | undefined {
 
 function normalizeSettings(value: unknown): AcademicResearchSettings {
   const stored = value && typeof value === 'object' ? value as Partial<AcademicResearchSettings> : {};
-  const providers = stored.providersEnabled || {};
+  const providers = (stored.providersEnabled && typeof stored.providersEnabled === 'object'
+    ? stored.providersEnabled
+    : {}) as Partial<AcademicResearchSettings['providersEnabled']>;
   const settings: AcademicResearchSettings = {
     enabled: typeof stored.enabled === 'boolean' ? stored.enabled : DEFAULT_ACADEMIC_RESEARCH_SETTINGS.enabled,
     cacheTtlHours: typeof stored.cacheTtlHours === 'number' ? stored.cacheTtlHours : DEFAULT_ACADEMIC_RESEARCH_SETTINGS.cacheTtlHours,
