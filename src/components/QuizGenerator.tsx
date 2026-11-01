@@ -68,6 +68,7 @@ export default function QuizGenerator({
   
   // Exam Mode State
   const [timeLeft, setTimeLeft] = useState(0); // in seconds
+  const [quizStartedAt, setQuizStartedAt] = useState<number | null>(null);
   const [flaggedQuestions, setFlaggedQuestions] = useState<Record<string, boolean>>({});
   const [showPalette, setShowPalette] = useState(false);
 
@@ -181,6 +182,7 @@ export default function QuizGenerator({
           setTimeLeft(numQuestions * 90); // 1.5 minutes per question
         }
       }
+      setQuizStartedAt(Date.now());
       setStep('quiz');
     } catch (error: any) {
       console.error("Quiz generation error:", error);
@@ -340,10 +342,15 @@ export default function QuizGenerator({
       triggerMilestoneCelebration();
     }
 
-    // Persist Quiz Attempt to Neon API
+    // Persist the measured practice result. Its provenance is explicitly recorded as
+    // client-computed practice, not represented as a server-verified examination.
     if (user && courseId) {
-      user.getIdToken().then(token => {
-        fetch('/api/quiz/record-attempt', {
+      try {
+        if (quizStartedAt === null) {
+          throw new Error('Quiz start time was not recorded; the attempt cannot be persisted accurately.');
+        }
+        const token = await user.getIdToken();
+        const response = await fetch('/api/quiz/record-attempt', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -352,12 +359,21 @@ export default function QuizGenerator({
           body: JSON.stringify({
             courseId,
             moduleId: module.id,
-            quizId: subTopic?.id || 'default',
+            quizId: subTopic?.id || module.id,
+            attemptIdempotencyKey: crypto.randomUUID(),
             scorePct: percentage,
-            passed: percentage >= 70
+            passed: percentage >= 70,
+            timeSpentSeconds: Math.max(0, Math.round((Date.now() - quizStartedAt) / 1000)),
+            gradingSource: 'client_computed_practice'
           })
-        }).catch(err => console.warn("Could not record quiz attempt:", err));
-      }).catch(err => console.warn("Could not get idToken for quiz attempt:", err));
+        });
+        if (!response.ok) {
+          throw new Error(`Quiz attempt persistence failed with HTTP ${response.status}.`);
+        }
+      } catch (err) {
+        console.error('Could not persist quiz attempt:', err);
+        toast.error('Your practice result could not be saved to the live record.');
+      }
     }
 
     // Update Spaced Repetition System
@@ -385,7 +401,7 @@ export default function QuizGenerator({
     }
 
     // PHASE 3: Automated Weakness Targeting
-    if (percentage < 70 && user) {
+    if (percentage < 70 && user && courseId) {
       const failedQuestions = questions.filter(q => {
         if (q.type === 'multiple-choice') {
           return userAnswers[q.id]?.toLowerCase().trim() !== q.correctAnswer.toLowerCase().trim();
@@ -409,7 +425,7 @@ export default function QuizGenerator({
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                 body: JSON.stringify({
                   cardId: c.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'c_' + Date.now()),
-                  courseId: courseId || module.id,
+                  courseId,
                   rating: 1,
                   front: c.front,
                   back: c.back,
