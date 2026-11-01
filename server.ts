@@ -172,6 +172,7 @@ import { jobStreamManager } from './server/services/jobStreamManager';
 import { getFeatureFlags, initRuntimeFlagsSync } from './server/config/features';
 import { ensureCourseLearningSchema } from './server/services/courseLearningSchema';
 import { ensureCourseAssessmentSchema } from './server/services/courseAssessmentSchema';
+import { redactInstructionalAnswersForStudent, getInstructionalActivityReveal, type InstructionalActivityType } from './server/services/instructionalDelivery.js';
 import { getSystemConfigDoc, setSystemConfigDoc, getSystemSettingsDoc, setSystemSettingsDoc } from './server/systemConfigStore';
 
 const latexInstruction = `
@@ -1185,32 +1186,6 @@ app.get('/api/courses/:courseId/modules', async (req, res) => {
   }
 });
 
-/**
- * Remove answer/rubric material from the ordinary student lesson payload.
- * The source JSONB remains intact for authenticated, persisted reveal requests.
- */
-function redactInstructionalAnswersForStudent(value: any): any {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-  const stripKeys = (item: any, keys: string[]) => {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
-    const copy = { ...item };
-    for (const key of keys) delete copy[key];
-    return copy;
-  };
-  return {
-    ...value,
-    guidedPractice: Array.isArray(value.guidedPractice)
-      ? value.guidedPractice.map((item: any) => stripKeys(item, ['expectedApproach', 'expectedAnswer', 'explanation', 'diagnosticSignals']))
-      : [],
-    independentPractice: Array.isArray(value.independentPractice)
-      ? value.independentPractice.map((item: any) => stripKeys(item, ['expectedApproach', 'expectedAnswer', 'explanation', 'diagnosticSignals']))
-      : [],
-    knowledgeChecks: Array.isArray(value.knowledgeChecks)
-      ? value.knowledgeChecks.map((item: any) => stripKeys(item, ['expectedReasoning', 'answerOrRubric', 'misconceptionSignals']))
-      : []
-  };
-}
-
 app.get('/api/courses/:courseId/modules/:moduleId/lessons', async (req, res) => {
   const t0 = Date.now();
   try {
@@ -1240,7 +1215,7 @@ app.get('/api/courses/:courseId/modules/:moduleId/lessons', async (req, res) => 
   }
 });
 
-app.post('/api/courses/:courseId/modules/:moduleId/lessons/:lessonId', async (req, res) => {
+app.post('/api/courses/:courseId/modules/:moduleId/lessons/:lessonId', verifyAdmin, async (req, res) => {
   try {
     const { courseId, moduleId, lessonId } = req.params;
     const { title, content } = req.body;
@@ -1501,32 +1476,16 @@ app.post('/api/courses/:courseId/modules/:moduleId/lessons/:lessonId/attempts', 
         return res.status(409).json({ error: 'Lesson instructional content is not valid structured data' });
       }
     }
-    const activityList = instructionalContent?.[activityType];
-    const activity = Array.isArray(activityList) ? activityList[activityIndex] : null;
-    if (!activity) return res.status(404).json({ error: 'Lesson activity not found' });
-
     let reveal: Record<string, string>;
-    if (activityType === 'knowledgeChecks') {
-      if (typeof activity.expectedReasoning !== 'string' || typeof activity.answerOrRubric !== 'string') {
-        return res.status(409).json({ error: 'This knowledge check has no stored comparison guide' });
-      }
-      reveal = {
-        expectedReasoning: activity.expectedReasoning,
-        answerOrRubric: activity.answerOrRubric
-      };
-    } else {
-      if (
-        typeof activity.expectedApproach !== 'string' ||
-        typeof activity.expectedAnswer !== 'string' ||
-        typeof activity.explanation !== 'string'
-      ) {
-        return res.status(409).json({ error: 'This practice item has no stored explanation' });
-      }
-      reveal = {
-        expectedApproach: activity.expectedApproach,
-        expectedAnswer: activity.expectedAnswer,
-        explanation: activity.explanation
-      };
+    try {
+      reveal = getInstructionalActivityReveal(
+        instructionalContent,
+        activityType as InstructionalActivityType,
+        activityIndex
+      );
+    } catch (revealError: any) {
+      const message = revealError?.message || 'Lesson activity is unavailable';
+      return res.status(message.includes('not found') ? 404 : 409).json({ error: message });
     }
 
     const savedAttempt = await pool.query(
