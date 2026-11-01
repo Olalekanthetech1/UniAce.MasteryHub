@@ -30,11 +30,11 @@ export const resolveUserFaculty = (
     return explicitFaculty.trim();
   }
 
-  const normalizedDepartment = String(department || '').trim().toLowerCase().replace(/\\s+/g, ' ');
+  const normalizedDepartment = String(department || '').trim().toLowerCase().replace(/\s+/g, ' ');
   if (!normalizedDepartment) return '';
 
   const matchingEntry = Object.entries(departmentToFaculty).find(
-    ([name]) => name.trim().toLowerCase().replace(/\\s+/g, ' ') === normalizedDepartment
+    ([name]) => name.trim().toLowerCase().replace(/\s+/g, ' ') === normalizedDepartment
   );
   return typeof matchingEntry?.[1] === 'string' ? matchingEntry[1].trim() : '';
 };
