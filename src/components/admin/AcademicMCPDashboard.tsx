@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { auth } from '../../firebase';
 import {
   BookOpen,
   Search,
@@ -24,12 +25,12 @@ interface Paper {
   title: string;
   authors: string[];
   abstract: string;
-  year?: number;
-  venue?: string;
+  year?: number | null;
+  venue?: string | null;
   doi?: string;
   url: string;
   pdfUrl?: string;
-  citationCount: number;
+  citationCount?: number | null;
   source: 'arxiv' | 'semantic_scholar' | 'openalex';
   relevanceScore: number;
   syllabusTags: string[];
@@ -46,10 +47,8 @@ interface ProviderHealth {
 interface AcademicConfig {
   enabled: boolean;
   cacheTtlHours: number;
-  semanticScholarApiKey?: string;
-  openAlexEmail?: string;
   arxivMaxResults: number;
-  defaultCourseAlignment: string;
+  researchDepth: 'adaptive';
   providersEnabled: {
     arxiv: boolean;
     semanticScholar: boolean;
@@ -62,9 +61,9 @@ export const AcademicMCPDashboard: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(false);
 
   // Search Sandbox State
-  const [searchQuery, setSearchQuery] = useState<string>('quantum computing optimization');
-  const [fieldOfStudy, setFieldOfStudy] = useState<string>('Computer Science');
-  const [courseCode, setCourseCode] = useState<string>('CSC 401');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [fieldOfStudy, setFieldOfStudy] = useState<string>('');
+  const [courseCode, setCourseCode] = useState<string>('');
   const [papers, setPapers] = useState<Paper[]>([]);
   const [selectedPaper, setSelectedPaper] = useState<Paper | null>(null);
   const [citationFormat, setCitationFormat] = useState<'apa' | 'bibtex'>('apa');
@@ -75,10 +74,8 @@ export const AcademicMCPDashboard: React.FC = () => {
   const [config, setConfig] = useState<AcademicConfig>({
     enabled: true,
     cacheTtlHours: 24,
-    semanticScholarApiKey: '',
-    openAlexEmail: 'uniace.support@gmail.com',
     arxivMaxResults: 5,
-    defaultCourseAlignment: 'Global University Benchmark Syllabus (Adaptive)',
+    researchDepth: 'adaptive',
     providersEnabled: {
       arxiv: true,
       semanticScholar: true,
@@ -87,10 +84,22 @@ export const AcademicMCPDashboard: React.FC = () => {
   });
   const [totalQueries, setTotalQueries] = useState<number>(0);
 
-  // Fetch Stats & Config
+  const getAdminHeaders = async () => {
+    const user = auth.currentUser;
+    if (!user) throw new Error('A signed-in administrator session is required.');
+    const token = await user.getIdToken();
+    return {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    };
+  };
+
+  // Fetch Stats & Config from the authenticated admin API.
   const fetchStatsAndConfig = async () => {
     try {
-      const res = await fetch('/api/academic/stats');
+      const res = await fetch('/api/academic/stats', {
+        headers: await getAdminHeaders(),
+      });
       if (res.ok) {
         const data = await res.json();
         if (data.providerHealth) setProviderHealth(data.providerHealth);
@@ -116,11 +125,11 @@ export const AcademicMCPDashboard: React.FC = () => {
     try {
       const res = await fetch('/api/academic/search', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await getAdminHeaders(),
         body: JSON.stringify({
           query: searchQuery,
-          fieldOfStudy,
-          courseCode,
+          ...(fieldOfStudy.trim() ? { fieldOfStudy: fieldOfStudy.trim() } : {}),
+          ...(courseCode.trim() ? { courseCode: courseCode.trim() } : {}),
           limit: 5,
         }),
       });
@@ -132,7 +141,7 @@ export const AcademicMCPDashboard: React.FC = () => {
 
       const data = await res.json();
       setPapers(data.papers || []);
-      toast.success(`Found ${data.papers?.length || 0} peer-reviewed papers in ${data.latencyMs}ms`);
+      toast.success(`Retrieved ${data.papers?.length ?? 0} indexed academic records in ${data.latencyMs}ms`);
     } catch (err) {
       toast.error((err as Error).message || 'Failed to query academic registries');
     } finally {
@@ -146,7 +155,7 @@ export const AcademicMCPDashboard: React.FC = () => {
     try {
       const res = await fetch('/api/academic/citation', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await getAdminHeaders(),
         body: JSON.stringify({ identifier: paper.doi || paper.title }),
       });
 
@@ -177,7 +186,7 @@ export const AcademicMCPDashboard: React.FC = () => {
     try {
       const res = await fetch('/api/admin/academic/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await getAdminHeaders(),
         body: JSON.stringify(config),
       });
 
@@ -204,11 +213,11 @@ export const AcademicMCPDashboard: React.FC = () => {
             <div className="flex items-center space-x-2">
               <h2 className="text-xl font-bold tracking-tight text-white">Academic Research & Syllabus Grounding MCP</h2>
               <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
-                Live Open-Source MCP
+                Live provider access
               </span>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              Zero-Mock Scholarly Intelligence Layer (arXiv • Semantic Scholar • OpenAlex • Dynamic Global Syllabi)
+              Scholarly records from arXiv, Semantic Scholar, and OpenAlex. These indexes are not official university syllabi.
             </p>
           </div>
         </div>
@@ -259,7 +268,7 @@ export const AcademicMCPDashboard: React.FC = () => {
           }`}
         >
           <Settings className="w-4 h-4" />
-          <span>Engine Settings & Keys</span>
+          <span>Engine Settings</span>
         </button>
       </div>
 
@@ -317,9 +326,9 @@ export const AcademicMCPDashboard: React.FC = () => {
           {papers.length > 0 && (
             <div className="space-y-4">
               <div className="flex items-center justify-between text-xs text-slate-400">
-                <span>Returned {papers.length} peer-reviewed results from arXiv, Semantic Scholar, and OpenAlex:</span>
+                <span>Returned {papers.length} indexed records from configured scholarly providers:</span>
                 <span className="text-emerald-400 flex items-center gap-1">
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Zero-Mock Live API Verification Passed
+                  <CheckCircle2 className="w-3.5 h-3.5" /> Live source response received
                 </span>
               </div>
 
@@ -341,7 +350,10 @@ export const AcademicMCPDashboard: React.FC = () => {
                           <ExternalLink className="w-3.5 h-3.5 text-slate-400 inline" />
                         </a>
                         <p className="text-xs text-slate-400 mt-1">
-                          By <span className="text-slate-300">{paper.authors.slice(0, 3).join(', ')}{paper.authors.length > 3 ? ' et al.' : ''}</span> • {paper.venue || 'Academic Journal'} ({paper.year || 'N/A'})
+                          {paper.authors.length > 0
+                            ? <>By <span className="text-slate-300">{paper.authors.slice(0, 3).join(', ')}{paper.authors.length > 3 ? ' et al.' : ''}</span></>
+                            : <span className="text-slate-500">Author metadata not indexed</span>}
+                          {' • '}{paper.venue || 'Venue not indexed'} ({paper.year ?? 'Year not indexed'})
                         </p>
                       </div>
 
@@ -350,22 +362,24 @@ export const AcademicMCPDashboard: React.FC = () => {
                           {paper.source}
                         </span>
                         <span className="text-[11px] text-amber-400 font-mono">
-                          ★ {paper.citationCount} Citations
+                          {typeof paper.citationCount === 'number'
+                            ? `★ ${paper.citationCount} Citations`
+                            : 'Citation count not indexed'}
                         </span>
                       </div>
                     </div>
 
                     <p className="text-xs text-slate-300 line-clamp-3 leading-relaxed">
-                      {paper.abstract}
+                      {paper.abstract || 'No abstract was supplied by this source index.'}
                     </p>
 
                     <div className="pt-2 border-t border-slate-700/50 flex flex-wrap items-center justify-between gap-2 text-xs">
                       <div className="flex items-center space-x-2">
-                        {paper.syllabusTags.map((tag, idx) => (
-                          <span key={idx} className="px-2 py-0.5 rounded text-[10px] bg-cyan-950/80 text-cyan-300 border border-cyan-800/50">
-                            🎓 {tag}
+                        {paper.syllabusTags.length > 0 && (
+                          <span className="text-[10px] text-slate-400">
+                            Indexed concepts: {paper.syllabusTags.join(', ')}
                           </span>
-                        ))}
+                        )}
                         {paper.doi && (
                           <span className="text-[11px] font-mono text-slate-400">
                             DOI: {paper.doi}
@@ -489,24 +503,13 @@ export const AcademicMCPDashboard: React.FC = () => {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
             <div className="space-y-1">
-              <label className="text-slate-400">Semantic Scholar API Key (Optional for High Throughput)</label>
-              <input
-                type="password"
-                value={config.semanticScholarApiKey || ''}
-                onChange={(e) => setConfig({ ...config, semanticScholarApiKey: e.target.value })}
-                placeholder="Enter Semantic Scholar API key"
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-slate-400">OpenAlex Polite User Agent Email</label>
-              <input
-                type="email"
-                value={config.openAlexEmail || ''}
-                onChange={(e) => setConfig({ ...config, openAlexEmail: e.target.value })}
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white"
-              />
+              <label className="text-slate-400">Research Depth Default</label>
+              <div className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white">
+                Adaptive
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Adaptive is persisted as the default research depth. Provider credentials are read only from server environment variables and are never returned to this dashboard.
+              </p>
             </div>
 
             <div className="space-y-1">
@@ -520,15 +523,16 @@ export const AcademicMCPDashboard: React.FC = () => {
             </div>
 
             <div className="space-y-1">
-              <label className="text-slate-400">Default Benchmark Syllabus Standard (Globally Adaptive)</label>
-              <input
-                type="text"
-                value={config.defaultCourseAlignment}
-                onChange={(e) => setConfig({ ...config, defaultCourseAlignment: e.target.value })}
-                placeholder="e.g., Global University Benchmark Syllabus (Adaptive)"
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white"
-              />
-              <p className="text-[11px] text-slate-500">Dynamically adapts course syllabi and scholarly references across accredited global academic standards (e.g., ABET, ACM/IEEE, ECTS, Global University Benchmarks).</p>
+              <label className="text-slate-400">Enabled Scholarly Providers</label>
+              <div className="text-slate-300">
+                {Object.entries(config.providersEnabled)
+                  .filter(([, enabled]) => enabled)
+                  .map(([provider]) => provider)
+                  .join(', ') || 'No scholarly providers enabled'}
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Academic papers and concept records support research; they are not treated as official course outlines or institutional approvals.
+              </p>
             </div>
           </div>
 
