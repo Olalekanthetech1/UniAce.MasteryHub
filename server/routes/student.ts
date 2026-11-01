@@ -609,8 +609,20 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
     const user = (req as any).user;
     const { courseId, paperId, paperTitle, missedQuestions } = req.body || {};
 
-    if (!Array.isArray(missedQuestions) || missedQuestions.length === 0) {
+    if (typeof courseId !== 'string' || !courseId.trim()) {
+      return res.status(400).json({ error: 'A real courseId is required to schedule missed questions.' });
+    }
+    if (!Array.isArray(missedQuestions)) {
+      return res.status(400).json({ error: 'missedQuestions must be an array from the recorded exam attempt.' });
+    }
+    if (missedQuestions.length === 0) {
       return res.json({ success: true, scheduledCount: 0, scheduledCards: [] });
+    }
+    if (missedQuestions.some((question: any) =>
+      !question || typeof question.question !== 'string' || !question.question.trim() ||
+      typeof question.correctAnswer !== 'string' || !question.correctAnswer.trim()
+    )) {
+      return res.status(400).json({ error: 'Every missed question must include its actual question text and correct answer.' });
     }
 
     const pool = getPostgresPool();
@@ -620,28 +632,35 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
     try {
       await client.query('BEGIN');
       const scheduledCards: any[] = [];
-      const effectiveCourseId = String(courseId || 'general').trim();
+      const effectiveCourseId = courseId.trim();
 
-      for (const q of missedQuestions) {
-        if (!q || !q.question) continue;
-        const rawQuestionId = String(q.id || crypto.createHash('md5').update(String(q.question)).digest('hex').slice(0, 10))
+      for (const question of missedQuestions) {
+        const rawQuestionId = String(question.id || crypto.createHash('sha256').update(question.question).digest('hex').slice(0, 16))
           .replace(/[^a-zA-Z0-9_-]/g, '_');
         const cardId = `exam_${effectiveCourseId}_${rawQuestionId}`;
         const rowId = `${user.uid}_${cardId}`;
-        const topicLabel = q.topic || paperTitle || `${effectiveCourseId} Past Examination`;
 
-        const cardDataPayload = {
-          front: String(q.question),
-          back: `**Correct Answer:** ${q.correctAnswer}\n\n${q.explanation ? `**Explanation:**\n${q.explanation}` : ''}`.trim(),
-          correctAnswer: String(q.correctAnswer || ''),
-          lastMissedAnswer: q.userAnswer ? String(q.userAnswer) : 'Unanswered',
-          explanation: String(q.explanation || ''),
-          topicTitle: topicLabel,
-          paperId: paperId || null,
-          paperTitle: paperTitle || null,
-          source: 'cbt_exam',
-          scheduledAt: new Date().toISOString()
+        const cardDataPayload: Record<string, any> = {
+          front: question.question,
+          correctAnswer: question.correctAnswer,
+          source: 'cbt_exam'
         };
+        if (typeof question.topic === 'string' && question.topic.trim()) {
+          cardDataPayload.topicTitle = question.topic.trim();
+        } else if (typeof paperTitle === 'string' && paperTitle.trim()) {
+          cardDataPayload.topicTitle = paperTitle.trim();
+        }
+        if (typeof question.explanation === 'string' && question.explanation.trim()) {
+          cardDataPayload.explanation = question.explanation.trim();
+          cardDataPayload.back = `**Correct Answer:** ${question.correctAnswer}\n\n**Explanation:**\n${question.explanation}`;
+        } else {
+          cardDataPayload.back = `**Correct Answer:** ${question.correctAnswer}`;
+        }
+        if (typeof question.userAnswer === 'string') {
+          cardDataPayload.lastMissedAnswer = question.userAnswer;
+        }
+        if (typeof paperId === 'string' && paperId.trim()) cardDataPayload.paperId = paperId.trim();
+        if (typeof paperTitle === 'string' && paperTitle.trim()) cardDataPayload.paperTitle = paperTitle.trim();
 
         const upsertRes = await client.query(
           `INSERT INTO user_spaced_repetition (id, uid, card_id, course_id, box, next_review_at, review_count, ease_factor, card_data, created_at, updated_at)
@@ -656,9 +675,10 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
           [rowId, user.uid, cardId, effectiveCourseId, JSON.stringify(cardDataPayload)]
         );
 
-        if (upsertRes.rows[0]) {
-          scheduledCards.push(upsertRes.rows[0]);
+        if (!upsertRes.rows[0]) {
+          throw new Error(`The missed question ${rawQuestionId} was not persisted to the spaced-repetition table.`);
         }
+        scheduledCards.push(upsertRes.rows[0]);
       }
 
       await client.query('COMMIT');
@@ -668,9 +688,13 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
         scheduledCards
       });
     } catch (err: any) {
-      await client.query('ROLLBACK').catch(() => {});
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError: any) {
+        logger.error({ uid: user.uid, error: rollbackError?.message || String(rollbackError) }, '[StudentRoutes] SRS batch rollback failed');
+      }
       logger.error({ uid: user.uid, err: err.message }, '[StudentRoutes] Failed to batch-schedule missed exam questions into SRS');
-      return res.status(500).json({ error: 'Failed to schedule missed questions into Spaced Repetition', details: err.message });
+      return res.status(503).json({ error: 'Missed questions could not be scheduled in the authoritative spaced-repetition database.' });
     } finally {
       client.release();
     }
