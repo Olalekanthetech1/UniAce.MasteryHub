@@ -226,7 +226,7 @@ export const InstructionalPracticeItemSchema = z.object({
   expectedApproach: z.string().min(10),
   expectedAnswer: z.string().min(1),
   explanation: z.string().min(10),
-  diagnosticSignals: z.array(z.string().min(1)).optional()
+  diagnosticSignals: z.array(z.string().min(1))
 });
 export type InstructionalPracticeItem = z.infer<typeof InstructionalPracticeItemSchema>;
 
@@ -238,7 +238,7 @@ export const InstructionalContentSchema = z.object({
     concept: z.string().min(1),
     whyNeeded: z.string().min(10),
     readinessCheck: z.string().min(5)
-  })).optional(),
+  })),
   conceptIntroduction: z.string().min(30),
   deepExplanation: z.string().min(80),
   formalDevelopment: z.string().min(40),
@@ -254,13 +254,13 @@ export const InstructionalContentSchema = z.object({
     context: z.string().min(1),
     conceptConnection: z.string().min(10),
     constraintsOrAssumptions: z.string().min(5)
-  })).optional(),
+  })),
   applicationRationale: z.string().min(10),
   misconceptions: z.array(z.object({
     misconception: z.string().min(5),
     whyItIsWrong: z.string().min(10),
     correction: z.string().min(10)
-  })).optional(),
+  })),
   misconceptionRationale: z.string().min(10),
   guidedPractice: z.array(InstructionalPracticeItemSchema).min(1),
   independentPractice: z.array(InstructionalPracticeItemSchema).min(1),
@@ -269,7 +269,7 @@ export const InstructionalContentSchema = z.object({
     responseMode: z.enum(['explain', 'calculate', 'compare', 'interpret', 'construct', 'multiple-choice']),
     expectedReasoning: z.string().min(10),
     answerOrRubric: z.string().min(10),
-    misconceptionSignals: z.array(z.string().min(1)).optional(),
+    misconceptionSignals: z.array(z.string().min(1)),
     difficulty: z.number().int().min(1).max(5),
     learningOutcome: z.string().optional()
   })).min(2),
