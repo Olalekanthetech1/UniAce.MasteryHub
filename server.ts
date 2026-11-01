@@ -8510,7 +8510,7 @@ app.post('/api/skill-session/generate', verifyAuth, async (req, res) => {
     ].filter(Boolean).join('\n\n');
 
     const systemInstruction = `You are the UniAce Interactive Skill Mastery Architect.
-Build a dynamically sized pool of ${dynamicInitialBatchCount} to ${dynamicInitialBatchCount + 2} 100% NEW, UNREPEATED interactive skill exercises for "${skillTitle}" in ${courseId}.
+Build a dynamically sized pool of ${dynamicInitialBatchCount} to ${dynamicInitialBatchCount + 2} 100% NEW, UNREPEATED interactive skill exercises for "${liveSkillTitle}" in ${courseId}.
 Output strictly valid raw JSON starting with { and ending with }.${latexInstruction}
 
 DYNAMIC EXERCISE POOL REQUIREMENTS (${dynamicInitialBatchCount} TO ${dynamicInitialBatchCount + 2} ITEMS):
@@ -8765,7 +8765,7 @@ app.post('/api/skill-session/next-exercise', verifyAuth, async (req, res) => {
       : poolTypes[Math.floor(Math.random() * poolTypes.length)];
 
     const systemInstruction = `You are the UniAce Interactive Skill Mastery Generator.
-Generate EXACTLY 1 brand-new, unrepeated interactive exercise for "${skillTitle}" grounded in the lesson content.
+Generate EXACTLY 1 brand-new, unrepeated interactive exercise for "${liveSkillTitle}" grounded in the lesson content.
 Selected format: "${chosenType}".
 Output strictly valid raw JSON starting with { and ending with }.
 ${latexInstruction}
