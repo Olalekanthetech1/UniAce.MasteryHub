@@ -17,9 +17,9 @@ export default function CourseCreateModal({ onClose, onSave }: CourseCreateModal
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [department, setDepartment] = useState<Department | ''>('');
-  const [level, setLevel] = useState<Level>('100');
-  const [semester, setSemester] = useState<Semester>('1st Semester');
-  const [scope, setScope] = useState<CourseScope>('GLOBAL');
+  const [level, setLevel] = useState<Level | ''>('');
+  const [semester, setSemester] = useState<Semester | ''>('');
+  const [scope, setScope] = useState<CourseScope | ''>('');
   const [academicStandard, setAcademicStandard] = useState<string>('Globally Adaptive (Universal University Standard)');
   const [customStandard, setCustomStandard] = useState<string>('');
   const [faculties, setFaculties] = useState<string[]>([]);
@@ -29,8 +29,8 @@ export default function CourseCreateModal({ onClose, onSave }: CourseCreateModal
 
   const handleSave = async () => {
     const sanitizedId = id.replace(/\s+/g, '').toUpperCase();
-    if (!sanitizedId || !title || !department) {
-      alert("Please provide Course ID, Title, and select a Department.");
+    if (!sanitizedId || !title || !department || !level || !semester || !scope) {
+      alert("Please provide Course ID, Title, Department, Level, Semester, and Scope.");
       return;
     }
     setIsSaving(true);
@@ -148,6 +148,7 @@ export default function CourseCreateModal({ onClose, onSave }: CourseCreateModal
                 onChange={(e) => setLevel(e.target.value as Level)}
                 className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white"
               >
+                <option value="">-- Select Level --</option>
                 {LEVELS.map(l => <option key={l} value={l}>{l}</option>)}
               </select>
             </div>
@@ -158,6 +159,7 @@ export default function CourseCreateModal({ onClose, onSave }: CourseCreateModal
                 onChange={(e) => setSemester(e.target.value as Semester)}
                 className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white"
               >
+                <option value="">-- Select Semester --</option>
                 {SEMESTERS.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
@@ -168,6 +170,7 @@ export default function CourseCreateModal({ onClose, onSave }: CourseCreateModal
                 onChange={(e) => setScope(e.target.value as CourseScope)}
                 className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white"
               >
+                <option value="">-- Select Scope --</option>
                 <option value="GLOBAL">Global</option>
                 <option value="FACULTY">Faculty</option>
                 <option value="DEPARTMENT">Department</option>
