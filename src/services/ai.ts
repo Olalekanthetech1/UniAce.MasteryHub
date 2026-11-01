@@ -64,6 +64,9 @@ export const callAI = async (prompt: any, systemInstruction?: string, responseFo
       }
 
       const data = await response.json();
+      if (typeof data?.text !== 'string' || !data.text.trim()) {
+        throw new Error('AI service returned no generated content.');
+      }
       return { text: data.text, meta: data.meta };
     } catch (err: any) {
       lastErr = err;
@@ -81,7 +84,9 @@ export const callAI = async (prompt: any, systemInstruction?: string, responseFo
 };
 
 const extractJSON = (text: string) => {
-  if (!text) return {};
+  if (typeof text !== 'string' || !text.trim()) {
+    throw new Error('Cannot parse an empty AI response.');
+  }
   
   // 1. Remove markdown code blocks if present
   let cleaned = text.replace(/```(?:json)?\s*([\s\S]*?)\s*```/g, '$1').trim();
@@ -347,7 +352,7 @@ SECURITY RULES:
 
     // All AI queries route through the backend server to prevent API key exposure and manage billing
     const response = await callAI({ parts }, systemInstruction, undefined, undefined, 'standard', 'chat', fastMode ? 'groq' : undefined);
-    const modelText = response.text || "I'm sorry, I couldn't process that.";
+    const modelText = response.text;
     
     // Sanitize LaTeX for better rendering
     const sanitizedText = sanitizeLatex(modelText);
@@ -390,14 +395,14 @@ Student Profile:
       prompt = `
 CURRENT STUDY TOPIC: ${subTopic.title}
 MODULE: ${module.title}
-STUDENT LEVEL: ${level || 'University Level'}
-DEPARTMENT: ${department || 'General Academic'}
+STUDENT LEVEL: ${level?.trim() || 'not supplied; do not infer'}
+DEPARTMENT: ${department?.trim() || 'not supplied; do not infer'}
 CONTENT CONTEXT: ${truncatedContent}
 ${profileStr}
 
 The student is currently studying the topic above. You are their proactive AI tutor.
 STRICTLY write a short, engaging check-in message that is exactly 2-3 sentences long.
-CRITICAL: Calibrate the tone and complexity to the student's level (${level || 'University Level'}).
+CRITICAL: Calibrate the tone and complexity to the student's level (${level?.trim() || 'not supplied; do not infer'}).
 CRITICAL: Your message MUST be about the CURRENT STUDY TOPIC (${subTopic.title}). 
 CRITICAL: You MUST acknowledge the topic in your VERY FIRST sentence. For example: "Hey! I see you're diving into ${subTopic.title}—how's it going?" or "Ready to master ${subTopic.title}? I'm here if you need a hand!"
 STRICT NEGATIVE CONSTRAINT: Do NOT provide any explanation, summary, or facts about the topic. Do NOT teach. Do NOT include LaTeX formulas.
@@ -411,13 +416,13 @@ Use emojis. Format using Markdown.
       prompt = `
 Topic: ${subTopic.title}
 Module: ${module.title}
-Student Level: ${level || 'University Level'}
-Department: ${department || 'General Academic'}
+Student Level: ${level?.trim() || 'not supplied; do not infer'}
+Department: ${department?.trim() || 'not supplied; do not infer'}
 Content Context: ${truncatedContent}
 
 The student has been reading this for a while and might be stuck. 
 Explain this concept AS SIMPLY AS POSSIBLE. 
-CRITICAL: Calibrate the explanation to the student's level (${level || 'University Level'}).
+CRITICAL: Calibrate the explanation to the student's level (${level?.trim() || 'not supplied; do not infer'}).
 CRITICAL: You MUST acknowledge the topic in your VERY FIRST sentence.
 - THE "WHY" BEFORE THE "HOW": Introduce this concept by explaining why understanding it is essential for professionals in the field, establishing practical importance first.
 - Use a real-world analogy.
@@ -429,13 +434,13 @@ Format the output beautifully using Markdown and LaTeX for math.
       prompt = `
 Topic: ${subTopic.title}
 Module: ${module.title}
-Student Level: ${level || 'University Level'}
-Department: ${department || 'General Academic'}
+Student Level: ${level?.trim() || 'not supplied; do not infer'}
+Department: ${department?.trim() || 'not supplied; do not infer'}
 Content Context: ${truncatedContent}
 
 The student wants a quick practice check.
 Generate a quick 3-question multiple-choice practice quiz to test understanding of this concept.
-CRITICAL: Calibrate the difficulty to the student's level (${level || 'University Level'}).
+CRITICAL: Calibrate the difficulty to the student's level (${level?.trim() || 'not supplied; do not infer'}).
 - Provide the 3 questions first.
 - Provide the answer key and brief explanations at the very end.
 Format the output beautifully using Markdown and LaTeX for math.
@@ -444,8 +449,8 @@ Format the output beautifully using Markdown and LaTeX for math.
       prompt = `
 Topic: ${subTopic.title}
 Module: ${module.title}
-Student Level: ${level || 'University Level'}
-Department: ${department || 'General Academic'}
+Student Level: ${level?.trim() || 'not supplied; do not infer'}
+Department: ${department?.trim() || 'not supplied; do not infer'}
 Difficulty: ${difficulty}
 Content Context: ${truncatedContent}
 
@@ -457,7 +462,7 @@ Generate a structured mini-lesson following this exact format:
 - 1 worked example showing step-by-step execution.
 - 2 practice questions for the student to solve.
 
-CRITICAL: Calibrate the depth and complexity to the student's level (${level || 'University Level'}).
+CRITICAL: Calibrate the depth and complexity to the student's level (${level?.trim() || 'not supplied; do not infer'}).
 CRITICAL: You MUST acknowledge the topic in your VERY FIRST sentence.
 CRITICAL: Ensure Markdown tables are valid and not compressed into single lines.
 Format the output beautifully using Markdown and LaTeX for math.
@@ -472,8 +477,8 @@ You are part of the UniAce app. NEVER recommend external websites, third-party p
 [CURRENT STUDY CONTEXT]
 Topic: ${subTopic.title}
 Module: ${module.title}
-Level: ${level || 'University Level'}
-Department: ${department || 'General Academic'}
+Level: ${level?.trim() || 'not supplied; do not infer'}
+Department: ${department?.trim() || 'not supplied; do not infer'}
 Student Name: ${studentName || 'Student'}
 
 CRITICAL: Use the student's actual name provided above. NEVER use placeholders like "[Student Name]" or "[Name]". If the name is unknown, just say "Student" or "there".
@@ -828,7 +833,7 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
 
     try {
       const response = await callAI(prompt, undefined, 'json', 1500, 'standard', 'quiz-eval');
-      const data = extractJSON(response.text || "{}");
+      const data = extractJSON(response.text);
       const validated = safeParseAIResponse(EvaluateWrittenAnswerSchema, data);
       return validated;
     } catch (e) {
@@ -840,11 +845,11 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
   generateQuickCheck: async (subTopic: SubTopic, level?: string, department?: string): Promise<QuizQuestion> => {
     const prompt = `INSTRUCTIONS:
     Generate a single, high-quality multiple-choice "Quick Check" question for the provided subtopic.
-    Student Level: ${level || 'University Level'}
-    Department: ${department || 'General Academic'}
+    Student Level: ${level?.trim() || 'not supplied; do not infer'}
+    Department: ${department?.trim() || 'not supplied; do not infer'}
     
     The question should test a key concept from the content. 
-    CRITICAL: Calibrate the difficulty and complexity to the student's level (${level || 'University Level'}).
+    CRITICAL: Calibrate the difficulty and complexity to the student's level (${level?.trim() || 'not supplied; do not infer'}).
     LATEX SQUARE ROOTS: You MUST use \\\\sqrt{...} for all square roots. NEVER use the Unicode symbol √.
     Provide 4 options, the correct answer, and a short, helpful explanation.
     Return the response as a VALID JSON object.
@@ -902,10 +907,10 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
   generateFlashcards: async (module: Module, subTopic?: SubTopic, numCards: number = 10, level?: string, department?: string): Promise<Flashcard[]> => {
     const prompt = `INSTRUCTIONS:
     Generate ${numCards} spaced-repetition flashcards for ${subTopic ? 'the specific subtopic' : 'the entire module'}.
-    Student Level: ${level || 'University Level'}
-    Department: ${department || 'General Academic'}
+    Student Level: ${level?.trim() || 'not supplied; do not infer'}
+    Department: ${department?.trim() || 'not supplied; do not infer'}
     Create high-quality flashcards suitable for university-level learning.
-    CRITICAL: Calibrate the depth and complexity to the student's level (${level || 'University Level'}).
+    CRITICAL: Calibrate the depth and complexity to the student's level (${level?.trim() || 'not supplied; do not infer'}).
     The "front" should be a clear, concise question, concept name, or formula prompt.
     The "back" should be the precise answer, definition, or formula.
     Use LaTeX formatting for mathematical expressions. 
@@ -1057,7 +1062,7 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
 
     const response = await callAI(prompt, undefined, 'json', undefined, 'standard', 'recommendation');
     try {
-      const rawData = extractJSON(response.text || "null");
+      const rawData = extractJSON(response.text);
       return safeParseAIResponse(RecommendationSchema, rawData);
     } catch (e) {
       console.error("Smart recommendation error:", e);
@@ -1122,7 +1127,7 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
 
     const response = await callAI(prompt, undefined, 'json', undefined, 'standard', 'recommendation');
     try {
-      const rawData = extractJSON(response.text || "null");
+      const rawData = extractJSON(response.text);
       return safeParseAIResponse(ExamReadinessSchema, rawData);
     } catch (e) {
       console.error("Exam readiness prediction error:", e);
@@ -1213,7 +1218,7 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
 
     const response = await callAI(prompt, undefined, 'json', undefined, 'standard', 'recommendation');
     try {
-      const rawData = extractJSON(response.text || "null");
+      const rawData = extractJSON(response.text);
       return safeParseAIResponse(StudyPlanSchema, rawData);
     } catch (e) {
       console.error("Study plan generation error:", e);
@@ -1237,7 +1242,7 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
     }`;
     const response = await callAI(prompt, undefined, 'json', undefined, 'standard', 'recommendation');
     try {
-      const rawData = extractJSON(response.text || "null");
+      const rawData = extractJSON(response.text);
       return safeParseAIResponse(BoosterLessonSchema, rawData);
     } catch (e) {
       console.error("Booster lesson generation error:", e);
