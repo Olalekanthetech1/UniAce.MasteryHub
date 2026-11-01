@@ -82,13 +82,45 @@ export interface AcademicConfig {
   cacheTtlHours: number;
   semanticScholarApiKey?: string;
   openAlexEmail?: string;
+  researchDepth: 'adaptive';
+  adaptiveMaxQueries: number;
+  minimumUsefulSources: number;
+  tavilyApiKeyConfigured: boolean;
+  semanticScholarApiKeyConfigured: boolean;
   arxivMaxResults: number;
   defaultCourseAlignment: string; // e.g. "Global University Benchmark Syllabus (Adaptive)"
   providersEnabled: {
     arxiv: boolean;
     semanticScholar: boolean;
     openAlex: boolean;
+    tavily: boolean;
   };
+}
+
+export interface AcademicWebSourceSearchResponse {
+  query: string;
+  researchDepth: 'adaptive';
+  status: 'results_found' | 'no_results';
+  escalated: boolean;
+  stages: Array<{
+    searchDepth: 'basic' | 'advanced';
+    resultCount: number;
+    usefulSourceCount: number;
+    creditsUsed: number | null;
+    responseTimeSeconds: number | null;
+  }>;
+  sources: Array<{
+    title: string;
+    url: string;
+    content: string;
+    rawContent?: string;
+    score: number;
+    publishedDate?: string | null;
+    sourceClass: 'institutional_domain_candidate' | 'publisher_or_repository_candidate' | 'general_web_candidate';
+    verificationStatus: 'unverified';
+  }>;
+  creditsUsed: number | null;
+  disclaimer: string;
 }
 
 export interface AcademicSearchResponse {
