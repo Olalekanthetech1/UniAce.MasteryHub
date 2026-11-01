@@ -57,7 +57,7 @@ export async function fetchFromArxiv(query: string, limit: number = 5): Promise<
 
     // Extract PDF link
     const pdfMatch = entryXml.match(/<link[^>]+title="pdf"[^>]+href="([^"]+)"/i) || entryXml.match(/<link[^>]+href="([^"]+pdf)"/i);
-    const pdfUrl = pdfMatch ? pdfMatch[1] : `https://arxiv.org/pdf/${arxivId}.pdf`;
+    const pdfUrl = pdfMatch ? pdfMatch[1] : null;
 
     // Extract DOI if present
     const doiMatch = entryXml.match(/<arxiv:doi[^>]*>([\s\S]*?)<\/arxiv:doi>/i) || entryXml.match(/10\.\d{4,9}\/[-._;()/:A-Za-z0-9]+/);
