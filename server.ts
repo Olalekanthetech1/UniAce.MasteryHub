@@ -106,7 +106,7 @@ import { ensureCourseReviewSchema } from './server/services/courseReviewSchema.j
 // --- ADMIN AUTHORIZATION UTILITY ---
 export function isAdminEmail(email: string | undefined | null): boolean {
   if (!email) return false;
-  const adminEmails = (process.env.ADMIN_EMAILS || 'olalekan4565@gmail.com').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+  const adminEmails = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
   return adminEmails.includes(email.toLowerCase());
 }
 
@@ -166,6 +166,14 @@ import {
 } from './server/sparkRollups';
 import { probeNeonConnection } from './server/postgresPool';
 import { courseRepository } from './server/repositories/courseRepository';
+import {
+  evaluateStudentCourseAccess,
+  getLiveCourseAccessRecord,
+  getLiveCourseAccessUser,
+  getLiveInstitutionAccessConfig,
+  getLivePublishedCourseAccessRecords,
+  normalizeCourseTargetValue
+} from './server/services/courseAccess';
 import { catalogCache } from './server/cache/catalogCache';
 import { progressRepository } from './server/repositories/progressRepository';
 import { JobRepository } from './server/repositories/jobRepository';
@@ -1071,41 +1079,132 @@ app.get('/api/health', async (req, res) => {
 });
 
 
-// --- Optional Auth Middleware for Public Read Routes ---
-async function optionalAuth(req: any, res: any, next: any) {
-  if (req.user) return next();
-  const token = req.headers.authorization?.split('Bearer ')[1]?.trim();
-  if (!token || token === 'undefined' || token === 'null') {
-    return next();
+// Course access is derived from the authenticated UID, the live Neon user record,
+// and the current institution registry. Request query/body fields never grant access.
+async function loadCourseAccessContext(uid: string, email?: string) {
+  const configuredAdminUids = new Set(
+    (process.env.ADMIN_UIDS_OVERRIDE || '').split(',').map(value => value.trim()).filter(Boolean)
+  );
+  const configuredAdmin = configuredAdminUids.has(uid) || isAdminEmail(email);
+  const account = configuredAdmin ? null : await getLiveCourseAccessUser(uid);
+  const isAdmin = configuredAdmin || account?.role === 'admin';
+
+  if (isAdmin) {
+    return { isAdmin: true, account, institution: null };
   }
-  try {
-    const app = getAdminApp();
-    if (app) {
-      const decodedToken = await app.auth().verifyIdToken(token);
-      req.user = decodedToken;
-    }
-  } catch {
-    // Non-blocking for public catalog reads
+  if (!account) {
+    return { isAdmin: false, account: null, institution: null };
   }
-  next();
+
+  const institution = await getLiveInstitutionAccessConfig();
+  return { isAdmin: false, account, institution };
 }
 
-// --- Phase 1 Catalog Read Cutover Endpoints ---
-app.get('/api/catalog/full', optionalAuth, async (req: any, res: any) => {
-  const t0 = Date.now();
-  try {
-    const { courses, etag, maxUpdatedAt } = await courseRepository.getFullCatalogWithSyllabus();
+async function resolveCourseAccessForUser(uid: string, email: string | undefined, courseId: string) {
+  const course = await getLiveCourseAccessRecord(courseId);
+  if (!course) return { allowed: false, statusCode: 404, reason: 'course_not_found' as const, course: null };
 
-    res.set('Cache-Control', 'private, max-age=60');
+  const context = await loadCourseAccessContext(uid, email);
+  if (context.isAdmin) {
+    return { allowed: true, statusCode: 200, reason: 'admin' as const, course };
+  }
+  if (!context.account) {
+    return { allowed: false, statusCode: 403, reason: 'student_profile_unavailable' as const, course };
+  }
+  if (course.status !== 'published') {
+    return { allowed: false, statusCode: 404, reason: 'course_not_found' as const, course };
+  }
+
+  const decision = evaluateStudentCourseAccess(
+    course,
+    context.account.learning_profile,
+    context.institution!
+  );
+  return {
+    allowed: decision.allowed,
+    statusCode: decision.allowed ? 200 : 403,
+    reason: decision.reason,
+    course
+  };
+}
+
+async function requireCourseAccess(req: any, res: any, next: any) {
+  const uid = req.user?.uid;
+  if (!uid) return res.status(401).json({ error: 'Authenticated student session required.' });
+
+  try {
+    const decision = await resolveCourseAccessForUser(uid, req.user?.email, req.params.courseId);
+    if (!decision.allowed) {
+      if (decision.statusCode === 404) return res.status(404).json({ error: 'Course not found.' });
+      return res.status(decision.statusCode).json({
+        error: decision.reason === 'student_profile_unavailable'
+          ? 'An authoritative student academic profile is required before course access can be granted.'
+          : 'This course is not available to the authenticated academic profile.'
+      });
+    }
+    req.courseAccessRecord = decision.course;
+    return next();
+  } catch (error: any) {
+    const statusCode = error?.message?.includes('unavailable') || error?.message?.includes('configuration')
+      ? 503
+      : 500;
+    logger.error({
+      error: error?.message || String(error),
+      uid,
+      courseId: req.params.courseId
+    }, '[Course access] Authorization could not be resolved from live sources');
+    return res.status(statusCode).json({
+      error: statusCode === 503
+        ? 'Course access is temporarily unavailable because an authoritative data source could not be verified.'
+        : 'Course access could not be verified.'
+    });
+  }
+}
+
+// --- Authenticated, server-filtered course catalog endpoints ---
+app.get('/api/catalog/full', verifyAuth, async (req: any, res: any) => {
+  const t0 = Date.now();
+  const uid = req.user?.uid;
+  if (!uid) return res.status(401).json({ error: 'Authenticated student session required.' });
+
+  try {
+    const accessContext = await loadCourseAccessContext(uid, req.user?.email);
+    if (!accessContext.isAdmin && !accessContext.account) {
+      return res.status(403).json({ error: 'An authoritative student academic profile is required before course access can be granted.' });
+    }
+
+    const { courses: catalogCourses, maxUpdatedAt } = await courseRepository.getFullCatalogWithSyllabus(true);
+    let courses = catalogCourses;
+    if (!accessContext.isAdmin) {
+      const liveAccessRecords = await getLivePublishedCourseAccessRecords();
+      const eligibleIds = new Set(
+        liveAccessRecords
+          .filter(record => evaluateStudentCourseAccess(
+            record,
+            accessContext.account!.learning_profile,
+            accessContext.institution!
+          ).allowed)
+          .map(record => record.id)
+      );
+      courses = catalogCourses.filter(course => eligibleIds.has(course.id));
+    }
+
+    const etag = `W/"${crypto.createHash('sha256').update(JSON.stringify(courses)).digest('hex').substring(0, 16)}"`;
+    res.set('Cache-Control', 'private, no-store');
+    res.set('Vary', 'Authorization');
     res.set('ETag', etag);
-    res.set('X-Catalog-Updated-At', maxUpdatedAt);
+    if (maxUpdatedAt) res.set('X-Catalog-Updated-At', maxUpdatedAt);
 
     const ifNoneMatch = req.get('If-None-Match');
     if (ifNoneMatch && ifNoneMatch === etag) {
       return res.status(304).end();
     }
 
-    const rawBuffer = Buffer.from(JSON.stringify({ courses, total: courses.length, latencyMs: Date.now() - t0 }));
+    const rawBuffer = Buffer.from(JSON.stringify({
+      courses,
+      total: courses.length,
+      latencyMs: Date.now() - t0
+    }));
     const acceptEncoding = req.get('Accept-Encoding') || '';
 
     if (acceptEncoding.includes('gzip')) {
@@ -1116,57 +1215,81 @@ app.get('/api/catalog/full', optionalAuth, async (req: any, res: any) => {
     }
 
     res.set('Content-Type', 'application/json');
-    res.send(rawBuffer);
+    return res.send(rawBuffer);
   } catch (err: any) {
-    logger.error({ err: err.message }, '[GET /api/catalog/full] Failed to fetch full catalog');
-    const statusCode = (err.message?.includes('Database service unavailable') || err.message?.includes('unreachable')) ? 503 : 500;
-    res.status(statusCode).json({ error: 'Failed to retrieve full catalog', message: err.message });
+    logger.error({ err: err.message, uid }, '[GET /api/catalog/full] Failed to fetch authorized catalog');
+    const statusCode = (err.message?.includes('Database service unavailable') ||
+      err.message?.includes('unavailable') || err.message?.includes('configuration') ||
+      err.message?.includes('unreachable')) ? 503 : 500;
+    return res.status(statusCode).json({
+      error: statusCode === 503
+        ? 'Course catalog access is temporarily unavailable because an authoritative data source could not be verified.'
+        : 'Failed to retrieve authorized course catalog.'
+    });
   }
 });
 
-/**
- * Draft/in-review course content is never served through public read routes.
- * Published courses remain publicly readable; non-published courses require
- * an authenticated administrator for course, module, lesson and formula reads.
- */
-async function requirePublishedCourseOrAdmin(req: any, res: any, next: any) {
-  try {
-    const course = await courseRepository.getCourseById(req.params.courseId);
-    if (!course) return res.status(404).json({ error: 'Course not found' });
-    if (course.status === 'published') return next();
-    return verifyAdmin(req, res, next);
-  } catch (error: any) {
-    const statusCode = error?.message?.includes('Database service unavailable') ? 503 : 500;
-    logger.error({ error: error?.message || String(error), courseId: req.params.courseId }, '[Course visibility] Failed');
-    return res.status(statusCode).json({ error: 'Could not verify course publication status' });
-  }
-}
-
-app.get('/api/courses', async (req, res) => {
+app.get('/api/courses', verifyAuth, async (req: any, res: any) => {
   const t0 = Date.now();
+  const uid = req.user?.uid;
+  if (!uid) return res.status(401).json({ error: 'Authenticated student session required.' });
+
   try {
-    const { department, level, status, limit } = req.query;
-    const courses = await courseRepository.listPublishedCourses({
-      department: typeof department === 'string' ? department : undefined,
-      level: typeof level === 'string' ? level : undefined,
-      status: typeof status === 'string' ? (status as any) : undefined,
-      limit: typeof limit === 'string' ? parseInt(limit, 10) : undefined
-    });
+    const accessContext = await loadCourseAccessContext(uid, req.user?.email);
+    if (!accessContext.isAdmin && !accessContext.account) {
+      return res.status(403).json({ error: 'An authoritative student academic profile is required before course access can be granted.' });
+    }
+
+    // The status query parameter is intentionally ignored. Student routes only return
+    // published records; a client cannot request drafts or in-review content.
+    const allPublishedCourses = await courseRepository.listPublishedCourses({ status: 'published' }, true);
+    let courses = allPublishedCourses;
+    if (!accessContext.isAdmin) {
+      const liveAccessRecords = await getLivePublishedCourseAccessRecords();
+      const eligibleIds = new Set(
+        liveAccessRecords
+          .filter(record => evaluateStudentCourseAccess(
+            record,
+            accessContext.account!.learning_profile,
+            accessContext.institution!
+          ).allowed)
+          .map(record => record.id)
+      );
+      courses = allPublishedCourses.filter(course => eligibleIds.has(course.id));
+    }
+
+    if (typeof req.query.level === 'string') {
+      const requestedLevel = normalizeCourseTargetValue(req.query.level);
+      courses = courses.filter(course => normalizeCourseTargetValue(course.level) === requestedLevel);
+    }
+    const requestedLimit = typeof req.query.limit === 'string' ? Number(req.query.limit) : null;
+    if (requestedLimit !== null && Number.isInteger(requestedLimit) && requestedLimit > 0) {
+      courses = courses.slice(0, requestedLimit);
+    }
+
+    res.set('Cache-Control', 'private, no-store');
+    res.set('Vary', 'Authorization');
     const latencyMs = Date.now() - t0;
-    res.json({
+    return res.json({
       courses,
       total: courses.length,
       flags: getFeatureFlags(),
       latencyMs
     });
   } catch (err: any) {
-    logger.error({ err: err.message }, '[GET /api/courses] Failed to fetch courses');
-    const statusCode = (err.message?.includes('Database service unavailable') || err.message?.includes('unreachable')) ? 503 : 500;
-    res.status(statusCode).json({ error: 'Failed to retrieve course catalog', message: err.message });
+    logger.error({ err: err.message, uid }, '[GET /api/courses] Failed to fetch authorized courses');
+    const statusCode = (err.message?.includes('Database service unavailable') ||
+      err.message?.includes('unavailable') || err.message?.includes('configuration') ||
+      err.message?.includes('unreachable')) ? 503 : 500;
+    return res.status(statusCode).json({
+      error: statusCode === 503
+        ? 'Course catalog access is temporarily unavailable because an authoritative data source could not be verified.'
+        : 'Failed to retrieve authorized course catalog.'
+    });
   }
 });
 
-app.get('/api/courses/:courseId', optionalAuth, requirePublishedCourseOrAdmin, async (req, res) => {
+app.get('/api/courses/:courseId', verifyAuth, requireCourseAccess, async (req, res) => {
   const t0 = Date.now();
   try {
     const { courseId } = req.params;
@@ -2497,20 +2620,6 @@ async function verifyAuth(req: express.Request, res: express.Response, next: exp
   
   const token = req.headers.authorization?.split('Bearer ')[1]?.trim();
   
-  // INTERNAL_TEST_KEY is strictly disabled in production
-  const testKey = process.env.INTERNAL_TEST_KEY;
-  if (
-    process.env.NODE_ENV !== 'production' &&
-    typeof testKey === 'string' &&
-    testKey.trim().length > 0 &&
-    typeof token === 'string' &&
-    token.trim().length > 0 &&
-    token === testKey
-  ) {
-    (req as any).user = { uid: 'jVPFtUUm1NM8yyabSRhnc8qRMNG3', email: 'olalekan4565@gmail.com', role: 'admin' };
-    return next();
-  }
-
   if (!token || token === 'undefined' || token === 'null') {
     return res.status(401).json({ error: 'Unauthorized: No token provided' });
   }
@@ -6179,7 +6288,7 @@ async function resumeInterruptedCourseJobs(_db: admin.firestore.Firestore | null
   }
 }
 
-app.get('/api/courses/:courseId/health', async (req, res) => {
+app.get('/api/courses/:courseId/health', verifyAdmin, async (req, res) => {
   const { courseId } = req.params;
   try {
     const audit = await auditCourseHealthInPostgres(courseId);
@@ -7543,6 +7652,23 @@ app.post('/api/formulas/search', verifyAuth, async (req, res) => {
   try {
     const { query, courseId } = req.body;
     if (!query) return res.status(400).json({ error: 'Query is required' });
+    if (courseId !== undefined && (typeof courseId !== 'string' || !courseId.trim())) {
+      return res.status(400).json({ error: 'courseId must be a non-empty string when supplied.' });
+    }
+    if (typeof courseId === 'string') {
+      const access = await resolveCourseAccessForUser(
+        (req as any).user.uid,
+        (req as any).user.email,
+        courseId
+      );
+      if (!access.allowed) {
+        return res.status(access.statusCode).json({
+          error: access.statusCode === 404
+            ? 'Course not found.'
+            : 'Formula context is not available to the authenticated academic profile.'
+        });
+      }
+    }
 
     const systemInstruction = `You are the UniAce Formula Expert, a high-performance academic assistant. 
     Your task is to find or generate a list of 3-5 highly related mathematical or scientific formulas based on the student's query.
@@ -9446,6 +9572,15 @@ app.post('/api/user/enroll-course', verifyAuth, async (req, res) => {
   }
 
   try {
+    const access = await resolveCourseAccessForUser(uid, (req as any).user?.email, courseId);
+    if (!access.allowed) {
+      return res.status(access.statusCode).json({
+        error: access.statusCode === 404
+          ? 'Course not found.'
+          : 'Enrollment is unavailable because this course is not assigned to the authenticated academic profile.'
+      });
+    }
+
     await pool.query(
       `INSERT INTO user_course_progress (id, uid, course_id, total_study_seconds, completed_lessons_count, completed_modules_count, version, updated_at)
        VALUES ($1, $2, $3, 0, 0, 0, 1, NOW())
