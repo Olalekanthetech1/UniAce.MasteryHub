@@ -8460,19 +8460,7 @@ app.post('/api/formulas/search', verifyAuth, async (req, res) => {
     
     Ensure they are relevant to a standard university syllabus.`;
 
-    // Dynamic Task Routing for Formulas from Neon PostgreSQL
-    let routingConfig: any = { formulas: 'cohere' };
-    try {
-      const routingDoc = await getSystemConfigDoc('routing');
-      if (routingDoc) {
-        routingConfig = routingDoc;
-      }
-    } catch (err) {
-      console.warn("Failed to fetch routing config for formula search:", err);
-    }
-
-    const preferredProviderName = req.body.preferredProvider || routingConfig.formulas || 'cohere';
-    
+    const routingConfig = await requireLiveRoutingConfig();
     const providerMap: Record<string, any> = {
       gemini_direct: globalGeminiDirectBreaker || globalGeminiDirectProvider,
       mistral_direct: globalMistralDirectBreaker || globalMistralDirectProvider,
@@ -8482,20 +8470,13 @@ app.post('/api/formulas/search', verifyAuth, async (req, res) => {
       openrouter_free: globalOpenRouterFreeBreaker || globalOpenRouterFreeProvider,
       nvidia: globalNvidiaBreaker || globalNvidiaProvider
     };
-
-    const providers = [];
-    if (providerMap[preferredProviderName]) {
-      providers.push(providerMap[preferredProviderName]);
-    }
-    
-    // Dynamically add all other available providers
-    const dynamicFallbacks = Object.keys(providerMap).filter(p => p !== preferredProviderName);
-    dynamicFallbacks.sort(() => Math.random() - 0.5); // Randomize to distribute load dynamically
-    for (const fallback of dynamicFallbacks) {
-      if (providerMap[fallback]) {
-        providers.push(providerMap[fallback]);
-      }
-    }
+    const providerNames = resolveLiveProviderQueue(
+      routingConfig,
+      'formulas',
+      providerMap,
+      req.body.preferredProvider
+    );
+    const providers = providerNames.map(name => providerMap[name]).filter(Boolean);
 
     let aiResponse;
     let lastError;
