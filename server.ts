@@ -5179,18 +5179,23 @@ app.post('/api/ai/generate-image', verifyAuth, async (req, res) => {
     
     if (!apiKey) throw new Error('NVIDIA API key not configured on server');
 
-    let routingConfig: any = {};
-    try {
-      routingConfig = (await getSystemConfigDoc('routing')) || {};
-    } catch (e) {
-      console.warn("Failed to fetch routing config for image gen:", e);
+    const routingConfig = await requireLiveRoutingConfig();
+    const primaryModel = routingConfig.nvidia_image_model;
+    const fallbackModel = routingConfig.nvidia_image_fallback_model;
+    if (typeof primaryModel !== 'string' || !primaryModel.trim()) {
+      return res.status(503).json({ error: 'No image-generation model is configured in live AI routing.' });
+    }
+    if (fallbackModel !== undefined && (typeof fallbackModel !== 'string' || !fallbackModel.trim())) {
+      throw new Error('Live image-generation fallback model configuration is invalid.');
     }
 
-    const isComplex = complexity === 'high' || prompt.length > 100;
-    const configuredModel = routingConfig.nvidia_image_model || 'black-forest-labs/flux.1-dev';
-    const primaryModel = configuredModel;
-    const fallbackModel = primaryModel === 'black-forest-labs/flux.1-dev' ? 'black-forest-labs/flux.1-schnell' : 'black-forest-labs/flux.1-dev';
-    
+    const requestBody = JSON.stringify({
+      text_prompts: [{ text: `Generate an educational diagram or illustration for the following concept: ${prompt}. Focus on accuracy and clarity.` }],
+      temperature: 1,
+      top_p: 1,
+      top_k: 0
+    });
+
     let response = await fetch(`https://ai.api.nvidia.com/v1/genai/${primaryModel}`, {
       method: "POST",
       headers: {
@@ -5198,36 +5203,23 @@ app.post('/api/ai/generate-image', verifyAuth, async (req, res) => {
         "Accept": "application/json",
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({
-        text_prompts: [{ text: `Generate a high-quality, educational diagram or illustration for the following concept: ${prompt}. Focus on accuracy and clarity.` }],
-        seed: Math.floor(Math.random() * 1000000),
-        temperature: 1,
-        top_p: 1,
-        top_k: 0
-      })
+      body: requestBody
     });
-    
+
+    if (!response.ok && typeof fallbackModel === 'string' && fallbackModel !== primaryModel) {
+      console.warn(`[ImageGen] Configured primary model ${primaryModel} failed with ${response.status}; trying the explicitly configured fallback ${fallbackModel}.`);
+      response = await fetch(`https://ai.api.nvidia.com/v1/genai/${fallbackModel}`, {
+        method: "POST",
+        headers: {
+          "Authorization": "Bearer " + apiKey,
+          "Accept": "application/json",
+          "Content-Type": "application/json"
+        },
+        body: requestBody
+      });
+    }
     if (!response.ok) {
-       console.log(`[ImageGen] ${primaryModel} failed with ${response.status}. Falling back to ${fallbackModel}...`);
-       response = await fetch(`https://ai.api.nvidia.com/v1/genai/${fallbackModel}`, {
-         method: "POST",
-         headers: {
-           "Authorization": "Bearer " + apiKey,
-           "Accept": "application/json",
-           "Content-Type": "application/json"
-         },
-         body: JSON.stringify({
-           text_prompts: [{ text: `Generate a high-quality, educational diagram or illustration for the following concept: ${prompt}. Focus on accuracy and clarity.` }],
-           seed: Math.floor(Math.random() * 1000000),
-           temperature: 1,
-           top_p: 1,
-           top_k: 0
-         })
-       });
-       
-       if (!response.ok) {
-          throw new Error(`Failed on both FLUX models. Last error: ${response.statusText}`);
-       }
+      throw new Error(`Configured image-generation model(s) failed. Last response: ${response.status} ${response.statusText}`);
     }
     
     const data = await response.json();
