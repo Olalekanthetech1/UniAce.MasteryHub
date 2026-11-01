@@ -37,17 +37,6 @@ function mapCourseRecord(row: any): CourseEntity {
     }
   }
 
-  const validLevels: CourseEntity['level'][] = [
-    '100L', '200L', '300L', '400L', 'undergraduate', 'postgraduate'
-  ];
-  if (!validLevels.includes(row.level)) {
-    throw new Error(`Course ${row.id} has an unsupported persisted academic level: ${row.level}.`);
-  }
-
-  const validStatuses: CourseEntity['status'][] = ['draft', 'in_review', 'published', 'archived'];
-  if (!validStatuses.includes(row.status)) {
-    throw new Error(`Course ${row.id} has an unsupported persisted status: ${row.status}.`);
-  }
 
   const version = Number(row.version);
   if (!Number.isInteger(version) || version < 1) {
@@ -64,9 +53,16 @@ function mapCourseRecord(row: any): CourseEntity {
     return date.toISOString();
   };
 
-  const semester = row.semester == null ? null : String(row.semester);
-  if (semester !== null && semester !== 'first' && semester !== 'second') {
-    throw new Error(`Course ${row.id} has an unsupported persisted semester value: ${semester}.`);
+  const semester = row.semester == null
+    ? null
+    : (typeof row.semester === 'string' && row.semester.trim() ? row.semester : null);
+  if (row.semester != null && semester === null) {
+    throw new Error(`Course ${row.id} has an invalid persisted semester value.`);
+  }
+
+  const generationStatuses = ['none', 'queued', 'generating', 'completed', 'failed'] as const;
+  if (row.generation_status != null && !generationStatuses.includes(row.generation_status)) {
+    throw new Error(`Course ${row.id} has an invalid persisted generation status.`);
   }
 
   return {
@@ -87,7 +83,7 @@ function mapCourseRecord(row: any): CourseEntity {
     version,
     created_at: toPersistedIso(row.created_at, 'created_at'),
     updated_at: toPersistedIso(row.updated_at, 'updated_at'),
-    ...(typeof row.generation_status === 'string' ? { generation_status: row.generation_status } : {}),
+    ...(typeof row.generation_status === 'string' ? { generation_status: row.generation_status as CourseEntity['generation_status'] } : {}),
     ...(typeof row.generation_job_id === 'string' ? { generation_job_id: row.generation_job_id } : {}),
     ...(typeof row.content_hash === 'string' ? { content_hash: row.content_hash } : {})
   };
