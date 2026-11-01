@@ -75,9 +75,10 @@ export const CurriculumManager: React.FC = () => {
     return allCourses.filter(c => !allocatedIds.has(c.id));
   }, [allCourses, allocatedCourses, selectedDepartment]);
 
-  const totalCreditUnits = useMemo(() => {
-    return 0;
-  }, [allocatedCourses]);
+  const totalCreditUnits = useMemo(() => allocatedCourses.reduce(
+    (total, course) => total + (Number.isInteger(course.creditUnits) ? Number(course.creditUnits) : 0),
+    0
+  ), [allocatedCourses]);
 
   const missingPrerequisites = useMemo(() => {
     return {};
