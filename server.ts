@@ -1583,7 +1583,7 @@ app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regen
  * Persist a student's attempt before releasing the related comparison guide.
  * This is a learning self-check, not proctored grading or a secure examination.
  */
-app.post('/api/courses/:courseId/modules/:moduleId/lessons/:lessonId/attempts', verifyAuth, requirePublishedCourseOrAdmin, async (req: any, res: any) => {
+app.post('/api/courses/:courseId/modules/:moduleId/lessons/:lessonId/attempts', verifyAuth, requireCourseAccess, async (req: any, res: any) => {
   const { courseId, moduleId, lessonId } = req.params;
   const uid = req.user?.uid;
   if (!uid) return res.status(401).json({ error: 'Authenticated user required' });
