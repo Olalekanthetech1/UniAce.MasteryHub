@@ -85,7 +85,7 @@ export async function fetchFromOpenAlex(
         citationCount: typeof item.cited_by_count === 'number' ? item.cited_by_count : null,
         source: 'openalex',
         relevanceScore: 0,
-        syllabusTags: conceptTags,
+        conceptTags,
       });
     }
   }
