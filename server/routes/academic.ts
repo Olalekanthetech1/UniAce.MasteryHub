@@ -6,6 +6,7 @@ import {
   checkAcademicProvidersHealth,
   getAcademicConfig,
   updateAcademicConfig,
+  searchAcademicWebSources,
 } from '../academicResearchEngine.js';
 import { getPostgresPool } from '../postgresPool.js';
 
@@ -82,7 +83,7 @@ router.post('/definitions', async (req: Request, res: Response) => {
 router.get('/stats', async (req: Request, res: Response) => {
   try {
     const health = await checkAcademicProvidersHealth();
-    const config = getAcademicConfig();
+    const config = await getAcademicConfig();
 
     let totalLogCount = 0;
     const pool = getPostgresPool();
@@ -108,37 +109,69 @@ router.get('/stats', async (req: Request, res: Response) => {
 });
 
 // 5. Admin Config GET
-router.get('/config', (req: Request, res: Response) => {
-  if (!req.baseUrl.startsWith('/api/admin/')) {
-    res.status(404).json({ error: 'Not found' });
-    return;
-  }
-  res.json(getAcademicConfig());
-});
-
-// 6. Admin Config POST
-router.post('/config', (req: Request, res: Response) => {
+router.get('/config', async (req: Request, res: Response) => {
   if (!req.baseUrl.startsWith('/api/admin/')) {
     res.status(404).json({ error: 'Not found' });
     return;
   }
   try {
-    const updated = updateAcademicConfig(req.body);
+    res.json(await getAcademicConfig());
+  } catch (error) {
+    res.status(503).json({ error: 'Academic configuration could not be loaded from the authoritative database.' });
+  }
+});
+
+// 6. Admin Config POST
+router.post('/config', async (req: Request, res: Response) => {
+  if (!req.baseUrl.startsWith('/api/admin/')) {
+    res.status(404).json({ error: 'Not found' });
+    return;
+  }
+  try {
+    const updated = await updateAcademicConfig(req.body);
     res.json({ message: 'Academic Config updated successfully', config: updated });
   } catch (error) {
     res.status(400).json({ error: 'Failed to update academic config', details: (error as Error).message });
   }
 });
 
-// 7. Admin Live Smoke Test Sandbox
+
+router.post('/sources/search', async (req: Request, res: Response) => {
+  if (!req.baseUrl.startsWith('/api/admin/')) {
+    res.status(404).json({ error: 'Not found' });
+    return;
+  }
+  try {
+    const { query, maxResults } = req.body || {};
+    if (typeof query !== 'string' || query.trim().length < 4) {
+      res.status(400).json({ error: 'A course research query of at least four characters is required.' });
+      return;
+    }
+    const result = await searchAcademicWebSources({
+      query: query.trim(),
+      ...(typeof maxResults === 'number' ? { maxResults } : {}),
+    });
+    res.json(result);
+  } catch (error) {
+    const message = (error as Error).message || 'Academic web research failed.';
+    const status = /not configured|disabled|DATABASE|configuration/i.test(message) ? 503 : 502;
+    res.status(status).json({ error: message });
+  }
+});
+
+// 8. Admin Live Smoke Test Sandbox
 router.post('/test', async (req: Request, res: Response) => {
   if (!req.baseUrl.startsWith('/api/admin/')) {
     res.status(404).json({ error: 'Not found' });
     return;
   }
   try {
-    const { query = 'quantum computing', limit = 3 } = req.body;
-    const searchRes = await searchAcademicPapers({ query, limit: Number(limit) });
+    const { query, limit = 3 } = req.body;
+    if (typeof query !== 'string' || query.trim().length < 2) {
+      res.status(400).json({ error: 'A live research query is required.' });
+      return;
+    }
+    const searchRes = await searchAcademicPapers({ query: query.trim(), limit: Number(limit) });
     const health = await checkAcademicProvidersHealth();
 
     res.json({
