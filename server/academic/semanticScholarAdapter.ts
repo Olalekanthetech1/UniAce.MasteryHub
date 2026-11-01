@@ -65,7 +65,7 @@ export async function fetchFromSemanticScholar(
         citationCount: typeof paper.citationCount === 'number' ? paper.citationCount : null,
         source: 'semantic_scholar',
         relevanceScore: 0,
-        syllabusTags: [],
+        conceptTags: [],
       });
     }
   }
@@ -129,7 +129,7 @@ export async function lookupPaperSemanticScholar(
       citationCount: typeof paper.citationCount === 'number' ? paper.citationCount : null,
       source: 'semantic_scholar',
       relevanceScore: 0,
-      syllabusTags: [],
+      conceptTags: [],
     };
   } catch (error) {
     console.error('Semantic Scholar Lookup Error:', error);
