@@ -18,11 +18,11 @@ function extractAllTags(xml: string, tag: string): string[] {
 export async function fetchFromArxiv(query: string, limit: number = 5): Promise<{ papers: AcademicPaper[]; latencyMs: number }> {
   const startTime = Date.now();
   const cleanQuery = query.replace(/[^a-zA-Z0-9\s]/g, '').trim();
-  const url = `http://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(cleanQuery)}&start=0&max_results=${limit}&sortBy=relevance&sortOrder=descending`;
+  const url = `https://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(cleanQuery)}&start=0&max_results=${limit}&sortBy=relevance&sortOrder=descending`;
 
   const response = await fetch(url, {
     headers: {
-      'User-Agent': 'UniAce-AcademicGrounding-Bot/1.0 (uniace.support@gmail.com)',
+      'User-Agent': 'UniAce-AcademicGrounding-Bot/1.0',
     },
     signal: AbortSignal.timeout(8000),
   });
