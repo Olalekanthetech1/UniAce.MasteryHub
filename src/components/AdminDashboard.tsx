@@ -223,24 +223,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   const [isPingingAll, setIsPingingAll] = useState(false);
   const [pingingProvider, setPingingProvider] = useState<string | null>(null);
   const [autoPingEnabled, setAutoPingEnabled] = useState(false);
-  const [routingConfig, setRoutingConfig] = useState({
-    global_provider: '',
-    chat: 'groq',
-    quiz: 'groq',
-    lesson: 'openrouter_free',
-    skeleton: 'cohere',
-    recommendation: 'cohere',
-    formulas: 'cohere',
-    flashcard: 'huggingface',
-    rag: 'openrouter_free',
-    vision: 'gemini_direct',
-    past_questions: 'gemini_direct',
-    voice_tutor: 'nvidia',
-    voice_tutor_model: 'nemotron-voicechat',
-    nvidia_text_model: 'nvidia/nemotron-3-super-120b-a12b',
-    nvidia_image_model: 'black-forest-labs/flux.1-dev',
-    default_personality: 'encouraging'
-  });
+  const [routingConfig, setRoutingConfig] = useState<Record<string, any>>({});
   const [logs, setLogs] = useState<SystemLog[]>([]);
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
   const [logFilter, setLogFilter] = useState<string>('all');
@@ -643,9 +626,12 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
       const res = await safeFetchJson<any>('/api/admin/config', {
         headers: { 'Authorization': `Bearer ${idToken}` }
       });
-      if (res.ok && res.data?.routing) {
-        setRoutingConfig(prev => ({ ...prev, ...res.data.routing }));
+      if (!res.ok) throw new Error(`Routing configuration request failed with HTTP ${res.status}.`);
+      if (!res.data?.routing || typeof res.data.routing !== 'object') {
+        setRoutingConfig({});
+        throw new Error('No authoritative routing configuration is stored.');
       }
+      setRoutingConfig(res.data.routing);
     } catch (error) {
       console.warn("Notice fetching routing config:", error);
     }
@@ -761,11 +747,11 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   };
 
   const updateRoutingConfig = async (task: string, provider: string) => {
-    const newConfig = { ...routingConfig, [task]: provider };
-    setRoutingConfig(newConfig as any);
     try {
       const idToken = await auth.currentUser?.getIdToken();
-      await fetch('/api/admin/config', {
+      if (!idToken) throw new Error('Administrator authentication is required to change AI routing.');
+      const newConfig = { ...routingConfig, [task]: provider };
+      const response = await fetch('/api/admin/config', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${idToken}`,
@@ -773,11 +759,19 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
         },
         body: JSON.stringify({ routing: newConfig })
       });
-      showToast(`Routing for ${task} updated to ${provider}`, 'success');
-      LogService.log('info', 'admin', `Updated AI routing for ${task} to ${provider}`);
+      if (!response.ok) throw new Error(`Routing configuration save failed with HTTP ${response.status}.`);
+      const result = await response.json();
+      const persistedRouting = result?.routing || result?.data?.routing || newConfig;
+      if (!persistedRouting || typeof persistedRouting !== 'object') {
+        throw new Error('The server did not confirm the saved routing configuration.');
+      }
+      setRoutingConfig(persistedRouting);
+      showToast(`Routing for ${task} updated`, 'success');
+      void LogService.log('info', 'admin', `Updated AI routing for ${task}`);
     } catch (error) {
       console.error("Error updating routing config:", error);
-      showToast("Failed to update routing", "error");
+      showToast(error instanceof Error ? error.message : "Failed to update routing", "error");
+      void fetchRoutingConfig();
     }
   };
 
