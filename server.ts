@@ -1123,6 +1123,24 @@ app.get('/api/catalog/full', optionalAuth, async (req: any, res: any) => {
   }
 });
 
+/**
+ * Draft/in-review course content is never served through public read routes.
+ * Published courses remain publicly readable; non-published courses require
+ * an authenticated administrator for course, module, lesson and formula reads.
+ */
+async function requirePublishedCourseOrAdmin(req: any, res: any, next: any) {
+  try {
+    const course = await courseRepository.getCourseById(req.params.courseId);
+    if (!course) return res.status(404).json({ error: 'Course not found' });
+    if (course.status === 'published') return next();
+    return verifyAdmin(req, res, next);
+  } catch (error: any) {
+    const statusCode = error?.message?.includes('Database service unavailable') ? 503 : 500;
+    logger.error({ error: error?.message || String(error), courseId: req.params.courseId }, '[Course visibility] Failed');
+    return res.status(statusCode).json({ error: 'Could not verify course publication status' });
+  }
+}
+
 app.get('/api/courses', async (req, res) => {
   const t0 = Date.now();
   try {
@@ -1147,7 +1165,7 @@ app.get('/api/courses', async (req, res) => {
   }
 });
 
-app.get('/api/courses/:courseId', async (req, res) => {
+app.get('/api/courses/:courseId', optionalAuth, requirePublishedCourseOrAdmin, async (req, res) => {
   const t0 = Date.now();
   try {
     const { courseId } = req.params;
@@ -1164,7 +1182,7 @@ app.get('/api/courses/:courseId', async (req, res) => {
   }
 });
 
-app.get('/api/courses/:courseId/modules', async (req, res) => {
+app.get('/api/courses/:courseId/modules', optionalAuth, requirePublishedCourseOrAdmin, async (req, res) => {
   const t0 = Date.now();
   try {
     const { courseId } = req.params;
@@ -1186,7 +1204,7 @@ app.get('/api/courses/:courseId/modules', async (req, res) => {
   }
 });
 
-app.get('/api/courses/:courseId/modules/:moduleId/lessons', async (req, res) => {
+app.get('/api/courses/:courseId/modules/:moduleId/lessons', optionalAuth, requirePublishedCourseOrAdmin, async (req, res) => {
   const t0 = Date.now();
   try {
     const { courseId, moduleId } = req.params;
@@ -1522,7 +1540,7 @@ app.post('/api/courses/:courseId/modules/:moduleId/lessons/:lessonId/attempts', 
   }
 });
 
-app.get('/api/courses/:courseId/formulas', async (req, res) => {
+app.get('/api/courses/:courseId/formulas', optionalAuth, requirePublishedCourseOrAdmin, async (req, res) => {
   const t0 = Date.now();
   try {
     const { courseId } = req.params;
