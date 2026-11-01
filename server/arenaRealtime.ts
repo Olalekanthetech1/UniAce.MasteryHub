@@ -431,45 +431,83 @@ class ArenaRealtimeManager {
   public async settlePlayersArenaStatsInTx(client: any, battleData: any) {
     const winnerId = battleData.winner;
     const players = [battleData.player1, battleData.player2].filter(
-      (p) => p && p.uid && !String(p.uid).startsWith('ghost_') && !String(p.uid).startsWith('ai_challenger_')
+      (player) =>
+        player &&
+        typeof player.uid === 'string' &&
+        player.uid.trim().length > 0 &&
+        player.opponentType === 'human'
     );
 
-    for (const p of players) {
-      const isWinner = winnerId === p.uid;
+    const xpRewards: Record<string, number> = {};
+
+    for (const player of players) {
+      const isWinner = winnerId === player.uid;
       const isDraw = winnerId === 'draw';
       const xpEarned = isWinner ? 100 : isDraw ? 25 : 10;
 
       const userRow = await client.query(
         `SELECT learning_profile FROM users WHERE uid = $1 FOR UPDATE`,
-        [p.uid]
+        [player.uid]
       );
-      if ((userRow.rowCount ?? 0) > 0) {
-        const lp = { ...(userRow.rows[0].learning_profile || {}) };
-        const prevXp = Number(lp.xp || 0);
-        const nextXp = prevXp + xpEarned;
-        const nextLevel = Math.max(1, Math.floor(nextXp / 1000) + 1);
-        const prevWins = Number(lp.arenaWins || 0);
-        const prevLosses = Number(lp.arenaLosses || 0);
-        const prevWinStreak = Number(lp.arenaWinStreak || 0);
-
-        lp.xp = nextXp;
-        lp.level = nextLevel;
-        if (isWinner) {
-          lp.arenaWins = prevWins + 1;
-          lp.arenaWinStreak = prevWinStreak + 1;
-          lp.bestArenaWinStreak = Math.max(Number(lp.bestArenaWinStreak || 0), lp.arenaWinStreak);
-        } else if (!isDraw) {
-          lp.arenaLosses = prevLosses + 1;
-          lp.arenaWinStreak = 0;
-        }
-        lp.lastArenaBattleAt = new Date().toISOString();
-
-        await client.query(
-          `UPDATE users SET learning_profile = $1::jsonb, updated_at = NOW() WHERE uid = $2`,
-          [JSON.stringify(lp), p.uid]
-        );
+      if ((userRow.rowCount ?? 0) !== 1) {
+        throw new Error(`Cannot settle Arena XP: authoritative user record is missing for participant ${player.uid}.`);
       }
+
+      const lp = { ...(userRow.rows[0].learning_profile || {}) };
+      const rawXp = lp.xp ?? 0;
+      const prevXp = Number(rawXp);
+      if (!Number.isSafeInteger(prevXp) || prevXp < 0) {
+        throw new Error(`Cannot settle Arena XP: persisted XP is invalid for participant ${player.uid}.`);
+      }
+
+      const nextXp = prevXp + xpEarned;
+      if (!Number.isSafeInteger(nextXp)) {
+        throw new Error(`Cannot settle Arena XP: resulting XP is outside the safe integer range for participant ${player.uid}.`);
+      }
+
+      const nextLevel = Math.max(1, Math.floor(nextXp / 1000) + 1);
+      const prevWins = Number(lp.arenaWins ?? 0);
+      const prevLosses = Number(lp.arenaLosses ?? 0);
+      const prevWinStreak = Number(lp.arenaWinStreak ?? 0);
+      if (![prevWins, prevLosses, prevWinStreak].every(value => Number.isSafeInteger(value) && value >= 0)) {
+        throw new Error(`Cannot settle Arena statistics: persisted battle counters are invalid for participant ${player.uid}.`);
+      }
+
+      lp.xp = nextXp;
+      lp.level = nextLevel;
+      if (isWinner) {
+        lp.arenaWins = prevWins + 1;
+        lp.arenaWinStreak = prevWinStreak + 1;
+        lp.bestArenaWinStreak = Math.max(Number(lp.bestArenaWinStreak ?? 0), lp.arenaWinStreak);
+      } else if (!isDraw) {
+        lp.arenaLosses = prevLosses + 1;
+        lp.arenaWinStreak = 0;
+      }
+      lp.lastArenaBattleAt = new Date().toISOString();
+
+      const updated = await client.query(
+        `UPDATE users
+         SET learning_profile = $1::jsonb, updated_at = NOW()
+         WHERE uid = $2
+         RETURNING learning_profile`,
+        [JSON.stringify(lp), player.uid]
+      );
+      if ((updated.rowCount ?? 0) !== 1) {
+        throw new Error(`Arena XP update did not persist for participant ${player.uid}.`);
+      }
+
+      const persistedProfile = updated.rows[0]?.learning_profile;
+      const persistedXp = Number(persistedProfile?.xp);
+      if (persistedXp !== nextXp) {
+        throw new Error(`Arena XP verification failed for participant ${player.uid}.`);
+      }
+
+      xpRewards[player.uid] = xpEarned;
     }
+
+    // The battle record reports rewards only after all participant profile updates
+    // have been verified inside the same transaction.
+    battleData.xpRewards = xpRewards;
   }
 }
 
