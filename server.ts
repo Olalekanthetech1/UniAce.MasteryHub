@@ -1426,8 +1426,33 @@ app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regen
     const course = courseResult.rows[0];
     const module = moduleResult.rows[0];
     const lesson = lessonResult.rows[0];
-    const courseName = String(course.title || course.code || courseId);
-    const level = String(course.level || 'undergraduate');
+
+    const courseName = typeof course.title === 'string' ? course.title.trim() : '';
+    const courseCode = typeof course.code === 'string' ? course.code.trim() : '';
+    const department = typeof course.department === 'string' ? course.department.trim() : '';
+    const level = typeof course.level === 'string' ? course.level.trim() : '';
+    const moduleTitle = typeof module.title === 'string' ? module.title.trim() : '';
+    const lessonTitle = typeof lesson.title === 'string' ? lesson.title.trim() : '';
+    const moduleOrderIndex = module.order_index;
+    const lessonOrderIndex = lesson.order_index;
+    const estimatedMinutes = module.estimated_minutes;
+    const learningOutcomes = Array.isArray(lesson.learning_outcomes)
+      ? lesson.learning_outcomes.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0)
+      : [];
+
+    if (
+      !courseName || !courseCode || !department || !level ||
+      !moduleTitle || !lessonTitle ||
+      typeof moduleOrderIndex !== 'number' || !Number.isSafeInteger(moduleOrderIndex) || moduleOrderIndex < 0 ||
+      typeof lessonOrderIndex !== 'number' || !Number.isSafeInteger(lessonOrderIndex) || lessonOrderIndex < 0 ||
+      typeof estimatedMinutes !== 'number' || !Number.isFinite(estimatedMinutes) || estimatedMinutes <= 0 ||
+      learningOutcomes.length === 0
+    ) {
+      return res.status(409).json({
+        error: 'Lesson regeneration requires verified course scope, module ordering, duration, and saved learning outcomes. Missing metadata was not inferred.'
+      });
+    }
+
     const requestedProvider = typeof req.body?.provider === 'string' && req.body.provider.trim()
       ? req.body.provider.trim()
       : undefined;
@@ -1439,10 +1464,10 @@ app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regen
         content: buildDomainBriefPrompt({
           courseId,
           courseName,
-          courseCode: String(course.code || courseId),
-          department: String(course.department || 'General Studies'),
+          courseCode,
+          department,
           level,
-          outline: `Module: ${module.title}\nLesson: ${lesson.title}`
+          outline: `Module: ${moduleTitle}\nLesson: ${lessonTitle}`
         })
       }],
       schema: DomainBriefSchema,
@@ -1450,18 +1475,15 @@ app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regen
       complexity: 'standard'
     });
 
-    const learningOutcomes = Array.isArray(lesson.learning_outcomes)
-      ? lesson.learning_outcomes.filter((value: any) => typeof value === 'string' && value.trim())
-      : [];
     const prompt = buildLessonPrompt(
-      String(lesson.title || lessonId),
-      String(module.title || moduleId),
-      Math.max(1, Number(module.order_index) || 1),
+      lessonTitle,
+      moduleTitle,
+      moduleOrderIndex,
       domainBrief,
       {
         courseId,
         courseName,
-        department: String(course.department || 'General Studies'),
+        department,
         level,
         depth: 'standard',
         scope: 'DEPARTMENT'
@@ -1528,16 +1550,16 @@ app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regen
       courseId,
       module: {
         id: moduleId,
-        title: String(module.title || moduleId),
-        description: String(module.description || ''),
-        orderIndex: Math.max(1, Number(module.order_index) || 1),
-        estimatedMinutes: Number(module.estimated_minutes) || 60
+        title: moduleTitle,
+        description: typeof module.description === 'string' ? module.description : undefined,
+        orderIndex: moduleOrderIndex,
+        estimatedMinutes
       },
       lesson: {
         id: lessonId,
-        title: String(generated.title || lesson.title || lessonId),
+        title: generated.title,
         contentMarkdown: markdown,
-        orderIndex: Math.max(1, Number(lesson.order_index) || 1),
+        orderIndex: lessonOrderIndex,
         learningOutcomes,
         instructionalContent
       }
