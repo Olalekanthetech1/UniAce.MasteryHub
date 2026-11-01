@@ -569,7 +569,7 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
 
       const player: BattlePlayer = {
         uid: user.uid,
-        name: profile?.displayName || user.displayName || 'Gladiator',
+        name: profile?.displayName || user.displayName || '',
         avatar: profile?.photoURL || user.photoURL || '',
         score: 0,
         currentQuestionIndex: 0,
@@ -618,36 +618,35 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
     }
   };
 
-  // 2. Direct Sparring Launch from Lobby or Waiting Screen ([AI Challenger] or Ghost Replay)
-  const startDirectSparring = async (mode: 'ghost_replay' | 'ai_challenger') => {
+  // Direct replay launch requires a verified historical human recording.
+  const startDirectSparring = async () => {
     const targetCourse = selectedCourseId;
     if (!user || !targetCourse || launchingSpar) {
       if (!targetCourse) toast.error('Please select a course first.');
       return;
     }
 
-    setLaunchingSpar(mode);
+    const displayName = typeof profile?.displayName === 'string' && profile.displayName.trim()
+      ? profile.displayName.trim()
+      : typeof user.displayName === 'string' && user.displayName.trim()
+      ? user.displayName.trim()
+      : '';
+    if (!displayName || ['gladiator', 'scholar'].includes(displayName.toLowerCase())) {
+      toast.error('A verified student display name is required before opening an Arena room.');
+      return;
+    }
+
+    setLaunchingSpar('ghost_replay');
     setView('matching');
     matchStartEpochRef.current = getAuthoritativeNowMs();
     setMatchWaitSeconds(0);
-    setMatchStatus(
-      mode === 'ai_challenger'
-        ? `Generating live ${targetCourse} combat questions for [AI Challenger] duel...`
-        : `Loading recorded ${targetCourse} Ghost Replay from Neon PostgreSQL...`
-    );
+    setMatchStatus('Checking for a verified recorded human replay in ' + targetCourse + '...');
 
+    let createdBattleId: string | null = null;
     try {
-      let questions: QuizQuestion[] = [];
-      if (mode === 'ai_challenger') {
-        questions = await generateBattleQuestions(targetCourse);
-        setMatchStatus(
-          `Calibrating [AI Challenger] (${lobbyTelemetry.challengerTelemetry?.pacingRangeLabel || '12–15s / question'}) & starting duel...`
-        );
-      }
-
       const player: BattlePlayer = {
         uid: user.uid,
-        name: profile?.displayName || user.displayName || 'Gladiator',
+        name: displayName,
         avatar: profile?.photoURL || user.photoURL || '',
         score: 0,
         currentQuestionIndex: 0,
@@ -660,89 +659,103 @@ Provide a concise, high-impact **Post-Match Tactical Breakdown** for each missed
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
+          Authorization: 'Bearer ' + token
         },
         body: JSON.stringify({
           topicId: targetCourse,
           player,
-          questions,
+          questions: [],
           skipQueueJoin: true
         })
       });
-
-      if (!createRes.ok) throw new Error('Failed to initialize sparring room');
       const createdData = await createRes.json();
-      const newBattleId = createdData.battleId;
-      setBattleId(newBattleId);
-
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'battle:subscribe', battleId: newBattleId }));
+      if (!createRes.ok || typeof createdData.battleId !== 'string') {
+        throw new Error(createdData.error || 'The replay room could not be initialized from live data.');
       }
 
-      const sparRes = await fetch(`/api/arena/battles/${encodeURIComponent(newBattleId)}/spar`, {
+      createdBattleId = createdData.battleId;
+      setBattleId(createdBattleId);
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'battle:subscribe', battleId: createdBattleId }));
+      }
+
+      const sparRes = await fetch('/api/arena/battles/' + encodeURIComponent(createdBattleId) + '/spar', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
+          Authorization: 'Bearer ' + token
         },
-        body: JSON.stringify({ mode })
+        body: JSON.stringify({ mode: 'ghost_replay' })
       });
-
       const sparData = await sparRes.json();
       if (!sparRes.ok) {
-        toast.error(sparData.error || 'Could not launch sparring match');
-        setView('lobby');
-        return;
+        throw new Error(sparData.error || 'No verified human replay is available for this course.');
+      }
+      if (!sparData.battle) {
+        throw new Error('The replay endpoint did not return a persisted battle record.');
       }
 
       updateServerClockOffset(sparData.serverNow);
-      if (sparData.battle) {
-        setBattleData(sparData.battle);
-        setSelectedAnswer(null);
-        setSubmittingAnswer(false);
-        setView('battle');
-      }
+      setBattleData(sparData.battle);
+      setSelectedAnswer(null);
+      setSubmittingAnswer(false);
+      setView('battle');
     } catch (err: any) {
-      toast.error(err?.message || 'Failed to launch sparring match');
+      toast.error(err?.message || 'Could not start a verified human replay.');
+      if (createdBattleId) {
+        try {
+          const token = await user.getIdToken();
+          const cancelRes = await fetch('/api/arena/battles/' + encodeURIComponent(createdBattleId), {
+            method: 'DELETE',
+            headers: { Authorization: 'Bearer ' + token }
+          });
+          if (!cancelRes.ok) {
+            console.warn('[Arena] Temporary replay room could not be removed:', cancelRes.status);
+          }
+        } catch (cleanupError) {
+          console.warn('[Arena] Temporary replay room cleanup failed:', cleanupError);
+        }
+      }
+      setBattleId(null);
+      setBattleData(null);
       setView('lobby');
+      void fetchLobbyTelemetry();
     } finally {
       setLaunchingSpar(null);
     }
   };
 
-  // Launch Sparring when already inside a waiting battle
-  const handleLaunchSparring = async (mode: 'ghost_replay' | 'ai_challenger') => {
+  // Launch a verified replay from the user's own waiting battle.
+  const handleLaunchSparring = async () => {
     if (!battleId || !user || launchingSpar) return;
-    setLaunchingSpar(mode);
-    setMatchStatus(
-      mode === 'ai_challenger'
-        ? `Calibrating [AI Challenger] (${lobbyTelemetry.challengerTelemetry?.pacingRangeLabel || '12–15s / question'}) & starting duel...`
-        : `Loading recorded ${selectedCourseId} Ghost Replay...`
-    );
+    setLaunchingSpar('ghost_replay');
+    setMatchStatus('Validating recorded human moves for ' + (selectedCourseId || 'the selected course') + '...');
     try {
       const token = await user.getIdToken();
-      const res = await fetch(`/api/arena/battles/${encodeURIComponent(battleId)}/spar`, {
+      const res = await fetch('/api/arena/battles/' + encodeURIComponent(battleId) + '/spar', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
+          Authorization: 'Bearer ' + token
         },
-        body: JSON.stringify({ mode })
+        body: JSON.stringify({ mode: 'ghost_replay' })
       });
       const data = await res.json();
       if (!res.ok) {
-        toast.error(data.error || 'Could not launch sparring match');
+        toast.error(data.error || 'No verified human replay is available.');
+        return;
+      }
+      if (!data.battle) {
+        toast.error('The replay endpoint did not return a persisted battle record.');
         return;
       }
       updateServerClockOffset(data.serverNow);
-      if (data.battle) {
-        setBattleData(data.battle);
-        setSelectedAnswer(null);
-        setSubmittingAnswer(false);
-        setView('battle');
-      }
+      setBattleData(data.battle);
+      setSelectedAnswer(null);
+      setSubmittingAnswer(false);
+      setView('battle');
     } catch (err: any) {
-      toast.error(err?.message || 'Failed to start sparring match');
+      toast.error(err?.message || 'Failed to start the verified replay.');
     } finally {
       setLaunchingSpar(null);
     }
