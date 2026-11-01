@@ -7,6 +7,7 @@ import {
   CitationResult,
   CanonicalDefinition,
   AcademicConfig,
+  AcademicConfigView,
   AcademicProviderHealth,
 } from './academic/types.js';
 import { fetchFromArxiv } from './academic/arxivAdapter.js';
