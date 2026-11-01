@@ -3636,12 +3636,11 @@ app.post('/api/chat', verifyAuth, async (req, res) => {
       }
     ];
 
-    const openRouterFreeBreaker = globalOpenRouterFreeBreaker;
-    const mistralBreaker = globalMistralDirectBreaker;
-    const groqBreaker = globalGroqBreaker;
-    const cohereBreaker = globalCohereBreaker;
-    const huggingFaceBreaker = globalHuggingFaceBreaker;
+    const classified = classifyTaskIntent(chatHygiene.cleanQuestion, 'chat');
+    const effectiveTaskType = classified.taskType;
+    const taskType = effectiveTaskType;
     const routingConfig = await requireLiveRoutingConfig();
+
     const providerMap: Record<string, any> = {
       gemini_direct: globalGeminiDirectBreaker,
       mistral_direct: globalMistralDirectBreaker,
@@ -3651,12 +3650,26 @@ app.post('/api/chat', verifyAuth, async (req, res) => {
       openrouter_free: globalOpenRouterFreeBreaker,
       nvidia: globalNvidiaBreaker || globalNvidiaProvider
     };
-    const providerNames = resolveLiveProviderQueue(routingConfig, 'course_extraction', providerMap);
-    const providers = providerNames.map(name => providerMap[name]).filter(Boolean);
-
-    if (providers.length === 0) {
-      throw new Error('No AI providers configured');
+    const configuredProviderNames = resolveLiveProviderQueue(
+      routingConfig,
+      effectiveTaskType,
+      providerMap
+    );
+    const hasDocumentOrRag = chatHygiene.hasDocumentAttachment || Boolean(relevantContext);
+    const providerQueue = selectTieredProviderNames({
+      preferredProvider: configuredProviderNames[0],
+      availableProviderKeys: configuredProviderNames,
+      hasImage: Boolean(image),
+      hasDocumentOrRag,
+      complexity,
+      verifiedTier1Providers: Array.isArray(routingConfig.verifiedTier1Providers) ? routingConfig.verifiedTier1Providers : [],
+      isStemQuery: effectiveTaskType === 'math_stem'
+    });
+    if (providerQueue.length === 0) {
+      throw new Error('No explicitly configured and verified AI provider is available for this chat request.');
     }
+    const preferredProviderName = providerQueue[0];
+    const providers = providerQueue.map(name => providerMap[name]).filter(Boolean);
 
     // Set headers for Server-Sent Events (SSE)
     res.setHeader('Content-Type', 'text/event-stream');
@@ -3664,6 +3677,7 @@ app.post('/api/chat', verifyAuth, async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
 
     let success = false;
+    let successfulProviderName: string | null = null;
     let lastError;
 
     console.log(`[AI Stream] Starting generation for ${uid}. Task: ${taskType}, Preferred: ${preferredProviderName}`);
