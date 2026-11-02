@@ -401,6 +401,19 @@ export const CourseProvenanceSchema = z.object({
     evidenceAssessment: z.unknown(),
     providerBreakdown: z.unknown(),
     limitations: z.array(z.string()),
+    sourceReferences: z.array(z.object({
+      recordType: z.enum(['scholarly_record', 'web_discovery']),
+      provider: z.enum(['arxiv', 'semantic_scholar', 'openalex', 'tavily']),
+      title: z.string().min(1),
+      url: z.string().url(),
+      authors: z.array(z.string()).optional(),
+      year: z.number().int().nullable().optional(),
+      venue: z.string().nullable().optional(),
+      doi: z.string().nullable().optional(),
+      publicationType: z.enum(['preprint', 'indexed_record']).optional(),
+      authorityClass: z.enum(['scholarly_index', 'institutional_domain', 'general_web', 'unknown']).optional(),
+      verificationStatus: z.literal('unverified')
+    })),
     errorMessage: z.string().optional()
   }).optional()
 });
