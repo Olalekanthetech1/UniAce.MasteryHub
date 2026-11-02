@@ -2,10 +2,25 @@ import { searchAcademicPapers } from './academicResearchEngine';
 
 export const MAX_COURSE_SOURCE_CHARS = 50000;
 
+export interface CourseResearchSourceReference {
+  recordType: 'scholarly_record' | 'web_discovery';
+  provider: 'arxiv' | 'semantic_scholar' | 'openalex' | 'tavily';
+  title: string;
+  url: string;
+  authors?: string[];
+  year?: number | null;
+  venue?: string | null;
+  doi?: string | null;
+  publicationType?: 'preprint' | 'indexed_record';
+  authorityClass?: 'scholarly_index' | 'institutional_domain' | 'general_web' | 'unknown';
+  verificationStatus: 'unverified';
+}
+
 export interface CourseGenerationResearchResult {
   context: string;
   metadata: {
     status: 'evidence_found' | 'insufficient_evidence' | 'no_results' | 'unavailable';
+    sourceReferences: CourseResearchSourceReference[];
     runId: string | null;
     researchDepth: string | null;
     retrievedAt: string;
@@ -99,10 +114,34 @@ export async function retrieveCourseGenerationResearch(input: {
       sections.push('RESEARCH LIMITATIONS:\n- ' + result.limitations.join('\n- '));
     }
 
+    const sourceReferences: CourseResearchSourceReference[] = [
+      ...(result.papers || []).map(paper => ({
+        recordType: 'scholarly_record' as const,
+        provider: paper.source,
+        title: paper.title,
+        url: paper.url,
+        authors: paper.authors,
+        year: paper.year,
+        venue: paper.venue,
+        doi: paper.doi,
+        publicationType: paper.publicationType,
+        verificationStatus: 'unverified' as const
+      })),
+      ...(result.webSources || []).map(source => ({
+        recordType: 'web_discovery' as const,
+        provider: 'tavily' as const,
+        title: source.title,
+        url: source.url,
+        authorityClass: source.authorityClass,
+        verificationStatus: 'unverified' as const
+      }))
+    ];
+
     return {
       context: sections.join('\n\n'),
       metadata: {
         status: result.researchStatus,
+        sourceReferences,
         runId: result.runId,
         researchDepth: result.researchDepth,
         retrievedAt: result.timestamp,
@@ -120,6 +159,7 @@ export async function retrieveCourseGenerationResearch(input: {
         '. Use only the admin-supplied outline/source material and established knowledge; do not claim that live research was performed or invent references.',
       metadata: {
         status: 'unavailable',
+        sourceReferences: [],
         runId: null,
         researchDepth: null,
         retrievedAt: new Date().toISOString(),
