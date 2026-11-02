@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { validateSimulationExpression } from './simulationExpression';
+import { isReservedSimulationIdentifier, validateSimulationExpression } from './simulationExpression';
 
 /**
  * UniAce Shared Course Schema & Pedagogical Architecture
@@ -345,6 +345,13 @@ export const InteractiveSimulationContentBlockSchema = LessonContentBlockBaseSch
 }).superRefine((simulation, ctx) => {
   const parameterIds = new Set<string>();
   for (const parameter of simulation.parameters) {
+    if (isReservedSimulationIdentifier(parameter.id)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['parameters'],
+        message: `Simulation parameter ID "${parameter.id}" is reserved by the model language.`
+      });
+    }
     if (parameterIds.has(parameter.id)) {
       ctx.addIssue({
         code: 'custom',
