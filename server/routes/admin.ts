@@ -1024,10 +1024,20 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
     await ensureCourseLearningSchema();
+    await ensureCourseLifecycleSchema();
 
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [id.trim()]);
+      const tombstone = await client.query(
+        'SELECT course_id FROM course_lifecycle_tombstones WHERE course_id = $1',
+        [id.trim()]
+      );
+      if (tombstone.rows.length > 0) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'This course ID was permanently deleted and cannot be reused.' });
+      }
       const courseCode = typeof code === 'string' && code.trim() ? code.trim() : id.trim();
       await client.query(
         `INSERT INTO courses (id, code, title, description, level, department, faculty, semester, credit_units, scope, status, version, created_at, updated_at)
