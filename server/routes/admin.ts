@@ -19,6 +19,7 @@ import { clearBootstrapCache } from './student';
 import { catalogCache } from '../cache/catalogCache';
 import { ensureCourseLearningSchema } from '../services/courseLearningSchema';
 import { ensureCourseReviewSchema } from '../services/courseReviewSchema';
+import { ensureCourseAssessmentSchema } from '../services/courseAssessmentSchema';
 import {
   getSystemConfigDoc,
   setSystemConfigDoc,
@@ -1487,7 +1488,7 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
       );
 
       // Remove dependent instructional and learner data in the same transaction.
-      await client.query(`DELETE FROM course_knowledge_chunks WHERE course_id = $1`, [id]);
+      await ensureCourseAssessmentSchema();
       await client.query(`DELETE FROM course_lesson_practice_attempts WHERE course_id = $1`, [id]);
       await client.query(`DELETE FROM course_formulas WHERE course_id = $1`, [id]);
       await client.query(`DELETE FROM course_lessons WHERE course_id = $1`, [id]);
