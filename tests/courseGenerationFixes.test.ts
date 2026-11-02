@@ -153,6 +153,24 @@ test('lesson prompt calibrates deep-dive depth and selects relevant complete sou
   assert.match(prompt, /workedExamples: at least three distinct discipline-appropriate examples/);
   assert.ok(prompt.includes('HYDROSTATIC PRESSURE'));
   assert.ok(!prompt.includes('UNRELATED THERMODYNAMICS'));
+
+  const legacyAdvancedPrompt = buildLessonPrompt(
+    'Hydrostatic Pressure',
+    'Fluid Statics',
+    2,
+    domainBrief,
+    {
+      courseId: 'GET205',
+      courseName: 'Fundamentals of Fluid Mechanics',
+      department: 'Materials Science and Engineering',
+      level: '200',
+      depth: 'advanced',
+      scope: 'DEPARTMENT',
+      sourceText
+    }
+  );
+  assert.match(legacyAdvancedPrompt, /ADVANCED \/ ANALYTICAL DEPTH/);
+  assert.match(legacyAdvancedPrompt, /at least four reasoning checks/);
 });
 
 test('module quiz prompt uses actual lesson text and refuses missing quiz evidence', () => {
