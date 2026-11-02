@@ -35,9 +35,11 @@ export async function ensureCourseLearningSchema(): Promise<void> {
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           CONSTRAINT course_module_quizzes_course_module_unique UNIQUE (course_id, module_id)
-        );
+        )
+      `),
+      queryPostgres(`
         CREATE INDEX IF NOT EXISTS idx_course_module_quizzes_course
-          ON course_module_quizzes (course_id);
+          ON course_module_quizzes (course_id)
       `)
     ]).then(() => undefined).catch((error: any) => {
       migrationPromise = null;
