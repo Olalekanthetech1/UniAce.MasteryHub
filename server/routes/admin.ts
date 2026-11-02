@@ -1480,8 +1480,15 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
         return res.status(409).json({ error: 'Only archived courses can be permanently deleted.' });
       }
 
-      // Revoke persisted jobs only when the PostgreSQL generation-job subsystem is enabled.
+      // Revoke and remove persisted jobs only when the PostgreSQL job subsystem is enabled.
       if (getFeatureFlags().ENABLE_POSTGRES_GENERATION_JOBS) {
+        const jobRelations = await client.query(
+          `SELECT to_regclass('course_generation_jobs') AS jobs,
+                  to_regclass('sse_stream_tickets') AS tickets`
+        );
+        if (!jobRelations.rows[0]?.jobs) {
+          throw new Error('PostgreSQL generation jobs are enabled, but the job table is missing.');
+        }
         await client.query(
           `UPDATE course_generation_jobs
            SET status = 'cancelled', stage = 'cancelled',
@@ -1491,7 +1498,25 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
            WHERE course_id = $1 AND status IN ('queued', 'running')`,
           [id]
         );
+        if (jobRelations.rows[0]?.tickets) {
+          await client.query(
+            `DELETE FROM sse_stream_tickets
+             WHERE job_id IN (SELECT job_id FROM course_generation_jobs WHERE course_id = $1)`,
+            [id]
+          );
+        }
+        await client.query(`DELETE FROM course_generation_jobs WHERE course_id = $1`, [id]);
       }
+
+      // Preserve a durable audit event for the destructive administrator action.
+      await ensureCourseReviewSchema();
+      await client.query(
+        `INSERT INTO course_review_events
+         (course_id, actor_uid, actor_email, action, from_status, to_status, notes, created_at)
+         VALUES ($1, $2, $3, 'permanent_delete', 'archived', 'deleted',
+                 'Course and associated instructional data permanently deleted by administrator.', NOW())`,
+        [id, user.uid, user.email || null]
+      );
 
       // Remove legacy and v2 vector chunks when those relations are present.
       const vectorTables = await client.query(
