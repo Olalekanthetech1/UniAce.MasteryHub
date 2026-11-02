@@ -809,7 +809,6 @@ export default function ContentArea({
                     courseId={courseId || ''}
                     moduleId={module.id}
                     lessonId={activeSubTopic.id}
-                    hideKnowledgeChecks={Boolean(activeLessonData.contentBlocks?.blocks.some(block => block.type === 'knowledge_check'))}
                   />
                 ) : (
                   <MarkdownRenderer content={activeLessonData.content} />
@@ -820,6 +819,7 @@ export default function ContentArea({
                     courseId={courseId || ''}
                     moduleId={module.id}
                     lessonId={activeSubTopic.id}
+                    hideKnowledgeChecks={Boolean(activeLessonData.contentBlocks?.blocks.some(block => block.type === 'knowledge_check'))}
                   />
                 )}
                 
