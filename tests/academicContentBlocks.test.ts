@@ -122,3 +122,25 @@ test('simulation parameters must have valid ranges and distinct symbols', () => 
   simulation.parameter.initialValue = 8;
   assert.throws(() => AcademicContentBlockCollectionSchema.parse(invalid), /initial parameter value must be within/);
 });
+
+test('simulation variables cannot collide with mathematical constants or allowlisted functions', () => {
+  assert.equal(validateSimulationExpression('pi*x', 'x', 'pi').valid, false);
+  assert.equal(validateSimulationExpression('sin*x', 'sin', 'a').valid, false);
+  assert.equal(validateSimulationExpression('e*x', 'x', 'e').valid, false);
+
+  const parameterCollision = structuredClone(collection);
+  const parameterSimulation = parameterCollision.blocks.find(block => block.type === 'interactive_simulation')!;
+  parameterSimulation.parameter.symbol = 'pi';
+  assert.throws(
+    () => AcademicContentBlockCollectionSchema.parse(parameterCollision),
+    /parameter symbol "pi" is reserved/
+  );
+
+  const variableCollision = structuredClone(collection);
+  const variableSimulation = variableCollision.blocks.find(block => block.type === 'interactive_simulation')!;
+  variableSimulation.independentVariable = 'sin';
+  assert.throws(
+    () => AcademicContentBlockCollectionSchema.parse(variableCollision),
+    /independent variable symbol "sin" is reserved/
+  );
+});
