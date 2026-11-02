@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { validateSimulationExpression } from './simulationExpression';
 
 /**
  * UniAce Shared Course Schema & Pedagogical Architecture
@@ -302,21 +303,8 @@ export const EngineeringDiagramContentBlockSchema = LessonContentBlockBaseSchema
 
 export const WorkedExampleContentBlockSchema = LessonContentBlockBaseSchema.extend({
   type: z.literal('worked_example'),
-  title: z.string().trim().min(1),
-  exampleType: z.enum(['numerical', 'conceptual', 'proof', 'case-analysis', 'experimental', 'design']),
-  problem: z.string().trim().min(20),
-  givens: z.array(z.object({
-    name: z.string().trim().min(1),
-    value: z.string().trim().min(1),
-    unit: z.string().trim().min(1).optional()
-  })).max(20),
-  assumptions: z.array(z.string().trim().min(1)).max(12),
-  steps: z.array(z.object({
-    explanation: z.string().trim().min(10),
-    equation: z.string().trim().min(1).max(1200).optional()
-  })).min(2).max(20),
-  finalAnswer: z.string().trim().min(1),
-  verification: z.string().trim().min(10)
+  exampleIndex: z.number().int().nonnegative(),
+  title: z.string().trim().min(1).optional()
 });
 
 const InteractiveSimulationParameterSchema = z.object({
@@ -367,22 +355,14 @@ export const InteractiveSimulationContentBlockSchema = LessonContentBlockBaseSch
     parameterIds.add(parameter.id);
   }
 
-  const allowedFunctions = new Set([
-    'abs', 'acos', 'acosh', 'asin', 'asinh', 'atan', 'atan2', 'atanh',
-    'ceil', 'cos', 'cosh', 'exp', 'floor', 'log', 'log10', 'log2',
-    'max', 'min', 'pow', 'round', 'sign', 'sin', 'sinh', 'sqrt',
-    'tan', 'tanh', 'trunc'
-  ]);
-  const allowedSymbols = new Set(['x', 'pi', 'e', ...parameterIds, ...allowedFunctions]);
-  const identifiers = simulation.expression.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
-  for (const identifier of identifiers) {
-    if (!allowedSymbols.has(identifier)) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['expression'],
-        message: `Unsupported simulation identifier "${identifier}". Use x, a declared parameter, pi, e, or a supported mathematical function.`
-      });
-    }
+  try {
+    validateSimulationExpression(simulation.expression, [...parameterIds]);
+  } catch (error) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['expression'],
+      message: error instanceof Error ? error.message : 'Simulation expression is invalid.'
+    });
   }
 });
 
@@ -448,7 +428,7 @@ function markdownMathExpression(expression: string): string {
  * lesson representation; this text is compiled for existing readers, search,
  * audio and assessment-evidence consumers.
  */
-export function renderLessonContentBlocksToMarkdown(blocks: LessonContentBlock[]): string {
+export function renderLessonContentBlocksToMarkdown(blocks: LessonContentBlock[], workedExamples: InstructionalWorkedExample[]): string {
   return blocks.map((block) => {
     switch (block.type) {
       case 'explanation':
@@ -475,25 +455,26 @@ export function renderLessonContentBlocksToMarkdown(blocks: LessonContentBlock[]
         ].filter(Boolean).join('\n\n');
 
       case 'worked_example': {
-        const givens = block.givens.length
-          ? `**Given information**\n\n${block.givens.map((given) => `- ${given.name}: ${given.value}${given.unit ? ` ${given.unit}` : ''}`).join('\n')}`
+        const example = workedExamples[block.exampleIndex];
+        if (!example) return '';
+        const givens = example.givens?.length
+          ? `**Given information**\n\n${example.givens.map((given) => `- ${given.name}: ${given.value}${given.unit ? ` ${given.unit}` : ''}`).join('\n')}`
           : '';
-        const assumptions = block.assumptions.length
-          ? `**Assumptions**\n\n${block.assumptions.map((item) => `- ${item}`).join('\n')}`
+        const assumptions = example.assumptions?.length
+          ? `**Assumptions**\n\n${example.assumptions.map((item) => `- ${item}`).join('\n')}`
           : '';
-        const steps = block.steps.map((step, stepIndex) => [
+        const steps = example.reasoningSteps.map((step, stepIndex) => [
           `### Step ${stepIndex + 1}`,
-          step.explanation,
-          step.equation ? markdownMathExpression(step.equation) : ''
-        ].filter(Boolean).join('\n\n')).join('\n\n');
+          step
+        ].join('\n\n')).join('\n\n');
         return [
-          `## ${block.title}`,
-          `**Problem**\n\n${block.problem}`,
+          `## ${block.title || example.title}`,
+          `**Problem**\n\n${example.problem}`,
           givens,
           assumptions,
           steps,
-          `**Final answer**\n\n${block.finalAnswer}`,
-          `**Verification**\n\n${block.verification}`
+          `**Solution**\n\n${example.solution}`,
+          `**Verification**\n\n${example.verification}`
         ].filter(Boolean).join('\n\n');
       }
 
@@ -523,6 +504,22 @@ export function renderLessonContentBlocksToMarkdown(blocks: LessonContentBlock[]
   }).join('\n\n');
 }
 
+export const InstructionalWorkedExampleSchema = z.object({
+  title: z.string().min(1),
+  exampleType: z.enum(['numerical', 'conceptual', 'proof', 'case-analysis', 'experimental', 'design']),
+  problem: z.string().min(10),
+  givens: z.array(z.object({
+    name: z.string().trim().min(1),
+    value: z.string().trim().min(1),
+    unit: z.string().trim().min(1).optional()
+  })).max(20).optional(),
+  assumptions: z.array(z.string().trim().min(1)).max(12).optional(),
+  reasoningSteps: z.array(z.string().min(5)).min(2),
+  solution: z.string().min(10),
+  verification: z.string().min(10)
+});
+export type InstructionalWorkedExample = z.infer<typeof InstructionalWorkedExampleSchema>;
+
 export const InstructionalContentSchema = z.preprocess(
   (value: unknown) => normalizeNestedMathUnicode(value),
   z.object({
@@ -537,14 +534,7 @@ export const InstructionalContentSchema = z.preprocess(
   conceptIntroduction: z.string().min(30),
   deepExplanation: z.string().min(80),
   formalDevelopment: z.string().min(40),
-  workedExamples: z.array(z.object({
-    title: z.string().min(1),
-    exampleType: z.enum(['numerical', 'conceptual', 'proof', 'case-analysis', 'experimental', 'design']),
-    problem: z.string().min(10),
-    reasoningSteps: z.array(z.string().min(5)).min(2),
-    solution: z.string().min(10),
-    verification: z.string().min(10)
-  })).min(1),
+  workedExamples: z.array(InstructionalWorkedExampleSchema).min(1),
   applications: z.array(z.object({
     context: z.string().min(1),
     conceptConnection: z.string().min(10),
@@ -611,6 +601,13 @@ export const InstructionalContentSchema = z.preprocess(
           message: `Knowledge-check block references unavailable activity index ${block.activityIndex}.`
         });
       }
+      if (block.type === 'worked_example' && block.exampleIndex >= value.workedExamples.length) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['contentBlocks', index, 'exampleIndex'],
+          message: `Worked-example block references unavailable example index ${block.exampleIndex}.`
+        });
+      }
     });
   })
 );
@@ -649,7 +646,7 @@ export const StructuredLessonOutputSchema = z.preprocess(
       return {
         ...lesson,
         // The canonical typed blocks compile to Markdown for existing readers and downstream evidence consumers.
-        content: renderLessonContentBlocksToMarkdown(validatedBlocks.data)
+        content: renderLessonContentBlocksToMarkdown(validatedBlocks.data, lesson.instructionalContent?.workedExamples || [])
       };
     }
     return normalized;
