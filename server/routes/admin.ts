@@ -1395,7 +1395,7 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
       const result = await pool.query(
         `UPDATE courses
          SET status = 'published', version = COALESCE(version, 1) + 1, updated_at = NOW()
-         WHERE id = $1`,
+         WHERE id = $1 AND status = 'archived'`,
         [id]
       );
       if ((result.rowCount ?? 0) === 0) return res.status(404).json({ error: 'Course not found.' });
@@ -1468,16 +1468,37 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      const course = await client.query(`SELECT id FROM courses WHERE id = $1 FOR UPDATE`, [id]);
+      if (course.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Course not found.' });
+      }
+
+      // Revoke queued/running generation work before removing course data.
+      // A worker must still pass its own fenced writes; cancellation alone is not the fence.
+      await client.query(
+        `UPDATE course_generation_jobs
+         SET status = 'cancelled', stage = 'cancelled',
+             status_message = 'Course permanently deleted by administrator.',
+             lease_owner = NULL, lease_expires_at = NULL, updated_at = NOW(),
+             completed_at = NOW()
+         WHERE course_id = $1 AND status IN ('queued', 'running')`,
+        [id]
+      );
+
+      // Remove dependent instructional and learner data in the same transaction.
+      await client.query(`DELETE FROM course_knowledge_chunks WHERE course_id = $1`, [id]);
+      await client.query(`DELETE FROM course_lesson_practice_attempts WHERE course_id = $1`, [id]);
+      await client.query(`DELETE FROM course_formulas WHERE course_id = $1`, [id]);
       await client.query(`DELETE FROM course_lessons WHERE course_id = $1`, [id]);
       await client.query(`DELETE FROM course_modules WHERE course_id = $1`, [id]);
-      await client.query(`DELETE FROM course_formulas WHERE course_id = $1`, [id]).catch(() => {});
       await client.query(`DELETE FROM courses WHERE id = $1`, [id]);
       await client.query('COMMIT');
       catalogCache.invalidateAll();
-      res.json({ success: true, courseId: id });
+      return res.json({ success: true, courseId: id });
     } catch (err: any) {
-      await client.query('ROLLBACK');
-      res.status(500).json({ error: 'Failed to permanently delete course', details: err.message });
+      await client.query('ROLLBACK').catch(() => undefined);
+      return res.status(500).json({ error: 'Failed to permanently delete course; transaction rolled back.', details: err.message });
     } finally {
       client.release();
     }
@@ -1494,15 +1515,36 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
 
+    const client = await pool.connect();
     try {
-      await pool.query(
-        `UPDATE courses SET status = 'archived', updated_at = NOW() WHERE id = $1`,
+      await client.query('BEGIN');
+      const course = await client.query(`SELECT id FROM courses WHERE id = $1 FOR UPDATE`, [id]);
+      if (course.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Course not found.' });
+      }
+      await client.query(
+        `UPDATE course_generation_jobs
+         SET status = 'cancelled', stage = 'cancelled',
+             status_message = 'Course archived by administrator.',
+             lease_owner = NULL, lease_expires_at = NULL, updated_at = NOW(),
+             completed_at = NOW()
+         WHERE course_id = $1 AND status IN ('queued', 'running')`,
         [id]
       );
+      await client.query(
+        `UPDATE courses SET status = 'archived', version = COALESCE(version, 1) + 1, updated_at = NOW()
+         WHERE id = $1`,
+        [id]
+      );
+      await client.query('COMMIT');
       catalogCache.invalidateAll();
-      res.json({ success: true, courseId: id });
+      return res.json({ success: true, courseId: id, status: 'archived' });
     } catch (err: any) {
-      res.status(500).json({ error: 'Failed to archive course', details: err.message });
+      await client.query('ROLLBACK').catch(() => undefined);
+      return res.status(500).json({ error: 'Failed to archive course; transaction rolled back.', details: err.message });
+    } finally {
+      client.release();
     }
   });
 
