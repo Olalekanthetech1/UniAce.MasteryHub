@@ -291,12 +291,14 @@ export class JobRepository {
 
     // 1. Upsert course_module
     const moduleSql = `
+      WITH eligible_course AS (
+        SELECT id FROM courses WHERE id = $2 AND status <> 'archived' FOR SHARE
+      )
       INSERT INTO course_modules (
         id, course_id, title, description, order_index, estimated_minutes, created_at, updated_at
       )
-      SELECT $1, c.id, $3, $4, $5, $6, NOW(), NOW()
-      FROM courses c
-      WHERE c.id = $2 AND c.status <> 'archived'
+      SELECT $1, eligible_course.id, $3, $4, $5, $6, NOW(), NOW()
+      FROM eligible_course
       ON CONFLICT (id, course_id) DO UPDATE SET
         title = EXCLUDED.title,
         description = EXCLUDED.description,
@@ -320,13 +322,15 @@ export class JobRepository {
     // 2. Upsert course_lesson (if provided)
     if (params.lesson) {
       const lessonSql = `
+        WITH eligible_course AS (
+          SELECT id FROM courses WHERE id = $2 AND status <> 'archived' FOR SHARE
+        )
         INSERT INTO course_lessons (
           id, course_id, module_id, title, content_markdown, order_index,
           key_terms, learning_outcomes, asset_references, instructional_content, created_at, updated_at
         )
-        SELECT $1, c.id, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, NOW(), NOW()
-        FROM courses c
-        WHERE c.id = $2 AND c.status <> 'archived'
+        SELECT $1, eligible_course.id, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, NOW(), NOW()
+        FROM eligible_course
         ON CONFLICT (id, course_id, module_id) DO UPDATE SET
           title = EXCLUDED.title,
           content_markdown = EXCLUDED.content_markdown,
