@@ -20,6 +20,7 @@ import { catalogCache } from '../cache/catalogCache';
 import { ensureCourseLearningSchema } from '../services/courseLearningSchema';
 import { ensureCourseReviewSchema } from '../services/courseReviewSchema';
 import { ensureCourseAssessmentSchema } from '../services/courseAssessmentSchema';
+import { ensureCourseLifecycleSchema } from '../services/courseLifecycleSchema.js';
 import { activeCancelledJobs } from '../services/courseJobControl.js';
 import {
   getSystemConfigDoc,
