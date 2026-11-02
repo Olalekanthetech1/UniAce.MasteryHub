@@ -440,7 +440,7 @@ function markdownMathExpression(expression: string): string {
   if (/^\$\$[\s\S]*\$\$/.test(value) || /^\$(?!\$)[\s\S]+\$(?!\$)$/.test(value) || /^\\\([\s\S]*\\\)$/.test(value) || /^\\\[[\s\S]*\\\]$/.test(value)) {
     return value;
   }
-  return `$\n${value}\n$`;
+  return '$$\n' + value + '\n$$';
 }
 
 /**
@@ -449,7 +449,7 @@ function markdownMathExpression(expression: string): string {
  * audio and assessment-evidence consumers.
  */
 export function renderLessonContentBlocksToMarkdown(blocks: LessonContentBlock[]): string {
-  return blocks.map((block, index) => {
+  return blocks.map((block) => {
     switch (block.type) {
       case 'explanation':
         return [`## ${block.title || 'Explanation'}`, block.markdown].join('\n\n');
@@ -470,7 +470,7 @@ export function renderLessonContentBlocksToMarkdown(blocks: LessonContentBlock[]
         return [
           `## ${block.title}`,
           `> Diagram description: ${block.altText}`,
-          ```${block.format}\n${block.source}\n````,
+          '```' + block.format + '\n' + block.source + '\n```',
           block.caption || ''
         ].filter(Boolean).join('\n\n');
 
