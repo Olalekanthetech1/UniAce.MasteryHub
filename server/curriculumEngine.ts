@@ -563,8 +563,20 @@ Organise learning around Understand → Explore → Apply → Verify → Master.
 For the Markdown 'content' field, include at least three meaningful level-2 headings and at least 800 characters of substantive academic prose. Headings should reflect the discipline and topic, not generic filler.
 When including a conceptual flowchart in 'content', prefer a structured \`\`\`diagram-spec JSON block ({ "type": "flowchart", "direction": "TD", "nodes": [{ "id": "n1", "label": "..." }], "edges": [{ "from": "n1", "to": "n2" }] }) so the platform serializer generates valid Mermaid syntax, or quote all Mermaid node labels in double quotes (e.g., A["Specific Weight (γ = ρg)"]) without raw $...$ LaTeX inside labels.
 
-Return BOTH readable Markdown in "content" and structured data in "instructionalContent".
+Return the structured lesson in "instructionalContent.contentBlocks" and protected mastery activities in "instructionalContent". The server compiles typed blocks into the legacy Markdown "content" field; typed blocks are the canonical representation.
 
+TYPED CONTENT BLOCK RULES
+- "contentBlocks" is required and ordered in the same sequence a student should learn. Return 3-40 blocks with unique stable IDs. Include at least one "explanation" block and one "worked_example" block.
+- "explanation": provide substantive Markdown in "markdown"; use a topic-specific "title" where useful.
+- "mathematical_derivation": use only where the discipline and topic require formal mathematics. Include explicit assumptions, at least two logically ordered steps, optional LaTeX "equation" per step, and a justified conclusion where appropriate.
+- "engineering_diagram": use only when a diagram materially improves understanding. Supply "format" as "mermaid" or "svg", valid source without Markdown fences, accurate "altText", and an optional caption. Do not invent relationships, components, dimensions or labels.
+- "worked_example": provide a defensible problem, actual givens and units, assumptions, at least two reasoning steps, a final answer, and a genuine independent reasonableness or logic verification. Do not invent empirical or measured values.
+- "interactive_simulation": optional. Use only for a genuine parameterized mathematical model that can be expressed as a safe function of x and declared slider parameters. Supply the exact expression, xRange, axis labels, and 1-8 declared parameters with min, max, step and initial values. Every symbol must be x, a declared parameter, pi, e, or a supported mathematical function. Do not use code, assignment statements, arbitrary functions, or unsupported simulation claims. Omit this block when the lesson does not support a defensible parameterized model.
+- "knowledge_check": link to an existing protected activity using "activityIndex" (zero-based index into "knowledgeChecks"). It may include a title, but MUST NOT contain an answer, expected reasoning, rubric, hint or answer key. Those remain server-side and are revealed only after a persisted student attempt.
+- Do not force every block type into every lesson. Derivations, diagrams and simulations are optional when not pedagogically or technically justified. Never insert placeholder blocks to satisfy the schema.
+- The server regenerates "content" from validated blocks for legacy Markdown consumers. Do not use a separate contradictory Markdown narrative as the source of truth.
+
+STRUCTURED CONTENT RULES
 STRUCTURED CONTENT RULES
 - frameworkVersion must be "understand-explore-apply-verify-master-v1"; disciplineEngine must be "${domainBrief.pedagogyType}".
 - learningObjectives: 2-5 measurable capabilities aligned to approved outcomes.
@@ -603,6 +615,11 @@ instructionalContent must follow this shape:
  "guidedPractice":[{"prompt":"...","hints":["..."],"expectedApproach":"...","expectedAnswer":"...","explanation":"...","diagnosticSignals":["..."]}],
  "independentPractice":[{"prompt":"...","hints":[],"expectedApproach":"...","expectedAnswer":"...","explanation":"...","diagnosticSignals":["..."]}],
  "knowledgeChecks":[{"prompt":"...","responseMode":"explain","expectedReasoning":"...","answerOrRubric":"...","misconceptionSignals":["..."],"difficulty":2,"learningOutcome":"..."}],
+  "contentBlocks":[
+    {"id":"explanation-1","type":"explanation","title":"...","markdown":"Substantive topic-specific explanation in Markdown..."},
+    {"id":"worked-example-1","type":"worked_example","title":"...","exampleType":"numerical","problem":"...","givens":[],"assumptions":[],"steps":[{"explanation":"...","equation":"..."},{"explanation":"...","equation":"..."}],"finalAnswer":"...","verification":"..."},
+    {"id":"knowledge-check-1","type":"knowledge_check","activityIndex":0}
+  ],
  "mastery":{"targetLevel":3,"criteria":["..."],"retentionPrompts":["..."]}
 }
 These are schema illustrations, not course facts. Return strict JSON without fences or commentary.`;
