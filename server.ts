@@ -90,6 +90,7 @@ import {
   isGenericLessonTitle,
   isBareDiagramOrFragment
 } from './src/shared/courseSchemas.js';
+import { AcademicContentBlockCollectionSchema } from './src/shared/academicContentBlocks.js';
 import { VISUALIZATION_AND_DIAGRAM_DIRECTIVE } from './src/shared/prompts.js';
 import {
   validateLessonSyntax,
