@@ -26,22 +26,22 @@ export type MermaidDiagramType =
   | 'unknown';
 
 export const StructuredDiagramNodeSchema = z.object({
-  id: z.string().min(1),
+  id: z.string().trim().min(1),
   label: z.string().min(1),
   shape: z.enum(['rect', 'rounded', 'stadium', 'subroutine', 'cylinder', 'circle', 'rhombus', 'hexagon']).optional()
 });
 
 export const StructuredDiagramEdgeSchema = z.object({
-  from: z.string().min(1),
-  to: z.string().min(1),
+  from: z.string().trim().min(1),
+  to: z.string().trim().min(1),
   label: z.string().optional(),
   style: z.enum(['solid', 'dotted', 'thick']).optional()
 });
 
 export const StructuredDiagramSubgraphSchema = z.object({
-  id: z.string().min(1),
+  id: z.string().trim().min(1),
   title: z.string().min(1),
-  nodeIds: z.array(z.string().min(1)).min(1)
+  nodeIds: z.array(z.string().trim().min(1)).min(1)
 });
 
 export const StructuredDiagramSpecSchema = z.object({
@@ -51,6 +51,95 @@ export const StructuredDiagramSpecSchema = z.object({
   nodes: z.array(StructuredDiagramNodeSchema).min(1),
   edges: z.array(StructuredDiagramEdgeSchema).default([]),
   subgraphs: z.array(StructuredDiagramSubgraphSchema).optional()
+}).superRefine((spec, ctx) => {
+  const rawNodeIds = new Set<string>();
+  const safeNodeIds = new Map<string, string>();
+
+  spec.nodes.forEach((node, index) => {
+    const rawId = node.id.trim();
+    if (rawNodeIds.has(rawId)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['nodes', index, 'id'],
+        message: `Duplicate diagram node ID: "${rawId}".`
+      });
+      return;
+    }
+    rawNodeIds.add(rawId);
+
+    const safeId = sanitizeMermaidNodeId(rawId, index + 1);
+    const existingOwner = safeNodeIds.get(safeId);
+    if (existingOwner && existingOwner !== rawId) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['nodes', index, 'id'],
+        message: `Diagram node IDs "${existingOwner}" and "${rawId}" both normalize to Mermaid ID "${safeId}". Use distinct node IDs.`
+      });
+    } else {
+      safeNodeIds.set(safeId, rawId);
+    }
+  });
+
+  spec.edges.forEach((edge, index) => {
+    if (!rawNodeIds.has(edge.from)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['edges', index, 'from'],
+        message: `Edge references undefined source node "${edge.from}".`
+      });
+    }
+    if (!rawNodeIds.has(edge.to)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['edges', index, 'to'],
+        message: `Edge references undefined target node "${edge.to}".`
+      });
+    }
+  });
+
+  const safeSubgraphIds = new Map<string, string>();
+  const assignedNodes = new Set<string>();
+  (spec.subgraphs || []).forEach((subgraph, index) => {
+    const rawId = subgraph.id.trim();
+    const safeId = sanitizeMermaidNodeId(rawId, index + 1);
+    if (safeNodeIds.has(safeId)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['subgraphs', index, 'id'],
+        message: `Subgraph ID "${rawId}" conflicts with a diagram node after Mermaid ID normalization.`
+      });
+    }
+    const existingSubgraph = safeSubgraphIds.get(safeId);
+    if (existingSubgraph) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['subgraphs', index, 'id'],
+        message: `Subgraph IDs "${existingSubgraph}" and "${rawId}" normalize to the same Mermaid ID "${safeId}".`
+      });
+    } else {
+      safeSubgraphIds.set(safeId, rawId);
+    }
+
+    subgraph.nodeIds.forEach((nodeId, nodeIndex) => {
+      if (!rawNodeIds.has(nodeId)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['subgraphs', index, 'nodeIds', nodeIndex],
+          message: `Subgraph references undefined diagram node "${nodeId}".`
+        });
+        return;
+      }
+      if (assignedNodes.has(nodeId)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['subgraphs', index, 'nodeIds', nodeIndex],
+          message: `Diagram node "${nodeId}" is assigned to more than one subgraph.`
+        });
+      } else {
+        assignedNodes.add(nodeId);
+      }
+    });
+  });
 });
 
 export type StructuredDiagramSpec = z.infer<typeof StructuredDiagramSpecSchema>;
