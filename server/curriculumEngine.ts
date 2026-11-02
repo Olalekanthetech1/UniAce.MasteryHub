@@ -258,7 +258,7 @@ ${researchContext && researchContext.trim() ? `\n[RETRIEVED ACADEMIC EVIDENCE â€
    - CRITICAL: If an [ADMIN-PROVIDED SYLLABUS OUTLINE] is present above, you MUST extract and include EVERY topic, unit, and theme from the admin's outline into "coreCourseTopics", ordered logically for ${normalizedLevel} Level.
    - If no admin outline is provided, derive the standard accredited university syllabus topics for "${courseName}" (${courseCode || ''}) at ${normalizedLevel} Level.
 6. Identify canonical references only when a specific title/author/edition or institutional source is explicitly present in the admin-supplied material or retrieved evidence above. Do not infer or invent references. Include source URLs where available; return an empty array when no such reference is present.
-7. Formulate 3-4 foundational axioms/principles that establish the core framework for orientation in Module 1.
+7. Identify 3-4 course-specific foundational concepts, laws, principles, methods, or models students need to understand the subject. These foundations are not automatically historical; do not infer that a history topic or timeline belongs in the course.
 
 Return strictly a JSON object:
 {
@@ -285,7 +285,7 @@ Return strictly a JSON object:
 
 /**
  * Stage 1: Dynamic Syllabus Skeleton Generator Prompt
- * Derives module count from credits and term length, and enforces the domain-agnostic Module 1 Orientation Rule.
+ * Derives module count from credits and term length, and builds a course-relevant opening foundation without forcing a history-first structure.
  */
 export function buildCurriculumSkeletonPrompt(
   domainBrief: DomainBrief,
@@ -390,9 +390,13 @@ STRICT OUTLINE ADHERENCE DIRECTIVE:
 
 [CRITICAL CURRICULUM ARCHITECTURE RULES]:
 1. DYNAMIC MODULE COUNT: ${hasAdminOutline ? `Structure the modules to faithfully cover all units in the Admin-Provided Outline (generating at least ${params.minModules} modules, or matching the structural divisions of the Admin Outline).` : `Generate between ${params.minModules} and ${params.maxModules} full academic modules to provide genuine ${normalizedLevel} Level depth for a ${params.credits}-credit course.`}
-2. DOMAIN-AGNOSTIC MODULE 1 ORIENTATION RULE:
-   - Module 1 MUST establish the history, scope, foundational taxonomy, and core theoretical framework of the discipline at ${normalizedLevel} Level${hasAdminOutline ? ', integrating the introductory topics of the Admin Outline' : ''}.
-   - Ground Module 1 in the domain's foundational axioms: ${domainBrief.foundationalAxioms.join('; ')}.
+2. COURSE-RELEVANT FOUNDATIONS & OPENING SEQUENCE:
+   - Design the opening module around the actual subject matter, approved syllabus topics, learning outcomes, prerequisite dependencies, and ${normalizedLevel} Level expectations. It should teach the most useful first concepts for this particular course, not follow a generic template.
+   - HISTORY IS OPTIONAL, NOT A DEFAULT REQUIREMENT: Do not automatically add a history, origin, evolution, or timeline module. Include historical development only when it is explicitly required by the Admin-provided outline, is a stated course learning outcome, or is substantively necessary to understand the discipline-specific subject being taught.
+   - When historical context is useful but is not a major learning outcome, integrate only the proportionate context into the relevant lesson. Do not expand it into a standalone module merely to fill the opening position.
+   - Do not force generic "scope", "taxonomy", or "evolution" lessons when they are not meaningful course topics. Use precise, course-specific module and lesson titles.
+   - Ground the opening concepts in the course-specific foundations identified for this discipline: ${domainBrief.foundationalAxioms.join('; ')}.
+   - Mark the first module as a foundation module only because it introduces the actual prerequisites and core concepts needed for the rest of this course; "foundation" does not mean "history module".
 3. PROGRESSIVE TAXONOMY & PREREQUISITES:
    - Organize modules so foundational mechanisms and prerequisite concepts precede complex applications, derivations, and specialized topics calibrated for ${normalizedLevel} Level.
 4. BLOOM'S TAXONOMY LEARNING OUTCOMES:
@@ -417,12 +421,12 @@ Return strictly a JSON object:
   "pedagogyType": "${domainBrief.pedagogyType}",
   "creditHours": ${params.credits},
   "learningOutcomes": [
-    { "outcome": "Demonstrate understanding of the foundational taxonomy...", "bloomLevel": "Understand" },
+    { "outcome": "Explain and apply the first course-specific concepts and principles...", "bloomLevel": "Understand" },
     { "outcome": "Analyze and calculate quantitative relationships...", "bloomLevel": "Analyze" }
   ],
   "modules": [
     {
-      "title": "Module 1 Title (Foundations & Discipline Scope)",
+      "title": "A precise title describing the first course-relevant foundational topic",
       "isFoundationModule": true,
       "lessonTitles": ["Lesson 1 Title", "Lesson 2 Title", "Lesson 3 Title", "Lesson 4 Title"],
       "quizTopics": ["Concept 1", "Concept 2"],
@@ -434,7 +438,7 @@ Return strictly a JSON object:
 
 /**
  * Stage 2: Outline Critic Prompt with Rubric
- * Audits syllabus skeleton across 4 axes: Coverage, Foundations Orientation, Prerequisite Sequencing, Workload Density.
+ * Audits syllabus skeleton across five axes: Coverage, Opening Foundations, Prerequisite Sequencing, Workload Density, and Internal Consistency.
  */
 export function buildOutlineCriticPrompt(
   domainBrief: DomainBrief,
@@ -462,7 +466,7 @@ ${moduleSummary}
 
 [AUDIT RUBRIC AXES]:
 1. COVERAGE SCORE (0-100): Are all expected core topics of ${domainBrief.primaryDomain} AND 100% of the topics in the Admin-Provided Syllabus Outline (if provided) represented in the proposed syllabus? Any topic from the Admin Outline that is missing MUST be listed in "missingTopics" and reduce "coverageScore".
-2. FOUNDATIONS ORIENTATION SCORE (0-100): Does Module 1 properly establish the history, scope, taxonomy, and core conceptual framework of the discipline for ${normalizedLevel} Level students?
+2. OPENING FOUNDATIONS SCORE (0-100): Does the opening module establish the course-specific concepts, prerequisites, methods, or models students need at ${normalizedLevel} Level? Do not reward a history, scope, taxonomy, or evolution section merely for being present. Historical treatment is appropriate only when the outline, learning outcomes, or subject matter make it materially relevant; otherwise, an unnecessary history module is generic filler and should reduce this score.
 3. PREREQUISITE & LEVEL SEQUENCING SCORE (0-100): Is the pedagogical progression logical for ${normalizedLevel} Level? Do foundational concepts precede advanced applications without inappropriate level jumps?
 4. WORKLOAD BALANCE & DENSITY (0-100): Does the module count (${proposedSkeleton.modules?.length || 0}) and lesson count provide legitimate ${normalizedLevel} Level university depth without superficial rushing or bloated repetition?
 5. INTERNAL CONSISTENCY (0-100): Are module titles, lesson titles, learning-outcome mappings, quiz topics, course scope, and the stated pedagogy internally aligned? Penalize contradictory sequencing, duplicated modules/lessons, orphaned or invalid learning-outcome references, quiz topics not covered by lessons, and descriptions that conflict with the proposed structure. A high score requires coherent naming, scope, terminology, and assessment alignment.
