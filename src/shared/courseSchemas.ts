@@ -382,7 +382,7 @@ export const LessonContentBlockSchema = z.discriminatedUnion('type', [
 ]);
 export type LessonContentBlock = z.infer<typeof LessonContentBlockSchema>;
 
-export const LessonContentBlocksSchema = z.array(LessonContentBlockSchema).min(3).max(40).superRefine((blocks, ctx) => {
+export const LessonContentBlocksSchema = z.array(LessonContentBlockSchema).min(2).max(40).superRefine((blocks, ctx) => {
   const ids = new Set<string>();
   let explanationCount = 0;
   let workedExampleCount = 0;
@@ -659,11 +659,11 @@ export const StructuredLessonOutputSchema = z.preprocess(
     }),
     instructionalContent: InstructionalContentSchema
   }).superRefine((value, ctx) => {
-    if (!value.instructionalContent.contentBlocks || value.instructionalContent.contentBlocks.length < 3) {
+    if (!value.instructionalContent.contentBlocks || value.instructionalContent.contentBlocks.length < 2) {
       ctx.addIssue({
         code: 'custom',
         path: ['instructionalContent', 'contentBlocks'],
-        message: 'New lesson generation must return at least three validated typed academic content blocks.'
+        message: 'New lesson generation must return at least two validated typed academic content blocks.'
       });
     }
   })
