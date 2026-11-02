@@ -4832,8 +4832,9 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
       (!sourceText || typeof sourceText !== 'string' || !sourceText.trim())) {
     return res.status(400).json({ error: 'An admin-approved syllabus outline or source material is required for source-grounded course generation.' });
   }
-  const suppliedSourceChars = [outline, sourceText].reduce((total, value) =>
-    total + (typeof value === 'string' ? value.length : 0), 0);
+  const suppliedSourceChars = [outline, sourceText]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .join('\n\n').length;
   if (suppliedSourceChars > MAX_COURSE_SOURCE_CHARS) {
     return res.status(413).json({
       error: 'The combined syllabus outline and extracted source material exceeds ' +
@@ -5214,8 +5215,9 @@ async function executeCoordinatedGenerationJob(
     if (res) return res.status(400).json({ error: 'An admin-approved syllabus outline or source material is required for source-grounded course generation.' });
     return;
   }
-  const suppliedSourceChars = [outline, sourceText].reduce((total, value) =>
-    total + (typeof value === 'string' ? value.length : 0), 0);
+  const suppliedSourceChars = [outline, sourceText]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .join('\n\n').length;
   if (suppliedSourceChars > MAX_COURSE_SOURCE_CHARS) {
     const message = 'The combined syllabus outline and extracted source material exceeds ' +
       MAX_COURSE_SOURCE_CHARS.toLocaleString() +
