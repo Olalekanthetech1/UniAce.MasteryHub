@@ -21,7 +21,7 @@ const collection = {
       introduction: 'Consider a small stationary fluid element and apply vertical force equilibrium.',
       assumptions: ['The fluid is at rest.', 'Density is constant over the stated depth interval.'],
       steps: [
-        { explanation: 'Balance the vertical pressure and weight forces.', equationLatex: 'P A - (P + dP)A - \rho g A dz = 0' },
+        { explanation: 'Balance the vertical pressure and weight forces.', equationLatex: 'P A - (P + dP)A - \\rho g A dz = 0' },
         { explanation: 'Divide by the element volume and rearrange.', equationLatex: '\\frac{dP}{dz} = -\\rho g' }
       ],
       conclusion: 'Pressure increases with depth when the vertical coordinate is positive upward.'
