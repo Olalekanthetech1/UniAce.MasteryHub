@@ -18,6 +18,7 @@ import { ChatInputBar } from './chat/ChatInputBar';
 import { ChatToolkitSheet } from './chat/ChatToolkitSheet';
 import { SyllabusJumperModal } from './chat/SyllabusJumperModal';
 import { MiniQuizModal } from './chat/MiniQuizModal';
+import { ensureMathDelimiters } from '../shared/mathText';
 
 interface ChatBotProps {
   isFullPage?: boolean;
@@ -435,6 +436,10 @@ export default function ChatBot({
       setHintsRequestedCount(prev => prev + 1);
     }
 
+    if (textToSend.trim()) {
+      textToSend = ensureMathDelimiters(textToSend);
+    }
+
     if (pdfText) {
       textToSend = `[Attached Document Context]:\n${pdfText}\n\n[Student Question]:\n${textToSend}`;
     }
@@ -804,40 +809,80 @@ export default function ChatBot({
               </p>
             </div>
 
-            {/* Quick Action Cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-3xl mx-auto text-left">
-              {[
-                { title: "Explain Core Mechanics", desc: "Break down fundamental theorems and definitions with proofs.", prompt: "Explain the core mechanics and derivations of this topic in rigorous detail." },
-                { title: "Worked University Problem", desc: "Show a step-by-step worked exam calculation with formulas.", prompt: "Provide a challenging worked exam problem on this topic with step-by-step solutions." },
-                { title: "3-Question Quick Check", desc: "Test diagnostic recall and calculation accuracy right now.", prompt: "__TRIGGER_MINI_QUIZ__" },
-                { title: "Syllabus Key Formulas", desc: "Extract essential LaTeX formulas and physical constants.", prompt: "List all key formulas, units, and constants for this syllabus module." }
-              ].map((card, cIdx) => (
-                <button
-                  key={cIdx}
-                  onClick={() => {
-                    if (card.prompt === "__TRIGGER_MINI_QUIZ__") {
-                      setIsMiniQuizOpen(true);
-                    } else {
-                      setInput(card.prompt);
-                    }
-                  }}
-                  className="p-4 bg-white dark:bg-zinc-900 border border-slate-200/90 dark:border-zinc-800 rounded-2xl hover:border-emerald-500 hover:shadow-md transition-all group flex flex-col justify-between text-left"
-                >
-                  <div>
-                    <h4 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors">
-                      {card.title}
-                    </h4>
-                    <p className="text-[11px] sm:text-xs text-slate-500 dark:text-zinc-400 mt-1 leading-relaxed">
-                      {card.desc}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-1 text-[11px] sm:text-xs font-semibold text-emerald-500 mt-3">
-                    <span>Ask Tutor</span>
-                    <ArrowRight size={12} className="group-hover:translate-x-1 transition-transform" />
-                  </div>
-                </button>
-              ))}
-            </div>
+            {/* Dynamically Resolved Context Action Cards */}
+            {(() => {
+              const focusSubject = currentSubTopicTitle || currentModuleTitle || currentCourseId;
+              const activeWeaknesses: string[] = Array.isArray((profile || authProfile)?.learningProfile?.weaknesses)
+                ? (profile || authProfile).learningProfile.weaknesses.filter((w: any) => typeof w === 'string' && w.trim())
+                : [];
+              const cards: Array<{ title: string; desc: string; prompt: string }> = [];
+
+              if (focusSubject) {
+                cards.push(
+                  {
+                    title: `Derive: ${focusSubject}`,
+                    desc: `Break down fundamental theorems, definitions, and mathematical proofs for ${focusSubject}.`,
+                    prompt: `Explain the core mechanics and rigorous derivations of "${focusSubject}" in detail.`
+                  },
+                  {
+                    title: `Worked Exam Problem: ${focusSubject}`,
+                    desc: `Step-by-step university exam calculation on ${focusSubject}.`,
+                    prompt: `Provide a challenging worked university exam problem on "${focusSubject}" with step-by-step solutions.`
+                  },
+                  {
+                    title: `3-Question Check: ${focusSubject}`,
+                    desc: `Test diagnostic recall and calculation accuracy on ${focusSubject}.`,
+                    prompt: '__TRIGGER_MINI_QUIZ__'
+                  },
+                  {
+                    title: `Key Formulas: ${focusSubject}`,
+                    desc: `Extract essential LaTeX formulas, boundary conditions, and constants for ${focusSubject}.`,
+                    prompt: `List all key formulas, units, and constants for "${focusSubject}".`
+                  }
+                );
+              } else if (activeWeaknesses.length > 0) {
+                activeWeaknesses.slice(0, 3).forEach((weakness) => {
+                  cards.push({
+                    title: `Strengthen: ${weakness}`,
+                    desc: `Targeted remediation based on your recorded learning profile.`,
+                    prompt: `Help me master "${weakness}" with a clear step-by-step explanation and a practice problem.`
+                  });
+                });
+              }
+
+              if (cards.length === 0) return null;
+
+              return (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-3xl mx-auto text-left">
+                  {cards.map((card, cIdx) => (
+                    <button
+                      key={cIdx}
+                      onClick={() => {
+                        if (card.prompt === "__TRIGGER_MINI_QUIZ__") {
+                          setIsMiniQuizOpen(true);
+                        } else {
+                          setInput(card.prompt);
+                        }
+                      }}
+                      className="p-4 bg-white dark:bg-zinc-900 border border-slate-200/90 dark:border-zinc-800 rounded-2xl hover:border-emerald-500 hover:shadow-md transition-all group flex flex-col justify-between text-left"
+                    >
+                      <div>
+                        <h4 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors">
+                          {card.title}
+                        </h4>
+                        <p className="text-[11px] sm:text-xs text-slate-500 dark:text-zinc-400 mt-1 leading-relaxed">
+                          {card.desc}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1 text-[11px] sm:text-xs font-semibold text-emerald-500 mt-3">
+                        <span>Ask Tutor</span>
+                        <ArrowRight size={12} className="group-hover:translate-x-1 transition-transform" />
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              );
+            })()}
           </div>
         ) : (
           <div className="w-full max-w-5xl xl:max-w-6xl 2xl:max-w-7xl mx-auto flex flex-col gap-3.5 sm:gap-5 py-1">
@@ -910,6 +955,12 @@ export default function ChatBot({
         hintsRequestedCount={hintsRequestedCount}
         onRequestAdaptiveSolution={() => handleSend("Please break down this derivation step-by-step with full intermediate calculations and intuitive analogies.")}
         activeTopicTitle={currentSubTopicTitle || currentModuleTitle || currentCourseId || undefined}
+        activeCourseId={currentCourseId}
+        activeModuleTitle={currentModuleTitle}
+        activeSubTopicTitle={currentSubTopicTitle}
+        activeContent={currentContent}
+        learningProfile={(profile || authProfile)?.learningProfile || null}
+        lastModelMessage={[...messages].reverse().find(m => m.role === 'model')?.text || null}
         onAbortStream={handleAbortStream}
       />
 

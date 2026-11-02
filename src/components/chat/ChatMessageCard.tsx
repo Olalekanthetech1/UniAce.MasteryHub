@@ -9,6 +9,7 @@ import {
 import { ChatMessage, Bookmark } from '../../types';
 import MarkdownRenderer from '../MarkdownRenderer';
 import { sanitizeLatex } from '../../services/aiCourseGenerator';
+import { containsLatexMath, ensureMathDelimiters } from '../../shared/mathText';
 import { 
   toggleMessageReaction, 
   subscribeToMessageReactions,
@@ -203,18 +204,47 @@ export const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // Generate dynamic follow-up chips based on message content
+  // Generate dynamic follow-up chips anchored to the actual concepts and formulas in the message
   const dynamicChips = React.useMemo(() => {
     if (!isModel || !cleanText) return [];
-    const chips = [];
+    const chips: Array<{ label: string; prompt: string; icon: any }> = [];
 
-    if (cleanText.toLowerCase().includes('formula') || cleanText.toLowerCase().includes('equation') || cleanText.includes('$')) {
-      chips.push({ label: 'Break Down Step-by-Step', prompt: 'Please break down the step-by-step mathematical proof for this equation in detail.', icon: Lightbulb });
-      chips.push({ label: 'Show Visual/Plot', prompt: 'Can you describe and provide a Mermaid graph or chart visualization for this concept?', icon: BarChart2 });
+    const extractedConcept =
+      Array.from(cleanText.matchAll(/^#{1,3}\s+([^\n#*`]+)$/gm), (m) => m[1].trim()).find(
+        (h) => h.length >= 4 && h.length <= 42 && !/^(?:step\s*\d+|summary|conclusion|final answer)/i.test(h)
+      ) ||
+      Array.from(cleanText.matchAll(/\*\*([^*]{4,36})\*\*/g), (m) => m[1].trim()).find(
+        (t) => !/^(?:step\s*\d+|note|summary|hint|answer|diagnostic|proof|example)/i.test(t)
+      );
+
+    const shortConcept = extractedConcept
+      ? extractedConcept.length > 22
+        ? `${extractedConcept.slice(0, 20)}…`
+        : extractedConcept
+      : null;
+
+    if (containsLatexMath(cleanText)) {
+      chips.push({
+        label: shortConcept ? `Derive ${shortConcept}` : 'Step-by-Step Proof',
+        prompt: extractedConcept
+          ? `Break down the full mathematical derivation and physical meaning of the equation for "${extractedConcept}".`
+          : 'Break down the mathematical derivation of each equation in your previous response step-by-step.',
+        icon: Lightbulb
+      });
+      chips.push({
+        label: shortConcept ? `Plot ${shortConcept}` : 'Plot / Diagram',
+        prompt: extractedConcept
+          ? `Generate a function plot or diagram illustrating "${extractedConcept}" and its mathematical behavior.`
+          : 'Provide a function plot or Mermaid diagram illustrating the mathematical relationship above.',
+        icon: BarChart2
+      });
     }
-    if (cleanText.length > 250) {
-      chips.push({ label: 'Give 1 Practice Problem', prompt: 'Give me a challenging university-level practice problem based on this to test my understanding.', icon: HelpCircle });
-      chips.push({ label: 'Real-World Analogy', prompt: 'Can you explain this using an intuitive real-world engineering or scientific analogy?', icon: Sparkles });
+    if (cleanText.length > 220 && extractedConcept) {
+      chips.push({
+        label: `Exam Problem: ${shortConcept}`,
+        prompt: `Give me a rigorous university exam calculation problem testing "${extractedConcept}".`,
+        icon: HelpCircle
+      });
     }
     return chips.slice(0, 3);
   }, [isModel, cleanText]);
@@ -357,8 +387,15 @@ export const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
                   </AnimatePresence>
                 )
               ) : (
-                <div className="text-white dark:text-white font-medium whitespace-pre-wrap break-words leading-relaxed text-sm">
-                  {cleanText || message.text}
+                <div className="text-white dark:text-white font-medium whitespace-pre-wrap break-words leading-relaxed text-sm [&_.katex]:text-white [&_p]:text-white">
+                  {containsLatexMath(cleanText || message.text) ? (
+                    <MarkdownRenderer
+                      content={sanitizeLatex(ensureMathDelimiters(cleanText || message.text))}
+                      inline
+                    />
+                  ) : (
+                    cleanText || message.text
+                  )}
                 </div>
               )}
 

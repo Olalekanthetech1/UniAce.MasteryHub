@@ -1,9 +1,12 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useMemo } from 'react';
 import { 
-  Send, Plus, Mic, MicOff, Image as ImageIcon, 
-  FileText, X, Sparkles, Sigma, HelpCircle, ArrowUp, Square 
+  Plus, Mic, MicOff, 
+  FileText, X, Sparkles, Sigma, HelpCircle, ArrowUp, Square, Eye 
 } from 'lucide-react';
 import { MathSymbolPalette } from './MathSymbolPalette';
+import MarkdownRenderer from '../MarkdownRenderer';
+import { sanitizeLatex } from '../../services/aiCourseGenerator';
+import { containsLatexMath, ensureMathDelimiters } from '../../shared/mathText';
 
 interface ChatInputBarProps {
   input: string;
@@ -26,6 +29,15 @@ interface ChatInputBarProps {
   hintsRequestedCount: number;
   onRequestAdaptiveSolution?: () => void;
   activeTopicTitle?: string;
+  activeCourseId?: string | null;
+  activeModuleTitle?: string | null;
+  activeSubTopicTitle?: string | null;
+  activeContent?: string | null;
+  learningProfile?: {
+    weaknesses?: string[];
+    strengths?: string[];
+  } | null;
+  lastModelMessage?: string | null;
   onAbortStream?: () => void;
 }
 
@@ -50,6 +62,12 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
   hintsRequestedCount,
   onRequestAdaptiveSolution,
   activeTopicTitle,
+  activeCourseId,
+  activeModuleTitle,
+  activeSubTopicTitle,
+  activeContent,
+  learningProfile,
+  lastModelMessage,
   onAbortStream,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -84,15 +102,15 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
         if (transcript) {
           // Normalize spoken math phrases to LaTeX
           let normalized = transcript
-            .replace(/integral of (.*?) dx/gi, '\\int $1 \\, dx')
-            .replace(/square root of (.*?)/gi, '\\sqrt{$1}')
-            .replace(/to the power of (\d+)/gi, '^{$1}')
+            .replace(/integral of (.*?) dx/gi, '$\\int $1 \\, dx$')
+            .replace(/square root of (.*?)/gi, '$\\sqrt{$1}$')
+            .replace(/to the power of (\d+)/gi, '$^{$1}$')
             .replace(/divided by/gi, '/')
-            .replace(/plus or minus/gi, '\\pm')
-            .replace(/theta/gi, '\\theta')
-            .replace(/alpha/gi, '\\alpha')
-            .replace(/beta/gi, '\\beta')
-            .replace(/pi/gi, '\\pi');
+            .replace(/plus or minus/gi, '$\\pm$')
+            .replace(/theta/gi, '$\\theta$')
+            .replace(/alpha/gi, '$\\alpha$')
+            .replace(/beta/gi, '$\\beta$')
+            .replace(/pi/gi, '$\\pi$');
 
           setInput((prev) => (prev ? `${prev} ${normalized}` : normalized));
         }
@@ -140,11 +158,139 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
     }
   };
 
-  const quickPrompts = [
-    { label: 'Explain Step-by-Step', text: 'Explain this concept step-by-step with clear derivations.' },
-    { label: 'Worked Example', text: 'Show a fully worked university exam problem on this topic.' },
-    { label: 'Key Formulas', text: 'List the essential formulas and definitions for this unit.' }
-  ];
+  // Cursor-aware LaTeX symbol insertion that ensures math delimiters ($...$) are balanced
+  const handleInsertMathSymbol = (rawLatex: string) => {
+    const el = textareaRef.current;
+    if (!el) {
+      const wrapped = rawLatex.startsWith('$') ? rawLatex : `$${rawLatex}$`;
+      onInsertSymbol(wrapped);
+      return;
+    }
+
+    const start = el.selectionStart ?? input.length;
+    const end = el.selectionEnd ?? input.length;
+    const before = input.slice(0, start);
+    const after = input.slice(end);
+
+    // Check if the cursor is currently inside an open $...$ math span
+    const dollarMatchesBefore = before.match(/(?<!\\)\$/g) || [];
+    const isInsideMathSpan = dollarMatchesBefore.length % 2 === 1;
+
+    const insertion = isInsideMathSpan
+      ? `${before.endsWith(' ') || before.endsWith('$') ? '' : ' '}${rawLatex}`
+      : `${before && !before.endsWith(' ') ? ' ' : ''}$${rawLatex}$`;
+
+    const nextValue = `${before}${insertion}${after}`;
+    setInput(nextValue);
+
+    requestAnimationFrame(() => {
+      el.focus();
+      const nextCursorPos = before.length + insertion.length;
+      el.setSelectionRange(nextCursorPos, nextCursorPos);
+    });
+  };
+
+  // Detect whether the current input contains LaTeX math to render in the Live Formula Preview
+  const hasMathInInput = useMemo(() => containsLatexMath(input), [input]);
+  const renderedMathPreview = useMemo(() => {
+    if (!hasMathInInput) return '';
+    return sanitizeLatex(ensureMathDelimiters(input));
+  }, [hasMathInInput, input]);
+
+  // Dynamically resolve contextual suggestion chips strictly from verified runtime context
+  const dynamicSuggestions = useMemo(() => {
+    const suggestions: Array<{ label: string; text: string }> = [];
+    const seenLabels = new Set<string>();
+    const addSuggestion = (label: string, text: string) => {
+      const cleanLabel = label.trim();
+      if (!cleanLabel || seenLabels.has(cleanLabel.toLowerCase()) || suggestions.length >= 4) return;
+      seenLabels.add(cleanLabel.toLowerCase());
+      suggestions.push({ label: cleanLabel, text: text.trim() });
+    };
+
+    // 1. Resolve from active lesson content headings if a syllabus lesson is open
+    if (activeContent && typeof activeContent === 'string') {
+      const headingMatches = Array.from(
+        activeContent.matchAll(/^#{2,3}\s+([^\n#*`]+)$/gm),
+        (m) => m[1].trim()
+      ).filter((h) => h.length >= 4 && h.length <= 48);
+
+      if (headingMatches.length > 0) {
+        const firstHeading = headingMatches[0];
+        addSuggestion(
+          `Derive: ${firstHeading.length > 26 ? `${firstHeading.slice(0, 24)}…` : firstHeading}`,
+          `Walk me through the rigorous derivation and core concepts of "${firstHeading}"${activeSubTopicTitle ? ` in ${activeSubTopicTitle}` : ''}.`
+        );
+      }
+    }
+
+    // 2. Resolve from active syllabus sub-topic / module / course context
+    const focusTopic = activeSubTopicTitle || activeModuleTitle || activeCourseId;
+    if (focusTopic) {
+      const shortTopic = focusTopic.length > 24 ? `${focusTopic.slice(0, 22)}…` : focusTopic;
+      addSuggestion(
+        `Worked Problem: ${shortTopic}`,
+        `Give me a worked university exam problem on "${focusTopic}" with step-by-step mathematical derivations.`
+      );
+      addSuggestion(
+        `Formulas: ${shortTopic}`,
+        `Extract and explain the essential equations, boundary conditions, and definitions for "${focusTopic}".`
+      );
+    }
+
+    // 3. Resolve from verified student learningProfile weaknesses/strengths in PostgreSQL/Firestore
+    const weaknesses = (learningProfile?.weaknesses || []).filter(
+      (w): w is string => typeof w === 'string' && w.trim().length > 0
+    );
+    for (const weakness of weaknesses.slice(0, 2)) {
+      const cleanW = weakness.trim();
+      const shortW = cleanW.length > 24 ? `${cleanW.slice(0, 22)}…` : cleanW;
+      addSuggestion(
+        `Strengthen: ${shortW}`,
+        `Help me overcome my weakness in "${cleanW}" with a clear breakdown and a diagnostic practice question.`
+      );
+    }
+
+    const strengths = (learningProfile?.strengths || []).filter(
+      (s): s is string => typeof s === 'string' && s.trim().length > 0
+    );
+    if (suggestions.length < 3 && strengths.length > 0) {
+      const cleanS = strengths[0].trim();
+      const shortS = cleanS.length > 24 ? `${cleanS.slice(0, 22)}…` : cleanS;
+      addSuggestion(
+        `Advanced Challenge: ${shortS}`,
+        `Give me an advanced, proof-level university challenge problem on "${cleanS}".`
+      );
+    }
+
+    // 4. Resolve from the latest AI tutor message in the active conversation
+    if (lastModelMessage && typeof lastModelMessage === 'string' && lastModelMessage.trim().length > 0) {
+      const boldTerms = Array.from(
+        lastModelMessage.matchAll(/\*\*([^*]{4,36})\*\*/g),
+        (m) => m[1].trim()
+      ).filter(
+        (term) =>
+          !/^(?:step\s*\d+|note|summary|hint|answer|diagnostic|proof|example)/i.test(term)
+      );
+      if (boldTerms.length > 0) {
+        const concept = boldTerms[0];
+        const shortConcept = concept.length > 24 ? `${concept.slice(0, 22)}…` : concept;
+        addSuggestion(
+          `Deepen: ${shortConcept}`,
+          `Explain "${concept}" in deeper mathematical detail and show how it is tested in university exams.`
+        );
+      }
+    }
+
+    return suggestions;
+  }, [
+    activeContent,
+    activeSubTopicTitle,
+    activeModuleTitle,
+    activeCourseId,
+    learningProfile,
+    lastModelMessage,
+  ]);
 
   return (
     <div className="p-2 sm:p-3 md:p-4 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border-t border-slate-200 dark:border-zinc-800 shrink-0">
@@ -153,7 +299,7 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
         <MathSymbolPalette
           isOpen={isMathPaletteOpen}
           onClose={onCloseMathPalette}
-          onInsertSymbol={onInsertSymbol}
+          onInsertSymbol={handleInsertMathSymbol}
         />
 
         {/* Adaptive Hint / Struggle Helper Banner if 3+ hints used */}
@@ -202,13 +348,28 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
           )}
         </div>
 
-        {/* Dynamic Quick Suggestion Chips */}
-        {!input && !selectedImage && !pdfText && (
+        {/* Live KaTeX Formula Preview Strip when input contains LaTeX */}
+        {hasMathInInput && renderedMathPreview && (
+          <div className="px-3 py-2 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200/80 dark:border-emerald-800/70 flex items-center justify-between gap-3 overflow-x-auto">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 shrink-0">
+                <Eye size={12} />
+                Live Math Preview:
+              </span>
+              <div className="text-sm text-slate-900 dark:text-zinc-100 overflow-x-auto py-0.5">
+                <MarkdownRenderer content={renderedMathPreview} inline />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Dynamic Context-Resolved Suggestion Chips (Only shown when verified context exists) */}
+        {!input && !selectedImage && !pdfText && dynamicSuggestions.length > 0 && (
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-hide">
             <span className="text-[10px] font-bold text-slate-400 dark:text-zinc-500 uppercase tracking-wider shrink-0">
               Suggestions:
             </span>
-            {quickPrompts.map((p, idx) => (
+            {dynamicSuggestions.map((p, idx) => (
               <button
                 key={idx}
                 onClick={() => setInput(p.text)}
