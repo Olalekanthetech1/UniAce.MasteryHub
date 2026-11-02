@@ -284,10 +284,11 @@ export class JobRepository {
       learningOutcomes?: string[];
       assetReferences?: any;
       instructionalContent?: Record<string, any>;
+      contentBlocks?: Record<string, any>;
     };
   }): Promise<void> {
     // Ensure the additive Neon migration before writing structured instructional data.
-    if (params.lesson?.instructionalContent) await ensureCourseLearningSchema();
+    if (params.lesson?.instructionalContent || params.lesson?.contentBlocks) await ensureCourseLearningSchema();
 
     // 1. Upsert course_module
     const moduleSql = `
@@ -327,9 +328,9 @@ export class JobRepository {
         )
         INSERT INTO course_lessons (
           id, course_id, module_id, title, content_markdown, order_index,
-          key_terms, learning_outcomes, asset_references, instructional_content, created_at, updated_at
+          key_terms, learning_outcomes, asset_references, instructional_content, content_blocks, created_at, updated_at
         )
-        SELECT $1, eligible_course.id, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, NOW(), NOW()
+        SELECT $1, eligible_course.id, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11::jsonb, NOW(), NOW()
         FROM eligible_course
         ON CONFLICT (id, course_id, module_id) DO UPDATE SET
           title = EXCLUDED.title,
@@ -339,6 +340,7 @@ export class JobRepository {
           learning_outcomes = EXCLUDED.learning_outcomes,
           asset_references = EXCLUDED.asset_references,
           instructional_content = COALESCE(EXCLUDED.instructional_content, course_lessons.instructional_content),
+          content_blocks = COALESCE(EXCLUDED.content_blocks, course_lessons.content_blocks),
           updated_at = NOW()
         RETURNING id;
       `;
@@ -352,7 +354,8 @@ export class JobRepository {
         params.lesson.keyTerms || [],
         params.lesson.learningOutcomes || [],
         JSON.stringify(params.lesson.assetReferences || []),
-        params.lesson.instructionalContent ? JSON.stringify(params.lesson.instructionalContent) : null
+        params.lesson.instructionalContent ? JSON.stringify(params.lesson.instructionalContent) : null,
+        params.lesson.contentBlocks ? JSON.stringify(params.lesson.contentBlocks) : null
       ]);
       if ((lessonWrite.rowCount ?? 0) === 0) {
         throw new Error(`Course ${params.courseId} is missing or archived; lesson write rejected.`);
