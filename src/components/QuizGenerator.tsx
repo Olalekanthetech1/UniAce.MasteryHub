@@ -154,18 +154,33 @@ export default function QuizGenerator({
       const rollingMastery = typeof userSkillLevel === 'number'
         ? Math.round((userSkillLevel / 5) * 100)
         : undefined;
-      const data = await AIService.generateQuiz(
-        moduleForQuiz,
-        subTopicForQuiz,
-        numQuestions,
-        questionType,
-        isAdaptive,
-        userSkillLevel,
-        profile?.academic_level,
-        profile?.department,
-        profile?.displayName,
-        rollingMastery
-      );
+      let data: QuizQuestion[] = [];
+
+      // Prefer the administrator-generated, persisted module quiz for ordinary
+      // module-level MCQ sessions. Lesson-specific, fill-in-the-blank, and
+      // adaptive sessions continue to use their respective live generation flow.
+      if (courseId && !subTopicForQuiz && questionType === 'multiple-choice' && !isAdaptive) {
+        const { CourseService } = await import('../services/courseService');
+        const persistedQuiz = await CourseService.getQuiz(courseId, module.id);
+        if (persistedQuiz && Array.isArray(persistedQuiz.questions)) {
+          data = persistedQuiz.questions.slice(0, numQuestions);
+        }
+      }
+
+      if (data.length === 0) {
+        data = await AIService.generateQuiz(
+          moduleForQuiz,
+          subTopicForQuiz,
+          numQuestions,
+          questionType,
+          isAdaptive,
+          userSkillLevel,
+          profile?.academic_level,
+          profile?.department,
+          profile?.displayName,
+          rollingMastery
+        );
+      }
       
       if (!data || data.length === 0) {
         throw new Error("No questions generated. Please try again.");
