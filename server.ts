@@ -6033,7 +6033,10 @@ Return strictly a JSON object:
         }
 
         const provenance = {
-          sources: canonicalRefs,
+          sources: [...new Set([
+            ...canonicalRefs,
+            ...courseResearch.metadata.sourceReferences.map(source => source.url)
+          ])],
           modelVersion: requestedProvider || 'dynamic-multi-provider',
           promptVersion: 'uniace-mastery-curriculum-v4.0',
           generatedAt: new Date().toISOString(),
