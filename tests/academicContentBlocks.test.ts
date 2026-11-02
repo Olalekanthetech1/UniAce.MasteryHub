@@ -131,16 +131,22 @@ test('simulation variables cannot collide with mathematical constants or allowli
   const parameterCollision = structuredClone(collection);
   const parameterSimulation = parameterCollision.blocks.find(block => block.type === 'interactive_simulation')!;
   parameterSimulation.parameter.symbol = 'pi';
-  assert.throws(
-    () => AcademicContentBlockCollectionSchema.parse(parameterCollision),
-    /adjustable parameter symbol "pi" is reserved by the simulation language/
-  );
+  const parameterResult = AcademicContentBlockCollectionSchema.safeParse(parameterCollision);
+  assert.equal(parameterResult.success, false);
+  if (!parameterResult.success) {
+    assert.ok(parameterResult.error.issues.some(issue =>
+      issue.message.includes('adjustable parameter symbol "pi" is reserved by the simulation language')
+    ));
+  }
 
   const variableCollision = structuredClone(collection);
   const variableSimulation = variableCollision.blocks.find(block => block.type === 'interactive_simulation')!;
   variableSimulation.independentVariable = 'sin';
-  assert.throws(
-    () => AcademicContentBlockCollectionSchema.parse(variableCollision),
-    /independent variable symbol "sin" is reserved by the simulation language/
-  );
+  const variableResult = AcademicContentBlockCollectionSchema.safeParse(variableCollision);
+  assert.equal(variableResult.success, false);
+  if (!variableResult.success) {
+    assert.ok(variableResult.error.issues.some(issue =>
+      issue.message.includes('independent variable symbol "sin" is reserved by the simulation language')
+    ));
+  }
 });
