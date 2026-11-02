@@ -40,6 +40,12 @@ const MATH_FUNCTIONS: Record<string, (...values: number[]) => number> = {
   trunc: Math.trunc
 };
 
+const RESERVED_SIMULATION_IDENTIFIERS = new Set(['x', 'pi', 'e', ...Object.keys(MATH_FUNCTIONS)]);
+
+export function isReservedSimulationIdentifier(identifier: string): boolean {
+  return RESERVED_SIMULATION_IDENTIFIERS.has(identifier);
+}
+
 function tokenize(expression: string): ArithmeticToken[] {
   if (typeof expression !== 'string' || !expression.trim() || expression.length > 300) {
     throw new Error('Simulation expression must contain 1–300 characters.');
