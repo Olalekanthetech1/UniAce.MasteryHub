@@ -5,20 +5,25 @@ let migrationPromise: Promise<void> | null = null;
 
 export async function ensureCourseLearningSchema(): Promise<void> {
   if (!migrationPromise) {
-    migrationPromise = Promise.all([
-      queryPostgres(
-        'ALTER TABLE course_lessons ADD COLUMN IF NOT EXISTS instructional_content JSONB NULL'
-      ),
-      queryPostgres(
-        'ALTER TABLE courses ADD COLUMN IF NOT EXISTS faculties TEXT[] NULL'
-      ),
-      queryPostgres(
-        'ALTER TABLE courses ADD COLUMN IF NOT EXISTS departments TEXT[] NULL'
-      ),
-      queryPostgres(
-        'ALTER TABLE courses ADD COLUMN IF NOT EXISTS credit_units INTEGER NULL'
-      ),
-      queryPostgres(`
+    migrationPromise = (async () => {
+      await Promise.all([
+        queryPostgres(
+          'ALTER TABLE course_lessons ADD COLUMN IF NOT EXISTS instructional_content JSONB NULL'
+        ),
+        queryPostgres(
+          'ALTER TABLE courses ADD COLUMN IF NOT EXISTS faculties TEXT[] NULL'
+        ),
+        queryPostgres(
+          'ALTER TABLE courses ADD COLUMN IF NOT EXISTS departments TEXT[] NULL'
+        ),
+        queryPostgres(
+          'ALTER TABLE courses ADD COLUMN IF NOT EXISTS credit_units INTEGER NULL'
+        )
+      ]);
+
+      // Create the relation before its index. Keeping these operations ordered
+      // avoids a fresh-database race between concurrent CREATE TABLE/INDEX calls.
+      await queryPostgres(`
         CREATE TABLE IF NOT EXISTS course_module_quizzes (
           id TEXT PRIMARY KEY,
           course_id TEXT NOT NULL,
@@ -36,12 +41,12 @@ export async function ensureCourseLearningSchema(): Promise<void> {
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           CONSTRAINT course_module_quizzes_course_module_unique UNIQUE (course_id, module_id)
         )
-      `),
-      queryPostgres(`
+      `);
+      await queryPostgres(`
         CREATE INDEX IF NOT EXISTS idx_course_module_quizzes_course
           ON course_module_quizzes (course_id)
-      `)
-    ]).then(() => undefined).catch((error: any) => {
+      `);
+    })().catch((error: any) => {
       migrationPromise = null;
       throw new Error(`Course learning schema migration failed: ${error?.message || String(error)}`);
     });
