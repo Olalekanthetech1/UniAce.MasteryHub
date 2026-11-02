@@ -3821,6 +3821,86 @@ app.get('/api/chat/nudge', verifyAuth, async (req, res) => {
   }
 });
 
+// Constrained AI Mermaid syntax repair endpoint.
+// Strictly preserves the academic meaning, nodes, labels, equations, and relationships of the diagram.
+app.post('/api/mermaid/repair', verifyAuth, async (req, res) => {
+  try {
+    const rawChart = typeof req.body?.chart === 'string' ? req.body.chart.trim() : '';
+    const errorMessage = typeof req.body?.errorMessage === 'string' ? req.body.errorMessage.trim() : '';
+    const diagramType = typeof req.body?.diagramType === 'string' ? req.body.diagramType.trim() : 'flowchart';
+
+    if (!rawChart || rawChart.length > 12000) {
+      return res.status(400).json({ error: 'A valid Mermaid diagram source (up to 12,000 chars) is required.' });
+    }
+
+    const sanitizedChart = redactPII(rawChart);
+    const sanitizedError = redactPII(errorMessage);
+
+    const repairPrompt = [
+      'You are a strict Mermaid v11 syntax repair engine for university educational diagrams.',
+      'Your ONLY task is to fix syntax errors in the supplied Mermaid diagram so it parses cleanly in Mermaid v11.',
+      '',
+      'MANDATORY CONSTRAINTS:',
+      '1. NEVER alter the academic meaning, scientific terminology, equations, Greek symbols, SI units, or relationships between nodes.',
+      '2. NEVER invent new nodes, remove existing conceptual steps, or substitute a different diagram.',
+      '3. For flowcharts, wrap node labels and edge labels that contain parentheses, brackets, colons, or mathematical symbols inside double quotes, e.g. A["Specific Weight (γ = ρg)"].',
+      '4. Replace raw LaTeX commands inside labels (such as \\rho or \\gamma) with their readable Unicode symbols (ρ, γ) rather than $...$ delimiters.',
+      '5. Return ONLY the repaired Mermaid diagram source code with no markdown fences and no explanation.',
+      '',
+      `Detected diagram type: ${diagramType}`,
+      sanitizedError ? `Parser error message: ${sanitizedError}` : '',
+      '',
+      'Broken Mermaid source:',
+      sanitizedChart
+    ].filter(Boolean).join('\n');
+
+    const candidateBreakers = [
+      globalGroqBreaker,
+      globalGeminiDirectBreaker,
+      globalMistralDirectBreaker
+    ].filter((b): b is CircuitBreaker => Boolean(b));
+
+    if (candidateBreakers.length === 0) {
+      return res.status(503).json({ error: 'No live AI provider is available for Mermaid syntax repair.' });
+    }
+
+    let repairedText = '';
+    for (const breaker of candidateBreakers) {
+      try {
+        const result = await generateWithTelemetry(
+          breaker,
+          [{ role: 'user', content: repairPrompt }],
+          { complexity: 'standard' }
+        );
+        if (result && typeof result.text === 'string' && result.text.trim()) {
+          repairedText = sanitizeAIResponse(result.text.trim());
+          break;
+        }
+      } catch {
+        // Try next live provider in queue
+      }
+    }
+
+    if (!repairedText) {
+      return res.status(503).json({ error: 'Constrained AI Mermaid syntax repair could not be completed by live providers.' });
+    }
+
+    // Strip any accidental markdown code fences around the returned Mermaid code
+    const unwrapped = repairedText
+      .replace(/^```(?:mermaid)?\s*\n([\s\S]*?)\n```$/i, '$1')
+      .trim();
+
+    return res.json({
+      repairedChart: unwrapped
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      error: 'Mermaid syntax repair failed.',
+      message: err?.message || String(err)
+    });
+  }
+});
+
 app.post('/api/chat', verifyAuth, async (req, res) => {
   console.log('API /api/chat called');
   

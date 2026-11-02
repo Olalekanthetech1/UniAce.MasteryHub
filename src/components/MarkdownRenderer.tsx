@@ -225,6 +225,8 @@ type RenderSegment =
 
 const INTERACTIVE_CODE_LANGS: Record<string, 'mermaid' | 'plot' | 'svg' | 'venn'> = {
   mermaid: 'mermaid',
+  'mermaid-json': 'mermaid',
+  'diagram-spec': 'mermaid',
   'function-plot': 'plot',
   'math-plot': 'plot',
   graph: 'plot',
@@ -247,7 +249,22 @@ function segmentMarkdownContent(content: string, inline: boolean): RenderSegment
     return [{ type: 'html', html: renderMarkdownToSanitizedHtml(content, true) }];
   }
 
-  const normalized = normalizeMathDelimiters(content);
+  // Protect interactive diagram blocks (Mermaid, diagram-spec, SVG, plots) before math normalization
+  const protectedDiagramBodies: string[] = [];
+  const maskedContent = content.replace(
+    /(^|\n)(```|~~~)([^\n]*)\n([\s\S]*?)\n\2[ \t]*(?=\n|$)/g,
+    (fullMatch, leading: string, fence: string, info: string, body: string) => {
+      const lang = String(info || '').trim().toLowerCase().split(/\s+/)[0];
+      if (INTERACTIVE_CODE_LANGS[lang]) {
+        const idx = protectedDiagramBodies.length;
+        protectedDiagramBodies.push(body);
+        return `${leading}${fence}${lang}\n__UNIACE_PROTECTED_DIAGRAM_${idx}__\n${fence}`;
+      }
+      return fullMatch;
+    }
+  );
+
+  const normalized = normalizeMathDelimiters(maskedContent);
   const tokens = sharedMarked.lexer(normalized);
   const segments: RenderSegment[] = [];
   let pendingTokens: any[] = [];
@@ -265,11 +282,15 @@ function segmentMarkdownContent(content: string, inline: boolean): RenderSegment
 
   for (const token of tokens) {
     if (token.type === 'code') {
-      const lang = (token.lang || '').trim().toLowerCase();
+      const lang = (token.lang || '').trim().toLowerCase().split(/\s+/)[0];
       const interactiveType = INTERACTIVE_CODE_LANGS[lang];
       if (interactiveType) {
         flushPendingTokens();
-        segments.push({ type: interactiveType, code: token.text });
+        const placeholderMatch = String(token.text || '').trim().match(/^__UNIACE_PROTECTED_DIAGRAM_(\d+)__$/);
+        const rawDiagramCode = placeholderMatch
+          ? protectedDiagramBodies[Number(placeholderMatch[1])] ?? token.text
+          : token.text;
+        segments.push({ type: interactiveType, code: rawDiagramCode });
         continue;
       }
     }

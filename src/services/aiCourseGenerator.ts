@@ -29,6 +29,12 @@ import { autoHealQuestion } from './validators/aiSchemas';
 import { sanitizeForFirestore } from './courseService';
 import { auth } from '../firebase';
 import { normalizeMathDelimiters } from '../shared/mathText';
+import {
+  StructuredDiagramSpecSchema,
+  serializeStructuredDiagramToMermaid,
+  trySerializeStructuredDiagramJson,
+  repairMermaidSyntaxDeterministically
+} from './mermaidRepairService';
 
 const courseMarkedEngine = new Marked({
   gfm: true,
@@ -75,19 +81,37 @@ export function flagOffTopicDrift(content: string, courseName: string, departmen
 
 /**
  * Normalizes transport-level JSON escape artifacts and standard LaTeX delimiters
- * without hardcoded keyword dictionaries, word-count heuristics, or format hacks.
+ * strictly on mathematical and prose regions while isolating Mermaid, diagram-spec,
+ * and ordinary code blocks so mathematical sanitization never corrupts Mermaid or code source.
  */
 export function sanitizeLatex(content: any): any {
   if (content === null || content === undefined) return content;
   if (typeof content !== 'string') return content;
 
-  let sanitized = content.replace(/\r\n/g, '\n');
+  let working = content.replace(/\r\n/g, '\n');
 
-  // Unwrap outer markdown code fence if the model wrapped the entire payload
-  sanitized = sanitized.replace(/^```(?:markdown)?\n([\s\S]*?)\n```$/g, '$1');
+  // Unwrap outer markdown code fence ONLY if the model wrapped the entire lesson payload in ```markdown ... ```
+  working = working.replace(/^```(?:markdown|md)\n([\s\S]*?)\n```$/i, '$1');
 
-  // Restore control characters produced when JSON.parse interprets single-escaped LaTeX backslashes
-  sanitized = sanitized
+  // 1. Extract and isolate all fenced code blocks (Mermaid, diagram-spec, and source code)
+  //    BEFORE running any LaTeX backslash or control-character replacements.
+  const isolatedFencedBlocks: Array<{ fence: string; info: string; body: string }> = [];
+  const proseAndMathOnly = working.replace(
+    /(^|\n)(\x60{3,}|~{3,})([^\n]*)\n([\s\S]*?)\n\2[ \t]*(?=\n|$)/g,
+    (fullMatch, leading: string, fence: string, info: string, body: string) => {
+      const lang = String(info || '').trim().toLowerCase().split(/\s+/)[0];
+      // Math fences (```math or ```latex) are intended for KaTeX normalization
+      if (lang === 'math' || lang === 'latex') {
+        return fullMatch;
+      }
+      const tokenIdx = isolatedFencedBlocks.length;
+      isolatedFencedBlocks.push({ fence, info: String(info || '').trim(), body });
+      return `${leading}\u0000UNIACE_FENCED_BLOCK_${tokenIdx}\u0000`;
+    }
+  );
+
+  // 2. Apply mathematical and transport-escape sanitization strictly to prose/math segments
+  let sanitized = proseAndMathOnly
     .replace(/\x08/g, '\\b')
     .replace(/\x0C/g, '\\f')
     .replace(/\x0D/g, '\\r')
@@ -97,8 +121,7 @@ export function sanitizeLatex(content: any): any {
   sanitized = sanitized.replace(/\\n(?![a-zA-Z])/g, '\n');
   sanitized = sanitized.replace(/\\t(?![a-zA-Z])/g, '\t');
 
-  // Normalize delimiters through the shared renderer-safe path. Code fences and inline
-  // code remain literal; only actual math regions are converted for KaTeX.
+  // Normalize delimiters through the shared renderer-safe path
   sanitized = normalizeMathDelimiters(sanitized);
 
   // Collapse double-escaped backslashes inside math spans that survived JSON decoding
@@ -110,6 +133,29 @@ export function sanitizeLatex(content: any): any {
   sanitized = sanitized.replace(/\$([^$\n]+?)\$/g, (_match, inner) => {
     const normalizedInner = inner.replace(/\\\\([a-zA-Z{}_^])/g, '\\$1').trim();
     return `$${normalizedInner}$`;
+  });
+
+  // 3. Restore isolated fenced blocks, compiling structured diagram specs and validating Mermaid blocks
+  sanitized = sanitized.replace(/\u0000UNIACE_FENCED_BLOCK_(\d+)\u0000/g, (_match, idxStr: string) => {
+    const entry = isolatedFencedBlocks[Number(idxStr)];
+    if (!entry) return '';
+    const lang = entry.info.toLowerCase().split(/\s+/)[0];
+
+    if (lang === 'diagram-spec' || lang === 'mermaid-json') {
+      const serialized = trySerializeStructuredDiagramJson(entry.body);
+      if (serialized) {
+        return `${entry.fence}mermaid\n${serialized}\n${entry.fence}`;
+      }
+      return `${entry.fence}${entry.info}\n${entry.body}\n${entry.fence}`;
+    }
+
+    if (lang === 'mermaid') {
+      const repaired = repairMermaidSyntaxDeterministically(entry.body);
+      return `${entry.fence}mermaid\n${repaired.repairedChart}\n${entry.fence}`;
+    }
+
+    // Ordinary code block: preserve verbatim without LaTeX mutations
+    return `${entry.fence}${entry.info}\n${entry.body}\n${entry.fence}`;
   });
 
   return sanitized.replace(/\n{3,}/g, '\n\n');
@@ -544,6 +590,7 @@ export const LessonOutputSchema = z.object({
   introduction: z.string().min(1),
   keyConcepts: z.array(z.string()).min(1),
   body: z.string().min(1),
+  diagrams: z.array(StructuredDiagramSpecSchema).optional(),
   relevance: z.array(RelevanceSchema).default([])
 });
 
@@ -649,13 +696,18 @@ export async function generateLessonContent(
        - Use GitHub-Flavored Markdown comparison tables (|---|) where contrasting multiple concepts or properties improves clarity.
        - Authentic disciplinary examples or case analyses (never invent fake citations or unverified statistics).
        - Diagnostic check-for-understanding questions with verified explanations.
-    4. "relevance": For the enrolled programs listed above, add an entry ONLY IF you can name:
+    4. "diagrams" (OPTIONAL STRUCTURED DIAGRAM SPECIFICATION):
+       - When a conceptual flowchart or process diagram clarifies the lesson, prefer providing a structured specification in "diagrams" (or inside a \`\`\`diagram-spec fenced JSON block in "body") rather than hand-writing raw Mermaid syntax:
+         { "type": "flowchart", "direction": "TD", "nodes": [{ "id": "density", "label": "Fluid Density (ρ = m/V)" }], "edges": [{ "from": "density", "to": "weight" }] }
+       - If you include a \`\`\`mermaid block directly, ALWAYS enclose node labels in double quotes (e.g., A["Specific Weight (γ = ρg)"]).
+    5. "relevance": For the enrolled programs listed above, add an entry ONLY IF you can name:
        (a) a concept from your keyConcepts, and
        (b) a specific mechanism, device, process, or practical case where it applies in that program.
        If you cannot name a concrete, specific mechanism, OMIT the program. Fewer entries is correct and expected. Never pad with generic text.
 
     CRITICAL LATEX & CLEAN FORMATTING SAFETY:
-    - When mathematical notation is used, use $ ... $ for inline math and $$ ... $$ for display block math.
+    - When mathematical notation is used in prose, use $ ... $ for inline math and $$ ... $$ for display block math.
+    - Do NOT place raw $...$ LaTeX delimiters inside Mermaid node labels; use readable symbols or structured diagram specifications instead.
     - You MUST double-escape all LaTeX backslashes for JSON compatibility (e.g., \\\\frac, \\\\alpha, \\\\begin, \\\\end).
     - Ensure all $ and $$ delimiters are closed and balanced.
 
@@ -664,6 +716,19 @@ export async function generateLessonContent(
       "introduction": "Conceptual introduction to the lesson topic...",
       "keyConcepts": ["Concept A", "Concept B", "Concept C"],
       "body": "Full detailed markdown lesson body...",
+      "diagrams": [
+        {
+          "type": "flowchart",
+          "direction": "TD",
+          "nodes": [
+            { "id": "nodeA", "label": "First Concept" },
+            { "id": "nodeB", "label": "Second Concept" }
+          ],
+          "edges": [
+            { "from": "nodeA", "to": "nodeB" }
+          ]
+        }
+      ],
       "relevance": [
         {
           "department": "Exact Department Name from enrolled list",
@@ -704,6 +769,19 @@ export async function generateLessonContent(
 
   const rawKeyConcepts = Array.isArray(parsedOutput.keyConcepts) ? parsedOutput.keyConcepts : [];
   const rawRelevance = Array.isArray(parsedOutput.relevance) ? parsedOutput.relevance : [];
+  const rawDiagrams = Array.isArray(parsedOutput.diagrams) ? parsedOutput.diagrams : [];
+
+  const serializedDiagramsMarkdown = rawDiagrams
+    .map((spec: unknown) => {
+      try {
+        const mermaidSource = serializeStructuredDiagramToMermaid(spec);
+        return `\`\`\`mermaid\n${mermaidSource}\n\`\`\``;
+      } catch {
+        return '';
+      }
+    })
+    .filter(Boolean)
+    .join('\n\n');
 
   const seenDepts = new Set<string>();
   const validatedRelevance = rawRelevance.filter((entry: any) => {
@@ -724,10 +802,15 @@ export async function generateLessonContent(
     return true;
   });
 
+  const bodyWithSerializedDiagrams =
+    serializedDiagramsMarkdown && !rawBody.includes('```mermaid')
+      ? `${rawBody}\n\n${serializedDiagramsMarkdown}`
+      : rawBody;
+
   // Assemble full lesson markdown without forcing a synthetic "The Why Before the How" heading
-  const fullLessonMarkdown = introduction && !rawBody.startsWith('#')
-    ? `## ${lessonTitle}\n\n${introduction}\n\n---\n\n${rawBody}`
-    : (introduction ? `${introduction}\n\n---\n\n${rawBody}` : rawBody);
+  const fullLessonMarkdown = introduction && !bodyWithSerializedDiagrams.startsWith('#')
+    ? `## ${lessonTitle}\n\n${introduction}\n\n---\n\n${bodyWithSerializedDiagrams}`
+    : (introduction ? `${introduction}\n\n---\n\n${bodyWithSerializedDiagrams}` : bodyWithSerializedDiagrams);
 
   const compiledLesson = compileAndSanitizeCourseMarkdown(fullLessonMarkdown);
   const sanitizedContent = compiledLesson.normalizedMarkdown;

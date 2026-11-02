@@ -13,6 +13,7 @@ import {
   MathUnicodeNormalizationEvent
 } from '../src/shared/courseSchemas.js';
 import { LATEX_INSTRUCTION } from '../src/shared/prompts.js';
+import { normalizeMermaidBlocksInMarkdown } from '../src/services/mermaidRepairService.js';
 
 function katexStrictDiagnosticPolicy(errorCode: string): 'error' | 'ignore' {
   if (errorCode === 'unknownSymbol' || errorCode === 'unicodeTextInMathMode') {
@@ -73,7 +74,9 @@ export function validateLessonSyntax(
   }
 
   const unicodeInspection = inspectAndNormalizeMathUnicode(content, 'lesson_validation');
-  const trimmed = normalizeLessonMarkdownContent(unicodeInspection.normalizedText);
+  const trimmed = normalizeMermaidBlocksInMarkdown(
+    normalizeLessonMarkdownContent(unicodeInspection.normalizedText)
+  );
 
   if (unicodeInspection.unsupportedCharacters.length > 0) {
     const formatted = unicodeInspection.unsupportedCharacters
@@ -558,6 +561,7 @@ UNIVERSAL MASTERY FRAMEWORK
 Organise learning around Understand → Explore → Apply → Verify → Master. This is a learning sequence, not ten compulsory long chapters. Keep every component proportionate to the topic.
 
 For the Markdown 'content' field, include at least three meaningful level-2 headings and at least 800 characters of substantive academic prose. Headings should reflect the discipline and topic, not generic filler.
+When including a conceptual flowchart in 'content', prefer a structured \`\`\`diagram-spec JSON block ({ "type": "flowchart", "direction": "TD", "nodes": [{ "id": "n1", "label": "..." }], "edges": [{ "from": "n1", "to": "n2" }] }) so the platform serializer generates valid Mermaid syntax, or quote all Mermaid node labels in double quotes (e.g., A["Specific Weight (γ = ρg)"]) without raw $...$ LaTeX inside labels.
 
 Return BOTH readable Markdown in "content" and structured data in "instructionalContent".
 
