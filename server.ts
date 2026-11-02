@@ -1,5 +1,7 @@
-import express from 'express';
-import { createServer as createViteServer } from 'vite';
+i
+mmport express from 'express';
+import { createServer as createViteServer }
+  from 'vite';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Server as SocketIOServer } from 'socket.io';
 import cors from 'cors';
@@ -75,7 +77,6 @@ import {
   LessonContentSchema,
   StructuredLessonOutputSchema,
   InstructionalContentSchema,
-  AcademicContentBlockCollectionSchema,
   CourseProvenanceSchema,
   normalizeLearningOutcomes,
   deriveCurriculumParameters,
