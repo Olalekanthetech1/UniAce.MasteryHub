@@ -1384,10 +1384,24 @@ app.get('/api/courses/:courseId/modules/:moduleId/lessons', verifyAuth, requireC
       }
     }
     const latencyMs = Date.now() - t0;
-    const studentLessons = lessons.map((lesson: any) => ({
-      ...lesson,
-      instructional_content: redactInstructionalAnswersForStudent(lesson.instructional_content)
-    }));
+    const studentLessons = lessons.map((lesson: any) => {
+      const parsedBlocks = lesson.content_blocks == null
+        ? null
+        : AcademicContentBlockCollectionSchema.safeParse(lesson.content_blocks);
+      if (parsedBlocks && !parsedBlocks.success) {
+        logger.warn({
+          courseId,
+          moduleId,
+          lessonId: lesson.id,
+          issueCount: parsedBlocks.error.issues.length
+        }, '[Course lesson delivery] Invalid typed content blocks withheld from student payload');
+      }
+      return {
+        ...lesson,
+        content_blocks: parsedBlocks?.success ? parsedBlocks.data : null,
+        instructional_content: redactInstructionalAnswersForStudent(lesson.instructional_content)
+      };
+    });
     res.json({ lessons: studentLessons, total: studentLessons.length, latencyMs });
   } catch (err: any) {
     logger.error({ err: err.message, courseId: req.params.courseId, moduleId: req.params.moduleId }, '[GET /api/courses/.../lessons] Failed');
