@@ -508,7 +508,10 @@ export function buildLessonPrompt(
   ].map(v => String(v).trim()).filter(Boolean))).join(', ') ||
     (typeof department === 'string' && department.trim() ? department.trim() : 'Department not supplied; do not infer');
 
-  const normalizedDepth = typeof depth === 'string' ? depth.trim().toLowerCase() : 'standard';
+  const rawDepth = typeof depth === 'string' ? depth.trim().toLowerCase() : 'standard';
+  const normalizedDepth = ['deep-dive', 'in-depth', 'advanced'].includes(rawDepth)
+    ? 'deep-dive'
+    : rawDepth === 'introductory' ? 'introductory' : 'standard';
   const depthDirectives: Record<string, string> = {
     introductory: 'FOUNDATIONAL DEPTH: Start from first principles. Provide one fully explained worked example, one guided practice, one independent no-hint exercise, and at least two reasoning checks. Avoid unnecessary advanced extensions.',
     standard: 'COMPREHENSIVE DEPTH: Provide a complete university-level treatment with at least two distinct worked examples, guided and independent practice, at least three reasoning checks, explicit assumptions and limitations, and discipline-relevant applications.',
