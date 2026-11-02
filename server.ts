@@ -1,5 +1,6 @@
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
+import { createServer as createViteServer }
+  from 'vite';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Server as SocketIOServer } from 'socket.io';
 import cors from 'cors';
@@ -88,6 +89,7 @@ import {
   isGenericLessonTitle,
   isBareDiagramOrFragment
 } from './src/shared/courseSchemas.js';
+import { AcademicContentBlockCollectionSchema } from './src/shared/academicContentBlocks.js';
 import { VISUALIZATION_AND_DIAGRAM_DIRECTIVE } from './src/shared/prompts.js';
 import {
   validateLessonSyntax,
@@ -1383,10 +1385,24 @@ app.get('/api/courses/:courseId/modules/:moduleId/lessons', verifyAuth, requireC
       }
     }
     const latencyMs = Date.now() - t0;
-    const studentLessons = lessons.map((lesson: any) => ({
-      ...lesson,
-      instructional_content: redactInstructionalAnswersForStudent(lesson.instructional_content)
-    }));
+    const studentLessons = lessons.map((lesson: any) => {
+      const parsedBlocks = lesson.content_blocks == null
+        ? null
+        : AcademicContentBlockCollectionSchema.safeParse(lesson.content_blocks);
+      if (parsedBlocks && !parsedBlocks.success) {
+        logger.warn({
+          courseId,
+          moduleId,
+          lessonId: lesson.id,
+          issueCount: parsedBlocks.error.issues.length
+        }, '[Course lesson delivery] Invalid typed content blocks withheld from student payload');
+      }
+      return {
+        ...lesson,
+        content_blocks: parsedBlocks?.success ? parsedBlocks.data : null,
+        instructional_content: redactInstructionalAnswersForStudent(lesson.instructional_content)
+      };
+    });
     res.json({ lessons: studentLessons, total: studentLessons.length, latencyMs });
   } catch (err: any) {
     logger.error({ err: err.message, courseId: req.params.courseId, moduleId: req.params.moduleId }, '[GET /api/courses/.../lessons] Failed');
@@ -1398,21 +1414,39 @@ app.get('/api/courses/:courseId/modules/:moduleId/lessons', verifyAuth, requireC
 app.post('/api/courses/:courseId/modules/:moduleId/lessons/:lessonId', verifyAdmin, async (req, res) => {
   try {
     const { courseId, moduleId, lessonId } = req.params;
-    const { title, content } = req.body;
+    const { title, content, contentBlocks } = req.body || {};
     if (!content && content !== '') {
       return res.status(400).json({ error: 'content is required' });
+    }
+    let serializedContentBlocks: string | null = null;
+    if (contentBlocks !== undefined) {
+      const parsedBlocks = AcademicContentBlockCollectionSchema.safeParse(contentBlocks);
+      if (!parsedBlocks.success) {
+        return res.status(400).json({
+          error: 'Typed academic content blocks failed schema validation.',
+          validationErrors: parsedBlocks.error.issues
+        });
+      }
+      if (!parsedBlocks.data.blocks.some(block => block.type === 'explanation')) {
+        return res.status(400).json({ error: 'Typed lessons require at least one explanation block.' });
+      }
+      serializedContentBlocks = JSON.stringify(parsedBlocks.data);
     }
     const pool = getPostgresPool();
     if (!pool) {
       return res.status(503).json({ error: 'Database service unavailable' });
     }
+    await ensureCourseLearningSchema();
     const lessonTitle = title || lessonId;
     await pool.query(
-      `INSERT INTO course_lessons (id, course_id, module_id, title, content_markdown, order_index, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, 1, NOW(), NOW())
+      `INSERT INTO course_lessons (id, course_id, module_id, title, content_markdown, content_blocks, order_index, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, 1, NOW(), NOW())
        ON CONFLICT (course_id, module_id, id)
-       DO UPDATE SET content_markdown = EXCLUDED.content_markdown, title = COALESCE(EXCLUDED.title, course_lessons.title), updated_at = NOW()`,
-      [lessonId, courseId, moduleId, lessonTitle, content]
+       DO UPDATE SET content_markdown = EXCLUDED.content_markdown,
+         content_blocks = COALESCE(EXCLUDED.content_blocks, course_lessons.content_blocks),
+         title = COALESCE(EXCLUDED.title, course_lessons.title),
+         updated_at = NOW()`,
+      [lessonId, courseId, moduleId, lessonTitle, content, serializedContentBlocks]
     );
     res.json({ success: true, courseId, moduleId, lessonId });
   } catch (err: any) {
@@ -1523,6 +1557,13 @@ app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regen
     );
 
     const validatedSchema = StructuredLessonOutputSchema.superRefine((value, context) => {
+      if (!value.contentBlocks) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['contentBlocks'],
+          message: 'Newly generated lessons must include a validated version 1.0 typed content-block collection.'
+        });
+      }
       if (value.instructionalContent.disciplineEngine !== domainBrief.pedagogyType) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
@@ -1592,7 +1633,8 @@ app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regen
         contentMarkdown: markdown,
         orderIndex: lessonOrderIndex,
         learningOutcomes,
-        instructionalContent
+        instructionalContent,
+        contentBlocks: generated.contentBlocks
       }
     });
 
@@ -1617,6 +1659,7 @@ app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regen
         id: lessonId,
         title: String(generated.title || lesson.title || lessonId),
         content: markdown,
+        contentBlocks: generated.contentBlocks,
         instructionalContent: redactInstructionalAnswersForStudent(instructionalContent)
       },
       verification: {
@@ -5786,7 +5829,7 @@ async function executeCoordinatedGenerationJob(
 
               // Check if lesson already exists in Neon PostgreSQL on resume
               const existingLessonRes = await pool.query(
-                `SELECT title, content_markdown, instructional_content FROM course_lessons WHERE course_id = $1 AND module_id = $2 AND id = $3 LIMIT 1`,
+                `SELECT title, content_markdown, instructional_content, content_blocks FROM course_lessons WHERE course_id = $1 AND module_id = $2 AND id = $3 LIMIT 1`,
                 [courseId, moduleId, lessonId]
               ).catch(() => ({ rows: [] as any[] }));
 
@@ -5795,6 +5838,7 @@ async function executeCoordinatedGenerationJob(
                 existingLessonRes.rows[0]?.content_markdown &&
                 !isGenericLessonTitle(existingLessonRes.rows[0]?.title) &&
                 InstructionalContentSchema.safeParse(existingLessonRes.rows[0]?.instructional_content).success &&
+                AcademicContentBlockCollectionSchema.safeParse(existingLessonRes.rows[0]?.content_blocks).success &&
                 validateLessonSyntax(existingLessonRes.rows[0].content_markdown, domainBrief.pedagogyType).isValid
               ) {
                 completedLessonsCount++;
@@ -5839,9 +5883,17 @@ async function executeCoordinatedGenerationJob(
               let lessonContent = '';
               let lessonTitle = topic;
               let instructionalContent: Record<string, any> | null = null;
+              let lessonContentBlocks: Record<string, any> | null = null;
               let lessonErrors: string[] = [];
 
               const ValidatedLessonSchema = StructuredLessonOutputSchema.superRefine((val, ctx) => {
+                if (!val.contentBlocks) {
+                  ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    path: ['contentBlocks'],
+                    message: 'New course-generation lessons must include version 1.0 typed academic content blocks.'
+                  });
+                }
                 if (val.instructionalContent.disciplineEngine !== domainBrief.pedagogyType) {
                   ctx.addIssue({
                     code: z.ZodIssueCode.custom,
@@ -5941,6 +5993,7 @@ async function executeCoordinatedGenerationJob(
 
                 lessonTitle = (!isGenericLessonTitle(lessonData.title) && lessonData.title ? lessonData.title.trim() : topic) || topic;
                 lessonContent = normalizeLessonMarkdownContent(lessonData.content || '');
+                lessonContentBlocks = lessonData.contentBlocks || null;
                 instructionalContent = {
                   ...lessonData.instructionalContent,
                   verification: {
@@ -5986,7 +6039,8 @@ async function executeCoordinatedGenerationJob(
                     const outcomeIndex = Number.parseInt(id, 10);
                     return Number.isInteger(outcomeIndex) && normalizedOutcomes[outcomeIndex] ? normalizedOutcomes[outcomeIndex].outcome : null;
                   }).filter((value: string | null): value is string => Boolean(value)) || (targetOutcomeText ? [targetOutcomeText] : []),
-                  instructionalContent: instructionalContent || undefined
+                  instructionalContent: instructionalContent || undefined,
+                  contentBlocks: lessonContentBlocks || undefined
                 }
               });
 

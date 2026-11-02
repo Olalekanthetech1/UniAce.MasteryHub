@@ -215,6 +215,7 @@ export interface SubTopic {
   groundingReferences?: string[];
   confidenceState?: 'verified' | 'needs_review' | 'failed';
   instructionalContent?: import('./shared/courseSchemas').StudentInstructionalContent;
+  contentBlocks?: import('./shared/academicContentBlocks').AcademicContentBlockCollection;
 }
 
 export interface Module {

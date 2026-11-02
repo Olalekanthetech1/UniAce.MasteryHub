@@ -135,6 +135,7 @@ export const CourseService = {
       title: l.title,
       content: l.content_markdown || l.content || '',
       instructionalContent: l.instructional_content || undefined,
+      contentBlocks: l.content_blocks || undefined,
       order: l.order_index
     })).sort((a: any, b: any) => getLessonOrderIndex(a) - getLessonOrderIndex(b));
   },

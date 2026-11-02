@@ -563,7 +563,20 @@ Organise learning around Understand → Explore → Apply → Verify → Master.
 For the Markdown 'content' field, include at least three meaningful level-2 headings and at least 800 characters of substantive academic prose. Headings should reflect the discipline and topic, not generic filler.
 When including a conceptual flowchart in 'content', prefer a structured \`\`\`diagram-spec JSON block ({ "type": "flowchart", "direction": "TD", "nodes": [{ "id": "n1", "label": "..." }], "edges": [{ "from": "n1", "to": "n2" }] }) so the platform serializer generates valid Mermaid syntax, or quote all Mermaid node labels in double quotes (e.g., A["Specific Weight (γ = ρg)"]) without raw $...$ LaTeX inside labels.
 
-Return BOTH readable Markdown in "content" and structured data in "instructionalContent".
+Return BOTH readable Markdown in "content", versioned typed blocks in "contentBlocks", and structured mastery data in "instructionalContent".
+
+TYPED ACADEMIC CONTENT BLOCK RULES
+- contentBlocks.schemaVersion must be "1.0"; contentBlocks.blocks must be an ordered array of typed academic elements.
+- Every block has a unique stable id, a title, and one exact type discriminator.
+- Always include at least one "explanation" block with substantive, topic-specific teaching prose.
+- Use "mathematical_derivation" only when the discipline and topic require a real derivation, proof, argument, causal mechanism, or analytical development. State assumptions and show each reasoning step.
+- Use "engineering_diagram" only when a diagram materially improves understanding. Supply a structured diagram specification with defined nodes and valid references; do not invent relationships.
+- Use "worked_example" for a discipline-appropriate example grounded in the supplied course context. Distinguish supplied givens from stated assumptions. Do not invent experimental, clinical, financial, or empirical measurements.
+- Use "interactive_simulation" only when a meaningful parameterized mathematical relationship and justified input range can be specified. The expression must use only the declared independent variable, adjustable parameter, arithmetic operators, and supported math functions. Never return JavaScript, executable code, or unbounded inputs.
+- Use "knowledge_check" as a reference to an item in instructionalContent.knowledgeChecks using its zero-based activityIndex. Do not duplicate expected answers or rubrics in the block.
+- Include only block types that are pedagogically appropriate. Do not force a diagram, derivation, simulation, or numerical example into a lesson where it is not justified. A lesson may contain multiple blocks of a relevant type.
+- Do not use illustrative schema values as course facts. Every expression, value, unit, assumption, label and range must be derived from the course context or explicitly identified as an assumption.
+- The readable Markdown "content" remains a complete fallback for clients that do not yet render typed blocks. Keep its academic meaning consistent with the typed blocks.
 
 STRUCTURED CONTENT RULES
 - frameworkVersion must be "understand-explore-apply-verify-master-v1"; disciplineEngine must be "${domainBrief.pedagogyType}".
@@ -585,7 +598,20 @@ ACADEMIC INTEGRITY
 Do not invent syllabus topics, facts, laws, equations, numerical data, case studies, source references or verification claims. State assumptions and limits. Ensure examples, units, derivations and explanations are internally consistent. Qualify insufficiently grounded information. Use balanced LaTeX delimiters.
 
 STRICT JSON
-Return one valid JSON object only with top-level keys "title", "pedagogicalReasoning", "content", "instructionalContent".
+Return one valid JSON object only with top-level keys "title", "pedagogicalReasoning", "content", "contentBlocks", "instructionalContent".
+contentBlocks must follow this versioned discriminated-union structure (include only blocks justified by the lesson; the values below illustrate field shapes, not facts):
+{
+ "schemaVersion":"1.0",
+ "blocks":[
+  {"id":"explanation-1","title":"Topic explanation","type":"explanation","body":"Substantive lesson-specific explanation..."},
+  {"id":"derivation-1","title":"Formal development","type":"mathematical_derivation","introduction":"Context and governing principle...","assumptions":["Explicit assumption..."],"steps":[{"explanation":"Reasoning step...","equationLatex":"\\text{equation}"}],"conclusion":"What the derivation establishes..."},
+  {"id":"diagram-1","title":"Conceptual diagram","type":"engineering_diagram","description":"What the diagram explains...","diagram":{"type":"flowchart","direction":"TD","nodes":[{"id":"n1","label":"Concept one"},{"id":"n2","label":"Concept two"}],"edges":[{"from":"n1","to":"n2"}]}},
+  {"id":"example-1","title":"Worked example","type":"worked_example","exampleType":"numerical","problem":"A course-specific problem...","givens":[{"symbol":"x","value":"a value supplied in the question","unit":"unit supplied or derived"}],"target":"Requested quantity...","assumptions":["Only explicitly justified assumptions..."],"steps":[{"explanation":"Reasoning...","equationLatex":"\\text{equation}"}],"finalAnswer":{"value":"Computed result","unit":"appropriate unit"},"verification":"Independent unit, logic or reasonableness check..."},
+  {"id":"simulation-1","title":"Parameter exploration","type":"interactive_simulation","simulationType":"parameterized_curve","description":"What relationship the student can explore...","expression":"a*x","independentVariable":"x","domain":{"min":0,"max":1},"parameter":{"symbol":"a","label":"Parameter meaning","initialValue":1,"min":0,"max":2,"step":0.1}},
+  {"id":"check-1","title":"Reasoning check","type":"knowledge_check","activityIndex":0}
+ ]
+}
+The diagram, worked-example, and simulation objects above are optional structural illustrations. Replace every placeholder and illustrative numeric value with topic-grounded values or omit the corresponding block. Never copy them as factual course data.
 instructionalContent must follow this shape:
 {
  "frameworkVersion":"understand-explore-apply-verify-master-v1",
