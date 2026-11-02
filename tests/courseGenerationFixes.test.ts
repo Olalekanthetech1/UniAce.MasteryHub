@@ -98,18 +98,8 @@ const typedContentBlocks = () => [
   {
     id: 'example-1',
     type: 'worked_example' as const,
-    title: 'Pressure at a stated depth',
-    exampleType: 'numerical' as const,
-    problem: 'Determine the gauge pressure at the stated depth using the supplied fluid properties.',
-    givens: [{ name: 'Fluid density', value: '1000', unit: 'kg/m^3' }],
-    assumptions: ['The fluid is static.', 'Density and gravitational acceleration are constant.'],
-    steps: [
-      { explanation: 'Identify the hydrostatic pressure relation and the depth variable.', equation: 'p = rho g h' },
-      { explanation: 'Substitute the supplied values and preserve consistent SI units.', equation: 'p = 1000 * 9.81 * h' }
-    ],
-    finalAnswer: 'The pressure is calculated from the substituted values once the stated depth is supplied.',
-    verification: 'The resulting unit is pascal because kg/(m s^2) is equivalent to N/m^2.'
-  },
+    exampleIndex: 0,
+    title: 'Pressure at a stated depth'
   {
     id: 'simulation-1',
     type: 'interactive_simulation' as const,
@@ -154,7 +144,7 @@ test('typed content block contract validates all six block variants and compiles
   const parsedBlocks = LessonContentBlocksSchema.safeParse(blocks);
   assert.equal(parsedBlocks.success, true);
 
-  const compiled = renderLessonContentBlocksToMarkdown(blocks);
+  const compiled = renderLessonContentBlocksToMarkdown(blocks, instructionalContent().workedExamples);
   assert.ok(compiled.includes('## Hydrostatic pressure'));
   assert.ok(compiled.includes('$\n'));
   assert.ok(compiled.includes('flowchart TD'));
@@ -287,7 +277,7 @@ test('lesson prompt calibrates deep-dive depth and selects relevant complete sou
     }
   );
   assert.match(prompt, /ADVANCED \/ ANALYTICAL DEPTH/);
-  assert.match(prompt, /instructionalContent\\.contentBlocks/);
+  assert.match(prompt, /instructionalContent\.contentBlocks/);
   assert.match(prompt, /interactive_simulation/);
   assert.match(prompt, /knowledge_check/);
   assert.match(prompt, /MUST NOT contain an answer, expected reasoning, rubric, hint or answer key/);
