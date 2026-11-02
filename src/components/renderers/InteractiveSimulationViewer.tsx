@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { evaluateSimulationExpression, validateSimulationExpression } from '../../shared/simulationExpression';
+import { compileSimulationExpression } from '../../shared/simulationExpression';
 import type { LessonContentBlock } from '../../shared/courseSchemas';
 
 type InteractiveSimulationBlock = Extract<LessonContentBlock, { type: 'interactive_simulation' }>;
@@ -19,9 +19,8 @@ function formatNumber(value: number): string {
   return Number(value.toPrecision(5)).toString();
 }
 
-function validateAndCompileExpression(expression: string, parameterIds: string[]): true {
-  validateSimulationExpression(expression, parameterIds);
-  return true;
+function validateAndCompileExpression(expression: string, parameterIds: string[]): (variables: Record<string, number>) => number {
+  return compileSimulationExpression(expression, parameterIds);
 }
 
 export default function InteractiveSimulationViewer({ block }: { block: InteractiveSimulationBlock }) {
@@ -38,19 +37,19 @@ export default function InteractiveSimulationViewer({ block }: { block: Interact
   const compiledModel = useMemo(() => {
     try {
       return {
-        valid: validateAndCompileExpression(block.expression, block.parameters.map((parameter) => parameter.id)),
+        evaluate: validateAndCompileExpression(block.expression, block.parameters.map((parameter) => parameter.id)),
         error: ''
       };
     } catch (error) {
       return {
-        valid: false,
+        evaluate: null,
         error: error instanceof Error ? error.message : 'The mathematical model could not be compiled.'
       };
     }
   }, [block.expression, block.parameters]);
 
   const plot = useMemo(() => {
-    if (!compiledModel.valid) {
+    if (!compiledModel.evaluate) {
       return { points: [] as PlotPoint[], error: compiledModel.error, yMin: 0, yMax: 0 };
     }
 
@@ -61,10 +60,7 @@ export default function InteractiveSimulationViewer({ block }: { block: Interact
     for (let index = 0; index <= SAMPLE_INTERVALS; index += 1) {
       const x = xMin + ((xMax - xMin) * index) / SAMPLE_INTERVALS;
       try {
-        const result = evaluateSimulationExpression(block.expression, {
-          x,
-          ...values
-        });
+        const result = compiledModel.evaluate({ x, ...values });
         const y = typeof result === 'number' ? result : Number.NaN;
         points.push({ x, y: Number.isFinite(y) && Math.abs(y) < 1e15 ? y : null });
       } catch (error) {
