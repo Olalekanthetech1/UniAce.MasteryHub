@@ -330,7 +330,14 @@ export class CourseRepository {
         explanation: question.explanation,
         hint: question.hint,
         difficulty: question.difficulty,
-        bloomLevel: question.bloom_level.toLowerCase() as Quiz['questions'][number]['bloomLevel'],
+        bloomLevel: ({
+          Remember: 'remembering',
+          Understand: 'understanding',
+          Apply: 'applying',
+          Analyze: 'analyzing',
+          Evaluate: 'evaluating',
+          Create: 'creating'
+        } as const)[question.bloom_level],
         sourceReference: question.source_reference,
         verifiedGrounded: true
       };
