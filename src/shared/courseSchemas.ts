@@ -257,7 +257,7 @@ export type LessonContent = z.infer<typeof LessonContentSchema>;
  */
 export const InstructionalPracticeItemSchema = z.object({
   prompt: z.string().min(10),
-  hints: z.array(z.string().min(1)).min(1),
+  hints: z.array(z.string().min(1)),
   expectedApproach: z.string().min(10),
   expectedAnswer: z.string().min(1),
   explanation: z.string().min(10),
@@ -323,6 +323,25 @@ export const InstructionalContentSchema = z.preprocess(
     checkedAt: z.string().datetime(),
     policyVersion: z.string().min(1)
   }).optional()
+  }).superRefine((value, ctx) => {
+    value.guidedPractice.forEach((practice, index) => {
+      if (practice.hints.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['guidedPractice', index, 'hints'],
+          message: 'Guided practice must contain at least one progressive hint.'
+        });
+      }
+    });
+    value.independentPractice.forEach((practice, index) => {
+      if (practice.hints.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['independentPractice', index, 'hints'],
+          message: 'Independent practice must not reveal hints before the attempt.'
+        });
+      }
+    });
   })
 );
 export type InstructionalContent = z.infer<typeof InstructionalContentSchema>;
@@ -424,7 +443,7 @@ export function deriveCurriculumParameters(level?: string, semester?: string, cr
     targetLessonsPerModule = 4;
   }
 
-  if (depth === 'in-depth' || depth === 'advanced') {
+  if (depth === 'in-depth' || depth === 'advanced' || depth === 'deep-dive') {
     minModules += 1;
     maxModules += 2;
   }
