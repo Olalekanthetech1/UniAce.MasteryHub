@@ -8,7 +8,10 @@ export async function ensureCourseLearningSchema(): Promise<void> {
     migrationPromise = (async () => {
       await Promise.all([
         queryPostgres(
-          'ALTER TABLE course_lessons ADD COLUMN IF NOT EXISTS instructional_content JSONB NULL'
+          'ALTER TABLE course_lessons ADD COLUMN IF NOT EXISTS instructional_content JSONB NULL',
+        queryPostgres(
+          'ALTER TABLE course_lessons ADD COLUMN IF NOT EXISTS content_blocks JSONB NULL'
+        )
         ),
         queryPostgres(
           'ALTER TABLE courses ADD COLUMN IF NOT EXISTS faculties TEXT[] NULL'
