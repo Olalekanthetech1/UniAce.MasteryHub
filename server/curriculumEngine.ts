@@ -465,6 +465,7 @@ ${moduleSummary}
 2. FOUNDATIONS ORIENTATION SCORE (0-100): Does Module 1 properly establish the history, scope, taxonomy, and core conceptual framework of the discipline for ${normalizedLevel} Level students?
 3. PREREQUISITE & LEVEL SEQUENCING SCORE (0-100): Is the pedagogical progression logical for ${normalizedLevel} Level? Do foundational concepts precede advanced applications without inappropriate level jumps?
 4. WORKLOAD BALANCE & DENSITY (0-100): Does the module count (${proposedSkeleton.modules?.length || 0}) and lesson count provide legitimate ${normalizedLevel} Level university depth without superficial rushing or bloated repetition?
+5. INTERNAL CONSISTENCY (0-100): Are module titles, lesson titles, learning-outcome mappings, quiz topics, course scope, and the stated pedagogy internally aligned? Penalize contradictory sequencing, duplicated modules/lessons, orphaned or invalid learning-outcome references, quiz topics not covered by lessons, and descriptions that conflict with the proposed structure. A high score requires coherent naming, scope, terminology, and assessment alignment.
 
 Return strictly a JSON object:
 {
