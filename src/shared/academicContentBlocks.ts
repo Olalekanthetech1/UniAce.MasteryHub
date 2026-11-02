@@ -64,6 +64,12 @@ const ALLOWED_SIMULATION_FUNCTIONS = new Set([
   'abs', 'cos', 'exp', 'log', 'log10', 'max', 'min', 'sin', 'sqrt', 'tan'
 ]);
 
+const RESERVED_SIMULATION_SYMBOLS = new Set([
+  'pi',
+  'e',
+  ...ALLOWED_SIMULATION_FUNCTIONS
+]);
+
 /**
  * Allows arithmetic expressions only. Assignment, accessors, indexing, object
  * construction, arbitrary function calls and user-defined functions are rejected.
@@ -73,6 +79,15 @@ export function validateSimulationExpression(
   independentVariable: string,
   parameterSymbol: string
 ): { valid: true } | { valid: false; reason: string } {
+  if (RESERVED_SIMULATION_SYMBOLS.has(independentVariable)) {
+    return { valid: false, reason: `The independent variable symbol "${independentVariable}" is reserved by the simulation language.` };
+  }
+  if (RESERVED_SIMULATION_SYMBOLS.has(parameterSymbol)) {
+    return { valid: false, reason: `The adjustable parameter symbol "${parameterSymbol}" is reserved by the simulation language.` };
+  }
+  if (independentVariable === parameterSymbol) {
+    return { valid: false, reason: 'The independent variable and adjustable parameter must use different symbols.' };
+  }
   if (!expression.trim() || expression.length > 300) {
     return { valid: false, reason: 'The simulation expression must contain 1–300 characters.' };
   }
