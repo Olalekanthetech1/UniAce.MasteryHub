@@ -338,8 +338,9 @@ export class CourseRepository {
           Evaluate: 'evaluating',
           Create: 'creating'
         } as const)[question.bloom_level],
-        sourceReference: question.source_reference,
-        verifiedGrounded: true
+        sourceReference: question.source_reference
+        // A matching lesson title proves provenance linkage, not independent
+        // semantic or academic verification of the answer key.
       };
     });
 
