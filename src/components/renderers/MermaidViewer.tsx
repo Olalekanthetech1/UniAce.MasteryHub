@@ -14,7 +14,9 @@ import {
   ChevronUp
 } from 'lucide-react';
 import FunctionPlotViewer from './FunctionPlotViewer';
+import { LogService } from '../../services/logService';
 import {
+  detectMermaidDiagramType,
   validateAndRecoverMermaidDiagram,
   type ConstrainedAiRepairFn
 } from '../../services/mermaidRepairService';
@@ -97,6 +99,25 @@ export default function MermaidViewer({ chart, aiRepairFn }: MermaidViewerProps)
 
     const renderValidatedDiagram = async () => {
       const trimmedChart = (chart || '').trim();
+      const reportRenderFailure = (
+        stage: 'empty_source' | 'syntax_validation' | 'post_render_sanitization' | 'render_exception',
+        error?: unknown
+      ) => {
+        const diagramType = detectMermaidDiagramType(trimmedChart);
+        const errorName = error instanceof Error ? error.name : 'UnknownError';
+        void LogService.log(
+          'error',
+          'ai',
+          `Mermaid rendering failure [${stage}] [${diagramType}].`,
+          {
+            subsystem: 'mermaid-renderer',
+            stage,
+            diagramType,
+            errorName,
+            sourceLength: trimmedChart.length
+          }
+        );
+      };
       if (!trimmedChart) {
         if (!isCancelled) {
           setSvgContent('');
@@ -106,6 +127,7 @@ export default function MermaidViewer({ chart, aiRepairFn }: MermaidViewerProps)
             'This diagram could not be rendered because its syntax could not be validated. The rest of this lesson remains available.'
           );
           setDiagnosticDetails('Diagram source is empty.');
+          reportRenderFailure('empty_source', new Error('EmptyDiagramSource'));
         }
         return;
       }
@@ -141,6 +163,7 @@ export default function MermaidViewer({ chart, aiRepairFn }: MermaidViewerProps)
               'This diagram could not be rendered because its syntax could not be validated. The rest of this lesson remains available.'
           );
           setDiagnosticDetails(validation.diagnosticDetails || 'Syntax validation failed.');
+          reportRenderFailure('syntax_validation', new Error('MermaidSyntaxValidationFailed'));
           return;
         }
 
@@ -167,6 +190,7 @@ export default function MermaidViewer({ chart, aiRepairFn }: MermaidViewerProps)
             'This diagram could not be rendered because its syntax could not be validated. The rest of this lesson remains available.'
           );
           setDiagnosticDetails('Renderer output failed post-render verification.');
+          reportRenderFailure('post_render_sanitization', new Error('UnsafeOrInvalidSvgOutput'));
           return;
         }
 
@@ -182,6 +206,7 @@ export default function MermaidViewer({ chart, aiRepairFn }: MermaidViewerProps)
             'This diagram could not be rendered because its syntax could not be validated. The rest of this lesson remains available.'
           );
           setDiagnosticDetails(err?.message || String(err));
+          reportRenderFailure('render_exception', err);
         }
       }
     };
