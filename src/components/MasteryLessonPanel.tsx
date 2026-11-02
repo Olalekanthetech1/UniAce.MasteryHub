@@ -15,7 +15,7 @@ interface MasteryLessonPanelProps {
   courseId: string;
   moduleId: string;
   lessonId: string;
-  hideKnowledgeChecks?: boolean;
+  hiddenKnowledgeCheckIndexes?: number[];
 }
 
 interface PracticeReveal {
@@ -260,9 +260,13 @@ export default function MasteryLessonPanel({
   courseId,
   moduleId,
   lessonId,
-  hideKnowledgeChecks = false
+  hiddenKnowledgeCheckIndexes = []
 }: MasteryLessonPanelProps) {
   if (!content) return null;
+  const hiddenKnowledgeChecks = new Set(hiddenKnowledgeCheckIndexes);
+  const visibleKnowledgeChecks = content.knowledgeChecks
+    .map((check, index) => ({ check, index }))
+    .filter(({ index }) => !hiddenKnowledgeChecks.has(index));
 
   return (
     <div className="mt-8 space-y-6" aria-label="Mastery learning activities">
@@ -333,10 +337,10 @@ export default function MasteryLessonPanel({
         </section>
       )}
 
-      {!hideKnowledgeChecks && content.knowledgeChecks.length > 0 && (
+      {visibleKnowledgeChecks.length > 0 && (
         <section className="space-y-3">
           <h3 className="font-bold text-zinc-900 dark:text-zinc-100">Verify your understanding</h3>
-          {content.knowledgeChecks.map((check, index) => (
+          {visibleKnowledgeChecks.map(({ check, index }) => (
             <KnowledgeCheckCard
               key={index}
               check={check}
