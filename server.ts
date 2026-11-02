@@ -4816,6 +4816,15 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
       (!sourceText || typeof sourceText !== 'string' || !sourceText.trim())) {
     return res.status(400).json({ error: 'An admin-approved syllabus outline or source material is required for source-grounded course generation.' });
   }
+  const suppliedSourceChars = [outline, sourceText].reduce((total, value) =>
+    total + (typeof value === 'string' ? value.length : 0), 0);
+  if (suppliedSourceChars > MAX_COURSE_SOURCE_CHARS) {
+    return res.status(413).json({
+      error: 'The combined syllabus outline and extracted source material exceeds ' +
+        MAX_COURSE_SOURCE_CHARS.toLocaleString() +
+        ' characters. No source text was truncated; split or reduce the source document before generation.'
+    });
+  }
   if (scope.trim().toUpperCase() === 'FACULTY' &&
       (!Array.isArray(selectedFaculties) || selectedFaculties.length === 0)) {
     return res.status(400).json({ error: 'At least one faculty must be selected for faculty-scoped generation.' });
@@ -4825,6 +4834,16 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
     : [department.trim()];
 
   try {
+    const courseResearch = await retrieveCourseGenerationResearch({
+      courseName,
+      courseCode,
+      department,
+      level,
+      outline,
+      sourceText
+    });
+    console.log(`[Skeleton Gen] Research retrieval: ${courseResearch.metadata.status} (${courseResearch.metadata.papersCount} scholarly records, ${courseResearch.metadata.webSourcesCount} web discoveries).`);
+
     // 1. STAGE 1: INFER AUTHORITATIVE ACADEMIC DOMAIN & GROUNDING BRIEF
     console.log(`[Skeleton Gen] Stage 1: Inferring domain & canonical course references for "${courseName}" (Level: ${level})...`);
     const domainPrompt = buildDomainBriefPrompt({
@@ -4834,7 +4853,8 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
       department,
       level,
       outline,
-      sourceText
+      sourceText,
+      researchContext: courseResearch.context
     });
 
     const domainBrief = await completeWithProviderJSON({
@@ -4873,6 +4893,7 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
         selectedDepartments: effectiveDepartments,
         outline,
         sourceText,
+        researchContext: courseResearch.context,
         academicStandard
       }, feedbackCritique);
 
@@ -4900,7 +4921,8 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
         courseName,
         courseCode,
         level,
-        outline
+        outline,
+        researchContext: courseResearch.context
       });
 
       auditResult = await completeWithProviderJSON({
@@ -4915,6 +4937,8 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
         auditResult.coverageScore >= 75 && 
         auditResult.foundationsScore >= 75 && 
         auditResult.sequencingScore >= 75 && 
+        auditResult.workloadBalanceScore >= 75 &&
+        auditResult.consistencyScore >= 75 &&
         !auditResult.genericFillerDetected;
 
       if (isApproved) {
@@ -4922,7 +4946,7 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
         break;
       } else {
         console.warn(`[Skeleton Gen] Attempt ${attempts} rejected by Critic: ${auditResult.reasoning} (Coverage: ${auditResult.coverageScore}%, Foundations: ${auditResult.foundationsScore}%)`);
-        feedbackCritique = `The previous outline scored Coverage: ${auditResult.coverageScore}%, Foundations: ${auditResult.foundationsScore}%, Sequencing: ${auditResult.sequencingScore}%. Critic Critique: ${auditResult.reasoning}. Missing core topics: ${(auditResult.missingTopics || []).join(', ')}. Sequencing errors: ${(auditResult.sequencingErrors || []).join(', ')}. Please explicitly include foundational orientation in Module 1 and address these required topics.`;
+        feedbackCritique = `The previous outline scored Coverage: ${auditResult.coverageScore}%, Foundations: ${auditResult.foundationsScore}%, Sequencing: ${auditResult.sequencingScore}%, Workload Balance: ${auditResult.workloadBalanceScore}%, Consistency: ${auditResult.consistencyScore}%. Critic Critique: ${auditResult.reasoning}. Missing core topics: ${(auditResult.missingTopics || []).join(', ')}. Sequencing errors: ${(auditResult.sequencingErrors || []).join(', ')}. Correct workload imbalance and internal inconsistencies before resubmission.`;
         
         if (attempts === MAX_ATTEMPTS && (!skeleton || !Array.isArray(skeleton.modules) || skeleton.modules.length < 4)) {
           return res.status(422).json({
@@ -4934,7 +4958,12 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
       }
     }
 
-    const confidenceState = (auditResult && auditResult.coverageScore >= 90) ? 'verified' : 'needs_review';
+    const confidenceState = (auditResult &&
+      auditResult.coverageScore >= 90 &&
+      auditResult.foundationsScore >= 90 &&
+      auditResult.sequencingScore >= 90 &&
+      auditResult.workloadBalanceScore >= 90 &&
+      auditResult.consistencyScore >= 90) ? 'verified' : 'needs_review';
 
     // Normalize & sort module lessonTitles & learning outcomes in ascending pedagogical order
     const sortedRawModules = [...(skeleton.modules || [])]
@@ -4970,6 +4999,7 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
       coverageScore: auditResult.coverageScore,
       confidenceState,
       rubricAudit: auditResult,
+      research: courseResearch.metadata,
       groundingReferences: domainBrief.canonicalCourseReferences
     });
 
