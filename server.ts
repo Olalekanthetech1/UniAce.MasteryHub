@@ -75,6 +75,7 @@ import {
   LessonContentSchema,
   StructuredLessonOutputSchema,
   InstructionalContentSchema,
+  AcademicContentBlockCollectionSchema,
   CourseProvenanceSchema,
   normalizeLearningOutcomes,
   deriveCurriculumParameters,
@@ -1523,6 +1524,13 @@ app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regen
     );
 
     const validatedSchema = StructuredLessonOutputSchema.superRefine((value, context) => {
+      if (!value.contentBlocks) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['contentBlocks'],
+          message: 'Newly generated lessons must include a validated version 1.0 typed content-block collection.'
+        });
+      }
       if (value.instructionalContent.disciplineEngine !== domainBrief.pedagogyType) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
@@ -1592,7 +1600,8 @@ app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regen
         contentMarkdown: markdown,
         orderIndex: lessonOrderIndex,
         learningOutcomes,
-        instructionalContent
+        instructionalContent,
+        contentBlocks: generated.contentBlocks
       }
     });
 
@@ -1617,6 +1626,7 @@ app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regen
         id: lessonId,
         title: String(generated.title || lesson.title || lessonId),
         content: markdown,
+        contentBlocks: generated.contentBlocks,
         instructionalContent: redactInstructionalAnswersForStudent(instructionalContent)
       },
       verification: {
