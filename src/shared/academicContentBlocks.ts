@@ -85,7 +85,7 @@ export function validateSimulationExpression(
     let failure: string | null = null;
     const allowedSymbols = new Set([independentVariable, parameterSymbol, 'pi', 'e']);
 
-    tree.traverse((node: any) => {
+    tree.traverse((node: any, _path: string, parent: any) => {
       if (failure) return;
 
       if (node.isConstantNode) {
@@ -96,7 +96,14 @@ export function validateSimulationExpression(
       }
 
       if (node.isSymbolNode) {
-        if (!allowedSymbols.has(node.name)) {
+        // MathJS represents the callee of a FunctionNode as a SymbolNode child.
+        // Treat that symbol as a function identifier, not as a free variable.
+        const isFunctionIdentifier = Boolean(parent?.isFunctionNode && parent.fn === node);
+        if (isFunctionIdentifier) {
+          if (!ALLOWED_SIMULATION_FUNCTIONS.has(node.name)) {
+            failure = 'The expression calls a function that is not on the simulation allowlist.';
+          }
+        } else if (!allowedSymbols.has(node.name)) {
           failure = `Unsupported simulation symbol: ${String(node.name)}.`;
         }
         return;
