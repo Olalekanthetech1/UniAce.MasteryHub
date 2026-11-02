@@ -186,8 +186,9 @@ test('course provenance accepts truthful empty references and retains research r
   const parsed = CourseProvenanceSchema.safeParse({
     sources: [],
     modelVersion: 'provider-recorded-by-job',
-    promptVersion: 'uniace-mastery-curriculum-v3.0',
+    promptVersion: 'uniace-mastery-curriculum-v4.0',
     generatedAt: new Date().toISOString(),
+    sourceStatus: 'research_retrieved_unverified',
     academicAccuracy: 'not_independently_verified',
     research: {
       status: 'evidence_found',
