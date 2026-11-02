@@ -19,6 +19,9 @@ import { clearBootstrapCache } from './student';
 import { catalogCache } from '../cache/catalogCache';
 import { ensureCourseLearningSchema } from '../services/courseLearningSchema';
 import { ensureCourseReviewSchema } from '../services/courseReviewSchema';
+import { ensureCourseAssessmentSchema } from '../services/courseAssessmentSchema';
+import { ensureCourseLifecycleSchema } from '../services/courseLifecycleSchema.js';
+import { activeCancelledJobs } from '../services/courseJobControl.js';
 import {
   getSystemConfigDoc,
   setSystemConfigDoc,
@@ -1022,10 +1025,20 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
     await ensureCourseLearningSchema();
+    await ensureCourseLifecycleSchema();
 
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [id.trim()]);
+      const tombstone = await client.query(
+        'SELECT course_id FROM course_lifecycle_tombstones WHERE course_id = $1',
+        [id.trim()]
+      );
+      if (tombstone.rows.length > 0) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'This course ID was permanently deleted and cannot be reused.' });
+      }
       const courseCode = typeof code === 'string' && code.trim() ? code.trim() : id.trim();
       await client.query(
         `INSERT INTO courses (id, code, title, description, level, department, faculty, semester, credit_units, scope, status, version, created_at, updated_at)
@@ -1395,7 +1408,7 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
       const result = await pool.query(
         `UPDATE courses
          SET status = 'published', version = COALESCE(version, 1) + 1, updated_at = NOW()
-         WHERE id = $1`,
+         WHERE id = $1 AND status = 'archived'`,
         [id]
       );
       if ((result.rowCount ?? 0) === 0) return res.status(404).json({ error: 'Course not found.' });
@@ -1465,19 +1478,91 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
 
+    await ensureCourseLifecycleSchema();
+    await ensureCourseReviewSchema();
+    await ensureCourseAssessmentSchema();
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [id]);
+      const course = await client.query(`SELECT id, code, title, status FROM courses WHERE id = $1 FOR UPDATE`, [id]);
+      if (course.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Course not found.' });
+      }
+      if (course.rows[0].status !== 'archived') {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'Only archived courses can be permanently deleted.' });
+      }
+
+      // Revoke and remove persisted jobs only when the PostgreSQL job subsystem is enabled.
+      if (getFeatureFlags().ENABLE_POSTGRES_GENERATION_JOBS) {
+        const jobRelations = await client.query(
+          `SELECT to_regclass('course_generation_jobs') AS jobs,
+                  to_regclass('sse_stream_tickets') AS tickets`
+        );
+        if (!jobRelations.rows[0]?.jobs) {
+          throw new Error('PostgreSQL generation jobs are enabled, but the job table is missing.');
+        }
+        await client.query(
+          `UPDATE course_generation_jobs
+           SET status = 'cancelled', stage = 'cancelled',
+               status_message = 'Course permanently deleted by administrator.',
+               lease_owner = NULL, lease_expires_at = NULL, updated_at = NOW(),
+               completed_at = NOW()
+           WHERE course_id = $1 AND status IN ('queued', 'running')`,
+          [id]
+        );
+        if (jobRelations.rows[0]?.tickets) {
+          await client.query(
+            `DELETE FROM sse_stream_tickets
+             WHERE job_id IN (SELECT job_id FROM course_generation_jobs WHERE course_id = $1)`,
+            [id]
+          );
+        }
+        await client.query(`DELETE FROM course_generation_jobs WHERE course_id = $1`, [id]);
+      }
+
+      // Preserve a durable audit event for the destructive administrator action.
+      await client.query(
+        `INSERT INTO course_lifecycle_tombstones (course_id, course_code, course_title, deleted_by, deleted_at)
+         VALUES ($1, $2, $3, $4, NOW())
+         ON CONFLICT (course_id) DO NOTHING`,
+        [id, course.rows[0].code || id, course.rows[0].title || null, user.uid]
+      );
+      await client.query(
+        `INSERT INTO course_review_events
+         (course_id, actor_uid, actor_email, action, from_status, to_status, notes, created_at)
+         VALUES ($1, $2, $3, 'permanent_delete', 'archived', 'deleted',
+                 'Course and associated instructional data permanently deleted by administrator.', NOW())`,
+        [id, user.uid, user.email || null]
+      );
+
+      // Remove legacy and v2 vector chunks when those relations are present.
+      const vectorTables = await client.query(
+        `SELECT to_regclass('course_knowledge_chunks') AS legacy_table,
+                to_regclass('course_knowledge_chunks_v2') AS v2_table`
+      );
+      if (vectorTables.rows[0]?.legacy_table) {
+        await client.query(`DELETE FROM course_knowledge_chunks WHERE course_id = $1`, [id]);
+      }
+      if (vectorTables.rows[0]?.v2_table) {
+        await client.query(`DELETE FROM course_knowledge_chunks_v2 WHERE course_id = $1`, [id]);
+      }
+
+      // Remove dependent instructional and learner data in the same transaction.
+      await client.query(`DELETE FROM course_lesson_practice_attempts WHERE course_id = $1`, [id]);
+      await client.query(`DELETE FROM course_formulas WHERE course_id = $1`, [id]);
       await client.query(`DELETE FROM course_lessons WHERE course_id = $1`, [id]);
       await client.query(`DELETE FROM course_modules WHERE course_id = $1`, [id]);
-      await client.query(`DELETE FROM course_formulas WHERE course_id = $1`, [id]).catch(() => {});
       await client.query(`DELETE FROM courses WHERE id = $1`, [id]);
       await client.query('COMMIT');
+      activeCancelledJobs.add(id);
       catalogCache.invalidateAll();
-      res.json({ success: true, courseId: id });
+      return res.json({ success: true, courseId: id });
     } catch (err: any) {
-      await client.query('ROLLBACK');
-      res.status(500).json({ error: 'Failed to permanently delete course', details: err.message });
+      await client.query('ROLLBACK').catch(() => undefined);
+      return res.status(500).json({ error: 'Failed to permanently delete course; transaction rolled back.', details: err.message });
     } finally {
       client.release();
     }
@@ -1494,15 +1579,40 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
 
+    const client = await pool.connect();
     try {
-      await pool.query(
-        `UPDATE courses SET status = 'archived', updated_at = NOW() WHERE id = $1`,
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [id]);
+      const course = await client.query(`SELECT id FROM courses WHERE id = $1 FOR UPDATE`, [id]);
+      if (course.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Course not found.' });
+      }
+      if (getFeatureFlags().ENABLE_POSTGRES_GENERATION_JOBS) {
+        await client.query(
+          `UPDATE course_generation_jobs
+           SET status = 'cancelled', stage = 'cancelled',
+               status_message = 'Course archived by administrator.',
+               lease_owner = NULL, lease_expires_at = NULL, updated_at = NOW(),
+               completed_at = NOW()
+           WHERE course_id = $1 AND status IN ('queued', 'running')`,
+          [id]
+        );
+      }
+      await client.query(
+        `UPDATE courses SET status = 'archived', version = COALESCE(version, 1) + 1, updated_at = NOW()
+         WHERE id = $1`,
         [id]
       );
+      await client.query('COMMIT');
+      activeCancelledJobs.add(id);
       catalogCache.invalidateAll();
-      res.json({ success: true, courseId: id });
+      return res.json({ success: true, courseId: id, status: 'archived' });
     } catch (err: any) {
-      res.status(500).json({ error: 'Failed to archive course', details: err.message });
+      await client.query('ROLLBACK').catch(() => undefined);
+      return res.status(500).json({ error: 'Failed to archive course; transaction rolled back.', details: err.message });
+    } finally {
+      client.release();
     }
   });
 

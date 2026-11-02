@@ -181,8 +181,10 @@ import { catalogCache } from './server/cache/catalogCache';
 import { progressRepository } from './server/repositories/progressRepository';
 import { JobRepository } from './server/repositories/jobRepository';
 import { jobStreamManager } from './server/services/jobStreamManager';
+import { activeCancelledJobs } from './server/services/courseJobControl.js';
 import { getFeatureFlags, initRuntimeFlagsSync } from './server/config/features';
 import { ensureCourseLearningSchema } from './server/services/courseLearningSchema';
+import { ensureCourseLifecycleSchema } from './server/services/courseLifecycleSchema.js';
 import { ensureCourseAssessmentSchema } from './server/services/courseAssessmentSchema';
 import { redactInstructionalAnswersForStudent, getInstructionalActivityReveal, type InstructionalActivityType } from './server/services/instructionalDelivery.js';
 import { getSystemConfigDoc, setSystemConfigDoc, getSystemSettingsDoc, setSystemSettingsDoc } from './server/systemConfigStore';
@@ -390,7 +392,6 @@ async function resilientEmbedContent(genAI: any, params: any) {
 const WORKER_INSTANCE_ID = `worker_${crypto.randomBytes(6).toString('hex')}_${Date.now().toString(36)}`;
 
 // In-memory cancellation and active worker trackers for server jobs
-const activeCancelledJobs = new Set<string>();
 const activeRunningCourseJobs = new Set<string>();
 
 // Concurrency Hysteresis State Tracker
@@ -4949,6 +4950,84 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
 // --- Server-Coordinated Async Course Generation Worker & Endpoint (Neon PostgreSQL Primary) ---
 const activeCoordinatedJobSnapshots = new Map<string, Record<string, any>>();
 
+async function ensureCourseGenerationTargetInPostgres(input: {
+  courseId: string;
+  courseName: string;
+  courseDescription?: string | null;
+  level: string;
+  department: string;
+  semester?: string | null;
+  creditUnits: number;
+  scope: string;
+  faculties: string[];
+  departments: string[];
+  allowPublishedResume: boolean;
+}): Promise<void> {
+  const pool = getPostgresPool();
+  if (!pool) throw new Error('Neon PostgreSQL database service unavailable.');
+  await ensureCourseLifecycleSchema();
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Serialize course creation, archive, and permanent-delete operations for this ID.
+    await client.query(
+      'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [input.courseId]
+    );
+
+    const tombstone = await client.query(
+      'SELECT course_id FROM course_lifecycle_tombstones WHERE course_id = $1',
+      [input.courseId]
+    );
+    if (tombstone.rows.length > 0) {
+      throw new Error(`Course ID ${input.courseId} was permanently deleted and cannot be resumed or recreated.`);
+    }
+
+    const existing = await client.query(
+      'SELECT status FROM courses WHERE id = $1 FOR UPDATE',
+      [input.courseId]
+    );
+    if (existing.rows.length > 0) {
+      const status = existing.rows[0].status;
+      if (status === 'archived') {
+        throw new Error(`Course ${input.courseId} is archived; restore it explicitly before generation.`);
+      }
+      if (status === 'published' && !input.allowPublishedResume) {
+        throw new Error(`Course ${input.courseId} is already published; use the explicit course-repair workflow instead of regenerating it.`);
+      }
+    } else {
+      await client.query(
+        `INSERT INTO courses
+          (id, code, title, description, level, department, faculty, semester,
+           credit_units, scope, faculties, departments, status, version, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'draft', 1, NOW(), NOW())`,
+        [
+          input.courseId,
+          input.courseId,
+          input.courseName,
+          typeof input.courseDescription === 'string' ? input.courseDescription : null,
+          input.level,
+          input.department,
+          input.faculties[0] || null,
+          input.semester || null,
+          input.creditUnits,
+          input.scope,
+          input.faculties,
+          input.departments
+        ]
+      );
+    }
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function updateCourseGenerationStateInPostgres(courseId: string, patch: Record<string, any>) {
   const current: Record<string, any> = activeCoordinatedJobSnapshots.get(courseId) || { id: courseId };
   const merged: Record<string, any> = { ...current, ...patch, updatedAt: new Date().toISOString() };
@@ -4958,41 +5037,45 @@ async function updateCourseGenerationStateInPostgres(courseId: string, patch: Re
   if (pool && (patch.title || patch.description || patch.generationStatus === 'completed')) {
     try {
       const statusVal = typeof merged.status === 'string' ? merged.status : 'draft';
-      await pool.query(
-`INSERT INTO courses (id, code, title, description, level, department, faculty, semester, credit_units, scope, faculties, departments, status, version, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 1, NOW(), NOW())
-         ON CONFLICT (id) DO UPDATE SET
-           title = COALESCE(EXCLUDED.title, courses.title),
-           description = COALESCE(EXCLUDED.description, courses.description),
-           level = COALESCE(EXCLUDED.level, courses.level),
-           department = COALESCE(EXCLUDED.department, courses.department),
-           faculty = COALESCE(EXCLUDED.faculty, courses.faculty),
-           semester = COALESCE(EXCLUDED.semester, courses.semester),
-           credit_units = COALESCE(EXCLUDED.credit_units, courses.credit_units),
-           scope = COALESCE(EXCLUDED.scope, courses.scope),
-           faculties = COALESCE(EXCLUDED.faculties, courses.faculties),
-           departments = COALESCE(EXCLUDED.departments, courses.departments),
-           status = EXCLUDED.status,
-           updated_at = NOW()`,
+      // Generation workers may update metadata only on an existing, non-archived course.
+      // They must never UPSERT a course row or change its administrator-owned lifecycle status.
+      const persisted = await pool.query(
+        `UPDATE courses SET
+           title = COALESCE($2, title),
+           description = COALESCE($3, description),
+           level = COALESCE($4, level),
+           department = COALESCE($5, department),
+           faculty = COALESCE($6, faculty),
+           semester = COALESCE($7, semester),
+           credit_units = COALESCE($8, credit_units),
+           scope = COALESCE($9, scope),
+           faculties = COALESCE($10, faculties),
+           departments = COALESCE($11, departments),
+           updated_at = NOW()
+         WHERE id = $1 AND status <> 'archived'
+         RETURNING id`,
         [
           courseId,
-          merged.code || courseId,
-          merged.title || courseId,
+          merged.title || null,
           merged.description || null,
-          merged.level,
+          merged.level ?? null,
           merged.department || null,
           (Array.isArray(merged.faculties) && merged.faculties[0]) || merged.faculty || null,
           merged.semester || null,
-          merged.creditUnits,
-          merged.scope,
+          merged.creditUnits ?? null,
+          merged.scope ?? null,
           Array.isArray(merged.faculties) ? merged.faculties : null,
-          Array.isArray(merged.departments) ? merged.departments : null,
-          statusVal
+          Array.isArray(merged.departments) ? merged.departments : null
         ]
       );
+      if ((persisted.rowCount ?? 0) === 0) {
+        activeCoordinatedJobSnapshots.delete(courseId);
+        throw new Error(`Course ${courseId} no longer exists or is archived; generation state was not persisted.`);
+      }
       catalogCache.invalidateCourse(courseId);
     } catch (pgErr: any) {
-      console.warn(`[Coordinated Gen] Postgres course row upsert notice for ${courseId}:`, pgErr.message);
+      console.error(`[Coordinated Gen] Course state persistence rejected for ${courseId}:`, pgErr.message);
+      throw pgErr;
     }
   }
 }
@@ -5071,15 +5154,30 @@ async function executeCoordinatedGenerationJob(
 
   try {
     await ensureCourseLearningSchema();
+    await ensureCourseLifecycleSchema();
     const existingSnap = activeCoordinatedJobSnapshots.get(courseId);
+    const isResume = req.body.resume === true || Boolean(existingSnap && existingSnap.generationStatus === 'generating');
+
+    await ensureCourseGenerationTargetInPostgres({
+      courseId,
+      courseName: courseName.trim(),
+      courseDescription,
+      level: level.trim(),
+      department: rawDept,
+      semester: typeof semester === 'string' ? semester : null,
+      creditUnits,
+      scope: scope.trim().toUpperCase(),
+      faculties: selectedFaculties,
+      departments: effectiveDepartments,
+      allowPublishedResume: isResume
+    });
+
     if (activeRunningCourseJobs.has(courseId) && existingSnap?.generationStatus === 'generating') {
       if (res && !res.headersSent) {
         return res.json({ status: 'started', courseId, alreadyOwned: true });
       }
       return;
     }
-
-    const isResume = req.body.resume === true || Boolean(existingSnap && existingSnap.generationStatus === 'generating');
 
     await updateCourseGenerationStateInPostgres(courseId, {
       id: courseId,
@@ -5873,6 +5971,18 @@ async function healCourseInPostgres(
     throw new Error('Neon PostgreSQL database service unavailable.');
   }
 
+  const lifecycle = await pool.query(
+    `SELECT status FROM courses WHERE id = $1`,
+    [courseId]
+  );
+  if (lifecycle.rows.length === 0 || lifecycle.rows[0].status !== 'published') {
+    return {
+      status: lifecycle.rows.length === 0 ? 'not_found' : 'not_eligible',
+      healedLessons: 0,
+      emptyModulesPopulated: 0
+    };
+  }
+
   const audit = await auditCourseHealthInPostgres(courseId);
   if (!audit.needsHealing) {
     return { status: 'healthy', healedLessons: 0, emptyModulesPopulated: 0 };
@@ -6044,10 +6154,25 @@ Return strictly valid JSON matching:
           if (!genericTitle && syntaxCheck.isValid) {
             // If normalization cleaned up minor escaping, persist normalized markdown without regenerating
             if (normalized !== l.content_markdown) {
-              await pool.query(
-                `UPDATE course_lessons SET content_markdown = $1, updated_at = NOW() WHERE course_id = $2 AND module_id = $3 AND id = $4`,
+              const normalizedWrite = await pool.query(
+                `WITH eligible_course AS (
+                   SELECT id FROM courses
+                   WHERE id = $2 AND status <> 'archived'
+                   FOR SHARE
+                 )
+                 UPDATE course_lessons AS lesson
+                 SET content_markdown = $1, updated_at = NOW()
+                 FROM eligible_course
+                 WHERE lesson.course_id = eligible_course.id
+                   AND lesson.course_id = $2
+                   AND lesson.module_id = $3
+                   AND lesson.id = $4
+                 RETURNING lesson.id`,
                 [normalized, courseId, m.id, l.id]
-              ).catch(() => {});
+              );
+              if ((normalizedWrite.rowCount ?? 0) === 0) {
+                throw new Error(`Course ${courseId} is missing or archived; self-heal normalization write rejected.`);
+              }
             }
             continue;
           }
@@ -6242,8 +6367,7 @@ Return strictly valid JSON matching:
       generationStatus: 'completed',
       generationProgress: 100,
       statusMessage: `Course verified and healed (${completedRepairs} lesson(s) repaired, ${audit.healthyLessonCount} healthy lesson(s) preserved).`,
-      published: true,
-      status: 'published'
+      // Healing completion is not a publication or lifecycle transition.
     });
 
     catalogCache.invalidateAll();
@@ -6284,7 +6408,7 @@ async function resumeInterruptedCourseJobs(_db: admin.firestore.Firestore | null
   try {
     const pool = getPostgresPool();
     if (!pool) return;
-    const coursesRes = await pool.query(`SELECT id FROM courses ORDER BY updated_at DESC`);
+    const coursesRes = await pool.query(`SELECT id FROM courses WHERE status = 'published' ORDER BY updated_at DESC`);
     for (const row of coursesRes.rows) {
       const courseId = row.id;
       const audit = await auditCourseHealthInPostgres(courseId);
@@ -6457,10 +6581,16 @@ app.post('/api/course/cancel-job', verifyAdmin, async (req, res) => {
 
   if (getFeatureFlags().ENABLE_POSTGRES_GENERATION_JOBS) {
     try {
-      const targetJobId = jobId || (await JobRepository.getActiveJobForCourse(courseId))?.job_id;
+      const targetJob = jobId
+        ? null
+        : await JobRepository.getActiveJobForCourse(courseId);
+      const targetJobId = jobId || targetJob?.job_id;
       if (targetJobId) {
         const cancelledBy = (req as any).user?.uid || 'admin';
-        await JobRepository.cancelJob(targetJobId, cancelledBy);
+        const cancelled = await JobRepository.cancelJob(targetJobId, cancelledBy);
+        if (!cancelled) {
+          return res.status(409).json({ error: 'The generation job is no longer active or could not be cancelled.', courseId, jobId: targetJobId });
+        }
         jobStreamManager.broadcast(targetJobId, 'cancelled', {
           jobId: targetJobId,
           courseId,
@@ -6468,7 +6598,8 @@ app.post('/api/course/cancel-job', verifyAdmin, async (req, res) => {
         });
       }
     } catch (pgErr: any) {
-      console.warn('[Postgres Job] Error cancelling job in PostgreSQL:', pgErr.message);
+      console.error('[Postgres Job] Authoritative cancellation failed:', pgErr.message);
+      return res.status(503).json({ error: 'Generation cancellation could not be confirmed.', courseId });
     }
   }
 
