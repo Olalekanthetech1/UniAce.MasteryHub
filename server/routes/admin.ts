@@ -20,6 +20,7 @@ import { catalogCache } from '../cache/catalogCache';
 import { ensureCourseLearningSchema } from '../services/courseLearningSchema';
 import { ensureCourseReviewSchema } from '../services/courseReviewSchema';
 import { ensureCourseAssessmentSchema } from '../services/courseAssessmentSchema';
+import { activeCancelledJobs } from '../services/courseJobControl.js';
 import {
   getSystemConfigDoc,
   setSystemConfigDoc,
@@ -1469,23 +1470,40 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const course = await client.query(`SELECT id FROM courses WHERE id = $1 FOR UPDATE`, [id]);
+      const course = await client.query(`SELECT id, status FROM courses WHERE id = $1 FOR UPDATE`, [id]);
       if (course.rows.length === 0) {
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Course not found.' });
       }
+      if (course.rows[0].status !== 'archived') {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'Only archived courses can be permanently deleted.' });
+      }
 
-      // Revoke queued/running generation work before removing course data.
-      // A worker must still pass its own fenced writes; cancellation alone is not the fence.
-      await client.query(
-        `UPDATE course_generation_jobs
-         SET status = 'cancelled', stage = 'cancelled',
-             status_message = 'Course permanently deleted by administrator.',
-             lease_owner = NULL, lease_expires_at = NULL, updated_at = NOW(),
-             completed_at = NOW()
-         WHERE course_id = $1 AND status IN ('queued', 'running')`,
-        [id]
+      // Revoke persisted jobs only when the PostgreSQL generation-job subsystem is enabled.
+      if (getFeatureFlags().ENABLE_POSTGRES_GENERATION_JOBS) {
+        await client.query(
+          `UPDATE course_generation_jobs
+           SET status = 'cancelled', stage = 'cancelled',
+               status_message = 'Course permanently deleted by administrator.',
+               lease_owner = NULL, lease_expires_at = NULL, updated_at = NOW(),
+               completed_at = NOW()
+           WHERE course_id = $1 AND status IN ('queued', 'running')`,
+          [id]
+        );
+      }
+
+      // Remove legacy and v2 vector chunks when those relations are present.
+      const vectorTables = await client.query(
+        `SELECT to_regclass('course_knowledge_chunks') AS legacy_table,
+                to_regclass('course_knowledge_chunks_v2') AS v2_table`
       );
+      if (vectorTables.rows[0]?.legacy_table) {
+        await client.query(`DELETE FROM course_knowledge_chunks WHERE course_id = $1`, [id]);
+      }
+      if (vectorTables.rows[0]?.v2_table) {
+        await client.query(`DELETE FROM course_knowledge_chunks_v2 WHERE course_id = $1`, [id]);
+      }
 
       // Remove dependent instructional and learner data in the same transaction.
       await ensureCourseAssessmentSchema();
@@ -1495,6 +1513,7 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
       await client.query(`DELETE FROM course_modules WHERE course_id = $1`, [id]);
       await client.query(`DELETE FROM courses WHERE id = $1`, [id]);
       await client.query('COMMIT');
+      activeCancelledJobs.add(id);
       catalogCache.invalidateAll();
       return res.json({ success: true, courseId: id });
     } catch (err: any) {
@@ -1524,21 +1543,24 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Course not found.' });
       }
-      await client.query(
-        `UPDATE course_generation_jobs
-         SET status = 'cancelled', stage = 'cancelled',
-             status_message = 'Course archived by administrator.',
-             lease_owner = NULL, lease_expires_at = NULL, updated_at = NOW(),
-             completed_at = NOW()
-         WHERE course_id = $1 AND status IN ('queued', 'running')`,
-        [id]
-      );
+      if (getFeatureFlags().ENABLE_POSTGRES_GENERATION_JOBS) {
+        await client.query(
+          `UPDATE course_generation_jobs
+           SET status = 'cancelled', stage = 'cancelled',
+               status_message = 'Course archived by administrator.',
+               lease_owner = NULL, lease_expires_at = NULL, updated_at = NOW(),
+               completed_at = NOW()
+           WHERE course_id = $1 AND status IN ('queued', 'running')`,
+          [id]
+        );
+      }
       await client.query(
         `UPDATE courses SET status = 'archived', version = COALESCE(version, 1) + 1, updated_at = NOW()
          WHERE id = $1`,
         [id]
       );
       await client.query('COMMIT');
+      activeCancelledJobs.add(id);
       catalogCache.invalidateAll();
       return res.json({ success: true, courseId: id, status: 'archived' });
     } catch (err: any) {
