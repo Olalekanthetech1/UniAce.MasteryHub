@@ -413,3 +413,103 @@ test('course curriculum does not force a history-first module', () => {
   assert.match(criticPrompt, /Do not reward a history, scope, taxonomy, or evolution section merely for being present/);
   assert.match(criticPrompt, /unnecessary history module is generic filler/);
 });
+
+
+test('typed lesson blocks reference the canonical worked-example and protected knowledge-check records', () => {
+  const instructional = {
+    ...instructionalContent(),
+    workedExamples: [{
+      title: 'Specific weight from density',
+      exampleType: 'numerical' as const,
+      problem: 'Determine the specific weight of a fluid from its density.',
+      givens: [{ name: 'Density', value: '1000', unit: 'kg/m³' }],
+      assumptions: ['Use standard gravitational acceleration for this worked example.'],
+      reasoningSteps: [
+        'Start with the definition of specific weight as weight per unit volume.',
+        'Substitute the density and gravitational acceleration, then check the SI units.'
+      ],
+      solution: 'The specific weight is 9,810 N/m³ for the stated values.',
+      verification: 'The result has units of force per volume and is physically consistent with water.'
+    }]
+  };
+  const contentBlocks = [
+    {
+      id: 'explanation-1',
+      type: 'explanation' as const,
+      title: 'Specific weight',
+      markdown: 'Specific weight is the weight of a substance per unit volume. '.repeat(18)
+    },
+    {
+      id: 'worked-example-1',
+      type: 'worked_example' as const,
+      exampleIndex: 0
+    },
+    {
+      id: 'knowledge-check-1',
+      type: 'knowledge_check' as const,
+      activityIndex: 0
+    }
+  ];
+  const candidate = { ...instructional, contentBlocks };
+
+  assert.equal(InstructionalContentSchema.safeParse(candidate).success, true);
+
+  const unavailableExample = {
+    ...candidate,
+    contentBlocks: [{ ...contentBlocks[0] }, { ...contentBlocks[1], exampleIndex: 3 }, { ...contentBlocks[2] }]
+  };
+  assert.equal(InstructionalContentSchema.safeParse(unavailableExample).success, false);
+
+  const unavailableCheck = {
+    ...candidate,
+    contentBlocks: [{ ...contentBlocks[0] }, { ...contentBlocks[1] }, { ...contentBlocks[2], activityIndex: 8 }]
+  };
+  assert.equal(InstructionalContentSchema.safeParse(unavailableCheck).success, false);
+
+  const compiled = renderLessonContentBlocksToMarkdown(contentBlocks, instructional.workedExamples);
+  assert.match(compiled, /Specific weight is the weight/);
+  assert.match(compiled, /9,810 N\/m³/);
+  assert.match(compiled, /Complete Check 1/);
+});
+
+test('new structured lesson output compiles validated blocks into compatible Markdown', () => {
+  const instructional = {
+    ...instructionalContent(),
+    workedExamples: [{
+      title: 'Pressure at depth',
+      exampleType: 'numerical' as const,
+      problem: 'Determine the pressure increase at a stated depth in a static fluid.',
+      givens: [],
+      assumptions: ['The fluid is at rest and has constant density.'],
+      reasoningSteps: [
+        'Apply the hydrostatic pressure relationship.',
+        'Substitute the supplied density, gravitational acceleration and depth.'
+      ],
+      solution: 'The pressure increase is calculated from density multiplied by gravity and depth.',
+      verification: 'The units reduce to pascals, which is the SI unit of pressure.'
+    }],
+    contentBlocks: [
+      {
+        id: 'explanation-1',
+        type: 'explanation' as const,
+        title: 'Hydrostatic pressure',
+        markdown: 'Hydrostatic pressure is the pressure variation associated with depth in a fluid at rest. '.repeat(20)
+      },
+      { id: 'worked-example-1', type: 'worked_example' as const, exampleIndex: 0 },
+      { id: 'knowledge-check-1', type: 'knowledge_check' as const, activityIndex: 0 }
+    ]
+  };
+
+  const parsed = StructuredLessonOutputSchema.safeParse({
+    title: 'Hydrostatic pressure',
+    pedagogicalReasoning: 'The lesson develops the concept, applies its governing relationship and checks understanding.',
+    content: 'This legacy field is replaced by the validated block adapter.',
+    instructionalContent: instructional
+  });
+
+  assert.equal(parsed.success, true);
+  if (!parsed.success) assert.fail(JSON.stringify(parsed.error.issues));
+  assert.ok(parsed.data.content.includes('## Hydrostatic pressure'));
+  assert.ok(parsed.data.content.includes('**Verification**'));
+  assert.ok(parsed.data.content.length >= 800);
+});
