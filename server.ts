@@ -4828,10 +4828,9 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
   if (typeof creditUnits !== 'number' || !Number.isInteger(creditUnits) || creditUnits < 1 || creditUnits > 12) {
     return res.status(400).json({ error: 'Verified course credit units are required.' });
   }
-  if ((!outline || typeof outline !== 'string' || !outline.trim()) &&
-      (!sourceText || typeof sourceText !== 'string' || !sourceText.trim())) {
-    return res.status(400).json({ error: 'An admin-approved syllabus outline or source material is required for source-grounded course generation.' });
-  }
+  // A supplied syllabus is optional. The research engine can begin from the
+  // course identity and academic context; when no source is found, provenance
+  // records that limitation and prompts prohibit invented references.
   const suppliedSourceChars = [outline, sourceText]
     .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
     .join('\n\n').length;
@@ -5210,11 +5209,8 @@ async function executeCoordinatedGenerationJob(
     if (res) return res.status(400).json({ error: 'A valid course audience scope is required.' });
     return;
   }
-  if ((!outline || typeof outline !== 'string' || !outline.trim()) &&
-      (!sourceText || typeof sourceText !== 'string' || !sourceText.trim())) {
-    if (res) return res.status(400).json({ error: 'An admin-approved syllabus outline or source material is required for source-grounded course generation.' });
-    return;
-  }
+  // A syllabus/source upload is optional; research retrieval starts from
+  // course identity and academic scope when the administrator has no document.
   const suppliedSourceChars = [outline, sourceText]
     .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
     .join('\n\n').length;
