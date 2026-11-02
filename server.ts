@@ -5755,10 +5755,120 @@ async function executeCoordinatedGenerationJob(
           await Promise.all(chunkPromises);
         }
 
-        // STEP 3: Generate Dynamic Formula Sheet in Neon PostgreSQL
+        // STEP 3: Generate and persist one lesson-grounded assessment for every module.
+        await updateCourseGenerationStateInPostgres(courseId, {
+          generationProgress: 92,
+          statusMessage: 'Generating module assessments from persisted lesson content...'
+        });
+
+        for (let moduleIndex = 0; moduleIndex < skeleton.modules.length; moduleIndex++) {
+          if (activeCancelledJobs.has(courseId)) return;
+          const moduleSkeleton = skeleton.modules[moduleIndex];
+          const moduleId = 'm' + (moduleIndex + 1);
+          const moduleTitle = String(moduleSkeleton.title || ('Module ' + (moduleIndex + 1)));
+          const quizTopics: string[] = Array.isArray(moduleSkeleton.quizTopics)
+            ? moduleSkeleton.quizTopics.map((topic: unknown) => String(topic).trim()).filter(Boolean)
+            : [];
+          if (quizTopics.length === 0) {
+            throw new Error('Module ' + moduleTitle + ' has no approved quizTopics. Course generation will not invent an assessment scope.');
+          }
+
+          const moduleLessonsResult = await pool.query(
+            `SELECT title, content_markdown FROM course_lessons
+             WHERE course_id = $1 AND module_id = $2 ORDER BY order_index ASC`,
+            [courseId, moduleId]
+          );
+          const moduleLessons = moduleLessonsResult.rows.map((lesson: any) => ({
+            title: String(lesson.title || ''),
+            content: String(lesson.content_markdown || '')
+          }));
+          if (moduleLessons.length === 0 || moduleLessons.some(lesson => !lesson.title.trim() || lesson.content.trim().length < 800)) {
+            throw new Error('Module ' + moduleTitle + ' does not have complete persisted lesson content. Its quiz cannot be generated from lesson titles alone.');
+          }
+
+          const quizPrompt = buildModuleQuizPrompt({
+            courseName,
+            courseCode: courseId,
+            moduleTitle,
+            moduleOrder: moduleIndex + 1,
+            level,
+            department: rawDept,
+            academicStandard,
+            quizTopics,
+            lessons: moduleLessons
+          });
+          const approvedTopicMap = new Map(quizTopics.map(topic => [topic.toLowerCase(), topic]));
+          const lessonTitleMap = new Map(moduleLessons.map(lesson => [lesson.title.toLowerCase(), lesson.title]));
+          let generatedQuiz: any = null;
+          let quizValidationError = '';
+          for (let quizAttempt = 1; quizAttempt <= 2; quizAttempt++) {
+            generatedQuiz = await completeWithProviderJSON({
+              type: 'module',
+              messages: [
+                { role: 'system', content: 'You are a rigorous university assessment author. Generate only valid JSON and ground every answer in the supplied persisted lessons.\n\n' + latexInstruction },
+                { role: 'user', content: quizPrompt + (quizValidationError ? '\n\n[REQUIRED CORRECTION]: ' + quizValidationError + ' Return a corrected complete quiz.' : '') }
+              ],
+              schema: CourseModuleQuizSchema,
+              requestedProvider,
+              complexity: 'high'
+            });
+            const coveredTopics = new Set((generatedQuiz.questions || []).map((question: any) => String(question.quizTopic || '').trim().toLowerCase()));
+            const missingTopics = quizTopics.filter(topic => !coveredTopics.has(topic.toLowerCase()));
+            const unsupportedReferences = (generatedQuiz.questions || [])
+              .filter((question: any) => !lessonTitleMap.has(String(question.sourceReference || '').trim().toLowerCase()));
+            if (missingTopics.length === 0 && unsupportedReferences.length === 0) break;
+            quizValidationError = [
+              missingTopics.length ? 'Missing exact approved topics: ' + missingTopics.join(', ') : '',
+              unsupportedReferences.length ? 'Every sourceReference must match an exact persisted lesson title.' : ''
+            ].filter(Boolean).join(' ');
+            if (quizAttempt === 2) {
+              throw new Error('Module quiz for ' + moduleTitle + ' failed lesson/topic grounding after two attempts: ' + quizValidationError);
+            }
+          }
+
+          const persistedQuestions = generatedQuiz.questions.map((question: any) => ({
+            id: question.id,
+            quiz_topic: approvedTopicMap.get(String(question.quizTopic).trim().toLowerCase()),
+            question: question.question,
+            options: question.options,
+            correct_option_index: question.correctOptionIndex,
+            explanation: question.explanation,
+            hint: question.hint,
+            difficulty: question.difficulty,
+            bloom_level: question.bloomLevel,
+            source_reference: lessonTitleMap.get(String(question.sourceReference).trim().toLowerCase())
+          }));
+          const questionIds = persistedQuestions.map((question: any) => question.id);
+          if (new Set(questionIds).size !== questionIds.length || persistedQuestions.some((question: any) => !question.quiz_topic || !question.source_reference)) {
+            throw new Error('Module quiz for ' + moduleTitle + ' failed final identity, topic, or source-reference validation.');
+          }
+          const questionsSnapshotHash = crypto.createHash('sha256')
+            .update(JSON.stringify(persistedQuestions))
+            .digest('hex');
+          const quizId = 'quiz_' + crypto.createHash('sha256').update(courseId + ':' + moduleId).digest('hex').slice(0, 32);
+
+          await pool.query(
+            `INSERT INTO course_module_quizzes (
+               id, course_id, module_id, title, passing_score, version,
+               questions_snapshot_hash, quiz_topics, pedagogical_reasoning, questions, created_at, updated_at
+             ) VALUES ($1, $2, $3, $4, 70, 1, $5, $6, $7, $8::jsonb, NOW(), NOW())
+             ON CONFLICT (course_id, module_id) DO UPDATE SET
+               title = EXCLUDED.title,
+               passing_score = EXCLUDED.passing_score,
+               version = course_module_quizzes.version + 1,
+               questions_snapshot_hash = EXCLUDED.questions_snapshot_hash,
+               quiz_topics = EXCLUDED.quiz_topics,
+               pedagogical_reasoning = EXCLUDED.pedagogical_reasoning,
+               questions = EXCLUDED.questions,
+               updated_at = NOW()`,
+            [quizId, courseId, moduleId, moduleTitle + ' Module Quiz', questionsSnapshotHash, quizTopics, generatedQuiz.pedagogicalReasoning, JSON.stringify(persistedQuestions)]
+          );
+        }
+
+        // STEP 4: Generate a formula reference only from lesson material actually persisted in Neon.
         await updateCourseGenerationStateInPostgres(courseId, {
           generationProgress: 95,
-          statusMessage: 'Generating mathematical and core concept sheets...'
+          statusMessage: 'Extracting course relationships from persisted lesson content...'
         });
 
         const formulaPrompt = `Using only the verified course material already generated for "${courseName}", identify the governing equations, quantitative relationships, and core theoretical laws actually supported by that material.
