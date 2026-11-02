@@ -50,6 +50,7 @@ export interface CurriculumGenerationOptions {
   selectedDepartments?: string[];
   outline?: string;
   sourceText?: string;
+  researchContext?: string;
   academicStandard?: string;
 }
 
@@ -226,7 +227,7 @@ export function validateLessonSyntax(
  * Retrieves course-level references (textbook TOCs, university syllabi) and classifies pedagogy type.
  */
 export function buildDomainBriefPrompt(options: CurriculumGenerationOptions): string {
-  const { courseName, courseCode, department, level, outline, sourceText } = options;
+  const { courseName, courseCode, department, level, outline, sourceText, researchContext } = options;
   if (typeof level !== 'string' || !level.trim()) {
     throw new Error('An explicit academic level is required; curriculum generation will not assume 100 Level.');
   }
@@ -236,7 +237,8 @@ export function buildDomainBriefPrompt(options: CurriculumGenerationOptions): st
     : 'not supplied; do not infer a department';
   return `Analyze the course title "${courseName}" ${courseCode ? `(Code: ${courseCode})` : ''} at Academic Level "${normalizedLevel} Level" within the department "${departmentContext}".
 ${outline && outline.trim() ? `\n[ADMIN-PROVIDED SYLLABUS OUTLINE (MANDATORY PRIMARY AUTHORITY)]:\n${outline.trim()}\n` : ''}
-${sourceText && sourceText.trim() ? `\n[SOURCE REFERENCE MATERIAL]:\n${sourceText.substring(0, 2000)}\n` : ''}
+${sourceText && sourceText.trim() ? `\n[COMPLETE ADMIN-SUPPLIED SOURCE MATERIAL — PRIMARY AUTHORITY]:\n${sourceText}\n` : ''}
+${researchContext && researchContext.trim() ? `\n[RETRIEVED ACADEMIC EVIDENCE — SUPPLEMENTARY, SOURCE-ATTRIBUTED]:\n${researchContext}\n` : '\n[RESEARCH STATUS]: No retrieved academic evidence was supplied. Do not invent sources, citations, textbook editions, institutional syllabi, or evidence claims.\n'}
 
 [GROUNDING & COURSE-LEVEL TAXONOMY TASK]:
 1. Identify the primary authoritative academic discipline.
@@ -255,7 +257,7 @@ ${sourceText && sourceText.trim() ? `\n[SOURCE REFERENCE MATERIAL]:\n${sourceTex
 5. List 8-14 core course topics that define the syllabus of this course at ${normalizedLevel} Level:
    - CRITICAL: If an [ADMIN-PROVIDED SYLLABUS OUTLINE] is present above, you MUST extract and include EVERY topic, unit, and theme from the admin's outline into "coreCourseTopics", ordered logically for ${normalizedLevel} Level.
    - If no admin outline is provided, derive the standard accredited university syllabus topics for "${courseName}" (${courseCode || ''}) at ${normalizedLevel} Level.
-6. Identify 2-3 canonical reference textbooks or standard university syllabus benchmarks appropriate for ${normalizedLevel} Level.
+6. Identify canonical references only when a specific title/author/edition or institutional source is explicitly present in the admin-supplied material or retrieved evidence above. Do not infer or invent references. Include source URLs where available; return an empty array when no such reference is present.
 7. Formulate 3-4 foundational axioms/principles that establish the core framework for orientation in Module 1.
 
 Return strictly a JSON object:
@@ -264,7 +266,7 @@ Return strictly a JSON object:
   "subDisciplines": ["Sub-discipline 1", "Sub-discipline 2", "Sub-discipline 3"],
   "pedagogyType": "STEM_MATHEMATICAL",
   "courseLevelFramework": "${normalizedLevel} Level University Curriculum Standard",
-  "canonicalCourseReferences": ["Only references explicitly present in the supplied source material; return an empty array when none are supplied"],
+  "canonicalCourseReferences": ["Exact source-attributed references found in admin-supplied or retrieved material; empty array when no reference is present"],
   "foundationalAxioms": [
     "Foundational Principle 1",
     "Foundational Principle 2",
@@ -303,6 +305,7 @@ export function buildCurriculumSkeletonPrompt(
     selectedDepartments = [],
     outline,
     sourceText,
+    researchContext,
     academicStandard
   } = options;
 
@@ -369,6 +372,7 @@ AUTHORITATIVE DOMAIN: ${domainBrief.primaryDomain}
 PEDAGOGY TYPE: ${domainBrief.pedagogyType}
 TARGET ACADEMIC LEVEL: ${normalizedLevel} Level (${domainBrief.courseLevelFramework || 'not supplied; do not infer'})
 GROUNDING REFERENCES: ${domainBrief.canonicalCourseReferences.join('; ')}
+${researchContext && researchContext.trim() ? `SUPPLEMENTARY RETRIEVED ACADEMIC EVIDENCE (do not treat as an official university syllabus):\n${researchContext}\n` : 'No retrievable academic evidence was supplied; do not invent citations or claims of external verification.'}
 REQUIRED CORE TOPICS: ${domainBrief.coreCourseTopics.join(', ')}
 
 ${levelCalibrationDirective}
@@ -404,7 +408,7 @@ Semester: ${normalizedSemester}
 Tone: ${tone}
 Depth: ${depth}
 Academic Standard: ${normalizedAcademicStandard}
-${sourceText ? `Source Reference: ${sourceText.substring(0, 3000)}` : ''}
+${sourceText ? `COMPLETE ADMIN-SUPPLIED SOURCE MATERIAL:\n${sourceText}` : ''}
 
 Return strictly a JSON object:
 {
@@ -437,7 +441,7 @@ export function buildOutlineCriticPrompt(
   proposedSkeleton: CourseSkeleton,
   options: CurriculumGenerationOptions
 ): string {
-  const { courseName, courseCode, level, outline } = options;
+  const { courseName, courseCode, level, outline, researchContext } = options;
   if (typeof level !== 'string' || !level.trim()) {
     throw new Error('An explicit academic level is required for curriculum auditing.');
   }
@@ -452,6 +456,7 @@ Evaluate the proposed syllabus for "${courseName}" ${courseCode ? `(${courseCode
 EXPECTED CANONICAL TOPICS (From Benchmark Syllabi & Domain Brief):
 - ${domainBrief.coreCourseTopics.join('\n- ')}
 ${outline && outline.trim() ? `\nMANDATORY ADMIN-PROVIDED SYLLABUS OUTLINE (MUST BE 100% COVERED):\n"""\n${outline.trim()}\n"""\n` : ''}
+${researchContext && researchContext.trim() ? `\nSUPPLEMENTARY SOURCE-ATTRIBUTED RESEARCH CONTEXT (not an official syllabus):\n${researchContext}\n` : ''}
 PROPOSED SYLLABUS OUTLINE (${proposedSkeleton.modules?.length || 0} Modules):
 ${moduleSummary}
 
@@ -491,7 +496,7 @@ export function buildLessonPrompt(
   learningOutcomeText?: string
 ): string {
   const { courseName, department, level, tone = 'academic', depth = 'standard',
-    scope, academicStandard, sourceText } = options;
+    scope, academicStandard, sourceText, researchContext } = options;
   if (typeof level !== 'string' || !level.trim()) {
     throw new Error('An explicit academic level is required for lesson generation.');
   }
@@ -501,6 +506,15 @@ export function buildLessonPrompt(
     ...(Array.isArray(options.selectedFaculties) ? options.selectedFaculties : [])
   ].map(v => String(v).trim()).filter(Boolean))).join(', ') ||
     (typeof department === 'string' && department.trim() ? department.trim() : 'Department not supplied; do not infer');
+
+  const normalizedDepth = typeof depth === 'string' ? depth.trim().toLowerCase() : 'standard';
+  const depthDirectives: Record<string, string> = {
+    introductory: 'FOUNDATIONAL DEPTH: Start from first principles. Provide one fully explained worked example, one guided practice, one independent no-hint exercise, and at least two reasoning checks. Avoid unnecessary advanced extensions.',
+    standard: 'COMPREHENSIVE DEPTH: Provide a complete university-level treatment with at least two distinct worked examples, guided and independent practice, at least three reasoning checks, explicit assumptions and limitations, and discipline-relevant applications.',
+    'deep-dive': 'ADVANCED / ANALYTICAL DEPTH: Provide deeper theoretical treatment with at least three distinct worked examples, including a non-routine or boundary case where appropriate; at least four reasoning checks; explicit derivation or analytical justification; model limitations; and links between concepts. Do not add unsupported topics to increase length.'
+  };
+  const depthDirective = depthDirectives[normalizedDepth] || depthDirectives.standard;
+  const selectedSource = selectRelevantLessonSource(sourceText || '', topicTitle, moduleTitle);
 
   const disciplineDirectives: Record<DomainBrief['pedagogyType'], string> = {
     STEM_MATHEMATICAL: 'Build physical intuition, state governing assumptions, derive equations from established laws, define symbols and SI units, explain mathematical transformations, and check numerical reasonableness. Never invent experimental values.',
@@ -519,9 +533,11 @@ Audience: ${audience}
 Level: ${level}
 Standard: ${typeof academicStandard === 'string' && academicStandard.trim() ? academicStandard.trim() : 'not supplied; do not infer an accreditation or university standard'}
 Tone/depth: ${tone} / ${depth}
+DEPTH REQUIREMENTS: ${depthDirective}
 Scope: ${typeof scope === 'string' && scope.trim() ? scope.trim() : 'not supplied; do not infer an audience scope'}
 Target learning outcome: ${learningOutcomeText || 'Derive measurable objectives only from approved course outcomes and this topic.'}
-${sourceText ? `ADMIN-SUPPLIED SOURCE MATERIAL (primary grounding):\n${sourceText.substring(0, 3500)}` : 'No additional source material was supplied. Do not fabricate quotations, citations, page numbers, textbooks or empirical findings.'}
+${selectedSource ? `TOPIC-RELEVANT EXCERPTS FROM THE ADMIN-SUPPLIED SOURCE (primary grounding):\n${selectedSource}` : 'No topic-matched admin source excerpt was selected. Do not fabricate quotations, citations, page numbers, textbooks or empirical findings.'}
+${researchContext && researchContext.trim() ? `\nSUPPLEMENTARY RETRIEVED ACADEMIC EVIDENCE (source-attributed; verify claims before treating as settled):\n${researchContext}\n` : ''}
 
 DISCIPLINE ENGINE
 ${disciplineDirectives[domainBrief.pedagogyType]}
@@ -540,11 +556,11 @@ STRUCTURED CONTENT RULES
 - conceptIntroduction: intuition before technical detail.
 - deepExplanation: mechanisms, assumptions, relationships and boundaries.
 - formalDevelopment: relevant derivation, proof, argument, causal mechanism, research method or analytical framework.
-- workedExamples: at least one discipline-appropriate example with problem, ordered reasoning, solution and a genuine reasonableness/logic check.
+- workedExamples: ${normalizedDepth === 'deep-dive' ? 'at least three' : normalizedDepth === 'standard' ? 'at least two' : 'at least one'} distinct discipline-appropriate examples with problem, ordered reasoning, solution and a genuine reasonableness/logic check.
 - applications and misconceptions: include only defensible items; otherwise return [] and explain why in applicationRationale or misconceptionRationale.
 - guidedPractice: at least one exercise with progressive hints, approach, answer and explanation.
 - independentPractice: at least one new no-hint exercise with answer/explanation for later reveal.
-- knowledgeChecks: at least two reasoning checks, not recall alone.
+- knowledgeChecks: ${normalizedDepth === 'deep-dive' ? 'at least four' : normalizedDepth === 'standard' ? 'at least three' : 'at least two'} reasoning checks, not recall alone.
 - mastery.targetLevel: appropriate target 1-5 for this lesson; it is not evidence that any student has achieved that level.
 - mastery.criteria: observable evidence required before advancement.
 - mastery.retentionPrompts: later active-retrieval prompts.
@@ -574,4 +590,19 @@ instructionalContent must follow this shape:
  "mastery":{"targetLevel":3,"criteria":["..."],"retentionPrompts":["..."]}
 }
 These are schema illustrations, not course facts. Return strict JSON without fences or commentary.`;
+}
+
+/** Select complete relevant source blocks rather than an arbitrary document prefix. */
+function selectRelevantLessonSource(sourceText: string, topicTitle: string, moduleTitle: string, maxChars = 10000): string {
+  if (!sourceText.trim()) return '';
+  const stopWords = new Set(['the','and','for','with','from','into','that','this','are','was','were','their','there','about','through','using','course','lesson','module','introduction','fundamentals','principles']);
+  const terms = [...new Set((topicTitle + ' ' + moduleTitle).toLowerCase().match(/[a-z0-9]{3,}/g) || [])].filter(term => !stopWords.has(term));
+  const blocks = sourceText.split(/\n\s*\n|(?<=\.)\s+(?=[A-Z0-9])/).map((text, index) => ({ text: text.trim(), index })).filter(block => block.text.length > 0);
+  if (terms.length === 0 || blocks.length === 0) return '';
+  const ranked = blocks.map(block => ({ ...block, hits: terms.filter(term => block.text.toLowerCase().includes(term)).length })).filter(block => block.hits > 0).sort((a, b) => b.hits - a.hits || a.index - b.index);
+  const selected: typeof ranked = []; let usedChars = 0;
+  for (const block of ranked) { const cost = block.text.length + 2; if (usedChars + cost > maxChars) continue; selected.push(block); usedChars += cost; }
+  selected.sort((a, b) => a.index - b.index);
+  if (selected.length === 0) return 'No source paragraph matched the lesson and module terminology. Do not attribute specific claims to the uploaded source without direct support.';
+  return selected.map((block, index) => '[Matched source excerpt ' + (index + 1) + ']\n' + block.text).join('\n\n');
 }
