@@ -101,6 +101,7 @@ const typedContentBlocks = () => [
     exampleIndex: 0,
     title: 'Pressure at a stated depth'
   },
+  {
     id: 'simulation-1',
     type: 'interactive_simulation' as const,
     title: 'Explore pressure versus depth',
