@@ -381,14 +381,28 @@ export const StructuredLessonOutputSchema = z.preprocess(
 export type StructuredLessonOutput = z.infer<typeof StructuredLessonOutputSchema>;
 
 export const CourseProvenanceSchema = z.object({
-  sources: z.array(z.string().min(1)).min(1),
+  // A valid course may have no externally retrieved references; empty is more
+  // accurate than manufacturing citations to satisfy a non-empty constraint.
+  sources: z.array(z.string().min(1)),
   modelVersion: z.string().min(1),
   promptVersion: z.string().min(1),
   generatedAt: z.string(),
   groundingScore: z.number().min(0).max(100).optional(),
   sourceStatus: z.enum(['admin_supplied_unverified', 'model_suggested_unverified', 'independently_verified']).optional(),
   academicAccuracy: z.enum(['not_independently_verified', 'subject_expert_reviewed']).optional(),
-  rubricAudit: OutlineCriticRubricSchema.optional()
+  rubricAudit: OutlineCriticRubricSchema.optional(),
+  research: z.object({
+    status: z.enum(['evidence_found', 'insufficient_evidence', 'no_results', 'unavailable']),
+    runId: z.string().nullable(),
+    researchDepth: z.string().nullable(),
+    retrievedAt: z.string(),
+    papersCount: z.number().int().nonnegative(),
+    webSourcesCount: z.number().int().nonnegative(),
+    evidenceAssessment: z.unknown(),
+    providerBreakdown: z.unknown(),
+    limitations: z.array(z.string()),
+    errorMessage: z.string().optional()
+  }).optional()
 });
 export type CourseProvenance = z.infer<typeof CourseProvenanceSchema>;
 
