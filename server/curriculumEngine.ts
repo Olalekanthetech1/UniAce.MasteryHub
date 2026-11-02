@@ -606,3 +606,73 @@ function selectRelevantLessonSource(sourceText: string, topicTitle: string, modu
   if (selected.length === 0) return 'No source paragraph matched the lesson and module terminology. Do not attribute specific claims to the uploaded source without direct support.';
   return selected.map((block, index) => '[Matched source excerpt ' + (index + 1) + ']\n' + block.text).join('\n\n');
 }
+
+/** Builds a module assessment prompt using persisted lesson content as its evidence base. */
+export function buildModuleQuizPrompt(options: {
+  courseName: string;
+  courseCode?: string;
+  moduleTitle: string;
+  moduleOrder: number;
+  level: string;
+  department: string;
+  academicStandard?: string;
+  quizTopics: string[];
+  lessons: Array<{ title: string; content: string }>;
+}): string {
+  const { courseName, courseCode, moduleTitle, moduleOrder, level, department, academicStandard, quizTopics, lessons } = options;
+  if (!Array.isArray(quizTopics) || quizTopics.length === 0) {
+    throw new Error('Module ' + moduleTitle + ' has no approved quiz topics; quiz generation cannot infer them.');
+  }
+  if (!Array.isArray(lessons) || lessons.length === 0 || lessons.some(lesson => typeof lesson.content !== 'string' || !lesson.content.trim())) {
+    throw new Error('Module ' + moduleTitle + ' has no complete generated lesson material to ground its quiz.');
+  }
+  const lessonEvidence = lessons.map((lesson, index) => 'LESSON ' + (index + 1) + ': ' + lesson.title + '\n' + lesson.content).join('\n\n');
+  if (lessonEvidence.length > 50000) {
+    throw new Error('Module ' + moduleTitle + ' lesson material exceeds the 50,000-character quiz evidence limit. No lesson content was truncated.');
+  }
+  return [
+    'Create a source-grounded university module quiz for ' + courseName + ' ' + (courseCode || ''),
+    'MODULE ' + moduleOrder + ': ' + moduleTitle,
+    'ACADEMIC LEVEL: ' + level,
+    'DEPARTMENT: ' + department,
+    'ACADEMIC STANDARD: ' + (academicStandard && academicStandard.trim() ? academicStandard.trim() : 'not supplied; do not infer an accreditation standard'),
+    '',
+    'APPROVED QUIZ TOPICS (every topic must be assessed):',
+    ...quizTopics.map((topic, index) => (index + 1) + '. ' + topic),
+    '',
+    'COMPLETE GENERATED LESSON MATERIAL — THE ONLY AUTHORIZED QUESTION EVIDENCE:',
+    lessonEvidence,
+    '',
+    'ASSESSMENT REQUIREMENTS',
+    '- Generate 8 to 12 distinct multiple-choice questions.',
+    '- Every question must be answerable from the supplied generated lessons; do not introduce unsupported facts, formulas, cases, values, or source claims.',
+    '- Cover every approved quiz topic at least once. Set quizTopic to the exact approved topic text.',
+    '- Calibrate to ' + level + '; assess conceptual understanding, application and analysis, not rote recall alone.',
+    '- Use exactly four distinct options per question and exactly one defensible correct option.',
+    '- correctOptionIndex is zero-based and must point to the correct option.',
+    '- Explain why the keyed answer is supported by the lesson material; do not claim independent academic verification.',
+    '- Provide a progressive hint that helps without directly giving away the answer.',
+    '- Assign difficulty 1-5 and Bloom level from Remember, Understand, Apply, Analyze, Evaluate, Create.',
+    '- Give each question a unique id and set sourceReference to the exact title of a supplied lesson.',
+    '- If a topic cannot be fairly assessed from the supplied lessons, explain the limitation in pedagogicalReasoning; never invent missing evidence.',
+    '',
+    'Return one valid JSON object only:',
+    '{',
+    '  "pedagogicalReasoning": "Explain how the questions cover the approved topics and generated lesson material, including any unsupported gaps.",',
+    '  "questions": [',
+    '    {',
+    '      "id": "q1",',
+    '      "quizTopic": "Exact approved topic",',
+    '      "question": "Question grounded in a supplied lesson",',
+    '      "options": ["Option A", "Option B", "Option C", "Option D"],',
+    '      "correctOptionIndex": 0,',
+    '      "explanation": "Evidence-based explanation grounded in the supplied lesson",',
+    '      "hint": "Progressive hint that does not reveal the answer",',
+    '      "difficulty": 2,',
+    '      "bloomLevel": "Understand",',
+    '      "sourceReference": "Exact supplied lesson title"',
+    '    }',
+    '  ]',
+    '}'
+  ].join('\n');
+}
