@@ -819,7 +819,8 @@ export default function ContentArea({
                     courseId={courseId || ''}
                     moduleId={module.id}
                     lessonId={activeSubTopic.id}
-                    hideKnowledgeChecks={Boolean(activeLessonData.contentBlocks?.blocks.some(block => block.type === 'knowledge_check'))}
+                    hiddenKnowledgeCheckIndexes={(activeLessonData.contentBlocks?.blocks || [])
+                      .flatMap(block => block.type === 'knowledge_check' ? [block.activityIndex] : [])}
                   />
                 )}
                 
