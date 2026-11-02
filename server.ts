@@ -3663,7 +3663,7 @@ const CourseModuleQuizSchema = z.preprocess(
       difficulty: z.number().int().min(1).max(5),
       bloomLevel: z.enum(['Remember', 'Understand', 'Apply', 'Analyze', 'Evaluate', 'Create']),
       sourceReference: z.string().trim().min(1)
-    })).min(8).max(12)
+    })).min(8).max(20)
   }).superRefine((quiz, ctx) => {
     const ids = quiz.questions.map(question => question.id);
     if (new Set(ids).size !== ids.length) {
