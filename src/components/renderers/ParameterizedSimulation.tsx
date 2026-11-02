@@ -24,23 +24,25 @@ function formatNumber(value: number): string {
 
 export default function ParameterizedSimulation({ block }: ParameterizedSimulationProps) {
   const [parameterValue, setParameterValue] = useState(block.parameter.initialValue);
-  const [renderError, setRenderError] = useState('');
 
   useEffect(() => {
     setParameterValue(block.parameter.initialValue);
-    setRenderError('');
   }, [block.id, block.parameter.initialValue]);
 
-  const compiledExpression = useMemo(() => {
+  const compiledExpression = useMemo((): { compiled: any | null; error: string } => {
     const validation = validateSimulationExpression(
       block.expression,
       block.independentVariable,
       block.parameter.symbol
     );
     if (!validation.valid) {
-      throw new Error(validation.reason);
+      return { compiled: null, error: validation.reason };
     }
-    return parse(block.expression).compile();
+    try {
+      return { compiled: parse(block.expression).compile(), error: '' };
+    } catch {
+      return { compiled: null, error: 'The validated expression could not be compiled.' };
+    }
   }, [block.expression, block.independentVariable, block.parameter.symbol]);
 
   const samples = useMemo<SamplePoint[]>(() => {
@@ -49,7 +51,8 @@ export default function ParameterizedSimulation({ block }: ParameterizedSimulati
       const sampleCount = 120;
       for (let index = 0; index <= sampleCount; index++) {
         const x = block.domain.min + ((block.domain.max - block.domain.min) * index) / sampleCount;
-        const y = compiledExpression.evaluate({
+        if (!compiledExpression.compiled) return [];
+        const y = compiledExpression.compiled.evaluate({
           [block.independentVariable]: x,
           [block.parameter.symbol]: parameterValue,
           pi: Math.PI,
@@ -95,9 +98,9 @@ export default function ParameterizedSimulation({ block }: ParameterizedSimulati
     return { width, height, inset, plotWidth, plotHeight, points, zeroX, zeroY, yMin, yMax };
   }, [block.domain.min, block.domain.max, samples]);
 
-  useEffect(() => {
-    setRenderError(!plot ? 'The current expression produced fewer than two finite plot points for the declared domain.' : '');
-  }, [plot]);
+  const simulationError = compiledExpression.error || (
+    !plot ? 'The current expression produced fewer than two finite plot points for the declared domain.' : ''
+  );
 
   return (
     <section className="rounded-2xl border border-cyan-200 dark:border-cyan-900/70 bg-cyan-50/40 dark:bg-cyan-950/10 p-4 space-y-3">
@@ -161,7 +164,7 @@ export default function ParameterizedSimulation({ block }: ParameterizedSimulati
           </svg>
         ) : (
           <div className="p-8 text-sm text-amber-700 dark:text-amber-300" role="status">
-            {renderError || 'The simulation cannot currently produce a valid plot.'}
+            {simulationError || 'The simulation cannot currently produce a valid plot.'}
           </div>
         )}
       </div>
