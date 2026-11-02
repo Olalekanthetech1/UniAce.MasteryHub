@@ -280,17 +280,19 @@ export class JobRepository {
     const moduleSql = `
       INSERT INTO course_modules (
         id, course_id, title, description, order_index, estimated_minutes, created_at, updated_at
-      ) VALUES (
-        $1, $2, $3, $4, $5, $6, NOW(), NOW()
       )
+      SELECT $1, c.id, $3, $4, $5, $6, NOW(), NOW()
+      FROM courses c
+      WHERE c.id = $2 AND c.status <> 'archived'
       ON CONFLICT (id, course_id) DO UPDATE SET
         title = EXCLUDED.title,
         description = EXCLUDED.description,
         order_index = EXCLUDED.order_index,
         estimated_minutes = EXCLUDED.estimated_minutes,
-        updated_at = NOW();
+        updated_at = NOW()
+      RETURNING id;
     `;
-    await queryPostgres(moduleSql, [
+    const moduleWrite = await queryPostgres(moduleSql, [
       params.module.id,
       params.courseId,
       params.module.title,
@@ -298,6 +300,9 @@ export class JobRepository {
       params.module.orderIndex,
       params.module.estimatedMinutes || 60
     ]);
+    if ((moduleWrite.rowCount ?? 0) === 0) {
+      throw new Error(`Course ${params.courseId} is missing or archived; module write rejected.`);
+    }
 
     // 2. Upsert course_lesson (if provided)
     if (params.lesson) {
@@ -305,9 +310,10 @@ export class JobRepository {
         INSERT INTO course_lessons (
           id, course_id, module_id, title, content_markdown, order_index,
           key_terms, learning_outcomes, asset_references, instructional_content, created_at, updated_at
-        ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, NOW(), NOW()
         )
+        SELECT $1, c.id, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, NOW(), NOW()
+        FROM courses c
+        WHERE c.id = $2 AND c.status <> 'archived'
         ON CONFLICT (id, course_id, module_id) DO UPDATE SET
           title = EXCLUDED.title,
           content_markdown = EXCLUDED.content_markdown,
@@ -316,9 +322,10 @@ export class JobRepository {
           learning_outcomes = EXCLUDED.learning_outcomes,
           asset_references = EXCLUDED.asset_references,
           instructional_content = COALESCE(EXCLUDED.instructional_content, course_lessons.instructional_content),
-          updated_at = NOW();
+          updated_at = NOW()
+        RETURNING id;
       `;
-      await queryPostgres(lessonSql, [
+      const lessonWrite = await queryPostgres(lessonSql, [
         params.lesson.id,
         params.courseId,
         params.module.id,
@@ -330,6 +337,9 @@ export class JobRepository {
         JSON.stringify(params.lesson.assetReferences || []),
         params.lesson.instructionalContent ? JSON.stringify(params.lesson.instructionalContent) : null
       ]);
+      if ((lessonWrite.rowCount ?? 0) === 0) {
+        throw new Error(`Course ${params.courseId} is missing or archived; lesson write rejected.`);
+      }
     }
     catalogCache.invalidateCourse(params.courseId);
   }
