@@ -593,6 +593,7 @@ export const InstructionalContentSchema = z.preprocess(
       }
     });
 
+    const referencedWorkedExamples = new Set<number>();
     value.contentBlocks?.forEach((block, index) => {
       if (block.type === 'knowledge_check' && block.activityIndex >= value.knowledgeChecks.length) {
         ctx.addIssue({
@@ -601,11 +602,24 @@ export const InstructionalContentSchema = z.preprocess(
           message: `Knowledge-check block references unavailable activity index ${block.activityIndex}.`
         });
       }
-      if (block.type === 'worked_example' && block.exampleIndex >= value.workedExamples.length) {
+      if (block.type === 'worked_example') {
+        if (block.exampleIndex >= value.workedExamples.length) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['contentBlocks', index, 'exampleIndex'],
+            message: `Worked-example block references unavailable example index ${block.exampleIndex}.`
+          });
+        } else {
+          referencedWorkedExamples.add(block.exampleIndex);
+        }
+      }
+    });
+    value.workedExamples.forEach((_, exampleIndex) => {
+      if (!referencedWorkedExamples.has(exampleIndex)) {
         ctx.addIssue({
           code: 'custom',
-          path: ['contentBlocks', index, 'exampleIndex'],
-          message: `Worked-example block references unavailable example index ${block.exampleIndex}.`
+          path: ['workedExamples', exampleIndex],
+          message: `Worked example ${exampleIndex} has no corresponding ordered worked_example content block.`
         });
       }
     });
