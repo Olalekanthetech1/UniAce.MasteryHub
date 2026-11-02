@@ -10,7 +10,7 @@ import {
   normalizeMermaidBlocksInMarkdown,
   convertLatexLabelToReadableText
 } from '../src/services/mermaidRepairService';
-import { sanitizeLatex } from '../src/services/aiCourseGenerator';
+import { sanitizeLatex, serializeGeneratedDiagramSpecs } from '../src/services/aiCourseGenerator';
 
 /**
  * Grammar validator that emulates Mermaid v11's strict flowchart and sequence lexer rules
@@ -92,6 +92,37 @@ async function strictMermaidV11GrammarValidator(chartText: string): Promise<bool
 
   throw new Error(`Syntax error in text (mermaid version 11.17.2): unsupported or invalid diagram header: ${header}`);
 }
+
+test('generated structured diagrams report failed specifications instead of silently dropping them', () => {
+  const result = serializeGeneratedDiagramSpecs([
+    {
+      type: 'flowchart',
+      direction: 'TD',
+      nodes: [{ id: 'density', label: 'Fluid density' }],
+      edges: []
+    },
+    {
+      type: 'flowchart',
+      direction: 'TD',
+      nodes: [{ id: 'mass', label: 'Mass' }],
+      edges: [{ from: 'mass', to: 'missing-volume-node' }]
+    }
+  ]);
+
+  assert.equal(result.failureCount, 1);
+  assert.deepEqual(result.failedIndexes, [2]);
+  assert.match(result.markdown, /density\["Fluid density"\]/);
+  assert.ok(!result.markdown.includes('missing-volume-node'));
+  assert.ok(!JSON.stringify(result).includes('Mass'));
+});
+
+test('empty generated diagram collections produce an empty result without fabricated blocks', () => {
+  assert.deepEqual(serializeGeneratedDiagramSpecs([]), {
+    markdown: '',
+    failureCount: 0,
+    failedIndexes: []
+  });
+});
 
 test('Scenario 1: Valid flowchart validates and passes through unmodified', async () => {
   const validChart = `flowchart TD
