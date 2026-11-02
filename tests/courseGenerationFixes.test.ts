@@ -116,6 +116,18 @@ test('domain prompt includes complete supplied source text and retrieved researc
   assert.ok(prompt.includes(researchContext));
 });
 
+test('course generation can start without a supplied syllabus and does not fabricate evidence', () => {
+  const prompt = buildDomainBriefPrompt({
+    courseId: 'GET205',
+    courseName: 'Fundamentals of Fluid Mechanics',
+    courseCode: 'GET205',
+    department: 'Materials Science and Engineering',
+    level: '200'
+  });
+  assert.match(prompt, /No retrieved academic evidence was supplied/);
+  assert.match(prompt, /Do not invent sources, citations, textbook editions, institutional syllabi/);
+});
+
 test('lesson prompt calibrates deep-dive depth and selects relevant complete source excerpts', () => {
   const sourceText = [
     'HYDROSTATIC PRESSURE: Pressure in a fluid at rest varies with depth and depends on fluid density and gravitational acceleration.',
