@@ -4958,38 +4958,41 @@ async function updateCourseGenerationStateInPostgres(courseId: string, patch: Re
   if (pool && (patch.title || patch.description || patch.generationStatus === 'completed')) {
     try {
       const statusVal = typeof merged.status === 'string' ? merged.status : 'draft';
-      await pool.query(
-`INSERT INTO courses (id, code, title, description, level, department, faculty, semester, credit_units, scope, faculties, departments, status, version, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 1, NOW(), NOW())
-         ON CONFLICT (id) DO UPDATE SET
-           title = COALESCE(EXCLUDED.title, courses.title),
-           description = COALESCE(EXCLUDED.description, courses.description),
-           level = COALESCE(EXCLUDED.level, courses.level),
-           department = COALESCE(EXCLUDED.department, courses.department),
-           faculty = COALESCE(EXCLUDED.faculty, courses.faculty),
-           semester = COALESCE(EXCLUDED.semester, courses.semester),
-           credit_units = COALESCE(EXCLUDED.credit_units, courses.credit_units),
-           scope = COALESCE(EXCLUDED.scope, courses.scope),
-           faculties = COALESCE(EXCLUDED.faculties, courses.faculties),
-           departments = COALESCE(EXCLUDED.departments, courses.departments),
-           status = EXCLUDED.status,
-           updated_at = NOW()`,
+      // Generation workers may update metadata only on an existing, non-archived course.
+      // They must never UPSERT a course row or change its administrator-owned lifecycle status.
+      const persisted = await pool.query(
+        `UPDATE courses SET
+           title = COALESCE($2, title),
+           description = COALESCE($3, description),
+           level = COALESCE($4, level),
+           department = COALESCE($5, department),
+           faculty = COALESCE($6, faculty),
+           semester = COALESCE($7, semester),
+           credit_units = COALESCE($8, credit_units),
+           scope = COALESCE($9, scope),
+           faculties = COALESCE($10, faculties),
+           departments = COALESCE($11, departments),
+           updated_at = NOW()
+         WHERE id = $1 AND status <> 'archived'
+         RETURNING id`,
         [
           courseId,
-          merged.code || courseId,
-          merged.title || courseId,
+          merged.title || null,
           merged.description || null,
-          merged.level,
+          merged.level ?? null,
           merged.department || null,
           (Array.isArray(merged.faculties) && merged.faculties[0]) || merged.faculty || null,
           merged.semester || null,
-          merged.creditUnits,
-          merged.scope,
+          merged.creditUnits ?? null,
+          merged.scope ?? null,
           Array.isArray(merged.faculties) ? merged.faculties : null,
-          Array.isArray(merged.departments) ? merged.departments : null,
-          statusVal
+          Array.isArray(merged.departments) ? merged.departments : null
         ]
       );
+      if ((persisted.rowCount ?? 0) === 0) {
+        activeCoordinatedJobSnapshots.delete(courseId);
+        throw new Error(`Course ${courseId} no longer exists or is archived; generation state was not persisted.`);
+      }
       catalogCache.invalidateCourse(courseId);
     } catch (pgErr: any) {
       console.warn(`[Coordinated Gen] Postgres course row upsert notice for ${courseId}:`, pgErr.message);
@@ -6242,8 +6245,7 @@ Return strictly valid JSON matching:
       generationStatus: 'completed',
       generationProgress: 100,
       statusMessage: `Course verified and healed (${completedRepairs} lesson(s) repaired, ${audit.healthyLessonCount} healthy lesson(s) preserved).`,
-      published: true,
-      status: 'published'
+      // Healing completion is not a publication or lifecycle transition.
     });
 
     catalogCache.invalidateAll();
@@ -6284,7 +6286,7 @@ async function resumeInterruptedCourseJobs(_db: admin.firestore.Firestore | null
   try {
     const pool = getPostgresPool();
     if (!pool) return;
-    const coursesRes = await pool.query(`SELECT id FROM courses ORDER BY updated_at DESC`);
+    const coursesRes = await pool.query(`SELECT id FROM courses WHERE status = 'published' ORDER BY updated_at DESC`);
     for (const row of coursesRes.rows) {
       const courseId = row.id;
       const audit = await auditCourseHealthInPostgres(courseId);
