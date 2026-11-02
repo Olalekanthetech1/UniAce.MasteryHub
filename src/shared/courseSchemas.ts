@@ -388,7 +388,7 @@ export const CourseProvenanceSchema = z.object({
   promptVersion: z.string().min(1),
   generatedAt: z.string(),
   groundingScore: z.number().min(0).max(100).optional(),
-  sourceStatus: z.enum(['admin_supplied_unverified', 'model_suggested_unverified', 'independently_verified']).optional(),
+  sourceStatus: z.enum(['admin_supplied_unverified', 'research_retrieved_unverified', 'model_suggested_unverified', 'independently_verified']).optional(),
   academicAccuracy: z.enum(['not_independently_verified', 'subject_expert_reviewed']).optional(),
   rubricAudit: OutlineCriticRubricSchema.optional(),
   research: z.object({
