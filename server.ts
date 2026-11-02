@@ -94,8 +94,10 @@ import {
   buildDomainBriefPrompt,
   buildCurriculumSkeletonPrompt,
   buildOutlineCriticPrompt,
-  buildLessonPrompt
+  buildLessonPrompt,
+  buildModuleQuizPrompt
 } from './server/curriculumEngine.js';
+import { retrieveCourseGenerationResearch, MAX_COURSE_SOURCE_CHARS } from './server/courseGenerationResearch.js';
 import { setupRagRoutes } from './server/routes/rag.js';
 import { setupStudentRoutes, invalidateBootstrapCache } from './server/routes/student.js';
 import { arenaRealtime } from './server/arenaRealtime.js';
@@ -3623,12 +3625,42 @@ const CourseFormulaSchema = z.preprocess((val: any) => {
     title: z.string().trim().min(1),
     latex: z.string().trim().min(1),
     description: z.string().trim().min(1)
-  })).min(1).refine(
+  })).refine(
     formulas => new Set(formulas.map(formula => formula.id)).size === formulas.length,
     'Formula identifiers must be unique.'
   )
 }));
 
+
+const CourseModuleQuizSchema = z.preprocess(
+  (value: unknown) => normalizeNestedMathUnicode(value),
+  z.object({
+    pedagogicalReasoning: z.string().trim().min(1),
+    questions: z.array(z.object({
+      id: z.string().trim().min(1),
+      quizTopic: z.string().trim().min(1),
+      question: z.string().trim().min(10),
+      options: z.array(z.string().trim().min(1)).length(4),
+      correctOptionIndex: z.number().int().min(0).max(3),
+      explanation: z.string().trim().min(20),
+      hint: z.string().trim().min(5),
+      difficulty: z.number().int().min(1).max(5),
+      bloomLevel: z.enum(['Remember', 'Understand', 'Apply', 'Analyze', 'Evaluate', 'Create']),
+      sourceReference: z.string().trim().min(1)
+    })).min(8).max(12)
+  }).superRefine((quiz, ctx) => {
+    const ids = quiz.questions.map(question => question.id);
+    if (new Set(ids).size !== ids.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['questions'], message: 'Question identifiers must be unique within the module quiz.' });
+    }
+    quiz.questions.forEach((question, index) => {
+      const normalizedOptions = question.options.map(option => option.toLowerCase());
+      if (new Set(normalizedOptions).size !== normalizedOptions.length) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['questions', index, 'options'], message: 'Each multiple-choice question must have four distinct options.' });
+      }
+    });
+  })
+);
 const VisionToQuizSchema = z.preprocess(
   (val: unknown) => normalizeNestedMathUnicode(val),
   z.object({
