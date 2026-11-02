@@ -5814,7 +5814,7 @@ async function executeCoordinatedGenerationJob(
 
               // Check if lesson already exists in Neon PostgreSQL on resume
               const existingLessonRes = await pool.query(
-                `SELECT title, content_markdown, instructional_content FROM course_lessons WHERE course_id = $1 AND module_id = $2 AND id = $3 LIMIT 1`,
+                `SELECT title, content_markdown, instructional_content, content_blocks FROM course_lessons WHERE course_id = $1 AND module_id = $2 AND id = $3 LIMIT 1`,
                 [courseId, moduleId, lessonId]
               ).catch(() => ({ rows: [] as any[] }));
 
@@ -5823,6 +5823,7 @@ async function executeCoordinatedGenerationJob(
                 existingLessonRes.rows[0]?.content_markdown &&
                 !isGenericLessonTitle(existingLessonRes.rows[0]?.title) &&
                 InstructionalContentSchema.safeParse(existingLessonRes.rows[0]?.instructional_content).success &&
+                AcademicContentBlockCollectionSchema.safeParse(existingLessonRes.rows[0]?.content_blocks).success &&
                 validateLessonSyntax(existingLessonRes.rows[0].content_markdown, domainBrief.pedagogyType).isValid
               ) {
                 completedLessonsCount++;
@@ -5867,9 +5868,17 @@ async function executeCoordinatedGenerationJob(
               let lessonContent = '';
               let lessonTitle = topic;
               let instructionalContent: Record<string, any> | null = null;
+              let lessonContentBlocks: Record<string, any> | null = null;
               let lessonErrors: string[] = [];
 
               const ValidatedLessonSchema = StructuredLessonOutputSchema.superRefine((val, ctx) => {
+                if (!val.contentBlocks) {
+                  ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    path: ['contentBlocks'],
+                    message: 'New course-generation lessons must include version 1.0 typed academic content blocks.'
+                  });
+                }
                 if (val.instructionalContent.disciplineEngine !== domainBrief.pedagogyType) {
                   ctx.addIssue({
                     code: z.ZodIssueCode.custom,
@@ -5969,6 +5978,7 @@ async function executeCoordinatedGenerationJob(
 
                 lessonTitle = (!isGenericLessonTitle(lessonData.title) && lessonData.title ? lessonData.title.trim() : topic) || topic;
                 lessonContent = normalizeLessonMarkdownContent(lessonData.content || '');
+                lessonContentBlocks = lessonData.contentBlocks || null;
                 instructionalContent = {
                   ...lessonData.instructionalContent,
                   verification: {
@@ -6014,7 +6024,8 @@ async function executeCoordinatedGenerationJob(
                     const outcomeIndex = Number.parseInt(id, 10);
                     return Number.isInteger(outcomeIndex) && normalizedOutcomes[outcomeIndex] ? normalizedOutcomes[outcomeIndex].outcome : null;
                   }).filter((value: string | null): value is string => Boolean(value)) || (targetOutcomeText ? [targetOutcomeText] : []),
-                  instructionalContent: instructionalContent || undefined
+                  instructionalContent: instructionalContent || undefined,
+                  contentBlocks: lessonContentBlocks || undefined
                 }
               });
 
