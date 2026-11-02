@@ -5871,24 +5871,52 @@ async function executeCoordinatedGenerationJob(
           statusMessage: 'Extracting course relationships from persisted lesson content...'
         });
 
-        const formulaPrompt = `Using only the verified course material already generated for "${courseName}", identify the governing equations, quantitative relationships, and core theoretical laws actually supported by that material.
+        const formulaEvidenceResult = await pool.query(
+          `SELECT m.title AS module_title, l.title AS lesson_title, l.content_markdown
+           FROM course_lessons l
+           INNER JOIN course_modules m ON m.id = l.module_id AND m.course_id = l.course_id
+           WHERE l.course_id = $1
+           ORDER BY m.order_index ASC, l.order_index ASC`,
+          [courseId]
+        );
+        if (formulaEvidenceResult.rows.length === 0 || formulaEvidenceResult.rows.some((lesson: any) =>
+          typeof lesson.content_markdown !== 'string' || lesson.content_markdown.trim().length < 800
+        )) {
+          throw new Error('Formula generation requires complete, persisted course lesson content.');
+        }
+        const formulaEvidence = formulaEvidenceResult.rows.map((lesson: any, index: number) =>
+          'LESSON ' + (index + 1) + ' — MODULE: ' + lesson.module_title + ' — TITLE: ' + lesson.lesson_title + '\n' + lesson.content_markdown
+        ).join('\n\n');
+        if (formulaEvidence.length > 150000) {
+          throw new Error('Persisted formula evidence exceeds the 150,000-character processing limit. No lesson material was silently truncated.');
+        }
+
+        const formulaPrompt = `Identify the governing equations, quantitative relationships, and core theoretical laws actually supported by the complete persisted lessons for "${courseName}".
 Domain: ${domainBrief.primaryDomain}
 Pedagogy Type: ${domainBrief.pedagogyType}
 
-Do not invent a formula to fill a quota. Include every distinct relationship that is materially required to explain or solve the generated course content; do not duplicate equivalent equations. If the supplied course material does not support a reliable formula, fail this generation step rather than fabricate one.
+AUTHORITATIVE FORMULA EVIDENCE — ACTUAL LESSON CONTENT RETRIEVED FROM NEON:
+${formulaEvidence}
+
+RULES
+- Use only the supplied persisted lesson text. Do not rely on lesson titles alone or on unsupported prior assumptions.
+- Include distinct equations and relationships that are materially required by the lessons; do not duplicate equivalent expressions.
+- Do not invent formulas, variables, constants, units, or derivations to fill a quota.
+- If the lessons do not support a reliable formula sheet, return an empty formulas array and explain why in pedagogicalReasoning. This is a valid outcome, especially for non-quantitative disciplines.
+- For each formula, explain variables and assumptions using only what the lessons support. Preserve the exact mathematical meaning in LaTeX.
 
 Return strictly a JSON object:
 {
-  "pedagogicalReasoning": "Explain why these relationships are present in the supplied course material",
+  "pedagogicalReasoning": "Explain why the returned formulas are present in the persisted lesson material, or why no formula is appropriate.",
   "formulas": [
     {
-      "id": "A unique, stable identifier for this formula within this course",
+      "id": "A unique identifier within this course",
       "title": "The exact law or equation name",
       "latex": "The governing equation in LaTeX",
-      "description": "Define every variable and state the physical or theoretical meaning grounded in the course material"
+      "description": "Define the variables and state the meaning and assumptions grounded in the supplied lessons"
     }
   ]
-}`;
+}
 
         try {
           const formulaData = await completeWithProviderJSON({
