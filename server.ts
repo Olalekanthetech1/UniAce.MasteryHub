@@ -181,6 +181,7 @@ import { catalogCache } from './server/cache/catalogCache';
 import { progressRepository } from './server/repositories/progressRepository';
 import { JobRepository } from './server/repositories/jobRepository';
 import { jobStreamManager } from './server/services/jobStreamManager';
+import { activeCancelledJobs } from './server/services/courseJobControl.js';
 import { getFeatureFlags, initRuntimeFlagsSync } from './server/config/features';
 import { ensureCourseLearningSchema } from './server/services/courseLearningSchema';
 import { ensureCourseAssessmentSchema } from './server/services/courseAssessmentSchema';
@@ -390,7 +391,6 @@ async function resilientEmbedContent(genAI: any, params: any) {
 const WORKER_INSTANCE_ID = `worker_${crypto.randomBytes(6).toString('hex')}_${Date.now().toString(36)}`;
 
 // In-memory cancellation and active worker trackers for server jobs
-const activeCancelledJobs = new Set<string>();
 const activeRunningCourseJobs = new Set<string>();
 
 // Concurrency Hysteresis State Tracker
