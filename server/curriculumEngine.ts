@@ -569,7 +569,7 @@ TYPED CONTENT BLOCK RULES
 - "explanation": provide substantive Markdown in "markdown"; use a topic-specific "title" where useful.
 - "mathematical_derivation": use only where the discipline and topic require formal mathematics. Include explicit assumptions, at least two logically ordered steps, optional LaTeX "equation" per step, and a justified conclusion where appropriate.
 - "engineering_diagram": use only when a diagram materially improves understanding. Supply "format" as "mermaid" or "svg", valid source without Markdown fences, accurate "altText", and an optional caption. Do not invent relationships, components, dimensions or labels.
-- "worked_example": provide a defensible problem, actual givens and units, assumptions, at least two reasoning steps, a final answer, and a genuine independent reasonableness or logic verification. Do not invent empirical or measured values.
+- "worked_example": reference one canonical record in "instructionalContent.workedExamples" using a zero-based "exampleIndex". Do not duplicate the problem, reasoning, solution or answer inside the block. The referenced workedExamples record should contain the complete problem, optional givens/units and assumptions, ordered reasoningSteps, solution and genuine independent verification.
 - "interactive_simulation": optional. Use only for a genuine parameterized mathematical model that can be expressed as a safe function of x and declared slider parameters. Supply the exact expression, xRange, axis labels, and 1-8 declared parameters with min, max, step and initial values. Every symbol must be x, a declared parameter, pi, e, or a supported mathematical function. Do not use code, assignment statements, arbitrary functions, or unsupported simulation claims. Omit this block when the lesson does not support a defensible parameterized model.
 - "knowledge_check": link to an existing protected activity using "activityIndex" (zero-based index into "knowledgeChecks"). It may include a title, but MUST NOT contain an answer, expected reasoning, rubric, hint or answer key. Those remain server-side and are revealed only after a persisted student attempt.
 - Do not force every block type into every lesson. Derivations, diagrams and simulations are optional when not pedagogically or technically justified. Never insert placeholder blocks to satisfy the schema.
@@ -605,7 +605,7 @@ instructionalContent must follow this shape:
  "conceptIntroduction":"...",
  "deepExplanation":"...",
  "formalDevelopment":"...",
- "workedExamples":[{"title":"...","exampleType":"numerical","problem":"...","reasoningSteps":["...","..."],"solution":"...","verification":"..."}],
+  \"workedExamples\":[{\"title\":\"...\",\"exampleType\":\"numerical\",\"problem\":\"...\",\"givens\":[],\"assumptions\":[],\"reasoningSteps\":[\"...\",\"...\"],\"solution\":\"...\",\"verification\":\"...\"}],
  "applications":[{"context":"...","conceptConnection":"...","constraintsOrAssumptions":"..."}],
  "applicationRationale":"...",
  "misconceptions":[{"misconception":"...","whyItIsWrong":"...","correction":"..."}],
@@ -615,7 +615,7 @@ instructionalContent must follow this shape:
  "knowledgeChecks":[{"prompt":"...","responseMode":"explain","expectedReasoning":"...","answerOrRubric":"...","misconceptionSignals":["..."],"difficulty":2,"learningOutcome":"..."}],
   "contentBlocks":[
     {"id":"explanation-1","type":"explanation","title":"...","markdown":"Substantive topic-specific explanation in Markdown..."},
-    {"id":"worked-example-1","type":"worked_example","title":"...","exampleType":"numerical","problem":"...","givens":[],"assumptions":[],"steps":[{"explanation":"...","equation":"..."},{"explanation":"...","equation":"..."}],"finalAnswer":"...","verification":"..."},
+     {\"id\":\"worked-example-1\",\"type\":\"worked_example\",\"exampleIndex\":0,\"title\":\"...\"},
     {"id":"knowledge-check-1","type":"knowledge_check","activityIndex":0}
   ],
  "mastery":{"targetLevel":3,"criteria":["..."],"retentionPrompts":["..."]}
