@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { parse } from 'mathjs';
+import { evaluateSimulationExpression, validateSimulationExpression } from '../../shared/simulationExpression';
 import type { LessonContentBlock } from '../../shared/courseSchemas';
 
 type InteractiveSimulationBlock = Extract<LessonContentBlock, { type: 'interactive_simulation' }>;
@@ -8,13 +8,6 @@ interface PlotPoint {
   x: number;
   y: number | null;
 }
-
-const ALLOWED_FUNCTIONS = new Set([
-  'abs', 'acos', 'acosh', 'asin', 'asinh', 'atan', 'atan2', 'atanh',
-  'ceil', 'cos', 'cosh', 'exp', 'floor', 'log', 'log10', 'log2',
-  'max', 'min', 'pow', 'round', 'sign', 'sin', 'sinh', 'sqrt',
-  'tan', 'tanh', 'trunc'
-]);
 
 const VIEW_WIDTH = 760;
 const VIEW_HEIGHT = 340;
@@ -26,20 +19,9 @@ function formatNumber(value: number): string {
   return Number(value.toPrecision(5)).toString();
 }
 
-function validateAndCompileExpression(expression: string, parameterIds: string[]) {
-  if (!/^[A-Za-z0-9_+\-*/^().,\s]+$/.test(expression)) {
-    throw new Error('The model contains characters that are not permitted in a mathematical expression.');
-  }
-
-  const allowed = new Set(['x', 'pi', 'e', ...parameterIds, ...ALLOWED_FUNCTIONS]);
-  const identifiers = expression.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
-  const unsupported = identifiers.find((name) => !allowed.has(name));
-  if (unsupported) {
-    throw new Error(`The model refers to unsupported identifier "${unsupported}".`);
-  }
-
-  // mathjs parses a mathematical expression; JavaScript evaluation is never used.
-  return parse(expression).compile();
+function validateAndCompileExpression(expression: string, parameterIds: string[]): true {
+  validateSimulationExpression(expression, parameterIds);
+  return true;
 }
 
 export default function InteractiveSimulationViewer({ block }: { block: InteractiveSimulationBlock }) {
@@ -56,19 +38,19 @@ export default function InteractiveSimulationViewer({ block }: { block: Interact
   const compiledModel = useMemo(() => {
     try {
       return {
-        expression: validateAndCompileExpression(block.expression, block.parameters.map((parameter) => parameter.id)),
+        valid: validateAndCompileExpression(block.expression, block.parameters.map((parameter) => parameter.id)),
         error: ''
       };
     } catch (error) {
       return {
-        expression: null,
+        valid: false,
         error: error instanceof Error ? error.message : 'The mathematical model could not be compiled.'
       };
     }
   }, [block.expression, block.parameters]);
 
   const plot = useMemo(() => {
-    if (!compiledModel.expression) {
+    if (!compiledModel.valid) {
       return { points: [] as PlotPoint[], error: compiledModel.error, yMin: 0, yMax: 0 };
     }
 
@@ -79,11 +61,9 @@ export default function InteractiveSimulationViewer({ block }: { block: Interact
     for (let index = 0; index <= SAMPLE_INTERVALS; index += 1) {
       const x = xMin + ((xMax - xMin) * index) / SAMPLE_INTERVALS;
       try {
-        const result = compiledModel.expression.evaluate({
+        const result = evaluateSimulationExpression(block.expression, {
           x,
-          ...values,
-          pi: Math.PI,
-          e: Math.E
+          ...values
         });
         const y = typeof result === 'number' ? result : Number.NaN;
         points.push({ x, y: Number.isFinite(y) && Math.abs(y) < 1e15 ? y : null });
