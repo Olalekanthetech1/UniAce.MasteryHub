@@ -262,6 +262,267 @@ export const InstructionalPracticeItemSchema = z.object({
 });
 export type InstructionalPracticeItem = z.infer<typeof InstructionalPracticeItemSchema>;
 
+const LessonContentBlockIdSchema = z.string().trim().min(1).max(96).regex(
+  /^[A-Za-z0-9][A-Za-z0-9._-]*$/,
+  'Block IDs may contain letters, numbers, dots, underscores and hyphens.'
+);
+
+const LessonContentBlockBaseSchema = z.object({
+  id: LessonContentBlockIdSchema
+});
+
+export const ExplanationContentBlockSchema = LessonContentBlockBaseSchema.extend({
+  type: z.literal('explanation'),
+  title: z.string().trim().min(1).optional(),
+  markdown: z.string().trim().min(80).max(20000)
+});
+
+export const MathematicalDerivationContentBlockSchema = LessonContentBlockBaseSchema.extend({
+  type: z.literal('mathematical_derivation'),
+  title: z.string().trim().min(1),
+  assumptions: z.array(z.string().trim().min(1)).max(12),
+  steps: z.array(z.object({
+    explanation: z.string().trim().min(10),
+    equation: z.string().trim().min(1).max(1200).optional()
+  })).min(2).max(20),
+  conclusion: z.string().trim().min(10).optional()
+});
+
+export const EngineeringDiagramContentBlockSchema = LessonContentBlockBaseSchema.extend({
+  type: z.literal('engineering_diagram'),
+  title: z.string().trim().min(1),
+  format: z.enum(['mermaid', 'svg']),
+  source: z.string().trim().min(20).max(20000).refine(
+    (value) => !value.includes('```') && !value.includes('~~~'),
+    'Diagram source must not contain an enclosing Markdown code fence.'
+  ),
+  altText: z.string().trim().min(10).max(500),
+  caption: z.string().trim().min(1).max(1000).optional()
+});
+
+export const WorkedExampleContentBlockSchema = LessonContentBlockBaseSchema.extend({
+  type: z.literal('worked_example'),
+  title: z.string().trim().min(1),
+  exampleType: z.enum(['numerical', 'conceptual', 'proof', 'case-analysis', 'experimental', 'design']),
+  problem: z.string().trim().min(20),
+  givens: z.array(z.object({
+    name: z.string().trim().min(1),
+    value: z.string().trim().min(1),
+    unit: z.string().trim().min(1).optional()
+  })).max(20),
+  assumptions: z.array(z.string().trim().min(1)).max(12),
+  steps: z.array(z.object({
+    explanation: z.string().trim().min(10),
+    equation: z.string().trim().min(1).max(1200).optional()
+  })).min(2).max(20),
+  finalAnswer: z.string().trim().min(1),
+  verification: z.string().trim().min(10)
+});
+
+const InteractiveSimulationParameterSchema = z.object({
+  id: z.string().trim().regex(/^[A-Za-z][A-Za-z0-9_]*$/, 'Parameter IDs must be valid mathematical variable names.'),
+  label: z.string().trim().min(1),
+  unit: z.string().trim().min(1).optional(),
+  min: z.number().finite(),
+  max: z.number().finite(),
+  step: z.number().finite().positive(),
+  initial: z.number().finite()
+}).superRefine((parameter, ctx) => {
+  if (parameter.min >= parameter.max) {
+    ctx.addIssue({ code: 'custom', path: ['max'], message: 'Parameter maximum must be greater than its minimum.' });
+  }
+  if (parameter.initial < parameter.min || parameter.initial > parameter.max) {
+    ctx.addIssue({ code: 'custom', path: ['initial'], message: 'Initial parameter value must be inside the configured range.' });
+  }
+  if (parameter.step > parameter.max - parameter.min) {
+    ctx.addIssue({ code: 'custom', path: ['step'], message: 'Parameter step cannot exceed its configured range.' });
+  }
+});
+
+export const InteractiveSimulationContentBlockSchema = LessonContentBlockBaseSchema.extend({
+  type: z.literal('interactive_simulation'),
+  title: z.string().trim().min(1),
+  description: z.string().trim().min(30),
+  expression: z.string().trim().min(1).max(300).refine(
+    (value) => /^[A-Za-z0-9_+\-*/^().,\s]+$/.test(value),
+    'Simulation expressions may contain only mathematical identifiers, operators, numbers and parentheses.'
+  ),
+  xRange: z.tuple([z.number().finite(), z.number().finite()]).refine(
+    ([min, max]) => min < max,
+    'The horizontal-axis minimum must be less than its maximum.'
+  ),
+  xLabel: z.string().trim().min(1),
+  yLabel: z.string().trim().min(1),
+  parameters: z.array(InteractiveSimulationParameterSchema).min(1).max(8)
+}).superRefine((simulation, ctx) => {
+  const parameterIds = new Set<string>();
+  for (const parameter of simulation.parameters) {
+    if (parameterIds.has(parameter.id)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['parameters'],
+        message: `Duplicate simulation parameter ID: "${parameter.id}".`
+      });
+    }
+    parameterIds.add(parameter.id);
+  }
+
+  const allowedFunctions = new Set([
+    'abs', 'acos', 'acosh', 'asin', 'asinh', 'atan', 'atan2', 'atanh',
+    'ceil', 'cos', 'cosh', 'exp', 'floor', 'log', 'log10', 'log2',
+    'max', 'min', 'pow', 'round', 'sign', 'sin', 'sinh', 'sqrt',
+    'tan', 'tanh', 'trunc'
+  ]);
+  const allowedSymbols = new Set(['x', 'pi', 'e', ...parameterIds, ...allowedFunctions]);
+  const identifiers = simulation.expression.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
+  for (const identifier of identifiers) {
+    if (!allowedSymbols.has(identifier)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['expression'],
+        message: `Unsupported simulation identifier "${identifier}". Use x, a declared parameter, pi, e, or a supported mathematical function.`
+      });
+    }
+  }
+});
+
+export const KnowledgeCheckContentBlockSchema = LessonContentBlockBaseSchema.extend({
+  type: z.literal('knowledge_check'),
+  activityIndex: z.number().int().min(0),
+  title: z.string().trim().min(1).optional()
+});
+
+export const LessonContentBlockSchema = z.discriminatedUnion('type', [
+  ExplanationContentBlockSchema,
+  MathematicalDerivationContentBlockSchema,
+  EngineeringDiagramContentBlockSchema,
+  WorkedExampleContentBlockSchema,
+  InteractiveSimulationContentBlockSchema,
+  KnowledgeCheckContentBlockSchema
+]);
+export type LessonContentBlock = z.infer<typeof LessonContentBlockSchema>;
+
+export const LessonContentBlocksSchema = z.array(LessonContentBlockSchema).min(3).max(40).superRefine((blocks, ctx) => {
+  const ids = new Set<string>();
+  let explanationCount = 0;
+  let workedExampleCount = 0;
+
+  blocks.forEach((block, index) => {
+    if (ids.has(block.id)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [index, 'id'],
+        message: `Duplicate lesson content block ID: "${block.id}".`
+      });
+    }
+    ids.add(block.id);
+    if (block.type === 'explanation') explanationCount += 1;
+    if (block.type === 'worked_example') workedExampleCount += 1;
+  });
+
+  if (explanationCount === 0) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'Typed lesson content must contain at least one substantive explanation block.'
+    });
+  }
+  if (workedExampleCount === 0) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'Typed lesson content must contain at least one worked-example block.'
+    });
+  }
+});
+
+function markdownMathExpression(expression: string): string {
+  const value = expression.trim();
+  if (!value) return '';
+  if (/^\$\$[\s\S]*\$\$/.test(value) || /^\$(?!\$)[\s\S]+\$(?!\$)$/.test(value) || /^\\\([\s\S]*\\\)$/.test(value) || /^\\\[[\s\S]*\\\]$/.test(value)) {
+    return value;
+  }
+  return `$\n${value}\n$`;
+}
+
+/**
+ * Backward-compatible Markdown adapter. The typed blocks remain the canonical
+ * lesson representation; this text is compiled for existing readers, search,
+ * audio and assessment-evidence consumers.
+ */
+export function renderLessonContentBlocksToMarkdown(blocks: LessonContentBlock[]): string {
+  return blocks.map((block, index) => {
+    switch (block.type) {
+      case 'explanation':
+        return [`## ${block.title || 'Explanation'}`, block.markdown].join('\n\n');
+
+      case 'mathematical_derivation': {
+        const assumptions = block.assumptions.length
+          ? `**Assumptions**\n\n${block.assumptions.map((item) => `- ${item}`).join('\n')}`
+          : '';
+        const steps = block.steps.map((step, stepIndex) => [
+          `### Step ${stepIndex + 1}`,
+          step.explanation,
+          step.equation ? markdownMathExpression(step.equation) : ''
+        ].filter(Boolean).join('\n\n')).join('\n\n');
+        return [`## ${block.title}`, assumptions, steps, block.conclusion || ''].filter(Boolean).join('\n\n');
+      }
+
+      case 'engineering_diagram':
+        return [
+          `## ${block.title}`,
+          `> Diagram description: ${block.altText}`,
+          ```${block.format}\n${block.source}\n````,
+          block.caption || ''
+        ].filter(Boolean).join('\n\n');
+
+      case 'worked_example': {
+        const givens = block.givens.length
+          ? `**Given information**\n\n${block.givens.map((given) => `- ${given.name}: ${given.value}${given.unit ? ` ${given.unit}` : ''}`).join('\n')}`
+          : '';
+        const assumptions = block.assumptions.length
+          ? `**Assumptions**\n\n${block.assumptions.map((item) => `- ${item}`).join('\n')}`
+          : '';
+        const steps = block.steps.map((step, stepIndex) => [
+          `### Step ${stepIndex + 1}`,
+          step.explanation,
+          step.equation ? markdownMathExpression(step.equation) : ''
+        ].filter(Boolean).join('\n\n')).join('\n\n');
+        return [
+          `## ${block.title}`,
+          `**Problem**\n\n${block.problem}`,
+          givens,
+          assumptions,
+          steps,
+          `**Final answer**\n\n${block.finalAnswer}`,
+          `**Verification**\n\n${block.verification}`
+        ].filter(Boolean).join('\n\n');
+      }
+
+      case 'interactive_simulation': {
+        const parameters = block.parameters.map((parameter) =>
+          `- ${parameter.label}: ${parameter.min} to ${parameter.max}${parameter.unit ? ` ${parameter.unit}` : ''} (initial value: ${parameter.initial})`
+        ).join('\n');
+        return [
+          `## ${block.title}`,
+          block.description,
+          `**Model:** ${markdownMathExpression(block.expression)}`,
+          `**Horizontal axis:** ${block.xLabel} (${block.xRange[0]} to ${block.xRange[1]})`,
+          `**Vertical axis:** ${block.yLabel}`,
+          `**Adjustable parameters**\n\n${parameters}`
+        ].join('\n\n');
+      }
+
+      case 'knowledge_check':
+        return [
+          `## ${block.title || `Knowledge check ${block.activityIndex + 1}`}`,
+          `Complete Check ${block.activityIndex + 1} in the secure assessment activity at this point in the lesson.`
+        ].join('\n\n');
+
+      default:
+        return '';
+    }
+  }).join('\n\n');
+}
+
 export const InstructionalContentSchema = z.preprocess(
   (value: unknown) => normalizeNestedMathUnicode(value),
   z.object({
@@ -307,6 +568,8 @@ export const InstructionalContentSchema = z.preprocess(
     difficulty: z.number().int().min(1).max(5),
     learningOutcome: z.string().optional()
   })).min(2),
+  // Optional only for previously persisted Markdown-era lessons. New generated lessons require typed blocks.
+  contentBlocks: LessonContentBlocksSchema.optional(),
   mastery: z.object({
     targetLevel: z.number().int().min(1).max(5),
     criteria: z.array(z.string().min(5)).min(1),
@@ -339,6 +602,16 @@ export const InstructionalContentSchema = z.preprocess(
         });
       }
     });
+
+    value.contentBlocks?.forEach((block, index) => {
+      if (block.type === 'knowledge_check' && block.activityIndex >= value.knowledgeChecks.length) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['contentBlocks', index, 'activityIndex'],
+          message: `Knowledge-check block references unavailable activity index ${block.activityIndex}.`
+        });
+      }
+    });
   })
 );
 export type InstructionalContent = z.infer<typeof InstructionalContentSchema>;
@@ -365,14 +638,37 @@ export type StudentInstructionalContent = Omit<
 };
 
 export const StructuredLessonOutputSchema = z.preprocess(
-  (value: unknown) => normalizeNestedMathUnicode(value),
+  (value: unknown) => {
+    const normalized = normalizeNestedMathUnicode(value);
+    if (!normalized || typeof normalized !== 'object' || Array.isArray(normalized)) return normalized;
+
+    const lesson = normalized as Record<string, any>;
+    const rawBlocks = lesson.instructionalContent?.contentBlocks;
+    const validatedBlocks = LessonContentBlocksSchema.safeParse(rawBlocks);
+    if (validatedBlocks.success) {
+      return {
+        ...lesson,
+        // The canonical typed blocks compile to Markdown for existing readers and downstream evidence consumers.
+        content: renderLessonContentBlocksToMarkdown(validatedBlocks.data)
+      };
+    }
+    return normalized;
+  },
   z.object({
-  pedagogicalReasoning: z.string().optional(),
-  title: z.string().min(1),
-  content: z.string().min(800).refine((value) => !isBareDiagramOrFragment(value), {
-    message: 'Lesson content must include substantive academic prose, not only a diagram or fragment.'
-  }),
-  instructionalContent: InstructionalContentSchema
+    pedagogicalReasoning: z.string().optional(),
+    title: z.string().min(1),
+    content: z.string().min(800).refine((value) => !isBareDiagramOrFragment(value), {
+      message: 'Lesson content must include substantive academic prose, not only a diagram or fragment.'
+    }),
+    instructionalContent: InstructionalContentSchema
+  }).superRefine((value, ctx) => {
+    if (!value.instructionalContent.contentBlocks || value.instructionalContent.contentBlocks.length < 3) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['instructionalContent', 'contentBlocks'],
+        message: 'New lesson generation must return at least three validated typed academic content blocks.'
+      });
+    }
   })
 );
 export type StructuredLessonOutput = z.infer<typeof StructuredLessonOutputSchema>;
