@@ -443,6 +443,41 @@ test('typed lesson blocks reference the canonical worked-example and protected k
   const candidate = { ...instructional, contentBlocks };
 
   assert.equal(InstructionalContentSchema.safeParse(candidate).success, true);
+  assert.equal(LessonContentBlocksSchema.safeParse(contentBlocks).success, true);
+
+  const simulationBlock = {
+    id: 'simulation-1',
+    type: 'interactive_simulation' as const,
+    title: 'Hydrostatic pressure model',
+    description: 'Explore how fluid density, gravity and depth affect hydrostatic pressure.',
+    expression: 'rho * g * x',
+    xRange: [0, 10] as [number, number],
+    xLabel: 'Depth (m)',
+    yLabel: 'Pressure increase (Pa)',
+    parameters: [
+      { id: 'rho', label: 'Fluid density', unit: 'kg/m³', min: 1, max: 2000, step: 10, initial: 1000 },
+      { id: 'g', label: 'Gravitational acceleration', unit: 'm/s²', min: 1, max: 20, step: 0.1, initial: 9.81 }
+    ]
+  };
+  const withValidSimulation = {
+    ...candidate,
+    contentBlocks: [...contentBlocks, simulationBlock]
+  };
+  assert.equal(InstructionalContentSchema.safeParse(withValidSimulation).success, true);
+  const withInvalidSimulation = {
+    ...candidate,
+    contentBlocks: [...contentBlocks, { ...simulationBlock, expression: 'unknownVariable * x' }]
+  };
+  assert.equal(InstructionalContentSchema.safeParse(withInvalidSimulation).success, false);
+
+  const unreferencedWorkedExample = {
+    ...candidate,
+    workedExamples: [
+      ...candidate.workedExamples,
+      { ...candidate.workedExamples[0], title: 'A second example not placed in the lesson' }
+    ]
+  };
+  assert.equal(InstructionalContentSchema.safeParse(unreferencedWorkedExample).success, false);
 
   const unavailableExample = {
     ...candidate,
