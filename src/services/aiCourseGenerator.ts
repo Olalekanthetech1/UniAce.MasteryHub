@@ -28,6 +28,7 @@ import { PipelineMetadata } from '../types';
 import { autoHealQuestion } from './validators/aiSchemas';
 import { sanitizeForFirestore } from './courseService';
 import { auth } from '../firebase';
+import { LogService } from './logService';
 import { normalizeMathDelimiters } from '../shared/mathText';
 import {
   StructuredDiagramSpecSchema,
@@ -35,6 +36,37 @@ import {
   trySerializeStructuredDiagramJson,
   repairMermaidSyntaxDeterministically
 } from './mermaidRepairService';
+
+export interface SerializedGeneratedDiagrams {
+  markdown: string;
+  failureCount: number;
+  failedIndexes: number[];
+}
+
+/**
+ * Serializes AI-supplied structured diagrams without silently discarding failures.
+ * The result intentionally contains no raw invalid specification or parser payload,
+ * so callers can report failures without leaking generated content into diagnostics.
+ */
+export function serializeGeneratedDiagramSpecs(rawDiagrams: unknown[]): SerializedGeneratedDiagrams {
+  const markdownBlocks: string[] = [];
+  const failedIndexes: number[] = [];
+
+  rawDiagrams.forEach((spec, index) => {
+    try {
+      const mermaidSource = serializeStructuredDiagramToMermaid(spec);
+      markdownBlocks.push(`\`\`\`mermaid\n${mermaidSource}\n\`\`\``);
+    } catch {
+      failedIndexes.push(index + 1);
+    }
+  });
+
+  return {
+    markdown: markdownBlocks.join('\n\n'),
+    failureCount: failedIndexes.length,
+    failedIndexes
+  };
+}
 
 const courseMarkedEngine = new Marked({
   gfm: true,
@@ -771,17 +803,18 @@ export async function generateLessonContent(
   const rawRelevance = Array.isArray(parsedOutput.relevance) ? parsedOutput.relevance : [];
   const rawDiagrams = Array.isArray(parsedOutput.diagrams) ? parsedOutput.diagrams : [];
 
-  const serializedDiagramsMarkdown = rawDiagrams
-    .map((spec: unknown) => {
-      try {
-        const mermaidSource = serializeStructuredDiagramToMermaid(spec);
-        return `\`\`\`mermaid\n${mermaidSource}\n\`\`\``;
-      } catch {
-        return '';
-      }
-    })
-    .filter(Boolean)
-    .join('\n\n');
+  const diagramSerialization = serializeGeneratedDiagramSpecs(rawDiagrams);
+  const { markdown: serializedDiagramsMarkdown } = diagramSerialization;
+
+  if (diagramSerialization.failureCount > 0) {
+    void LogService.log('error', 'ai', 'Generated course diagrams failed structural validation.', {
+      subsystem: 'course-content-generation',
+      courseName,
+      lessonTitle,
+      failedDiagramCount: diagramSerialization.failureCount,
+      failedDiagramIndexes: diagramSerialization.failedIndexes
+    });
+  }
 
   const seenDepts = new Set<string>();
   const validatedRelevance = rawRelevance.filter((entry: any) => {
@@ -807,10 +840,18 @@ export async function generateLessonContent(
       ? `${rawBody}\n\n${serializedDiagramsMarkdown}`
       : rawBody;
 
+  const diagramFailureNotice = diagramSerialization.failureCount > 0
+    ? `> **Visualization unavailable:** ${diagramSerialization.failureCount} generated diagram${diagramSerialization.failureCount === 1 ? '' : 's'} could not be validated and were omitted. The lesson explanation remains available.`
+    : '';
+
+  const bodyWithDiagramStatus = [bodyWithSerializedDiagrams, diagramFailureNotice]
+    .filter(Boolean)
+    .join('\n\n');
+
   // Assemble full lesson markdown without forcing a synthetic "The Why Before the How" heading
-  const fullLessonMarkdown = introduction && !bodyWithSerializedDiagrams.startsWith('#')
-    ? `## ${lessonTitle}\n\n${introduction}\n\n---\n\n${bodyWithSerializedDiagrams}`
-    : (introduction ? `${introduction}\n\n---\n\n${bodyWithSerializedDiagrams}` : bodyWithSerializedDiagrams);
+  const fullLessonMarkdown = introduction && !bodyWithDiagramStatus.startsWith('#')
+    ? `## ${lessonTitle}\n\n${introduction}\n\n---\n\n${bodyWithDiagramStatus}`
+    : (introduction ? `${introduction}\n\n---\n\n${bodyWithDiagramStatus}` : bodyWithDiagramStatus);
 
   const compiledLesson = compileAndSanitizeCourseMarkdown(fullLessonMarkdown);
   const sanitizedContent = compiledLesson.normalizedMarkdown;
