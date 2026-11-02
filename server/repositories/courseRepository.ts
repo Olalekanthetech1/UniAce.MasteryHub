@@ -262,7 +262,7 @@ export class CourseRepository {
 
         const sql = `
           SELECT id, course_id, module_id, title, content_markdown, order_index,
-                 key_terms, learning_outcomes, asset_references, instructional_content, created_at, updated_at
+                 key_terms, learning_outcomes, asset_references, instructional_content, content_blocks, created_at, updated_at
           FROM course_lessons
           WHERE course_id = $1 AND module_id = $2
           ORDER BY order_index ASC
