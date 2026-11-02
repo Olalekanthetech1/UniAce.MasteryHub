@@ -614,15 +614,17 @@ export const InstructionalContentSchema = z.preprocess(
         }
       }
     });
-    value.workedExamples.forEach((_, exampleIndex) => {
-      if (!referencedWorkedExamples.has(exampleIndex)) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['workedExamples', exampleIndex],
-          message: `Worked example ${exampleIndex} has no corresponding ordered worked_example content block.`
-        });
-      }
-    });
+    if (value.contentBlocks) {
+      value.workedExamples.forEach((_, exampleIndex) => {
+        if (!referencedWorkedExamples.has(exampleIndex)) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['workedExamples', exampleIndex],
+            message: `Worked example ${exampleIndex} has no corresponding ordered worked_example content block.`
+          });
+        }
+      });
+    }
   })
 );
 export type InstructionalContent = z.infer<typeof InstructionalContentSchema>;
