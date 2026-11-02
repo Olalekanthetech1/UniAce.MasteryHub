@@ -5648,6 +5648,23 @@ async function executeCoordinatedGenerationJob(
                     message: 'Instructional engine does not match the course discipline.'
                   });
                 }
+                const normalizedDepth = typeof depth === 'string' ? depth.trim().toLowerCase() : 'standard';
+                const requiredExamples = normalizedDepth === 'deep-dive' ? 3 : normalizedDepth === 'standard' ? 2 : 1;
+                const requiredChecks = normalizedDepth === 'deep-dive' ? 4 : normalizedDepth === 'standard' ? 3 : 2;
+                if (val.instructionalContent.workedExamples.length < requiredExamples) {
+                  ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    path: ['instructionalContent', 'workedExamples'],
+                    message: 'Selected depth requires at least ' + requiredExamples + ' distinct worked examples.'
+                  });
+                }
+                if (val.instructionalContent.knowledgeChecks.length < requiredChecks) {
+                  ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    path: ['instructionalContent', 'knowledgeChecks'],
+                    message: 'Selected depth requires at least ' + requiredChecks + ' reasoning checks.'
+                  });
+                }
                 const check = validateLessonSyntax(val.content || '', domainBrief.pedagogyType);
                 if (!check.isValid) {
                   ctx.addIssue({
