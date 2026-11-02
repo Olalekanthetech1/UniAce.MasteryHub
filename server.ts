@@ -5916,7 +5916,7 @@ Return strictly a JSON object:
       "description": "Define the variables and state the meaning and assumptions grounded in the supplied lessons"
     }
   ]
-}
+}`;
 
         try {
           const formulaData = await completeWithProviderJSON({
