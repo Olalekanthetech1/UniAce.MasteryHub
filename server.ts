@@ -4964,9 +4964,9 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
         console.warn(`[Skeleton Gen] Attempt ${attempts} rejected by Critic: ${auditResult.reasoning} (Coverage: ${auditResult.coverageScore}%, Foundations: ${auditResult.foundationsScore}%)`);
         feedbackCritique = `The previous outline scored Coverage: ${auditResult.coverageScore}%, Foundations: ${auditResult.foundationsScore}%, Sequencing: ${auditResult.sequencingScore}%, Workload Balance: ${auditResult.workloadBalanceScore}%, Consistency: ${auditResult.consistencyScore}%. Critic Critique: ${auditResult.reasoning}. Missing core topics: ${(auditResult.missingTopics || []).join(', ')}. Sequencing errors: ${(auditResult.sequencingErrors || []).join(', ')}. Correct workload imbalance and internal inconsistencies before resubmission.`;
         
-        if (attempts === MAX_ATTEMPTS && (!skeleton || !Array.isArray(skeleton.modules) || skeleton.modules.length < 4)) {
+        if (attempts === MAX_ATTEMPTS) {
           return res.status(422).json({
-            error: `Zero-Fallback Policy: Failed to generate a verified, high-coverage curriculum for "${courseName}" after ${MAX_ATTEMPTS} attempts. [Audit]: ${auditResult.reasoning} (Coverage Score: ${auditResult.coverageScore}%).`,
+            error: `Zero-Fallback Policy: The curriculum did not pass every required academic audit dimension for "${courseName}" after ${MAX_ATTEMPTS} attempts. Coverage: ${auditResult.coverageScore}%; foundations: ${auditResult.foundationsScore}%; sequencing: ${auditResult.sequencingScore}%; workload balance: ${auditResult.workloadBalanceScore}%; consistency: ${auditResult.consistencyScore}%. ${auditResult.reasoning}`,
             confidenceState: 'failed',
             auditResult
           });
