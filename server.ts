@@ -6142,10 +6142,25 @@ Return strictly valid JSON matching:
           if (!genericTitle && syntaxCheck.isValid) {
             // If normalization cleaned up minor escaping, persist normalized markdown without regenerating
             if (normalized !== l.content_markdown) {
-              await pool.query(
-                `UPDATE course_lessons SET content_markdown = $1, updated_at = NOW() WHERE course_id = $2 AND module_id = $3 AND id = $4`,
+              const normalizedWrite = await pool.query(
+                `WITH eligible_course AS (
+                   SELECT id FROM courses
+                   WHERE id = $2 AND status <> 'archived'
+                   FOR SHARE
+                 )
+                 UPDATE course_lessons AS lesson
+                 SET content_markdown = $1, updated_at = NOW()
+                 FROM eligible_course
+                 WHERE lesson.course_id = eligible_course.id
+                   AND lesson.course_id = $2
+                   AND lesson.module_id = $3
+                   AND lesson.id = $4
+                 RETURNING lesson.id`,
                 [normalized, courseId, m.id, l.id]
-              ).catch(() => {});
+              );
+              if ((normalizedWrite.rowCount ?? 0) === 0) {
+                throw new Error(`Course ${courseId} is missing or archived; self-heal normalization write rejected.`);
+              }
             }
             continue;
           }
