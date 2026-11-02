@@ -5646,7 +5646,10 @@ async function executeCoordinatedGenerationJob(
                     message: 'Instructional engine does not match the course discipline.'
                   });
                 }
-                const normalizedDepth = typeof depth === 'string' ? depth.trim().toLowerCase() : 'standard';
+                const rawDepth = typeof depth === 'string' ? depth.trim().toLowerCase() : 'standard';
+                const normalizedDepth = ['deep-dive', 'in-depth', 'advanced'].includes(rawDepth)
+                  ? 'deep-dive'
+                  : rawDepth === 'introductory' ? 'introductory' : 'standard';
                 const requiredExamples = normalizedDepth === 'deep-dive' ? 3 : normalizedDepth === 'standard' ? 2 : 1;
                 const requiredChecks = normalizedDepth === 'deep-dive' ? 4 : normalizedDepth === 'standard' ? 3 : 2;
                 if (val.instructionalContent.workedExamples.length < requiredExamples) {
