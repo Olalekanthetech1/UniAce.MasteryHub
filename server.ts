@@ -5971,6 +5971,10 @@ Return strictly a JSON object:
           });
 
           if (formulaData && Array.isArray(formulaData.formulas)) {
+            // Replace the full formula set atomically at the generation stage;
+            // otherwise a resumed job can retain stale formulas omitted by the
+            // newly generated, lesson-grounded result.
+            await pool.query('DELETE FROM course_formulas WHERE course_id = $1', [courseId]);
             for (const f of formulaData.formulas) {
               const fId = `form_${courseId}_${f.id}`;
               await pool.query(
