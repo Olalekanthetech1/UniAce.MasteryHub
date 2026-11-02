@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   AcademicContentBlockCollectionSchema,
+  isFoundationalExplanationBlock,
+  resolveBlockAcademicLabel,
   validateSimulationExpression
 } from '../src/shared/academicContentBlocks';
 
@@ -150,3 +152,105 @@ test('simulation variables cannot collide with mathematical constants or allowli
     ));
   }
 });
+
+test('supports multi-faculty non-engineering blocks and forward-compatible structured_block types', () => {
+  const multiDisciplineLesson = {
+    schemaVersion: '1.0',
+    disciplineEngine: 'Constitutional Law',
+    blocks: [
+      {
+        id: 'doctrine-overview',
+        title: 'Constitutional Proportionality Doctrine',
+        academicRole: 'Doctrinal Foundation',
+        type: 'explanation',
+        body: 'Proportionality analysis evaluates whether a state restriction on a protected right pursues a legitimate aim through suitable, necessary, and balanced means.',
+        keyTakeaways: [
+          'Legitimate aim threshold',
+          'Rational connection and minimal impairment'
+        ]
+      },
+      {
+        id: 'argument-proportionality',
+        title: 'Four-Stage Proportionality Test',
+        academicRole: 'Jurisprudential Argument Chain',
+        type: 'mathematical_derivation',
+        introduction: 'Courts apply the four prongs sequentially before upholding a rights limitation.',
+        steps: [
+          {
+            explanation: 'Determine whether the legislative objective is sufficiently important to warrant overriding a constitutionally protected right.',
+            evidenceOrCitation: 'R v Oakes [1986] 1 SCR 103'
+          },
+          {
+            explanation: 'Assess whether the chosen measure impairs the right as little as reasonably possible while achieving the objective.',
+            evidenceOrCitation: 'Bank Mellat v HM Treasury (No 2) [2013] UKSC 39'
+          }
+        ],
+        conclusion: 'If any prong fails, the infringement is disproportionate and unconstitutional.'
+      },
+      {
+        id: 'case-brief-1',
+        title: 'Applied Constitutional Review',
+        academicRole: 'Legal Case Brief',
+        type: 'worked_example',
+        exampleType: 'case-analysis',
+        problem: 'A municipal bylaw imposes a blanket ban on public leafletting in all civic plazas to prevent litter.',
+        contextFactors: [
+          { label: 'Protected Interest', detail: 'Freedom of expression in traditional public fora.' },
+          { label: 'State Objective', detail: 'Maintaining sanitation and civic aesthetics.' }
+        ],
+        target: 'Whether the blanket prohibition survives minimal impairment scrutiny.',
+        steps: [
+          { explanation: 'Confirm that freedom of expression is engaged and the sanitation objective is legitimate.' },
+          { explanation: 'Evaluate whether less restrictive alternatives (such as anti-littering fines and recycling bins) achieve the goal.' }
+        ],
+        finalAnswer: { value: 'The blanket ban fails minimal impairment because targeted anti-littering enforcement achieves sanitation without extinguishing speech.' },
+        verification: 'Consistent with comparative constitutional precedent on overbroad prior restraints.'
+      },
+      {
+        id: 'comparative-scrutiny-matrix',
+        title: 'Comparative Judicial Review Standards',
+        academicRole: 'Comparative Matrix',
+        type: 'structured_block',
+        customType: 'comparative_table',
+        summary: 'Comparison of proportionality review and tiered scrutiny across constitutional systems.',
+        table: {
+          caption: 'Standards of Review',
+          headers: ['Framework', 'Primary Focus', 'Burden of Proof'],
+          rows: [
+            ['Structured Proportionality', 'Sequential 4-prong balancing', 'State bears burden once infringement shown'],
+            ['Strict Scrutiny', 'Compelling interest & narrow tailoring', 'Presumption of invalidity on government']
+          ]
+        },
+        citations: ['Barak, Proportionality: Constitutional Rights and their Limitations (2012)']
+      }
+    ]
+  };
+
+  const parsed = AcademicContentBlockCollectionSchema.parse(multiDisciplineLesson);
+  assert.equal(parsed.blocks.length, 4);
+  assert.equal(isFoundationalExplanationBlock(parsed.blocks[0]), true);
+  assert.equal(resolveBlockAcademicLabel(parsed.blocks[0]), 'Doctrinal Foundation');
+  assert.equal(resolveBlockAcademicLabel(parsed.blocks[3]), 'Comparative Matrix');
+});
+
+test('rejects dynamic structured_block types that lack any substantive structured content fields', () => {
+  const emptyDynamic = {
+    schemaVersion: '1.0',
+    blocks: [
+      {
+        id: 'empty-custom-block',
+        title: 'Empty Custom Block',
+        type: 'structured_block',
+        customType: 'custom_pedagogical_widget'
+      }
+    ]
+  };
+  const result = AcademicContentBlockCollectionSchema.safeParse(emptyDynamic);
+  assert.equal(result.success, false);
+  if (!result.success) {
+    assert.ok(result.error.issues.some(issue =>
+      issue.message.includes('must include at least one structured content field')
+    ));
+  }
+});
+

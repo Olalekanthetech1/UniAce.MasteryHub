@@ -407,6 +407,23 @@ export default function ChatBot({
   };
 
   // Send Message Logic
+  const handleSendRef = useRef<(overrideInput?: string, isHintRequest?: boolean) => Promise<void>>(async () => {});
+
+  useEffect(() => {
+    const onDemoQuery = (e: Event) => {
+      const detail = (e as CustomEvent)?.detail;
+      if (detail?.courseId) {
+        setCurrentCourseId(detail.courseId);
+      }
+      if (typeof detail?.prompt === 'string' && detail.prompt.trim()) {
+        setIsOpen(true);
+        void handleSendRef.current(detail.prompt);
+      }
+    };
+    window.addEventListener('uniace:demo-query', onDemoQuery);
+    return () => window.removeEventListener('uniace:demo-query', onDemoQuery);
+  }, []);
+
   const handleSend = async (overrideInput?: string, isHintRequest: boolean = false) => {
     let textToSend = overrideInput || input;
     if ((!textToSend.trim() && !selectedImage && !pdfText) || isLoading) return;
@@ -695,6 +712,7 @@ export default function ChatBot({
       setIsLoading(false);
     }
   };
+  handleSendRef.current = handleSend;
 
   // Render Full Page Experience
   const renderChatInterface = () => (

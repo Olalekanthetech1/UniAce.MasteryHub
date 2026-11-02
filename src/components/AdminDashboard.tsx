@@ -2933,7 +2933,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
         <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-hide">
           {[
             { id: 'overview', label: 'Overview', icon: Activity, show: true },
-            { id: 'demo-studio', label: '🎬 Marketing & Demo Studio', icon: Video, show: true },
+            { id: 'demo-studio', label: '🎬 Marketing, Flyer & Demo Studio', icon: Video, show: true },
             { id: 'api-status', label: 'API Status', icon: Activity, show: permissions.canManageSystem },
             { id: 'analytics', label: 'Platform Analytics', icon: BarChart3, show: true },
             { id: 'courses', label: 'Courses & AI', icon: BookOpen, show: permissions.canManageCourses },

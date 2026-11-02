@@ -18,7 +18,7 @@ interface DemoReelContextType {
   screenCaptureSupported: boolean;
   activeSimulatedQuery: string | null;
   setSelectedScenarioId: (id: string) => void;
-  startDemoReel: (scenarioId?: string, navigateCallback?: (view: View) => void, onSimulateChat?: (prompt: string) => void) => Promise<boolean>;
+  startDemoReel: (scenarioOrId?: string | DemoScenario, navigateCallback?: (view: View) => void, onSimulateChat?: (prompt: string) => void) => Promise<boolean>;
   skipToNextStep: () => void;
   pauseDemoReel: () => void;
   resumeDemoReel: () => void;
@@ -85,6 +85,8 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
     // 1. Programmatically navigate to target view
     if (navigateFnRef.current) {
       navigateFnRef.current(step.view);
+    } else if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('navigate', { detail: step.view }));
     }
 
     // 2. If step includes simulated chat query, trigger simulation
@@ -93,6 +95,14 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
       if (simulateChatFnRef.current) {
         setTimeout(() => {
           simulateChatFnRef.current?.(step.simulatedQuery!);
+        }, 1200);
+      } else if (typeof window !== 'undefined') {
+        setTimeout(() => {
+          window.dispatchEvent(
+            new CustomEvent('uniace:demo-query', {
+              detail: { prompt: step.simulatedQuery, courseId: step.courseId },
+            })
+          );
         }, 1200);
       }
     } else {
@@ -192,11 +202,15 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const startDemoReel = useCallback(async (
-    scenarioId = selectedScenarioId,
+    scenarioOrId: string | DemoScenario = selectedScenarioId,
     navigateCallback?: (view: View) => void,
     onSimulateChat?: (prompt: string) => void
   ): Promise<boolean> => {
-    const scenario = DEMO_SCENARIOS[scenarioId] || DEMO_SCENARIOS.full_ecosystem;
+    const scenario: DemoScenario =
+      typeof scenarioOrId === 'string'
+        ? DEMO_SCENARIOS[scenarioOrId] || DEMO_SCENARIOS.full_ecosystem
+        : scenarioOrId;
+    setSelectedScenarioId(scenario.id);
     setCurrentScenario(scenario);
     if (navigateCallback) navigateFnRef.current = navigateCallback;
     if (onSimulateChat) simulateChatFnRef.current = onSimulateChat;

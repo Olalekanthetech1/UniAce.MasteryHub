@@ -89,7 +89,10 @@ import {
   isGenericLessonTitle,
   isBareDiagramOrFragment
 } from './src/shared/courseSchemas.js';
-import { AcademicContentBlockCollectionSchema } from './src/shared/academicContentBlocks.js';
+import {
+  AcademicContentBlockCollectionSchema,
+  isFoundationalExplanationBlock
+} from './src/shared/academicContentBlocks.js';
 import { VISUALIZATION_AND_DIAGRAM_DIRECTIVE } from './src/shared/prompts.js';
 import {
   validateLessonSyntax,
@@ -1427,8 +1430,8 @@ app.post('/api/courses/:courseId/modules/:moduleId/lessons/:lessonId', verifyAdm
           validationErrors: parsedBlocks.error.issues
         });
       }
-      if (!parsedBlocks.data.blocks.some(block => block.type === 'explanation')) {
-        return res.status(400).json({ error: 'Typed lessons require at least one explanation block.' });
+      if (!parsedBlocks.data.blocks.some(block => isFoundationalExplanationBlock(block))) {
+        return res.status(400).json({ error: 'Typed lessons require at least one foundational explanation block.' });
       }
       serializedContentBlocks = JSON.stringify(parsedBlocks.data);
     }

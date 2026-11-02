@@ -4,7 +4,9 @@ import { StructuredDiagramSpecSchema } from '../services/mermaidRepairService';
 
 const blockIdentity = {
   id: z.string().trim().min(1).max(120),
-  title: z.string().trim().min(1).max(240)
+  title: z.string().trim().min(1).max(240),
+  academicRole: z.string().trim().min(1).max(120).optional(),
+  disciplineHint: z.string().trim().min(1).max(80).optional()
 };
 
 const identifierSchema = z.string().regex(
@@ -150,20 +152,48 @@ export function validateSimulationExpression(
   }
 }
 
+export const StructuredTableSchema = z.object({
+  caption: z.string().trim().max(300).optional(),
+  headers: z.array(z.string().trim().min(1).max(160)).min(1).max(12),
+  rows: z.array(z.array(z.string().trim().max(1000)).min(1).max(12)).min(1).max(60)
+});
+
+export const StructuredSectionItemSchema = z.object({
+  heading: z.string().trim().min(1).max(200),
+  content: z.string().trim().min(5).max(10000)
+});
+
+export const StructuredKeyValueItemSchema = z.object({
+  label: z.string().trim().min(1).max(200),
+  detail: z.string().trim().min(1).max(4000),
+  tag: z.string().trim().max(80).optional()
+});
+
 export const ExplanationBlockSchema = z.object({
   ...blockIdentity,
   type: z.literal('explanation'),
-  body: z.string().trim().min(40).max(30000)
+  body: z.string().trim().min(40).max(30000),
+  keyTakeaways: z.array(z.string().trim().min(3).max(500)).max(12).optional(),
+  sections: z.array(StructuredSectionItemSchema).max(20).optional(),
+  items: z.array(StructuredKeyValueItemSchema).max(30).optional(),
+  table: StructuredTableSchema.optional(),
+  codeSnippet: z.string().trim().min(1).max(10000).optional(),
+  language: z.string().trim().max(40).optional(),
+  citations: z.array(z.string().trim().min(2).max(600)).max(25).optional(),
+  callout: z.string().trim().min(5).max(3000).optional()
 });
 
 export const MathematicalDerivationBlockSchema = z.object({
   ...blockIdentity,
   type: z.literal('mathematical_derivation'),
   introduction: z.string().trim().min(20).max(5000),
-  assumptions: z.array(z.string().trim().min(3).max(500)).max(20),
+  assumptions: z.array(z.string().trim().min(3).max(500)).max(20).default([]),
   steps: z.array(z.object({
     explanation: z.string().trim().min(10).max(3000),
-    equationLatex: z.string().trim().min(1).max(2000).optional()
+    equationLatex: z.string().trim().min(1).max(2000).optional(),
+    codeSnippet: z.string().trim().min(1).max(4000).optional(),
+    language: z.string().trim().max(40).optional(),
+    evidenceOrCitation: z.string().trim().min(2).max(1000).optional()
   })).min(2).max(30),
   conclusion: z.string().trim().min(10).max(3000)
 });
@@ -178,21 +208,28 @@ export const EngineeringDiagramBlockSchema = z.object({
 export const WorkedExampleBlockSchema = z.object({
   ...blockIdentity,
   type: z.literal('worked_example'),
-  exampleType: z.enum(['numerical', 'conceptual', 'proof', 'case-analysis', 'experimental', 'design']),
+  exampleType: z.string().trim().min(2).max(80).default('numerical'),
   problem: z.string().trim().min(10).max(8000),
   givens: z.array(z.object({
     symbol: z.string().trim().min(1).max(80),
-    value: z.string().trim().min(1).max(160),
+    value: z.string().trim().min(1).max(240),
     unit: z.string().trim().max(80).optional()
-  })).max(30),
+  })).max(30).default([]),
+  contextFactors: z.array(z.object({
+    label: z.string().trim().min(1).max(120),
+    detail: z.string().trim().min(1).max(600)
+  })).max(30).optional(),
   target: z.string().trim().min(2).max(1000),
-  assumptions: z.array(z.string().trim().min(3).max(500)).max(20),
+  assumptions: z.array(z.string().trim().min(3).max(500)).max(20).default([]),
   steps: z.array(z.object({
     explanation: z.string().trim().min(10).max(3000),
-    equationLatex: z.string().trim().min(1).max(2000).optional()
+    equationLatex: z.string().trim().min(1).max(2000).optional(),
+    codeSnippet: z.string().trim().min(1).max(4000).optional(),
+    language: z.string().trim().max(40).optional(),
+    evidenceOrCitation: z.string().trim().min(2).max(1000).optional()
   })).min(2).max(40),
   finalAnswer: z.object({
-    value: z.string().trim().min(1).max(500),
+    value: z.string().trim().min(1).max(1000),
     unit: z.string().trim().max(80).optional()
   }),
   verification: z.string().trim().min(10).max(3000)
@@ -237,17 +274,58 @@ export const KnowledgeCheckBlockSchema = z.object({
   activityIndex: z.number().int().nonnegative().max(100)
 });
 
+/**
+ * Open, forward-compatible structured block capability (`type: "structured_block"`)
+ * allowing any course discipline or future pedagogy extension to define custom block
+ * structures (`customType`, `academicRole`, `sections`, `items`, `table`, `codeSnippet`,
+ * `equationsLatex`, `citations`, `callout`) without hardcoding discipline enums.
+ */
+export const DynamicStructuredBlockSchema = z.object({
+  ...blockIdentity,
+  type: z.literal('structured_block'),
+  customType: z.string().trim().min(2).max(80).optional(),
+  summary: z.string().trim().min(10).max(5000).optional(),
+  body: z.string().trim().min(10).max(30000).optional(),
+  sections: z.array(StructuredSectionItemSchema).min(1).max(30).optional(),
+  items: z.array(StructuredKeyValueItemSchema).min(1).max(50).optional(),
+  table: StructuredTableSchema.optional(),
+  codeSnippet: z.string().trim().min(1).max(10000).optional(),
+  language: z.string().trim().max(40).optional(),
+  equationsLatex: z.array(z.string().trim().min(1).max(2000)).max(20).optional(),
+  citations: z.array(z.string().trim().min(2).max(600)).max(25).optional(),
+  callout: z.string().trim().min(5).max(3000).optional()
+}).superRefine((block, ctx) => {
+  const hasSubstantiveContent = Boolean(
+    block.body ||
+    block.summary ||
+    (block.sections && block.sections.length > 0) ||
+    (block.items && block.items.length > 0) ||
+    block.table ||
+    block.codeSnippet ||
+    (block.equationsLatex && block.equationsLatex.length > 0)
+  );
+  if (!hasSubstantiveContent) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['body'],
+      message: `Dynamic structured block "${block.id}" must include at least one structured content field (body, summary, sections, items, table, codeSnippet, or equationsLatex).`
+    });
+  }
+});
+
 export const AcademicContentBlockSchema = z.discriminatedUnion('type', [
   ExplanationBlockSchema,
   MathematicalDerivationBlockSchema,
   EngineeringDiagramBlockSchema,
   WorkedExampleBlockSchema,
   InteractiveSimulationBlockSchema,
-  KnowledgeCheckBlockSchema
+  KnowledgeCheckBlockSchema,
+  DynamicStructuredBlockSchema
 ]);
 
 export const AcademicContentBlockCollectionSchema = z.object({
   schemaVersion: z.literal('1.0'),
+  disciplineEngine: z.string().trim().min(1).max(80).optional(),
   blocks: z.array(AcademicContentBlockSchema).min(1).max(100)
 }).superRefine((collection, ctx) => {
   const seenIds = new Set<string>();
@@ -275,6 +353,49 @@ export const AcademicContentBlockCollectionSchema = z.object({
   });
 });
 
+export type ExplanationBlock = z.infer<typeof ExplanationBlockSchema>;
+export type MathematicalDerivationBlock = z.infer<typeof MathematicalDerivationBlockSchema>;
+export type EngineeringDiagramBlock = z.infer<typeof EngineeringDiagramBlockSchema>;
+export type WorkedExampleBlock = z.infer<typeof WorkedExampleBlockSchema>;
+export type InteractiveSimulationBlock = z.infer<typeof InteractiveSimulationBlockSchema>;
+export type KnowledgeCheckBlock = z.infer<typeof KnowledgeCheckBlockSchema>;
+export type DynamicStructuredBlock = z.infer<typeof DynamicStructuredBlockSchema>;
 export type AcademicContentBlock = z.infer<typeof AcademicContentBlockSchema>;
 export type AcademicContentBlockCollection = z.infer<typeof AcademicContentBlockCollectionSchema>;
-export type InteractiveSimulationBlock = z.infer<typeof InteractiveSimulationBlockSchema>;
+
+/**
+ * Checks whether a block serves as a foundational conceptual/narrative block for the lesson.
+ */
+export function isFoundationalExplanationBlock(block: AcademicContentBlock): boolean {
+  if (block.type === 'explanation') {
+    return true;
+  }
+  if (block.type === 'structured_block') {
+    return Boolean(
+      (block.body && block.body.length >= 40) ||
+      (block.sections && block.sections.length > 0)
+    );
+  }
+  return false;
+}
+
+/**
+ * Resolves the display label for a block dynamically from its runtime `academicRole` or `customType`,
+ * falling back to a human-readable formatting of `block.type` without hardcoded discipline dictionaries.
+ */
+export function resolveBlockAcademicLabel(block: AcademicContentBlock): string {
+  if (block.academicRole && block.academicRole.trim().length > 0) {
+    return block.academicRole.trim();
+  }
+  if (block.type === 'structured_block' && block.customType && block.customType.trim().length > 0) {
+    return block.customType
+      .trim()
+      .replace(/[_-]+/g, ' ')
+      .replace(/\b\w/g, (char) => char.toUpperCase());
+  }
+  return block.type
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+

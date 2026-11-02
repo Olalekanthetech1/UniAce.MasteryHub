@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { AcademicContentBlockCollectionSchema, type AcademicContentBlockCollection } from './academicContentBlocks.js';
+import {
+  AcademicContentBlockCollectionSchema,
+  isFoundationalExplanationBlock,
+  type AcademicContentBlockCollection
+} from './academicContentBlocks.js';
 
 /**
  * UniAce Shared Course Schema & Pedagogical Architecture
@@ -379,12 +383,12 @@ export const StructuredLessonOutputSchema = z.preprocess(
   }).superRefine((value, ctx) => {
     if (!value.contentBlocks) return;
 
-    const explanationCount = value.contentBlocks.blocks.filter(block => block.type === 'explanation').length;
+    const explanationCount = value.contentBlocks.blocks.filter(block => isFoundationalExplanationBlock(block)).length;
     if (explanationCount === 0) {
       ctx.addIssue({
         code: 'custom',
         path: ['contentBlocks', 'blocks'],
-        message: 'A typed lesson must include at least one explanation block.'
+        message: 'A typed lesson must include at least one foundational explanation block.'
       });
     }
 

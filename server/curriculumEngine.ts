@@ -531,18 +531,19 @@ export function buildLessonPrompt(
   const depthDirective = depthDirectives[normalizedDepth] || depthDirectives.standard;
   const selectedSource = selectRelevantLessonSource(sourceText || '', topicTitle, moduleTitle);
 
-  const disciplineDirectives: Record<DomainBrief['pedagogyType'], string> = {
-    STEM_MATHEMATICAL: 'Build physical intuition, state governing assumptions, derive equations from established laws, define symbols and SI units, explain mathematical transformations, and check numerical reasonableness. Never invent experimental values.',
-    HUMANITIES_LAW_ARTS: 'Build historical/textual context, compare interpretations, demonstrate argument structure and primary-source analysis. Formal development means an interpretive method or evidentiary argument, not an artificial mathematical derivation. Distinguish facts from interpretation.',
-    SOCIAL_SCIENCES_BUSINESS: 'Explain theoretical mechanisms, assumptions, research design, causal logic, statistical methods and limits of evidence. Never fabricate datasets, study findings or company results.',
-    BIOMEDICAL_LIFE_SCIENCES: 'Explain structures, mechanisms, pathways, regulation, causal relationships and evidence quality. Use equations only when appropriate. Never invent clinical outcomes, reference values or treatment guidance.',
-    GENERAL_FOUNDATIONS: 'Prioritise definitions, conceptual relationships, evidence and discipline-appropriate examples. Select formal reasoning appropriate to the subject; do not force mathematics.'
-  };
+  const subDisciplinesList = Array.isArray(domainBrief.subDisciplines) && domainBrief.subDisciplines.length > 0
+    ? domainBrief.subDisciplines.join(', ')
+    : domainBrief.primaryDomain;
+  const foundationalAxiomsList = Array.isArray(domainBrief.foundationalAxioms) && domainBrief.foundationalAxioms.length > 0
+    ? domainBrief.foundationalAxioms.join('; ')
+    : 'Use established principles of the discipline';
 
   return `Create a university lesson for "${topicTitle}" in Module ${moduleOrder}: "${moduleTitle}" of "${courseName}".
 
 ACADEMIC CONTEXT
-Discipline: ${domainBrief.primaryDomain}
+Discipline: ${domainBrief.primaryDomain} (${subDisciplinesList})
+Course framework: ${domainBrief.courseLevelFramework}
+Foundational principles: ${foundationalAxiomsList}
 Discipline engine: ${domainBrief.pedagogyType}
 Audience: ${audience}
 Level: ${level}
@@ -554,9 +555,6 @@ Target learning outcome: ${learningOutcomeText || 'Derive measurable objectives 
 ${selectedSource ? `TOPIC-RELEVANT EXCERPTS FROM THE ADMIN-SUPPLIED SOURCE (primary grounding):\n${selectedSource}` : 'No topic-matched admin source excerpt was selected. Do not fabricate quotations, citations, page numbers, textbooks or empirical findings.'}
 ${researchContext && researchContext.trim() ? `\nSUPPLEMENTARY RETRIEVED ACADEMIC EVIDENCE (source-attributed; verify claims before treating as settled):\n${researchContext}\n` : ''}
 
-DISCIPLINE ENGINE
-${disciplineDirectives[domainBrief.pedagogyType]}
-
 UNIVERSAL MASTERY FRAMEWORK
 Organise learning around Understand → Explore → Apply → Verify → Master. This is a learning sequence, not ten compulsory long chapters. Keep every component proportionate to the topic.
 
@@ -565,16 +563,17 @@ When including a conceptual flowchart in 'content', prefer a structured \`\`\`di
 
 Return BOTH readable Markdown in "content", versioned typed blocks in "contentBlocks", and structured mastery data in "instructionalContent".
 
-TYPED ACADEMIC CONTENT BLOCK RULES
-- contentBlocks.schemaVersion must be "1.0"; contentBlocks.blocks must be an ordered array of typed academic elements.
-- Every block has a unique stable id, a title, and one exact type discriminator.
-- Always include at least one "explanation" block with substantive, topic-specific teaching prose.
-- Use "mathematical_derivation" only when the discipline and topic require a real derivation, proof, argument, causal mechanism, or analytical development. State assumptions and show each reasoning step.
-- Use "engineering_diagram" only when a diagram materially improves understanding. Supply a structured diagram specification with defined nodes and valid references; do not invent relationships.
-- Use "worked_example" for a discipline-appropriate example grounded in the supplied course context. Distinguish supplied givens from stated assumptions. Do not invent experimental, clinical, financial, or empirical measurements.
+DYNAMIC ACADEMIC CONTENT BLOCK RULES
+- contentBlocks.schemaVersion must be "1.0"; contentBlocks.disciplineEngine should be "${domainBrief.primaryDomain}"; contentBlocks.blocks must be an ordered array of typed academic elements dynamically adapted to "${domainBrief.primaryDomain}" and "${topicTitle}".
+- Every block has a unique stable id, a title, an optional "academicRole" badge label tailored to "${domainBrief.primaryDomain}" (for example, a discipline-authentic role label describing the pedagogical function of that block in this subject), and a type discriminator.
+- Always include at least one foundational "explanation" (or "structured_block") with substantive, topic-specific teaching prose. An "explanation" block may also include optional "keyTakeaways", "sections", "items", "table", "codeSnippet", "citations", or "callout".
+- Use "mathematical_derivation" when the topic requires step-by-step formal reasoning, derivation, proof, argument progression, algorithmic trace, or mechanistic pathway; each step includes "explanation" and optional "equationLatex", "codeSnippet" ("language"), or "evidenceOrCitation".
+- Use "engineering_diagram" when a diagram materially improves understanding in "${domainBrief.primaryDomain}". Supply a structured diagram specification with defined nodes and valid edge references; do not invent relationships.
+- Use "worked_example" for an applied problem, case analysis, clinical/empirical interpretation, code walkthrough, or doctrinal application grounded in the course context. Supply "givens" and/or qualitative "contextFactors", ordered "steps", "finalAnswer", and "verification". Do not invent experimental, clinical, financial, or empirical measurements.
+- Use "structured_block" (with a descriptive "customType" and "academicRole") whenever the topic calls for a specialized discipline-native structure (such as comparative matrices, primary source analyses, statutory breakdowns, clinical protocols, design critiques, or code tables) using "summary", "body", "sections", "items", "table" ("headers" and "rows"), "codeSnippet", "equationsLatex", "citations", or "callout".
 - Use "interactive_simulation" only when a meaningful parameterized mathematical relationship and justified input range can be specified. The expression must use only the declared independent variable, adjustable parameter, arithmetic operators, and supported math functions. Never return JavaScript, executable code, or unbounded inputs.
 - Use "knowledge_check" as a reference to an item in instructionalContent.knowledgeChecks using its zero-based activityIndex. Do not duplicate expected answers or rubrics in the block.
-- Include only block types that are pedagogically appropriate. Do not force a diagram, derivation, simulation, or numerical example into a lesson where it is not justified. A lesson may contain multiple blocks of a relevant type.
+- Include only blocks that are pedagogically appropriate for "${topicTitle}" in "${domainBrief.primaryDomain}". Do not force a diagram, derivation, simulation, or numerical calculation into a lesson where it is not justified.
 - Do not use illustrative schema values as course facts. Every expression, value, unit, assumption, label and range must be derived from the course context or explicitly identified as an assumption.
 - The readable Markdown "content" remains a complete fallback for clients that do not yet render typed blocks. Keep its academic meaning consistent with the typed blocks.
 
@@ -599,19 +598,21 @@ Do not invent syllabus topics, facts, laws, equations, numerical data, case stud
 
 STRICT JSON
 Return one valid JSON object only with top-level keys "title", "pedagogicalReasoning", "content", "contentBlocks", "instructionalContent".
-contentBlocks must follow this versioned discriminated-union structure (include only blocks justified by the lesson; the values below illustrate field shapes, not facts):
+contentBlocks must follow this versioned structure (include only blocks justified by the lesson; the values below illustrate field shapes, not facts):
 {
  "schemaVersion":"1.0",
+ "disciplineEngine":"${domainBrief.primaryDomain}",
  "blocks":[
-  {"id":"explanation-1","title":"Topic explanation","type":"explanation","body":"Substantive lesson-specific explanation..."},
-  {"id":"derivation-1","title":"Formal development","type":"mathematical_derivation","introduction":"Context and governing principle...","assumptions":["Explicit assumption..."],"steps":[{"explanation":"Reasoning step...","equationLatex":"\\text{equation}"}],"conclusion":"What the derivation establishes..."},
-  {"id":"diagram-1","title":"Conceptual diagram","type":"engineering_diagram","description":"What the diagram explains...","diagram":{"type":"flowchart","direction":"TD","nodes":[{"id":"n1","label":"Concept one"},{"id":"n2","label":"Concept two"}],"edges":[{"from":"n1","to":"n2"}]}},
-  {"id":"example-1","title":"Worked example","type":"worked_example","exampleType":"numerical","problem":"A course-specific problem...","givens":[{"symbol":"x","value":"a value supplied in the question","unit":"unit supplied or derived"}],"target":"Requested quantity...","assumptions":["Only explicitly justified assumptions..."],"steps":[{"explanation":"Reasoning...","equationLatex":"\\text{equation}"}],"finalAnswer":{"value":"Computed result","unit":"appropriate unit"},"verification":"Independent unit, logic or reasonableness check..."},
-  {"id":"simulation-1","title":"Parameter exploration","type":"interactive_simulation","simulationType":"parameterized_curve","description":"What relationship the student can explore...","expression":"a*x","independentVariable":"x","domain":{"min":0,"max":1},"parameter":{"symbol":"a","label":"Parameter meaning","initialValue":1,"min":0,"max":2,"step":0.1}},
+  {"id":"explanation-1","title":"Topic explanation","academicRole":"Discipline-authentic role label","type":"explanation","body":"Substantive lesson-specific explanation..."},
+  {"id":"derivation-1","title":"Formal development","academicRole":"Discipline-authentic reasoning label","type":"mathematical_derivation","introduction":"Context and governing principle...","assumptions":["Explicit assumption..."],"steps":[{"explanation":"Reasoning step...","equationLatex":"\\text{optional equation}","evidenceOrCitation":"optional source/principle"},{"explanation":"Next step..."}],"conclusion":"What the reasoning establishes..."},
+  {"id":"diagram-1","title":"Conceptual diagram","academicRole":"Discipline-authentic diagram label","type":"engineering_diagram","description":"What the diagram explains...","diagram":{"type":"flowchart","direction":"TD","nodes":[{"id":"n1","label":"Concept one"},{"id":"n2","label":"Concept two"}],"edges":[{"from":"n1","to":"n2"}]}},
+  {"id":"example-1","title":"Worked application","academicRole":"Discipline-authentic case/example label","type":"worked_example","exampleType":"case-or-problem-type","problem":"A course-specific problem or scenario...","givens":[{"symbol":"x","value":"supplied value","unit":"optional unit"}],"contextFactors":[{"label":"Context factor","detail":"Supplied qualitative context"}],"target":"Requested quantity or analytical objective...","assumptions":["Only explicitly justified assumptions..."],"steps":[{"explanation":"Step 1..."},{"explanation":"Step 2..."}],"finalAnswer":{"value":"Computed result or reasoned conclusion","unit":"optional unit"},"verification":"Independent unit, logic or reasonableness check..."},
+  {"id":"structured-1","title":"Specialized disciplinary section","academicRole":"Discipline-authentic label","type":"structured_block","customType":"comparative_analysis","summary":"Optional overview...","table":{"caption":"Optional table","headers":["Column 1","Column 2"],"rows":[["Cell 1","Cell 2"]]}},
+  {"id":"simulation-1","title":"Parameter exploration","academicRole":"Interactive Model","type":"interactive_simulation","simulationType":"parameterized_curve","description":"What relationship the student can explore...","expression":"a*x","independentVariable":"x","domain":{"min":0,"max":1},"parameter":{"symbol":"a","label":"Parameter meaning","initialValue":1,"min":0,"max":2,"step":0.1}},
   {"id":"check-1","title":"Reasoning check","type":"knowledge_check","activityIndex":0}
  ]
 }
-The diagram, worked-example, and simulation objects above are optional structural illustrations. Replace every placeholder and illustrative numeric value with topic-grounded values or omit the corresponding block. Never copy them as factual course data.
+The derivation, diagram, worked-example, structured_block, and simulation objects above are optional structural illustrations. Replace every placeholder and illustrative value with topic-grounded values or omit the corresponding block. Never copy them as factual course data.
 instructionalContent must follow this shape:
 {
  "frameworkVersion":"understand-explore-apply-verify-master-v1",
