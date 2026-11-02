@@ -72,8 +72,17 @@ function tokenize(expression: string): ArithmeticToken[] {
     }
 
     const operator = rest[0];
-    if ('+-*/^(),'.includes(operator)) {
-      tokens.push({ kind: 'operator', value: operator as ArithmeticToken['value'] & string });
+    if (
+      operator === '+' ||
+      operator === '-' ||
+      operator === '*' ||
+      operator === '/' ||
+      operator === '^' ||
+      operator === '(' ||
+      operator === ')' ||
+      operator === ','
+    ) {
+      tokens.push({ kind: 'operator', value: operator });
       cursor += 1;
       continue;
     }
