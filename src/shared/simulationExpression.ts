@@ -224,7 +224,10 @@ function evaluateNode(node: ArithmeticNode, variables: Record<string, number>): 
   }
 }
 
-export function validateSimulationExpression(expression: string, allowedVariables: string[]): void {
+export function compileSimulationExpression(
+  expression: string,
+  allowedVariables: string[]
+): (variables: Record<string, number>) => number {
   const ast = parseExpression(tokenize(expression));
   const allowed = new Set([...allowedVariables, 'x', 'pi', 'e']);
   const inspect = (node: ArithmeticNode): void => {
@@ -242,10 +245,18 @@ export function validateSimulationExpression(expression: string, allowedVariable
     if (node.kind === 'call') node.args.forEach(inspect);
   };
   inspect(ast);
+
+  return (variables) => {
+    const result = evaluateNode(ast, variables);
+    if (!Number.isFinite(result)) throw new Error('The current inputs produce a non-finite result.');
+    return result;
+  };
+}
+
+export function validateSimulationExpression(expression: string, allowedVariables: string[]): void {
+  compileSimulationExpression(expression, allowedVariables);
 }
 
 export function evaluateSimulationExpression(expression: string, variables: Record<string, number>): number {
-  const result = evaluateNode(parseExpression(tokenize(expression)), variables);
-  if (!Number.isFinite(result)) throw new Error('The current inputs produce a non-finite result.');
-  return result;
+  return compileSimulationExpression(expression, Object.keys(variables))(variables);
 }
