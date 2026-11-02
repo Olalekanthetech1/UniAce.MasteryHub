@@ -7,6 +7,8 @@ import {
 } from '../src/shared/courseSchemas';
 import {
   buildDomainBriefPrompt,
+  buildCurriculumSkeletonPrompt,
+  buildOutlineCriticPrompt,
   buildLessonPrompt,
   buildModuleQuizPrompt
 } from '../server/curriculumEngine';
@@ -238,4 +240,37 @@ test('course provenance accepts truthful empty references and retains research r
     }
   });
   assert.equal(parsed.success, true);
+});
+
+
+test('course curriculum does not force a history-first module', () => {
+  const options = {
+    courseId: 'GET205',
+    courseName: 'Fundamentals of Fluid Mechanics',
+    courseCode: 'GET205',
+    department: 'Materials Science and Engineering',
+    level: '200',
+    semester: 'First Semester',
+    creditUnits: 3,
+    scope: 'DEPARTMENT'
+  };
+  const curriculumPrompt = buildCurriculumSkeletonPrompt(domainBrief, options);
+  assert.match(curriculumPrompt, /HISTORY IS OPTIONAL, NOT A DEFAULT REQUIREMENT/);
+  assert.match(curriculumPrompt, /Do not automatically add a history, origin, evolution, or timeline module/);
+  assert.match(curriculumPrompt, /course-specific concepts/);
+  assert.doesNotMatch(curriculumPrompt, /Module 1 MUST establish the history/);
+  assert.doesNotMatch(curriculumPrompt, /Module 1 Title \(Foundations & Discipline Scope\)/);
+
+  const criticPrompt = buildOutlineCriticPrompt(
+    domainBrief,
+    {
+      modules: [{
+        title: 'Fluid Properties',
+        lessonTitles: ['Density and Specific Weight', 'Viscosity']
+      }]
+    } as any,
+    options
+  );
+  assert.match(criticPrompt, /Do not reward a history, scope, taxonomy, or evolution section merely for being present/);
+  assert.match(criticPrompt, /unnecessary history module is generic filler/);
 });
