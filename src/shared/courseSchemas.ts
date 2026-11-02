@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AcademicContentBlockCollectionSchema, type AcademicContentBlockCollection } from './academicContentBlocks.js';
 
 /**
  * UniAce Shared Course Schema & Pedagogical Architecture
@@ -372,10 +373,34 @@ export const StructuredLessonOutputSchema = z.preprocess(
   content: z.string().min(800).refine((value) => !isBareDiagramOrFragment(value), {
     message: 'Lesson content must include substantive academic prose, not only a diagram or fragment.'
   }),
-  instructionalContent: InstructionalContentSchema
+  instructionalContent: InstructionalContentSchema,
+  // Optional during the compatibility window. New-generation routes enforce its presence.
+  contentBlocks: AcademicContentBlockCollectionSchema.optional()
+  }).superRefine((value, ctx) => {
+    if (!value.contentBlocks) return;
+
+    const explanationCount = value.contentBlocks.blocks.filter(block => block.type === 'explanation').length;
+    if (explanationCount === 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['contentBlocks', 'blocks'],
+        message: 'A typed lesson must include at least one explanation block.'
+      });
+    }
+
+    value.contentBlocks.blocks.forEach((block, index) => {
+      if (block.type === 'knowledge_check' && block.activityIndex >= value.instructionalContent.knowledgeChecks.length) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['contentBlocks', 'blocks', index, 'activityIndex'],
+          message: 'Knowledge-check blocks must reference an existing instructionalContent.knowledgeChecks item.'
+        });
+      }
+    });
   })
 );
 export type StructuredLessonOutput = z.infer<typeof StructuredLessonOutputSchema>;
+export type { AcademicContentBlockCollection };
 
 export const CourseProvenanceSchema = z.object({
   // A valid course may have no externally retrieved references; empty is more
