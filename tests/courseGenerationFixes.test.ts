@@ -217,7 +217,24 @@ test('course provenance accepts truthful empty references and retains research r
       webSourcesCount: 1,
       evidenceAssessment: { verificationRequired: true },
       providerBreakdown: {},
-      limitations: ['Web discoveries remain unverified.']
+      limitations: ['Web discoveries remain unverified.'],
+      sourceReferences: [{
+        recordType: 'scholarly_record',
+        provider: 'arxiv',
+        title: 'Fluid mechanics research record',
+        url: 'https://arxiv.org/abs/2401.00001',
+        authors: ['A. Author'],
+        year: 2024,
+        publicationType: 'preprint',
+        verificationStatus: 'unverified'
+      }, {
+        recordType: 'web_discovery',
+        provider: 'tavily',
+        title: 'University fluid mechanics page',
+        url: 'https://example.edu/fluid-mechanics',
+        authorityClass: 'institutional_domain',
+        verificationStatus: 'unverified'
+      }]
     }
   });
   assert.equal(parsed.success, true);
