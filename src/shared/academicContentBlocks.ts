@@ -207,7 +207,7 @@ export const InteractiveSimulationBlockSchema = z.object({
     simulation.independentVariable,
     simulation.parameter.symbol
   );
-  if (!expressionCheck.valid) {
+  if (expressionCheck.valid === false) {
     ctx.addIssue({
       code: 'custom',
       path: ['expression'],
