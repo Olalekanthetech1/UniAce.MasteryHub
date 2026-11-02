@@ -560,8 +560,7 @@ ${disciplineDirectives[domainBrief.pedagogyType]}
 UNIVERSAL MASTERY FRAMEWORK
 Organise learning around Understand → Explore → Apply → Verify → Master. This is a learning sequence, not ten compulsory long chapters. Keep every component proportionate to the topic.
 
-For the Markdown 'content' field, include at least three meaningful level-2 headings and at least 800 characters of substantive academic prose. Headings should reflect the discipline and topic, not generic filler.
-When including a conceptual flowchart in 'content', prefer a structured \`\`\`diagram-spec JSON block ({ "type": "flowchart", "direction": "TD", "nodes": [{ "id": "n1", "label": "..." }], "edges": [{ "from": "n1", "to": "n2" }] }) so the platform serializer generates valid Mermaid syntax, or quote all Mermaid node labels in double quotes (e.g., A["Specific Weight (γ = ρg)"]) without raw $...$ LaTeX inside labels.
+Typed blocks are the canonical ordered lesson representation. The top-level legacy Markdown 'content' field must be a faithful readable projection of those same blocks; do not add separate facts, examples or diagrams to it. The server compiles its own compatibility Markdown from the validated blocks.
 
 Return the structured lesson in "instructionalContent.contentBlocks" and protected mastery activities in "instructionalContent". The server compiles typed blocks into the legacy Markdown "content" field; typed blocks are the canonical representation.
 
@@ -576,7 +575,6 @@ TYPED CONTENT BLOCK RULES
 - Do not force every block type into every lesson. Derivations, diagrams and simulations are optional when not pedagogically or technically justified. Never insert placeholder blocks to satisfy the schema.
 - The server regenerates "content" from validated blocks for legacy Markdown consumers. Do not use a separate contradictory Markdown narrative as the source of truth.
 
-STRUCTURED CONTENT RULES
 STRUCTURED CONTENT RULES
 - frameworkVersion must be "understand-explore-apply-verify-master-v1"; disciplineEngine must be "${domainBrief.pedagogyType}".
 - learningObjectives: 2-5 measurable capabilities aligned to approved outcomes.
