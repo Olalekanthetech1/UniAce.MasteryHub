@@ -15,6 +15,7 @@ interface MasteryLessonPanelProps {
   courseId: string;
   moduleId: string;
   lessonId: string;
+  excludeKnowledgeCheckIndexes?: number[];
 }
 
 interface PracticeReveal {
@@ -175,7 +176,7 @@ function PracticeCard({
   );
 }
 
-function KnowledgeCheckCard({
+export function KnowledgeCheckCard({
   check,
   index,
   courseId,
@@ -220,7 +221,7 @@ function KnowledgeCheckCard({
   };
 
   return (
-    <section className="rounded-2xl border border-zinc-200 dark:border-zinc-700 p-4 space-y-3">
+    <section id={`uniace-knowledge-check-${index}`} className="rounded-2xl border border-zinc-200 dark:border-zinc-700 p-4 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <h4 className="font-semibold text-zinc-900 dark:text-zinc-100">Check {index + 1}</h4>
         <span className="text-xs text-zinc-500">Difficulty {check.difficulty}/5 · {check.responseMode}</span>
@@ -258,9 +259,14 @@ export default function MasteryLessonPanel({
   content,
   courseId,
   moduleId,
-  lessonId
+  lessonId,
+  excludeKnowledgeCheckIndexes = []
 }: MasteryLessonPanelProps) {
   if (!content) return null;
+
+  const standaloneKnowledgeChecks = content.knowledgeChecks
+    .map((check, index) => ({ check, index }))
+    .filter(({ index }) => !excludeKnowledgeCheckIndexes.includes(index));
 
   return (
     <div className="mt-8 space-y-6" aria-label="Mastery learning activities">
@@ -331,10 +337,10 @@ export default function MasteryLessonPanel({
         </section>
       )}
 
-      {content.knowledgeChecks.length > 0 && (
+      {standaloneKnowledgeChecks.length > 0 && (
         <section className="space-y-3">
           <h3 className="font-bold text-zinc-900 dark:text-zinc-100">Verify your understanding</h3>
-          {content.knowledgeChecks.map((check, index) => (
+          {standaloneKnowledgeChecks.map(({ check, index }) => (
             <KnowledgeCheckCard
               key={index}
               check={check}
