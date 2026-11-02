@@ -138,7 +138,7 @@ test('lesson prompt calibrates deep-dive depth and selects relevant complete sou
     }
   );
   assert.match(prompt, /ADVANCED \/ ANALYTICAL DEPTH/);
-  assert.match(prompt, /at least three distinct examples/);
+  assert.match(prompt, /workedExamples: at least three distinct discipline-appropriate examples/);
   assert.ok(prompt.includes('HYDROSTATIC PRESSURE'));
   assert.ok(!prompt.includes('UNRELATED THERMODYNAMICS'));
 });
