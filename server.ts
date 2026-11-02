@@ -97,7 +97,12 @@ import {
   buildLessonPrompt,
   buildModuleQuizPrompt
 } from './server/curriculumEngine.js';
-import { retrieveCourseGenerationResearch, MAX_COURSE_SOURCE_CHARS } from './server/courseGenerationResearch.js';
+import {
+  retrieveCourseGenerationResearch,
+  retrieveTopicSpecificCourseResearch,
+  assertVerifiedCourseResearchOrSourceMaterial,
+  MAX_COURSE_SOURCE_CHARS
+} from './server/courseGenerationResearch.js';
 import { setupRagRoutes } from './server/routes/rag.js';
 import { setupStudentRoutes, invalidateBootstrapCache } from './server/routes/student.js';
 import { arenaRealtime } from './server/arenaRealtime.js';
@@ -2514,7 +2519,7 @@ app.post('/api/track-click', clickTrackingLimiter, async (req, res) => {
     }
     const refCode = rawRefCode.trim().toUpperCase();
     const pool = getPostgresPool();
-    if (!pool) return res.json({ success: true });
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
 
     const affRes = await pool.query(`SELECT code, user_id, data FROM affiliates WHERE code = $1`, [refCode]);
     let ownerUid = affRes.rows[0]?.user_id || null;
@@ -2557,7 +2562,7 @@ app.post('/api/track-signup', clickTrackingLimiter, async (req, res) => {
     }
     const refCode = rawRefCode.trim().toUpperCase();
     const pool = getPostgresPool();
-    if (!pool) return res.json({ success: true });
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
 
     const affRes = await pool.query(`SELECT code, user_id, referral_count, data FROM affiliates WHERE code = $1`, [refCode]);
     let referringUserId = affRes.rows[0]?.user_id || null;
@@ -4858,7 +4863,12 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
       outline,
       sourceText
     });
-    console.log(`[Skeleton Gen] Research retrieval: ${courseResearch.metadata.status} (${courseResearch.metadata.papersCount} scholarly records, ${courseResearch.metadata.webSourcesCount} web discoveries).`);
+    assertVerifiedCourseResearchOrSourceMaterial(courseResearch, {
+      outline,
+      sourceText,
+      stageLabel: 'Curriculum skeleton generation'
+    });
+    console.log(`[Skeleton Gen] Research retrieval: ${courseResearch.metadata.status} (${courseResearch.metadata.papersCount} scholarly records, ${courseResearch.metadata.webSourcesCount} web discoveries, ${courseResearch.metadata.researchPasses.length} pass(es)).`);
 
     // 1. STAGE 1: INFER AUTHORITATIVE ACADEMIC DOMAIN & GROUNDING BRIEF
     console.log(`[Skeleton Gen] Stage 1: Inferring domain & canonical course references for "${courseName}" (Level: ${level})...`);
@@ -4987,21 +4997,50 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
       .sort((a, b) => a.order - b.order)
       .map(item => item.m);
 
-    const normalizedModules = sortedRawModules.map((m: any, idx: number) => ({
-      id: `m${idx + 1}`,
-      order: idx + 1,
-      title: m.title || `Module ${idx + 1}`,
-      isFoundationModule: idx === 0 || !!m.isFoundationModule,
-      lessonTitles: m.lessonTitles || m.topics || (m.lessons ? m.lessons.map((l: any) => typeof l === 'string' ? l : l.title) : []) || [`Introduction to ${m.title || 'Module'}`],
-      quizTopics: m.quizTopics || [],
-      learningOutcomeIds: m.learningOutcomeIds || []
-    }));
+    const normalizedModules = sortedRawModules.map((m: any, idx: number) => {
+      const modTitle = typeof m.title === 'string' ? m.title.trim() : '';
+      if (!modTitle) {
+        throw new Error(`Generated skeleton module at position ${idx + 1} is missing a valid title.`);
+      }
+      const rawLessons = Array.isArray(m.lessonTitles)
+        ? m.lessonTitles
+        : Array.isArray(m.topics)
+          ? m.topics
+          : Array.isArray(m.lessons)
+            ? m.lessons.map((l: any) => (typeof l === 'string' ? l : l?.title))
+            : [];
+      const lessonTitles = rawLessons
+        .map((t: any) => (typeof t === 'string' ? t.trim() : ''))
+        .filter((t: string) => t.length > 0 && !isGenericLessonTitle(t));
+      if (lessonTitles.length === 0) {
+        throw new Error(`Generated skeleton module "${modTitle}" did not contain any valid lesson titles.`);
+      }
+      return {
+        id: `m${idx + 1}`,
+        order: idx + 1,
+        title: modTitle,
+        isFoundationModule: idx === 0 || !!m.isFoundationModule,
+        lessonTitles,
+        quizTopics: Array.isArray(m.quizTopics) ? m.quizTopics : [],
+        learningOutcomeIds: Array.isArray(m.learningOutcomeIds) ? m.learningOutcomeIds : []
+      };
+    });
 
     const normalizedOutcomes = normalizeLearningOutcomes(skeleton.learningOutcomes);
+    const verifiedDescription = typeof skeleton.description === 'string' ? skeleton.description.trim() : '';
+    if (!verifiedDescription) {
+      throw new Error('Generated course skeleton is missing a valid course description.');
+    }
+    const hasExternalEvidence = Boolean(
+      (outline && outline.trim()) ||
+      (sourceText && sourceText.trim()) ||
+      courseResearch.metadata.sourceReferences.length > 0
+    );
+    const verifiedGroundingRefs = hasExternalEvidence ? domainBrief.canonicalCourseReferences : [];
 
     res.json({
       success: true,
-      description: skeleton.description || `A comprehensive university course on ${courseName} (${domainBrief.primaryDomain}).`,
+      description: verifiedDescription,
       modules: normalizedModules,
       learningOutcomes: normalizedOutcomes,
       domainBrief: {
@@ -5009,14 +5048,14 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
         subDisciplines: domainBrief.subDisciplines,
         pedagogyType: domainBrief.pedagogyType,
         coreRequiredTopics: domainBrief.coreCourseTopics,
-        groundingReferences: domainBrief.canonicalCourseReferences,
+        groundingReferences: verifiedGroundingRefs,
         foundationalAxioms: domainBrief.foundationalAxioms
       },
       coverageScore: auditResult.coverageScore,
       confidenceState,
       rubricAudit: auditResult,
       research: courseResearch.metadata,
-      groundingReferences: domainBrief.canonicalCourseReferences
+      groundingReferences: verifiedGroundingRefs
     });
 
   } catch (err: any) {
@@ -5039,6 +5078,7 @@ async function ensureCourseGenerationTargetInPostgres(input: {
   scope: string;
   faculties: string[];
   departments: string[];
+  isResume: boolean;
   allowPublishedResume: boolean;
 }): Promise<void> {
   const pool = getPostgresPool();
@@ -5059,7 +5099,14 @@ async function ensureCourseGenerationTargetInPostgres(input: {
       [input.courseId]
     );
     if (tombstone.rows.length > 0) {
-      throw new Error(`Course ID ${input.courseId} was permanently deleted and cannot be resumed or recreated.`);
+      if (input.isResume) {
+        throw new Error(`Course ID ${input.courseId} was permanently deleted and cannot be resumed.`);
+      }
+      // Explicit administrator-initiated fresh generation clears the deletion tombstone.
+      await client.query(
+        'DELETE FROM course_lifecycle_tombstones WHERE course_id = $1',
+        [input.courseId]
+      );
     }
 
     const existing = await client.query(
@@ -5069,9 +5116,19 @@ async function ensureCourseGenerationTargetInPostgres(input: {
     if (existing.rows.length > 0) {
       const status = existing.rows[0].status;
       if (status === 'archived') {
-        throw new Error(`Course ${input.courseId} is archived; restore it explicitly before generation.`);
-      }
-      if (status === 'published' && !input.allowPublishedResume) {
+        if (input.isResume) {
+          throw new Error(`Course ${input.courseId} is archived; restore it explicitly before resuming generation.`);
+        }
+        await client.query(
+          `UPDATE courses
+           SET status = 'draft',
+               review_status = 'pending',
+               published = FALSE,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [input.courseId]
+        );
+      } else if (status === 'published' && !input.allowPublishedResume) {
         throw new Error(`Course ${input.courseId} is already published; use the explicit course-repair workflow instead of regenerating it.`);
       }
     } else {
@@ -5241,7 +5298,11 @@ async function executeCoordinatedGenerationJob(
     await ensureCourseLearningSchema();
     await ensureCourseLifecycleSchema();
     const existingSnap = activeCoordinatedJobSnapshots.get(courseId);
-    const isResume = req.body.resume === true || Boolean(existingSnap && existingSnap.generationStatus === 'generating');
+    const isActivelyRunning = activeRunningCourseJobs.has(courseId) && existingSnap?.generationStatus === 'generating';
+    const isResume = req.body.resume === true || (req.body.resume !== false && isActivelyRunning);
+    if (!isResume && !isActivelyRunning) {
+      activeCoordinatedJobSnapshots.delete(courseId);
+    }
 
     await ensureCourseGenerationTargetInPostgres({
       courseId,
@@ -5254,10 +5315,11 @@ async function executeCoordinatedGenerationJob(
       scope: scope.trim().toUpperCase(),
       faculties: selectedFaculties,
       departments: effectiveDepartments,
+      isResume,
       allowPublishedResume: isResume
     });
 
-    if (activeRunningCourseJobs.has(courseId) && existingSnap?.generationStatus === 'generating') {
+    if (isActivelyRunning) {
       if (res && !res.headersSent) {
         return res.json({ status: 'started', courseId, alreadyOwned: true });
       }
@@ -5327,7 +5389,12 @@ async function executeCoordinatedGenerationJob(
           outline,
           sourceText
         });
-        console.log(`[Coordinated Gen] Academic research: ${courseResearch.metadata.status} (${courseResearch.metadata.papersCount} scholarly records, ${courseResearch.metadata.webSourcesCount} web discoveries).`);
+        assertVerifiedCourseResearchOrSourceMaterial(courseResearch, {
+          outline,
+          sourceText,
+          stageLabel: 'Coordinated course generation'
+        });
+        console.log(`[Coordinated Gen] Academic research: ${courseResearch.metadata.status} (${courseResearch.metadata.papersCount} scholarly records, ${courseResearch.metadata.webSourcesCount} web discoveries, ${courseResearch.metadata.researchPasses.length} pass(es)).`);
 
         // STEP 0: Infer Academic Domain & Canonical References
         await updateCourseGenerationStateInPostgres(courseId, {
@@ -5492,22 +5559,59 @@ async function executeCoordinatedGenerationJob(
         }
 
         const normalizedOutcomes = normalizeLearningOutcomes(skeleton.learningOutcomes);
-        const canonicalRefs = domainBrief.canonicalCourseReferences;
+        const verifiedResearchUrls = courseResearch.metadata.sourceReferences.map(source => source.url);
+        const hasExternalSourceMaterial = Boolean(
+          (outline && outline.trim()) ||
+          (sourceText && sourceText.trim()) ||
+          verifiedResearchUrls.length > 0
+        );
+        const canonicalRefs = hasExternalSourceMaterial ? domainBrief.canonicalCourseReferences : [];
 
-        const syllabus = (skeleton.modules || []).map((m: any, mIdx: number) => ({
-          id: `m${mIdx + 1}`,
-          order: mIdx + 1,
-          title: m.title || `Module ${mIdx + 1}`,
-          isFoundationModule: mIdx === 0 || !!m.isFoundationModule,
-          subTopics: (m.lessonTitles || m.topics || (m.lessons ? m.lessons.map((l: any) => typeof l === 'string' ? l : l.title) : []) || [`Introduction to ${m.title || 'Module'}`]).map((t: string, tIdx: number) => ({
-            id: `m${mIdx + 1}-l${tIdx + 1}`,
-            order: tIdx + 1,
-            title: t || `Lesson ${tIdx + 1}`
-          }))
-        }));
+        const extractVerifiedLessonTitles = (m: any, mIdx: number): string[] => {
+          const rawList = Array.isArray(m.lessonTitles)
+            ? m.lessonTitles
+            : Array.isArray(m.topics)
+              ? m.topics
+              : Array.isArray(m.lessons)
+                ? m.lessons.map((l: any) => (typeof l === 'string' ? l : l?.title))
+                : [];
+          const cleaned = rawList
+            .map((t: any) => (typeof t === 'string' ? t.trim() : ''))
+            .filter((t: string) => t.length > 0 && !isGenericLessonTitle(t));
+          if (cleaned.length === 0) {
+            throw new Error(`Module ${mIdx + 1} ("${m.title || ''}") has no verified lesson titles in the approved skeleton.`);
+          }
+          return cleaned;
+        };
+
+        const syllabus = (skeleton.modules || []).map((m: any, mIdx: number) => {
+          const modTitle = typeof m.title === 'string' ? m.title.trim() : '';
+          if (!modTitle) {
+            throw new Error(`Module at position ${mIdx + 1} is missing a verified title.`);
+          }
+          const verifiedLessonTitles = extractVerifiedLessonTitles(m, mIdx);
+          return {
+            id: `m${mIdx + 1}`,
+            order: mIdx + 1,
+            title: modTitle,
+            isFoundationModule: mIdx === 0 || !!m.isFoundationModule,
+            subTopics: verifiedLessonTitles.map((t: string, tIdx: number) => ({
+              id: `m${mIdx + 1}-l${tIdx + 1}`,
+              order: tIdx + 1,
+              title: t
+            }))
+          };
+        });
+
+        const verifiedCourseDescription = typeof skeleton.description === 'string' && skeleton.description.trim()
+          ? skeleton.description.trim()
+          : (typeof courseDescription === 'string' && courseDescription.trim() ? courseDescription.trim() : '');
+        if (!verifiedCourseDescription) {
+          throw new Error('Course generation requires a non-empty course description from the verified skeleton.');
+        }
 
         await updateCourseGenerationStateInPostgres(courseId, {
-          description: skeleton.description || `A comprehensive university course on ${courseName}.`,
+          description: verifiedCourseDescription,
           syllabus,
           learningOutcomes: normalizedOutcomes,
           objectives: normalizedOutcomes.map(o => o.outcome),
@@ -5526,8 +5630,8 @@ async function executeCoordinatedGenerationJob(
 
         const totalModules = skeleton.modules.length;
         let totalLessonsCount = 0;
-        skeleton.modules.forEach((m: any) => {
-          const tList = m.lessonTitles || m.topics || (m.lessons ? m.lessons.map((l: any) => typeof l === 'string' ? l : l.title) : []) || [`Introduction to ${m.title || 'Module'}`];
+        skeleton.modules.forEach((m: any, mIdx: number) => {
+          const tList = extractVerifiedLessonTitles(m, mIdx);
           totalLessonsCount += tList.length;
         });
 
@@ -5560,7 +5664,10 @@ async function executeCoordinatedGenerationJob(
           const chunkPromises = chunk.map(async (moduleSkeleton: any, idx: number) => {
             const mIndex = i + idx;
             const moduleId = `m${mIndex + 1}`;
-            const modTitle = moduleSkeleton.title || `Module ${mIndex + 1}`;
+            const modTitle = typeof moduleSkeleton.title === 'string' ? moduleSkeleton.title.trim() : '';
+            if (!modTitle) {
+              throw new Error(`Module ${mIndex + 1} is missing a verified title.`);
+            }
 
             await JobRepository.upsertModuleAndLesson({
               courseId,
@@ -5573,7 +5680,23 @@ async function executeCoordinatedGenerationJob(
               }
             });
 
-            const topics = moduleSkeleton.lessonTitles || moduleSkeleton.topics || (moduleSkeleton.lessons ? moduleSkeleton.lessons.map((l: any) => typeof l === 'string' ? l : l.title) : []) || [`Core Concepts of ${modTitle}`];
+            const topics = extractVerifiedLessonTitles(moduleSkeleton, mIndex);
+            const moduleResearch = await retrieveTopicSpecificCourseResearch({
+              courseName,
+              courseCode: courseId,
+              department: rawDept,
+              moduleTitle: modTitle,
+              topicTitles: topics,
+              courseResearch
+            });
+            for (const ref of moduleResearch.newSourceReferences) {
+              if (!courseResearch.metadata.sourceReferences.some(existing => existing.url === ref.url)) {
+                courseResearch.metadata.sourceReferences.push(ref);
+              }
+              if (!verifiedResearchUrls.includes(ref.url)) {
+                verifiedResearchUrls.push(ref.url);
+              }
+            }
 
             for (let lIndex = 0; lIndex < topics.length; lIndex++) {
               if (activeCancelledJobs.has(courseId)) return;
@@ -5676,6 +5799,23 @@ async function executeCoordinatedGenerationJob(
                 }
               });
 
+              const lessonTopicResearch = await retrieveTopicSpecificCourseResearch({
+                courseName,
+                courseCode: courseId,
+                department: rawDept,
+                moduleTitle: modTitle,
+                topicTitles: [topic],
+                courseResearch
+              });
+              for (const ref of lessonTopicResearch.newSourceReferences) {
+                if (!courseResearch.metadata.sourceReferences.some(existing => existing.url === ref.url)) {
+                  courseResearch.metadata.sourceReferences.push(ref);
+                }
+                if (!verifiedResearchUrls.includes(ref.url)) {
+                  verifiedResearchUrls.push(ref.url);
+                }
+              }
+
               while (lessonAttempts < 3) {
                 if (activeCancelledJobs.has(courseId)) return;
                 lessonAttempts++;
@@ -5696,7 +5836,7 @@ async function executeCoordinatedGenerationJob(
                     scope,
                     academicStandard,
                     sourceText,
-                    researchContext: courseResearch.context
+                    researchContext: lessonTopicResearch.context || moduleResearch.context || courseResearch.context
                   },
                   targetOutcomeText
                 );
@@ -6018,15 +6158,21 @@ Return strictly a JSON object:
             });
           }
 
-          compiledSyllabus = modsRes.rows.map((m: any, mIdx: number) => ({
-            id: m.id,
-            order: m.order_index ?? (mIdx + 1),
-            title: m.title || `Module ${mIdx + 1}`,
-            isFoundationModule: mIdx === 0,
-            groundingReferences: canonicalRefs,
-            confidenceState: 'needs_review',
-            subTopics: (lessonsByMod[m.id] || []).sort((a, b) => (a.order || 0) - (b.order || 0))
-          }));
+          compiledSyllabus = modsRes.rows.map((m: any, mIdx: number) => {
+            const modTitle = typeof m.title === 'string' ? m.title.trim() : '';
+            if (!modTitle) {
+              throw new Error(`Persisted module ${m.id} is missing a verified title.`);
+            }
+            return {
+              id: m.id,
+              order: m.order_index ?? (mIdx + 1),
+              title: modTitle,
+              isFoundationModule: mIdx === 0,
+              groundingReferences: canonicalRefs,
+              confidenceState: 'needs_review',
+              subTopics: (lessonsByMod[m.id] || []).sort((a, b) => (a.order || 0) - (b.order || 0))
+            };
+          });
           compiledSyllabus = sortCourseSyllabus(compiledSyllabus);
         } catch (sErr) {
           console.warn('[Coordinated Gen] Failed compiling syllabus array from Postgres:', sErr);
@@ -6035,7 +6181,7 @@ Return strictly a JSON object:
         const provenance = {
           sources: [...new Set([
             ...canonicalRefs,
-            ...courseResearch.metadata.sourceReferences.map(source => source.url)
+            ...verifiedResearchUrls
           ])],
           modelVersion: requestedProvider || 'dynamic-multi-provider',
           promptVersion: 'uniace-mastery-curriculum-v4.0',
@@ -6107,7 +6253,7 @@ Return strictly a JSON object:
   } catch (error: any) {
     console.error('Coordinated Generate Error:', error);
     if (res && !res.headersSent) {
-      res.status(500).json({ error: 'Failed to start coordinated generation.' });
+      res.status(500).json({ error: error?.message || 'Failed to start coordinated generation.' });
     }
   }
 }
@@ -6130,20 +6276,9 @@ interface CourseHealthAuditResult {
 async function auditCourseHealthInPostgres(courseId: string): Promise<CourseHealthAuditResult> {
   const pool = getPostgresPool();
   if (!pool) {
-    return {
-      courseId,
-      courseTitle: courseId,
-      department: 'Engineering',
-      level: '200',
-      faculty: 'Engineering',
-      semester: '1st Semester',
-      scope: 'DEPARTMENT',
-      needsHealing: false,
-      totalModules: 0,
-      emptyModuleIds: [],
-      corruptedLessonIds: [],
-      healthyLessonCount: 0
-    };
+    const err: any = new Error('Neon PostgreSQL database service unavailable.');
+    err.statusCode = 503;
+    throw err;
   }
 
   const cRes = await pool.query(
@@ -6151,23 +6286,15 @@ async function auditCourseHealthInPostgres(courseId: string): Promise<CourseHeal
     [courseId]
   );
   if (cRes.rows.length === 0) {
-    return {
-      courseId,
-      courseTitle: courseId,
-      department: 'Engineering',
-      level: '200',
-      faculty: 'Engineering',
-      semester: '1st Semester',
-      scope: 'DEPARTMENT',
-      needsHealing: false,
-      totalModules: 0,
-      emptyModuleIds: [],
-      corruptedLessonIds: [],
-      healthyLessonCount: 0
-    };
+    const err: any = new Error(`Course "${courseId}" does not exist in PostgreSQL.`);
+    err.statusCode = 404;
+    throw err;
   }
 
   const c = cRes.rows[0];
+  const snapshot = activeCoordinatedJobSnapshots.get(courseId);
+  const resolvedPedagogyType = snapshot?.pedagogyType || 'GENERAL_FOUNDATIONS';
+
   const modsRes = await pool.query(
     `SELECT id, title, order_index FROM course_modules WHERE course_id = $1 ORDER BY order_index ASC`,
     [courseId]
@@ -6196,7 +6323,7 @@ async function auditCourseHealthInPostgres(courseId: string): Promise<CourseHeal
     for (const l of modLessons) {
       const normalized = normalizeLessonMarkdownContent(l.content_markdown || '');
       const genericTitle = isGenericLessonTitle(l.title);
-      const syntaxCheck = validateLessonSyntax(normalized, 'GENERAL_FOUNDATIONS');
+      const syntaxCheck = validateLessonSyntax(normalized, resolvedPedagogyType);
       if (genericTitle || !syntaxCheck.isValid) {
         corruptedLessonIds.push({
           moduleId: m.id,
@@ -6210,16 +6337,17 @@ async function auditCourseHealthInPostgres(courseId: string): Promise<CourseHeal
     }
   }
 
-  const needsHealing = modsRes.rows.length === 0 || emptyModuleIds.length > 0 || corruptedLessonIds.length > 0;
+  const missingMetadata = !c.department || !c.level || !c.scope;
+  const needsHealing = missingMetadata || modsRes.rows.length === 0 || emptyModuleIds.length > 0 || corruptedLessonIds.length > 0;
 
   return {
     courseId: c.id,
-    courseTitle: c.title || c.id,
-    department: c.department || 'Academic Studies',
-    level: c.level || '200',
-    faculty: c.faculty || 'Academic Studies',
-    semester: c.semester || '1st Semester',
-    scope: c.scope || 'DEPARTMENT',
+    courseTitle: c.title || '',
+    department: c.department || '',
+    level: c.level || '',
+    faculty: c.faculty || '',
+    semester: c.semester || '',
+    scope: c.scope || '',
     needsHealing,
     totalModules: modsRes.rows.length,
     emptyModuleIds,
@@ -6305,12 +6433,21 @@ async function healCourseInPostgres(
       statusMessage: `Auditing & repairing ${audit.emptyModuleIds.length} incomplete module(s) and ${audit.corruptedLessonIds.length} corrupted lesson(s)...`
     });
 
+    const courseResearch = await retrieveCourseGenerationResearch({
+      courseName: audit.courseTitle,
+      courseCode: audit.courseId,
+      department: audit.department,
+      level: audit.level
+    });
+    console.log(`[Self-Heal] Research retrieval for ${courseId}: ${courseResearch.metadata.status} (${courseResearch.metadata.papersCount} scholarly records, ${courseResearch.metadata.webSourcesCount} web discoveries).`);
+
     const domainPrompt = buildDomainBriefPrompt({
       courseId: audit.courseId,
       courseName: audit.courseTitle,
       courseCode: audit.courseId,
       department: audit.department,
-      level: audit.level
+      level: audit.level,
+      researchContext: courseResearch.context
     });
 
     const domainBrief: any = await completeWithProviderJSON({
@@ -6336,15 +6473,15 @@ async function healCourseInPostgres(
       lessonsByMod[l.module_id].push(l);
     }
 
-    // Build list of modules that need canonical lesson titles (either 0 lessons or lessons titled 'Lesson')
-    const modulesNeedingTopics: { moduleId: string; moduleTitle: string; neededCount: number; existingHealthyTitles: string[] }[] = [];
+    // Build list of modules that need canonical lesson titles (either 0 lessons or lessons with generic titles)
+    const modulesNeedingTopics: { moduleId: string; moduleTitle: string; neededCount: number | null; existingHealthyTitles: string[] }[] = [];
     for (const m of modsRes.rows) {
       const modLessons = lessonsByMod[m.id] || [];
       if (modLessons.length === 0) {
         modulesNeedingTopics.push({
           moduleId: m.id,
           moduleTitle: m.title,
-          neededCount: 4,
+          neededCount: null,
           existingHealthyTitles: []
         });
       } else if (modLessons.some((l: any) => isGenericLessonTitle(l.title))) {
@@ -6361,10 +6498,13 @@ async function healCourseInPostgres(
     if (modulesNeedingTopics.length > 0) {
       const planPrompt = `You are a university curriculum committee chair for "${audit.courseTitle}" (${audit.courseId}, Level ${audit.level}, Department: ${audit.department}, Domain: ${domainBrief.primaryDomain}).
 Generate specific, rigorous university-level lesson titles for each of the following course modules.
-NEVER use generic titles like "Lesson", "Lesson 1", or "Introduction". Every lesson title must name the concrete academic concept, governing law, theorem, or analytical method covered.
+NEVER use generic titles like "Lesson", "Lesson 1", "Part 1", "Section 1", or "Introduction". Every lesson title must name the concrete academic concept, governing law, theorem, or analytical method covered.
+
+LIVE ACADEMIC RESEARCH CONTEXT:
+${courseResearch.context}
 
 Modules requiring canonical lesson titles:
-${modulesNeedingTopics.map(m => `- moduleId: "${m.moduleId}", moduleTitle: "${m.moduleTitle}", exact number of lessonTopics required: ${m.neededCount}${m.existingHealthyTitles.length > 0 ? ` (keep existing valid topics at their positions: ${m.existingHealthyTitles.join('; ')})` : ''}`).join('\n')}
+${modulesNeedingTopics.map(m => `- moduleId: "${m.moduleId}", moduleTitle: "${m.moduleTitle}", ${m.neededCount !== null ? `exact number of lessonTopics required: ${m.neededCount}` : 'determine the natural number of lessonTopics (2 to 5) required to cover this module thoroughly'}${m.existingHealthyTitles.length > 0 ? ` (keep existing valid topics at their positions: ${m.existingHealthyTitles.join('; ')})` : ''}`).join('\n')}
 
 Return strictly valid JSON matching:
 {
@@ -6390,7 +6530,9 @@ Return strictly valid JSON matching:
 
       for (const mp of topicPlan.modules || []) {
         if (mp.moduleId && Array.isArray(mp.lessonTopics)) {
-          topicPlanByModule[mp.moduleId] = mp.lessonTopics;
+          topicPlanByModule[mp.moduleId] = mp.lessonTopics
+            .map((t: string) => String(t || '').trim())
+            .filter((t: string) => t.length > 0 && !isGenericLessonTitle(t));
         }
       }
     }
@@ -6413,9 +6555,11 @@ Return strictly valid JSON matching:
       const plannedTopics = topicPlanByModule[m.id] || [];
 
       if (modLessons.length === 0) {
-        const count = plannedTopics.length > 0 ? plannedTopics.length : 4;
-        for (let lIdx = 0; lIdx < count; lIdx++) {
-          const topic = plannedTopics[lIdx] || `${m.title.replace(/^Module\s*\d+\s*:\s*/i, '')} — Part ${lIdx + 1}`;
+        if (plannedTopics.length === 0) {
+          throw new Error(`Self-heal topic planning failed to resolve canonical lesson topics for empty module "${m.title}" (${m.id}).`);
+        }
+        for (let lIdx = 0; lIdx < plannedTopics.length; lIdx++) {
+          const topic = plannedTopics[lIdx];
           repairTasks.push({
             moduleId: m.id,
             moduleTitle: m.title,
@@ -6458,8 +6602,11 @@ Return strictly valid JSON matching:
             continue;
           }
 
-          // Determine canonical topic title
-          const candidateTopic = (!genericTitle && l.title ? l.title : plannedTopics[lIdx]) || `${m.title.replace(/^Module\s*\d+\s*:\s*/i, '')} — Section ${lIdx + 1}`;
+          // Determine canonical topic title without fabricating "Section N"
+          const candidateTopic = (!genericTitle && l.title ? l.title.trim() : plannedTopics[lIdx]?.trim()) || '';
+          if (!candidateTopic) {
+            throw new Error(`Self-heal could not resolve a verified topic title for lesson ${l.id} in module "${m.title}".`);
+          }
 
           // Check if the existing content is already valid after normalization and only lacked a title
           if (genericTitle && syntaxCheck.isValid) {
@@ -6526,6 +6673,15 @@ Return strictly valid JSON matching:
             elapsedSeconds: Math.round((Date.now() - jobStartTime) / 1000)
           });
 
+          const repairTopicResearch = await retrieveTopicSpecificCourseResearch({
+            courseName: audit.courseTitle,
+            courseCode: audit.courseId,
+            department: audit.department,
+            moduleTitle: task.moduleTitle,
+            topicTitles: [task.topic],
+            courseResearch
+          });
+
           let attempts = 0;
           let lessonContent = '';
           let lessonTitle = task.topic;
@@ -6542,13 +6698,13 @@ Return strictly valid JSON matching:
                 courseId: audit.courseId,
                 courseName: audit.courseTitle,
                 department: audit.department,
-                selectedFaculties: [audit.faculty],
-                selectedDepartments: [audit.department],
+                selectedFaculties: audit.faculty ? [audit.faculty] : [],
+                selectedDepartments: audit.department ? [audit.department] : [],
                 level: audit.level,
                 tone: 'academic',
                 depth: 'comprehensive',
                 scope: audit.scope,
-                academicStandard: 'Globally Adaptive (Universal University Standard)'
+                researchContext: repairTopicResearch.context || courseResearch.context
               },
               ''
             );
@@ -6724,7 +6880,8 @@ app.get('/api/courses/:courseId/health', verifyAdmin, async (req, res) => {
       snapshot
     });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || 'Failed to audit course health' });
+    const statusCode = typeof err?.statusCode === 'number' ? err.statusCode : 500;
+    return res.status(statusCode).json({ error: err.message || 'Failed to audit course health' });
   }
 });
 
@@ -6747,7 +6904,8 @@ app.post('/api/course/heal/:courseId', verifyAdmin, async (req, res) => {
     });
     return res.json({ status: 'healing_started', audit });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || 'Failed to initiate course self-healing' });
+    const statusCode = typeof err?.statusCode === 'number' ? err.statusCode : 500;
+    return res.status(statusCode).json({ error: err.message || 'Failed to initiate course self-healing' });
   }
 });
 
@@ -7425,8 +7583,13 @@ app.post('/api/admin/test-email', verifyAuth, async (req, res) => {
 
     if (template === 'welcome') {
       const generalConfig = await getSystemConfigDoc('general', true);
-      const resolvedTrialDays = Number(trialDays) || Number(generalConfig?.trialDays) || 7;
-      await MailService.sendWelcomeEmail(to, 'Scholar', resolvedTrialDays);
+      const rawTrialDays = trialDays !== undefined ? Number(trialDays) : Number(generalConfig?.trialDays);
+      if (!Number.isFinite(rawTrialDays) || rawTrialDays <= 0) {
+        return res.status(503).json({
+          error: 'Welcome email requires a verified trialDays configuration in system_config.general or the request body.'
+        });
+      }
+      await MailService.sendWelcomeEmail(to, 'Scholar', rawTrialDays);
     } else {
       await MailService.sendDiagnosticTestEmail(to);
     }

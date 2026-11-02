@@ -256,7 +256,7 @@ ${researchContext && researchContext.trim() ? `\n[RETRIEVED ACADEMIC EVIDENCE â€
 4. List 3-5 sub-disciplines relevant to "${courseName}" at ${normalizedLevel} Level.
 5. List 8-14 core course topics that define the syllabus of this course at ${normalizedLevel} Level:
    - CRITICAL: If an [ADMIN-PROVIDED SYLLABUS OUTLINE] is present above, you MUST extract and include EVERY topic, unit, and theme from the admin's outline into "coreCourseTopics", ordered logically for ${normalizedLevel} Level.
-   - If no admin outline is provided, derive the standard accredited university syllabus topics for "${courseName}" (${courseCode || ''}) at ${normalizedLevel} Level.
+   - If no admin outline is provided, propose coherent university-level core topics appropriate for "${courseName}" (${courseCode || ''}) at ${normalizedLevel} Level without claiming they are copied from an external accredited syllabus.
 6. Identify canonical references only when a specific title/author/edition or institutional source is explicitly present in the admin-supplied material or retrieved evidence above. Do not infer or invent references. Include source URLs where available; return an empty array when no such reference is present.
 7. Identify 3-4 course-specific foundational concepts, laws, principles, methods, or models students need to understand the subject. These foundations are not automatically historical; do not infer that a history topic or timeline belongs in the course.
 
@@ -320,7 +320,11 @@ export function buildCurriculumSkeletonPrompt(
   const normalizedSemester = typeof semester === 'string' && semester.trim()
     ? semester.trim()
     : 'not supplied; do not infer a semester';
-  const normalizedAcademicStandard = typeof academicStandard === 'string' && academicStandard.trim()
+  const isSyntheticStandard = typeof academicStandard === 'string' && (
+    academicStandard.trim() === 'Globally Adaptive (Universal University Standard)' ||
+    academicStandard.trim() === 'Custom Dynamic Academic Benchmark'
+  );
+  const normalizedAcademicStandard = typeof academicStandard === 'string' && academicStandard.trim() && !isSyntheticStandard
     ? academicStandard.trim()
     : 'not supplied; do not infer an accreditation or university standard';
   if (typeof creditUnits !== 'number' || !Number.isInteger(creditUnits) || creditUnits <= 0) {
@@ -371,7 +375,7 @@ Design a complete, comprehensive ${normalizedLevel} Level university syllabus sk
 AUTHORITATIVE DOMAIN: ${domainBrief.primaryDomain}
 PEDAGOGY TYPE: ${domainBrief.pedagogyType}
 TARGET ACADEMIC LEVEL: ${normalizedLevel} Level (${domainBrief.courseLevelFramework || 'not supplied; do not infer'})
-GROUNDING REFERENCES: ${domainBrief.canonicalCourseReferences.join('; ')}
+GROUNDING REFERENCES: ${domainBrief.canonicalCourseReferences.length > 0 ? domainBrief.canonicalCourseReferences.join('; ') : 'None supplied or retrieved (do not fabricate references)'}
 ${researchContext && researchContext.trim() ? `SUPPLEMENTARY RETRIEVED ACADEMIC EVIDENCE (do not treat as an official university syllabus):\n${researchContext}\n` : 'No retrievable academic evidence was supplied; do not invent citations or claims of external verification.'}
 REQUIRED CORE TOPICS: ${domainBrief.coreCourseTopics.join(', ')}
 
@@ -403,7 +407,7 @@ STRICT OUTLINE ADHERENCE DIRECTIVE:
    - Formulate 5-8 measurable "learningOutcomes" covering Bloom's taxonomy (Remember, Understand, Apply, Analyze, Evaluate, Create).
    - Map each module to the relevant learning outcome indices.
 5. LESSONS PER MODULE:
-   - Provide 3 to 5 distinct, well-titled lessons per module covering the required core topics without superficial skipping.
+   - Structure each module into the number of distinct, well-titled lessons naturally required by its conceptual scope (${params.minLessonsPerModule} to ${params.maxLessonsPerModule} lessons per module, or matching the structural divisions of the Admin-Provided Outline).
 
 ${feedbackCritique ? `\n[AUDIT FEEDBACK FROM PREVIOUS REVIEW TO REMEDY]:\n${feedbackCritique}\n` : ''}
 
@@ -416,7 +420,7 @@ ${sourceText ? `COMPLETE ADMIN-SUPPLIED SOURCE MATERIAL:\n${sourceText}` : ''}
 
 Return strictly a JSON object:
 {
-  "pedagogicalReasoning": "Curriculum architecture rationale grounded in ${domainBrief.canonicalCourseReferences.join(' and ')} for ${normalizedLevel} Level",
+  "pedagogicalReasoning": "Curriculum architecture rationale ${domainBrief.canonicalCourseReferences.length > 0 ? `grounded in ${domainBrief.canonicalCourseReferences.join(' and ')} ` : ''}for ${domainBrief.primaryDomain} at ${normalizedLevel} Level",
   "description": "Comprehensive ${normalizedLevel} Level course overview rooted in ${domainBrief.primaryDomain}",
   "pedagogyType": "${domainBrief.pedagogyType}",
   "creditHours": ${params.credits},
@@ -457,7 +461,7 @@ export function buildOutlineCriticPrompt(
   return `You are a strict University Academic Accreditation Auditor & Subject Matter Critic.
 Evaluate the proposed syllabus for "${courseName}" ${courseCode ? `(${courseCode})` : ''} at Academic Level "${normalizedLevel} Level" against the authoritative discipline "${domainBrief.primaryDomain}".
 
-EXPECTED CANONICAL TOPICS (From Benchmark Syllabi & Domain Brief):
+${(outline && outline.trim()) || (researchContext && researchContext.trim()) ? 'EXPECTED CORE TOPICS (From Supplied Outline / Retrieved Evidence & Domain Brief)' : 'PROPOSED DOMAIN BRIEF TOPICS (Model-inferred topic scope; no external syllabus was supplied)'}:
 - ${domainBrief.coreCourseTopics.join('\n- ')}
 ${outline && outline.trim() ? `\nMANDATORY ADMIN-PROVIDED SYLLABUS OUTLINE (MUST BE 100% COVERED):\n"""\n${outline.trim()}\n"""\n` : ''}
 ${researchContext && researchContext.trim() ? `\nSUPPLEMENTARY SOURCE-ATTRIBUTED RESEARCH CONTEXT (not an official syllabus):\n${researchContext}\n` : ''}

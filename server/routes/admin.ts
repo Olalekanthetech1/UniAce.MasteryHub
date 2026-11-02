@@ -136,9 +136,25 @@ export function setupAdminRoutes(
       const isAdmin = await checkIsAdmin(user.uid, user.email);
       if (!isAdmin) return res.status(403).json({ error: 'Forbidden: Admin access required' });
 
-      const { courseId, moduleId, subTopicId, subTopicTitle, moduleTitle, struggleCount } = req.body;
+      const { courseId, moduleId, subTopicId, subTopicTitle, moduleTitle, struggleCount, department: reqDepartment, level: reqLevel } = req.body;
       if (!subTopicTitle) {
         return res.status(400).json({ error: 'subTopicTitle is required' });
+      }
+
+      let resolvedCourseTitle = '';
+      let resolvedDepartment = typeof reqDepartment === 'string' ? reqDepartment.trim() : '';
+      let resolvedLevel = typeof reqLevel === 'string' ? reqLevel.trim() : '';
+      const pool = getPostgresPool();
+      if (pool && courseId) {
+        const courseRow = await pool.query(
+          'SELECT title, department, level FROM courses WHERE id = $1 LIMIT 1',
+          [String(courseId).trim()]
+        ).catch(() => ({ rows: [] as any[] }));
+        if (courseRow.rows[0]) {
+          resolvedCourseTitle = courseRow.rows[0].title || '';
+          resolvedDepartment = resolvedDepartment || courseRow.rows[0].department || '';
+          resolvedLevel = resolvedLevel || courseRow.rows[0].level || '';
+        }
       }
 
       const apiKeysData = (await getSystemSettingsDoc('api_keys')) || {};
@@ -161,23 +177,20 @@ export function setupAdminRoutes(
 
       const ai = new GoogleGenAI({ apiKey });
       const prompt = `You are UniAce's Senior University Academic Architect & Curriculum Specialist.
-Students are actively struggling with the topic: "${subTopicTitle}" in module "${moduleTitle || 'Core Studies'}".
+Students are actively struggling with the topic: "${subTopicTitle}"${moduleTitle ? ` in module "${moduleTitle}"` : ''}${resolvedCourseTitle ? ` (Course: "${resolvedCourseTitle}")` : ''}.
+${resolvedDepartment ? `Target Discipline / Department: ${resolvedDepartment}` : ''}
+${resolvedLevel ? `Target Academic Level: ${resolvedLevel} Level` : ''}
 (Logged struggle requests from students: ${struggleCount || 1})
 
-Provide a comprehensive, high-clarity academic remediation package formatted in clean Markdown with LaTeX math notation ($...$ and $$...$$).
-
-Structure your output into these 4 distinct sections:
-# 1. Intuitive Conceptual Bridge (ELI5 & Real-World Analogy)
-Explain the core mechanism simply without introducing any scientific inaccuracies.
-
-# 2. Rigorous Academic Breakdown & Formal Definition
-Provide university-standard proofs, mathematical definitions, and complete theoretical mechanisms using LaTeX ($...$).
-
-# 3. Common Student Pitfalls & Misconceptions
-Explicitly list what confuses students and provide clear contrasting examples.
-
-# 4. Check for Understanding (3 Interactive Questions with Explanations)
-Include 3 multiple-choice conceptual questions with step-by-step verified explanations.`;
+Author a comprehensive, discipline-appropriate academic remediation guide in clean Markdown that directly addresses why students struggle with "${subTopicTitle}":
+- Adapt the structure and analytical approach to the nature of the subject:
+  * If the topic is quantitative, mathematical, physical, or engineering-based, include step-by-step formal derivations, governing equations in balanced LaTeX ($...$ and $$...$$), and worked numerical examples.
+  * If the topic is in the humanities, law, social sciences, or non-quantitative disciplines, focus on authoritative conceptual frameworks, primary source/textual or institutional analysis, and structured case evaluation without forcing artificial mathematical formulas.
+- Include:
+  1. Clear conceptual framing that bridges intuitive understanding to formal university-level terminology.
+  2. Thorough academic exposition of the core principles, mechanisms, or analytical frameworks appropriate for ${resolvedLevel ? `${resolvedLevel} Level` : 'university study'}.
+  3. Diagnosis of the specific misconceptions or analytical errors that cause students to struggle with this topic, paired with worked corrections.
+  4. Diagnostic check-for-understanding questions with complete, verified academic explanations.`;
 
       const response = await ai.models.generateContent({
         model: activeModel,
@@ -1031,14 +1044,10 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
     try {
       await client.query('BEGIN');
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [id.trim()]);
-      const tombstone = await client.query(
-        'SELECT course_id FROM course_lifecycle_tombstones WHERE course_id = $1',
+      await client.query(
+        'DELETE FROM course_lifecycle_tombstones WHERE course_id = $1',
         [id.trim()]
       );
-      if (tombstone.rows.length > 0) {
-        await client.query('ROLLBACK');
-        return res.status(409).json({ error: 'This course ID was permanently deleted and cannot be reused.' });
-      }
       const courseCode = typeof code === 'string' && code.trim() ? code.trim() : id.trim();
       await client.query(
         `INSERT INTO courses (id, code, title, description, level, department, faculty, semester, credit_units, scope, status, version, created_at, updated_at)

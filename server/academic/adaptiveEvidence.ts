@@ -1,15 +1,31 @@
 import type { AcademicPaper, EvidenceAssessment, WebEvidence } from './types.js';
 
 const STOP_WORDS = new Set([
-  'about', 'after', 'also', 'among', 'and', 'are', 'based', 'being', 'between',
-  'can', 'course', 'for', 'from', 'into', 'its', 'more', 'of', 'on', 'or',
-  'over', 'the', 'their', 'this', 'through', 'under', 'using', 'what', 'when',
+  'about', 'academic', 'after', 'also', 'among', 'and', 'are', 'based', 'being',
+  'between', 'can', 'chapter', 'comprehensive', 'concepts', 'course', 'curriculum',
+  'department', 'for', 'foundational', 'foundations', 'from', 'fundamentals',
+  'general', 'into', 'introduction', 'introductory', 'its', 'lecture', 'lesson',
+  'level', 'literature', 'module', 'modules', 'more', 'of', 'on', 'or', 'outline',
+  'over', 'overview', 'part', 'principles', 'section', 'semester', 'standard',
+  'study', 'syllabus', 'the', 'their', 'theory', 'this', 'through', 'topic',
+  'topics', 'under', 'unit', 'units', 'university', 'using', 'what', 'when',
   'where', 'which', 'with'
 ]);
 
+const COURSE_CODE_TOKEN_REGEX = /^[a-z]{2,4}[0-9]{2,4}[a-z]?$/i;
+
 export function tokenizeResearchTerms(value: string): string[] {
   const words = value.toLowerCase().match(/[a-z0-9]{3,}/g) || [];
-  return [...new Set(words.filter((word) => !STOP_WORDS.has(word)))];
+  return [
+    ...new Set(
+      words.filter(
+        (word) =>
+          !STOP_WORDS.has(word) &&
+          !COURSE_CODE_TOKEN_REGEX.test(word) &&
+          !/^[0-9]+$/.test(word)
+      )
+    )
+  ];
 }
 
 export function assessResearchEvidence(
@@ -81,14 +97,52 @@ export function buildAdaptiveExpansionQuery(
   query: string,
   fieldOfStudy: string | undefined,
   syllabusText: string | undefined,
-  assessment: EvidenceAssessment
+  assessment: EvidenceAssessment,
+  round: number = 1
 ): string {
+  const coreQueryTerms = tokenizeResearchTerms(query).slice(0, 6);
   const contextTerms = tokenizeResearchTerms(
     [query, fieldOfStudy || '', syllabusText || ''].join(' ')
   );
   const matched = new Set(assessment.matchedQueryTerms);
   const missingTerms = contextTerms.filter((term) => !matched.has(term));
-  const additions = missingTerms.slice(0, 6);
-  const expanded = [query, fieldOfStudy || '', additions.join(' ')].filter(Boolean).join(' ').trim();
+  const offset = Math.max(0, (round - 1) * 4);
+  const additions = missingTerms.slice(offset, offset + 6);
+  const baseAnchor = coreQueryTerms.length > 0 ? coreQueryTerms.join(' ') : query.trim();
+  const expanded = [baseAnchor, fieldOfStudy || '', additions.join(' ')].filter(Boolean).join(' ').trim();
   return expanded.slice(0, 390);
 }
+
+/**
+ * Builds a concise, high-recall scholarly query for OpenAlex, Semantic Scholar, and arXiv
+ * during adaptive expansion passes. Scholarly APIs perform best with 3–8 focused domain terms
+ * targeting the core subject plus uncovered syllabus concepts.
+ */
+export function buildFocusedScholarlyExpansionQuery(
+  query: string,
+  fieldOfStudy: string | undefined,
+  syllabusText: string | undefined,
+  assessment: EvidenceAssessment,
+  round: number = 1
+): string {
+  const coreTerms = tokenizeResearchTerms(query).slice(0, 4);
+  const fieldTerms = tokenizeResearchTerms(fieldOfStudy || '').slice(0, 2);
+  const syllabusTerms = tokenizeResearchTerms(syllabusText || '');
+  const allCandidateTerms = [...new Set([...coreTerms, ...fieldTerms, ...syllabusTerms])];
+  const matched = new Set(assessment.matchedQueryTerms);
+  const missingTerms = allCandidateTerms.filter((term) => !matched.has(term));
+
+  const windowSize = 4;
+  const offset = Math.max(0, (round - 1) * windowSize);
+  const roundMissing = missingTerms.slice(offset, offset + windowSize);
+
+  const combined = roundMissing.length > 0
+    ? [...new Set([...coreTerms.slice(0, 3), ...roundMissing])]
+    : round >= 2 && coreTerms.length > 2
+      ? [...new Set([...coreTerms.slice(0, 2), ...fieldTerms])]
+      : [...new Set([...coreTerms, ...fieldTerms])];
+
+  const finalQuery = combined.slice(0, 7).join(' ').trim();
+  return (finalQuery || query.trim()).slice(0, 240);
+}
+

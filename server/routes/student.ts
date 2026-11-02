@@ -262,34 +262,34 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
         systemConfig[row.key] = row.data;
       }
       systemConfig.feature_switches = {
-        arena: true,
+        arena: false,
         tutor_dashboard: false,
         ...(systemConfig.feature_switches || {})
       };
 
+      if (!profile || typeof profile.ai_sparks !== 'number') {
+        return res.status(503).json({
+          error: 'Authoritative user profile record could not be verified during bootstrap.'
+        });
+      }
+
       const payload = {
         success: true,
         uid,
-        profile: profile || {
-          uid,
-          email: user.email,
-          role: 'student',
-          plan_type: 'free',
-          ai_sparks: 100
-        },
+        profile,
         quota: {
-          ai_sparks: profile?.ai_sparks ?? 100,
-          plan_type: profile?.plan_type || 'free',
-          role: profile?.role || 'student',
-          subscription_status: profile?.subscription_status || 'none',
-          subscription_expiry: profile?.subscription_expiry,
-          subscription_start_date: profile?.subscription_start_date
+          ai_sparks: profile.ai_sparks,
+          plan_type: profile.plan_type,
+          role: profile.role,
+          subscription_status: profile.subscription_status || 'none',
+          subscription_expiry: profile.subscription_expiry,
+          subscription_start_date: profile.subscription_start_date
         },
         progress: progressByCourse,
         unreadNotificationsCount,
         systemConfig,
-        sessionVersion: profile?.sessionVersion || 1,
-        sessionId: profile?.sessionId || null,
+        sessionVersion: profile.sessionVersion || 1,
+        sessionId: profile.sessionId || null,
         timestamp: new Date().toISOString()
       };
 

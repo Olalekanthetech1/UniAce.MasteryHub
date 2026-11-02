@@ -427,20 +427,38 @@ export async function generateCourseSkeleton(
   level?: string,
   semester?: string,
   department?: string,
-  curriculumBenchmark?: any, // Globally adaptive curriculum benchmark
+  curriculumBenchmark?: any,
   tone: string = 'academic',
   depth: string = 'standard',
   sourceContext?: string,
-  academicStandard: string = 'Globally Adaptive (Universal University Standard)',
+  academicStandard?: string,
   scope?: string,
   selectedFaculties: string[] = [],
   selectedDepartments: string[] = [],
   courseCode?: string,
   creditUnits?: number
  ): Promise<any> {
+  if (!courseName || typeof courseName !== 'string' || !courseName.trim()) {
+    throw new Error('A verified course title is required before curriculum generation.');
+  }
+  if (!courseCode || typeof courseCode !== 'string' || !courseCode.trim()) {
+    throw new Error('A verified course code is required before curriculum generation.');
+  }
+  if (!level || typeof level !== 'string' || !level.trim()) {
+    throw new Error('An explicit academic level is required before curriculum generation.');
+  }
+  if (!scope || typeof scope !== 'string' || !scope.trim()) {
+    throw new Error('An explicit course audience scope is required before curriculum generation.');
+  }
   if (!Number.isInteger(creditUnits) || (creditUnits as number) < 1 || (creditUnits as number) > 12) {
     throw new Error('A verified course credit-unit value between 1 and 12 is required before curriculum generation.');
   }
+  const normalizedStandard = academicStandard &&
+    academicStandard.trim() !== 'Globally Adaptive (Universal University Standard)' &&
+    academicStandard.trim() !== 'Custom Dynamic Academic Benchmark'
+      ? academicStandard.trim()
+      : undefined;
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 600000); // 10 minutes for multi-agent audit
 
@@ -456,18 +474,18 @@ export async function generateCourseSkeleton(
             ...(token ? { 'Authorization': `Bearer ${token}` } : {})
           },
           body: JSON.stringify({
-            courseName,
-            courseCode: courseCode || courseName,
+            courseName: courseName.trim(),
+            courseCode: courseCode.trim(),
             department,
-            scope,
-            level,
+            scope: scope.trim(),
+            level: level.trim(),
             semester,
             creditUnits,
             tone,
             depth,
             outline,
             sourceText: sourceContext,
-            academicStandard,
+            academicStandard: normalizedStandard,
             provider,
             selectedFaculties,
             selectedDepartments
@@ -553,16 +571,27 @@ export async function generateLessonContent(
   tone: string = 'academic',
   depth: string = 'standard',
   sourceContext?: string,
-  academicStandard: string = 'Globally Adaptive (Universal University Standard)'
+  academicStandard?: string
 ): Promise<{ title: string, content: string, metadata: PipelineMetadata }> {
-  // 1. Extract course metadata from CourseContext object or parameters
+  // 1. Extract verified course metadata from CourseContext object or parameters
   const isContextObj = typeof courseContext === 'object' && courseContext !== null;
-  const courseName: string = typeof courseContext === 'string' 
-    ? courseContext 
-    : (courseContext.title || courseContext.id || 'Academic Course');
-  const courseCode: string = isContextObj ? (courseContext.id || courseName) : courseName;
-  const effectiveLevel = isContextObj ? courseContext.level || level || 'University Undergraduate' : level || 'University Undergraduate';
-  const effectiveStandard = isContextObj ? courseContext.academicStandard || academicStandard : academicStandard;
+  const courseName: string = typeof courseContext === 'string'
+    ? courseContext.trim()
+    : String(courseContext.title || '').trim();
+  if (!courseName) {
+    throw new Error('Verified course title is required before generating lesson content.');
+  }
+  const courseCode: string = isContextObj ? String(courseContext.id || '').trim() : '';
+  const effectiveLevel = (isContextObj ? courseContext.level || level : level)?.trim() || '';
+  if (!effectiveLevel) {
+    throw new Error(`Verified academic level is required before generating lesson "${lessonTitle}" for "${courseName}".`);
+  }
+  const rawStandard = isContextObj ? (courseContext.academicStandard || academicStandard) : academicStandard;
+  const effectiveStandard = rawStandard &&
+    rawStandard.trim() !== 'Globally Adaptive (Universal University Standard)' &&
+    rawStandard.trim() !== 'Custom Dynamic Academic Benchmark'
+      ? rawStandard.trim()
+      : undefined;
   const effectiveTone = isContextObj ? courseContext.tone || tone : tone;
   const effectiveDepth = isContextObj ? courseContext.depth || depth : depth;
   const effectiveSourceContext = isContextObj ? courseContext.sourceContext || sourceContext : sourceContext;
@@ -592,10 +621,11 @@ export async function generateLessonContent(
   const audienceLabel = uniqueAudience.join(', ');
 
   const lessonPrompt = `
-    You are an expert university professor authoring a rigorous, accredited university lesson for:
-    COURSE: "${courseName}" (${courseCode}), Level: ${effectiveLevel}
+    You are an expert university professor authoring a rigorous university lesson for:
+    COURSE: "${courseName}"${courseCode ? ` (${courseCode})` : ''}, Level: ${effectiveLevel}
     SUB-TOPIC: "${moduleTitle}" > "${lessonTitle}"
-    ACADEMIC STANDARD: "${effectiveStandard}"
+    TONE: ${effectiveTone}, DEPTH: ${effectiveDepth}
+    ${effectiveStandard ? `ACADEMIC STANDARD: "${effectiveStandard}"` : 'ACADEMIC STANDARD: Not supplied; do not invent or claim alignment with an unverified accreditation standard.'}
     
     ENROLLED PROGRAMS (FROM COURSE CURRICULUM):
     ${uniqueAudience.map(dept => `- ${dept}`).join('\n    ')}
@@ -604,38 +634,41 @@ export async function generateLessonContent(
 
     AUTHORITATIVE SUBJECT & DOMAIN FIDELITY:
     - The subject matter of "${courseName}" is authoritative and non-negotiable.
-    - You MUST teach the authentic core principles, terminology, theories, derivations, and case studies belonging directly to "${courseName}".
+    - Teach the authentic core principles, terminology, theories, methods, and case studies belonging directly to "${courseName}" at ${effectiveLevel} Level.
 
     TASK:
-    1. "introduction": Explain why this sub-topic matters to a student of "${courseName}" in general. Keep it strictly audience-neutral and motivational. Do NOT name or favor any single enrolled program in the introduction.
-    2. "keyConcepts": An array of specific technical and theoretical concepts taught in THIS lesson.
-    3. "body": The full comprehensive university lecture note (target length 1200-2000+ words). Must include:
+    1. "introduction": Explain why "${lessonTitle}" matters to a student of "${courseName}". Keep it audience-neutral and grounded in the discipline.
+    2. "keyConcepts": An array of specific technical or theoretical concepts taught in THIS lesson.
+    3. "body": The full university lecture note (target length 1200-2000+ words), structured dynamically according to the nature of "${courseName}":
        - Learning Objectives (Bloom's Taxonomy)
-       - Key Vocabulary Definitions
-       - Deep Theoretical Explanations and mathematical derivations
-       - Comparison Tables formatted in standard GitHub-Flavored Markdown (|---|)
-       - Concrete Empirical Case Studies and real-world mechanisms
-       - Summary & 3 Quick Check review questions with full answers
+       - Core Definitions & Disciplinary Framework
+       - Rigorous Exposition:
+         * For quantitative, mathematical, physical, or engineering subjects: include formal mathematical derivations in balanced LaTeX ($...$ and $$...$$) and step-by-step worked calculations.
+         * For humanities, law, social sciences, or arts: include primary source critique, theoretical/institutional analysis, and comparative perspectives without forcing artificial mathematical formulas.
+         * For biomedical or life sciences: include physiological/biochemical pathways, mechanisms, and experimental/clinical analysis.
+       - Use GitHub-Flavored Markdown comparison tables (|---|) where contrasting multiple concepts or properties improves clarity.
+       - Authentic disciplinary examples or case analyses (never invent fake citations or unverified statistics).
+       - Diagnostic check-for-understanding questions with verified explanations.
     4. "relevance": For the enrolled programs listed above, add an entry ONLY IF you can name:
        (a) a concept from your keyConcepts, and
        (b) a specific mechanism, device, process, or practical case where it applies in that program.
-       If you cannot name a concrete, specific mechanism, OMIT the program. Fewer entries is correct and expected. Never pad with generic text. Never invent connections to balance coverage.
+       If you cannot name a concrete, specific mechanism, OMIT the program. Fewer entries is correct and expected. Never pad with generic text.
 
     CRITICAL LATEX & CLEAN FORMATTING SAFETY:
-    - Use $ ... $ for inline math and $$ ... $$ for display block math.
+    - When mathematical notation is used, use $ ... $ for inline math and $$ ... $$ for display block math.
     - You MUST double-escape all LaTeX backslashes for JSON compatibility (e.g., \\\\frac, \\\\alpha, \\\\begin, \\\\end).
     - Ensure all $ and $$ delimiters are closed and balanced.
 
     Return STRICTLY valid JSON matching this schema:
     {
-      "introduction": "Audience-neutral 'Why Before How' conceptual introduction...",
+      "introduction": "Conceptual introduction to the lesson topic...",
       "keyConcepts": ["Concept A", "Concept B", "Concept C"],
-      "body": "Full detailed markdown lesson body with LaTeX and tables...",
+      "body": "Full detailed markdown lesson body...",
       "relevance": [
         {
           "department": "Exact Department Name from enrolled list",
           "concept": "Specific concept from keyConcepts",
-          "application": "Specific mechanism, device, process, or application in this discipline..."
+          "application": "Specific mechanism, process, or application in this discipline..."
         }
       ]
     }
@@ -672,10 +705,6 @@ export async function generateLessonContent(
   const rawKeyConcepts = Array.isArray(parsedOutput.keyConcepts) ? parsedOutput.keyConcepts : [];
   const rawRelevance = Array.isArray(parsedOutput.relevance) ? parsedOutput.relevance : [];
 
-  // Deterministic Relevance Validation:
-  // 1. Department must be in uniqueAudience (case-insensitive)
-  // 2. No duplicate departments
-  // 3. Minimum length requirements
   const seenDepts = new Set<string>();
   const validatedRelevance = rawRelevance.filter((entry: any) => {
     if (!entry || typeof entry !== 'object') return false;
@@ -695,10 +724,10 @@ export async function generateLessonContent(
     return true;
   });
 
-  // Assemble full lesson markdown: introduction + body
-  const fullLessonMarkdown = introduction && !rawBody.startsWith('# Introduction')
-    ? `### Introduction: The Why Before the How\n\n${introduction}\n\n---\n\n${rawBody}`
-    : rawBody;
+  // Assemble full lesson markdown without forcing a synthetic "The Why Before the How" heading
+  const fullLessonMarkdown = introduction && !rawBody.startsWith('#')
+    ? `## ${lessonTitle}\n\n${introduction}\n\n---\n\n${rawBody}`
+    : (introduction ? `${introduction}\n\n---\n\n${rawBody}` : rawBody);
 
   const compiledLesson = compileAndSanitizeCourseMarkdown(fullLessonMarkdown);
   const sanitizedContent = compiledLesson.normalizedMarkdown;
@@ -734,42 +763,47 @@ export async function generateModuleQuiz(
   provider?: string,
   level?: string,
   department?: string,
-  academicStandard: string = 'Globally Adaptive (Universal University Standard)'
+  academicStandard?: string,
+  authoredLessons?: Array<{ title: string; content: string }>
 ): Promise<any> {
+  if (!Array.isArray(authoredLessons) || authoredLessons.length === 0) {
+    throw new Error(`Module quiz generation for "${moduleTitle}" requires persisted lesson content; quizzes cannot be generated from topic titles alone.`);
+  }
+  const validLessons = authoredLessons.filter(
+    l => l && typeof l.title === 'string' && l.title.trim().length > 0 && typeof l.content === 'string' && l.content.trim().length >= 400
+  );
+  if (validLessons.length === 0) {
+    throw new Error(`Module quiz generation for "${moduleTitle}" requires substantive authored lesson content.`);
+  }
+
+  const combinedLessonContext = validLessons
+    .map((l, idx) => `[LESSON ${idx + 1}: "${l.title.trim()}"]\n${l.content.trim()}`)
+    .join('\n\n---\n\n');
+
+  const normalizedStandard = academicStandard &&
+    academicStandard.trim() !== 'Globally Adaptive (Universal University Standard)' &&
+    academicStandard.trim() !== 'Custom Dynamic Academic Benchmark'
+      ? academicStandard.trim()
+      : undefined;
+
   const quizPrompt = `
-    Generate a university-level quiz for this module.
-    
-    CRITICAL: You MUST use the dynamic academic standard "${academicStandard}" to ensure the quiz is both exam-relevant and deeply educational, testing for world-class competency:
-    1. Relevance: Questions must strictly align with the accredited academic standard "${academicStandard}" and its learning outcomes for ${department || 'this discipline'} at ${level || 'University Level'} to ensure comprehensive exam readiness and institutional rigor.
-    2. Depth: Calibrated to "${academicStandard}", questions must be challenging, high-order, and conceptual (level 4-6 on Bloom's Taxonomy), requiring deep analytical thinking rather than rote memorization. Incorporate global best practices for standardized testing at top-tier universities worldwide.
-    
-    Course: ${courseName}
-    Module: ${moduleTitle}
-    Academic Standard: ${academicStandard}
-    Topics: ${quizTopics.join(', ')}
-    ${level ? `Level: ${level}` : ''}
-    ${department ? `Department: ${department}` : ''}
-    
-    Requirements:
-    1. Generate 8-12 challenging, high-quality multiple-choice questions.
-    2. Questions must test deep conceptual understanding and application of knowledge, avoiding simple rote memorization.
-    3. Include a mix of difficulty levels: 20% foundational, 50% intermediate, 30% advanced/analytical.
-    4. CRITICAL: Calibrate the difficulty to the student's level (${level || 'University Level'}) and academic standard (${academicStandard}).
-    5. CRITICAL: Be concise in explanations and hints to avoid output truncation.
-    6. CRITICAL: Do NOT include any conversational text, self-corrections, or "thinking out loud" inside the JSON fields. 
-    7. CRITICAL: The "explanation" field must provide a detailed academic justification for the correct answer and why other options are incorrect.
-    8. CRITICAL: Ensure all double quotes inside strings are properly escaped (e.g., \\"word\\").
-    CRITICAL LATEX INSTRUCTIONS:
-    1. You MUST use LaTeX for ALL mathematical formulas, variables, and equations.
-    2. Use $ ... $ for inline math and $$ ... $$ for block math.
-    3. You are outputting data to a JSON parser. You MUST double-escape all LaTeX backslashes. 
-       For example, output \\\\frac instead of \\frac, and \\\\begin instead of \\begin.
-    4. Do NOT use \\label{...} as it is not supported. Use \\tag{...} for equation numbering if needed.
-    5. Ensure all LaTeX environments (like align, matrix, etc.) are wrapped in $$ ... $$ delimiters.
-    6. Double check that every backslash in your LaTeX is escaped with another backslash (e.g., \\\\alpha, \\\\beta).
-    9. CRITICAL: For LaTeX in JSON strings, use double backslashes (e.g., "\\\\mathbf"). Do NOT use triple backslashes.
-    10. CRITICAL: Ensure the quiz meets world-class academic standards set by "${academicStandard}" and adaptive assessment frameworks.
-    11. Return ONLY valid JSON:
+    Generate a university-level multiple-choice quiz for the module "${moduleTitle}" in course "${courseName}".
+    ${level ? `Academic Level: ${level}` : ''}
+    ${department ? `Department / Discipline: ${department}` : ''}
+    ${normalizedStandard ? `Accredited Standard: ${normalizedStandard}` : ''}
+    ${Array.isArray(quizTopics) && quizTopics.length > 0 ? `Focus Topics: ${quizTopics.join(', ')}` : ''}
+
+    [AUTHORITATIVE LESSON SOURCE MATERIAL — SOLE FACTUAL BASIS]:
+    """
+    ${combinedLessonContext}
+    """
+
+    STRICT GROUNDING & ZERO-FABRICATION RULES:
+    1. Generate 8-12 rigorous multiple-choice questions derived EXCLUSIVELY from the [AUTHORITATIVE LESSON SOURCE MATERIAL] above.
+    2. Do NOT test concepts, theorems, or facts absent from the provided lesson text, and do NOT invent external textbook sections or citations.
+    3. Every question MUST include a "sourceReference" field containing a verbatim phrase or sentence copied directly from the [AUTHORITATIVE LESSON SOURCE MATERIAL] that proves the correct answer.
+    4. Use balanced LaTeX ($...$ and $$...$$) with double-escaped backslashes (e.g., \\\\frac) whenever mathematical notation is used.
+    5. Return ONLY valid JSON:
     {
       "questions": [
         {
@@ -778,15 +812,15 @@ export async function generateModuleQuiz(
           "options": ["...", "...", "...", "..."],
           "correctAnswer": "...",
           "explanation": "...",
-          "hint": "..."
+          "hint": "...",
+          "sourceReference": "Exact verbatim quote from the lesson source material above"
         }
       ]
     }
   `;
 
   const result = await callGenerateAPI(quizPrompt, 'module', provider);
-  
-  // Sanitize LaTeX in questions and explanations and auto-heal options
+
   if (result && result.questions && Array.isArray(result.questions)) {
     result.questions = result.questions.map((q: any) => {
       if (!q || typeof q !== 'object') return q;
@@ -795,30 +829,22 @@ export async function generateModuleQuiz(
         question: sanitizeLatex(q.question),
         options: Array.isArray(q.options) ? q.options.map((opt: any) => sanitizeLatex(opt)) : q.options,
         explanation: sanitizeLatex(q.explanation),
-        hint: sanitizeLatex(q.hint)
+        hint: sanitizeLatex(q.hint),
+        sourceReference: typeof q.sourceReference === 'string' ? q.sourceReference.trim() : ''
       };
       return autoHealQuestion(sanitized);
     });
   }
-  
-  // Normalize result: ensure it's an object with a 'questions' array
+
   if (Array.isArray(result)) {
     return { questions: result };
   }
-  
+
   if (result && result.questions && Array.isArray(result.questions)) {
     return result;
   }
 
-  // If it's an object but doesn't have 'questions', try to find any array property
-  if (result && typeof result === 'object') {
-    const possibleArray = Object.values(result).find(val => Array.isArray(val));
-    if (possibleArray) {
-      return { questions: possibleArray };
-    }
-  }
-  
-  return result;
+  throw new Error(`Module quiz generation for "${moduleTitle}" did not return a valid questions array.`);
 }
 
 export async function generateModuleContent(
@@ -830,10 +856,16 @@ export async function generateModuleContent(
   tone: string = 'academic',
   depth: string = 'standard',
   sourceContext?: string,
-  academicStandard: string = 'Globally Adaptive (Universal University Standard)',
+  academicStandard?: string,
   level?: string,
   department?: string
 ): Promise<any> {
+  if (!moduleSkeleton || typeof moduleSkeleton.title !== 'string' || !moduleSkeleton.title.trim()) {
+    throw new Error('Verified module title is required before generating module content.');
+  }
+  if (!Array.isArray(moduleSkeleton.lessonTitles) || moduleSkeleton.lessonTitles.length === 0) {
+    throw new Error(`Module "${moduleSkeleton.title}" has no verified lesson titles.`);
+  }
   if (onProgress) onProgress(`Generating Module: ${moduleSkeleton.title}...`);
 
   const lessons = [];
@@ -846,7 +878,19 @@ export async function generateModuleContent(
 
   if (checkCancelled && checkCancelled()) throw new Error('Generation cancelled by user.');
   if (onProgress) onProgress(`Generating Quiz for: ${moduleSkeleton.title}...`);
-  const quiz = await generateModuleQuiz(courseName, moduleSkeleton.title, moduleSkeleton.quizTopics, provider, level, department, academicStandard);
+  const quizTopics = Array.isArray(moduleSkeleton.quizTopics) && moduleSkeleton.quizTopics.length > 0
+    ? moduleSkeleton.quizTopics
+    : moduleSkeleton.lessonTitles;
+  const quiz = await generateModuleQuiz(
+    courseName,
+    moduleSkeleton.title,
+    quizTopics,
+    provider,
+    level,
+    department,
+    academicStandard,
+    lessons
+  );
 
   return {
     title: moduleSkeleton.title,
@@ -856,34 +900,59 @@ export async function generateModuleContent(
 }
 
 export async function generateCourseContent(
-  courseName: string, 
-  courseDescription: string, 
+  courseName: string,
+  courseDescription: string,
   outline?: string,
   provider?: string,
   onProgress?: (progress: number, message: string) => void,
   tone: string = 'academic',
   depth: string = 'standard',
   sourceContext?: string,
-  academicStandard: string = 'Globally Adaptive (Universal University Standard)',
+  academicStandard?: string,
   level?: string,
   department?: string,
-  creditUnits?: number
+  creditUnits?: number,
+  semester?: string,
+  scope?: string,
+  courseCode?: string
 ): Promise<GeneratedCourse> {
   if (!Number.isInteger(creditUnits) || (creditUnits as number) < 1 || (creditUnits as number) > 12) {
     throw new Error('Verified course credit units are required for full-course generation.');
   }
+  if (!level?.trim() || !department?.trim() || !scope?.trim() || !courseCode?.trim()) {
+    throw new Error('Verified courseCode, level, department, and scope are required for full-course generation.');
+  }
   if (onProgress) onProgress(10, "Generating course skeleton...");
 
-  const skeleton = await generateCourseSkeleton(courseName, courseDescription, outline, provider, [], level, undefined, department, undefined, tone, depth, sourceContext, academicStandard, undefined, [], [], courseName, creditUnits);
-  
+  const skeleton = await generateCourseSkeleton(
+    courseName,
+    courseDescription,
+    outline,
+    provider,
+    [],
+    level,
+    semester,
+    department,
+    undefined,
+    tone,
+    depth,
+    sourceContext,
+    academicStandard,
+    scope,
+    [],
+    [department],
+    courseCode,
+    creditUnits
+  );
+
   if (!skeleton || !skeleton.modules || !Array.isArray(skeleton.modules)) {
     throw new Error("Failed to generate a valid course skeleton.");
   }
 
   const totalModules = skeleton.modules.length;
-  const finalCourse: GeneratedCourse = { 
+  const finalCourse: GeneratedCourse = {
     description: skeleton.description,
-    modules: [] 
+    modules: []
   };
 
   // Step 2: Generate Content for each module

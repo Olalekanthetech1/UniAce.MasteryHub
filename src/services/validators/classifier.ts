@@ -21,7 +21,7 @@ export const classifySubject = (text: string, department?: string): string | nul
     return 'Chemistry';
   }
 
-  // Math keywords
+  // Math keywords or explicit mathematical expressions (not ordinary hyphenated English words)
   if (
     lowerText.includes('derivative') ||
     lowerText.includes('integral') ||
@@ -30,7 +30,9 @@ export const classifySubject = (text: string, department?: string): string | nul
     lowerText.includes('matrix') ||
     lowerText.includes('solve') ||
     lowerText.includes('calculate') ||
-    /[+\-*/^=]/.test(lowerText)
+    /\b\d+(?:\.\d+)?\s*[+\-*/^=]\s*\d+(?:\.\d+)?\b/.test(lowerText) ||
+    /\b[a-z]\s*=\s*[-+]?\d+/i.test(lowerText) ||
+    /\$[^$]+\$/.test(text)
   ) {
     return 'Math';
   }

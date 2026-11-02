@@ -60,7 +60,7 @@ export const CourseSkeletonSchema = z.object({
   description: z.string().trim().min(1),
   pedagogyType: DisciplinePedagogyTypeEnum,
   creditHours: z.number().int().min(1).max(12),
-  learningOutcomes: z.array(z.union([z.string().trim().min(1), LearningOutcomeSchema])).min(1),
+  learningOutcomes: z.array(LearningOutcomeSchema).min(1),
   modules: z.array(CourseModuleOutlineSchema).min(1)
 });
 export type CourseSkeleton = z.infer<typeof CourseSkeletonSchema>;
@@ -200,42 +200,39 @@ export const LessonContentSchema = z.preprocess((val: any) => {
       };
     }
 
-    const sections: string[] = [];
-    if (val.introduction || val.executiveSummary) {
-      sections.push(`## Executive Summary\n\n${val.introduction || val.executiveSummary}`);
-    }
-    if (val.theoreticalFoundations || val.theory) {
-      sections.push(`## Theoretical Foundations\n\n${val.theoreticalFoundations || val.theory}`);
-    }
-    if (val.detailedBreakdown || val.breakdown || val.mechanisms) {
-      sections.push(`## Detailed Breakdown\n\n${val.detailedBreakdown || val.breakdown || val.mechanisms}`);
-    }
-    if (val.caseStudy || val.realWorldCaseStudy) {
-      sections.push(`## Real-World Case Study\n\n${val.caseStudy || val.realWorldCaseStudy}`);
-    }
-    if (val.keyTakeaways || val.takeaways) {
-      sections.push(`## Key Takeaways\n\n${val.keyTakeaways || val.takeaways}`);
-    }
-    if (val.practiceDiscussion || val.discussionPrompt) {
-      sections.push(`## Practice Discussion & Exercises\n\n${val.practiceDiscussion || val.discussionPrompt}`);
-    }
-    if (Array.isArray(val.sections)) {
-      for (const s of val.sections) {
-        if (typeof s === 'string') sections.push(s);
-        else if (s && typeof s === 'object') {
-          sections.push(`### ${s.title || s.heading || 'Section'}\n\n${s.content || s.text || s.body || ''}`);
-        }
-      }
-    }
-    if (val.body) sections.push(String(val.body));
-    if (val.text) sections.push(String(val.text));
-
-    if (sections.length > 0) {
+    const directMarkdown = typeof val.body === 'string' && val.body.trim().length > 0
+      ? val.body
+      : (typeof val.text === 'string' && val.text.trim().length > 0 ? val.text : null);
+    if (directMarkdown) {
       return {
         ...val,
         title: cleanTitle,
-        content: normalizeLessonMarkdownContent(sections.join('\n\n'))
+        content: normalizeLessonMarkdownContent(directMarkdown)
       };
+    }
+
+    if (Array.isArray(val.sections) && val.sections.length > 0) {
+      const sections: string[] = [];
+      for (const s of val.sections) {
+        if (typeof s === 'string' && s.trim().length > 0) {
+          sections.push(s.trim());
+        } else if (s && typeof s === 'object') {
+          const heading = String(s.title || s.heading || '').trim();
+          const body = String(s.content || s.text || s.body || '').trim();
+          if (heading && body) {
+            sections.push(`### ${heading}\n\n${body}`);
+          } else if (body) {
+            sections.push(body);
+          }
+        }
+      }
+      if (sections.length > 0) {
+        return {
+          ...val,
+          title: cleanTitle,
+          content: normalizeLessonMarkdownContent(sections.join('\n\n'))
+        };
+      }
     }
   }
   return val;
@@ -392,9 +389,15 @@ export const CourseProvenanceSchema = z.object({
   academicAccuracy: z.enum(['not_independently_verified', 'subject_expert_reviewed']).optional(),
   rubricAudit: OutlineCriticRubricSchema.optional(),
   research: z.object({
-    status: z.enum(['evidence_found', 'insufficient_evidence', 'no_results', 'unavailable']),
+    status: z.enum(['evidence_found', 'insufficient_evidence', 'no_results', 'disabled', 'unavailable']),
     runId: z.string().nullable(),
     researchDepth: z.string().nullable(),
+    researchPasses: z.array(z.object({
+      pass: z.number().int().positive(),
+      searchDepth: z.enum(['scholarly_only', 'basic', 'advanced']),
+      query: z.string(),
+      reason: z.string()
+    })).optional(),
     retrievedAt: z.string(),
     papersCount: z.number().int().nonnegative(),
     webSourcesCount: z.number().int().nonnegative(),
@@ -420,65 +423,68 @@ export const CourseProvenanceSchema = z.object({
 export type CourseProvenance = z.infer<typeof CourseProvenanceSchema>;
 
 /**
- * Normalizes any variation of objectives or learning outcomes into a clean LearningOutcome array
+ * Validates and normalizes learning outcomes into a verified LearningOutcome array.
+ * Requires an explicit, valid Bloom's taxonomy level for every learning outcome.
  */
-export function normalizeLearningOutcomes(raw: any): LearningOutcome[] {
-  if (!raw) return [];
-  if (!Array.isArray(raw)) return [];
-  return raw.map((item: any) => {
-    if (typeof item === 'string') {
-      return { outcome: item.trim(), bloomLevel: 'Understand' as BloomLevel };
+export function normalizeLearningOutcomes(raw: unknown): LearningOutcome[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error('Verified course learning outcomes with explicit Bloom taxonomy levels are required.');
+  }
+  const validBloomLevels = new Set<BloomLevel>(['Remember', 'Understand', 'Apply', 'Analyze', 'Evaluate', 'Create']);
+  const normalized = raw.map((item: any, idx: number) => {
+    if (!item || typeof item !== 'object') {
+      throw new Error(`Learning outcome at index ${idx} must be an object with "outcome" and "bloomLevel".`);
     }
-    if (item && typeof item === 'object') {
-      const outcome = item.outcome || item.title || item.description || item.text || '';
-      let bloomLevel: BloomLevel = 'Understand';
-      if (item.bloomLevel && ['Remember', 'Understand', 'Apply', 'Analyze', 'Evaluate', 'Create'].includes(item.bloomLevel)) {
-        bloomLevel = item.bloomLevel as BloomLevel;
-      }
-      return { outcome: String(outcome).trim(), bloomLevel };
+    const outcome = String(item.outcome || item.title || item.description || item.text || '').trim();
+    if (!outcome) {
+      throw new Error(`Learning outcome at index ${idx} is missing its outcome text.`);
     }
-    return { outcome: String(item).trim(), bloomLevel: 'Understand' as BloomLevel };
-  }).filter(o => o.outcome.length > 0);
+    const rawBloom = String(item.bloomLevel || '').trim() as BloomLevel;
+    if (!validBloomLevels.has(rawBloom)) {
+      throw new Error(`Learning outcome "${outcome}" is missing a valid Bloom taxonomy level (Remember, Understand, Apply, Analyze, Evaluate, Create).`);
+    }
+    return { outcome, bloomLevel: rawBloom };
+  });
+  return normalized;
 }
 
 /**
- * Helper to derive curriculum parameters based on level, term, and credits
+ * Helper to derive dynamic curriculum bounds based on verified level, term, and credit units
+ * without forcing a rigid module count or fixed 4-lesson template.
  */
 export function deriveCurriculumParameters(level?: string, semester?: string, creditUnits?: number, depth?: string) {
-  if (!creditUnits || !Number.isInteger(creditUnits) || creditUnits < 1 || creditUnits > 12) throw new Error('Verified course credit units are required to derive curriculum parameters.');
-  if (!level?.trim()) throw new Error('Verified academic level is required to derive curriculum parameters.');
+  if (!creditUnits || !Number.isInteger(creditUnits) || creditUnits < 1 || creditUnits > 12) {
+    throw new Error('Verified course credit units are required to derive curriculum parameters.');
+  }
+  if (!level?.trim()) {
+    throw new Error('Verified academic level is required to derive curriculum parameters.');
+  }
   const credits = creditUnits;
-  let minModules = 6;
-  let maxModules = 10;
-  let targetLessonsPerModule = 4;
+  let minModules = Math.max(3, credits * 2 - 1);
+  let maxModules = Math.max(minModules + 2, Math.min(14, credits * 3 + 2));
+  let minLessonsPerModule = 2;
+  let maxLessonsPerModule = 6;
 
-  const normalizedLevel = (level || '').toLowerCase();
-  if (normalizedLevel.includes('100') || normalizedLevel.includes('intro') || normalizedLevel.includes('first')) {
-    // 100 level: Broad foundational breadth, thorough orientation
-    minModules = Math.max(6, Math.min(10, credits * 2));
-    maxModules = minModules + 2;
-    targetLessonsPerModule = 4;
-  } else if (normalizedLevel.includes('400') || normalizedLevel.includes('500') || normalizedLevel.includes('grad') || normalizedLevel.includes('advanced')) {
-    // Advanced level: Deep specialized thematic modules
-    minModules = Math.max(6, Math.min(12, credits * 2 + 1));
-    maxModules = minModules + 2;
-    targetLessonsPerModule = 4;
-  } else {
-    // 200-300 level: Core intermediate progression
-    minModules = Math.max(6, Math.min(10, credits * 2));
-    maxModules = minModules + 2;
-    targetLessonsPerModule = 4;
+  const normalizedLevel = level.trim().toLowerCase();
+  if (normalizedLevel.includes('400') || normalizedLevel.includes('500') || normalizedLevel.includes('grad') || normalizedLevel.includes('advanced')) {
+    minModules = Math.max(4, credits * 2);
+    maxModules = Math.max(minModules + 2, Math.min(15, credits * 3 + 3));
   }
 
   if (depth === 'in-depth' || depth === 'advanced' || depth === 'deep-dive') {
     minModules += 1;
     maxModules += 2;
+    maxLessonsPerModule = 7;
   }
+
+  const targetLessonsPerModule = Math.max(minLessonsPerModule, Math.min(maxLessonsPerModule, credits + 1));
 
   return {
     credits,
     minModules,
     maxModules,
+    minLessonsPerModule,
+    maxLessonsPerModule,
     targetLessonsPerModule
   };
 }

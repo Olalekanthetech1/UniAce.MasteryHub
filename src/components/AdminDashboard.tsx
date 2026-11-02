@@ -315,7 +315,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   const [quickCourseOutline, setQuickCourseOutline] = useState('');
   const [quickTone, setQuickTone] = useState('academic');
   const [quickDepth, setQuickDepth] = useState('standard');
-  const [quickAcademicStandard, setQuickAcademicStandard] = useState<string>('Globally Adaptive (Universal University Standard)');
+  const [quickAcademicStandard, setQuickAcademicStandard] = useState<string>('');
   const [customAcademicStandard, setCustomAcademicStandard] = useState<string>('');
   const [sourceFile, setSourceFile] = useState<File | null>(null);
   const [sourceText, setSourceText] = useState('');
@@ -1150,8 +1150,16 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
       showToast('Please provide both course code and name', 'error');
       return;
     }
+    if (!quickLevel.trim()) {
+      showToast('Please enter the verified academic level (e.g., 100, 200, 300, 400).', 'error');
+      return;
+    }
     if (typeof quickCreditUnits !== 'number' || !Number.isInteger(quickCreditUnits) || quickCreditUnits < 1 || quickCreditUnits > 12) {
       showToast('Enter the verified course credit units (a whole number from 1 to 12).', 'error');
+      return;
+    }
+    if (quickAcademicStandard === 'Custom Academic Benchmark' && !customAcademicStandard.trim()) {
+      showToast('Please enter the specific custom academic benchmark or select another option.', 'error');
       return;
     }
     const target = resolveCourseGenerationTarget(courseScope, selectedFaculties, selectedDepartments);
@@ -1169,8 +1177,8 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
       let retries = 2;
 
       const activeAcademicStandard = quickAcademicStandard === 'Custom Academic Benchmark'
-        ? (customAcademicStandard.trim() || 'Custom Dynamic Academic Benchmark')
-        : quickAcademicStandard;
+        ? customAcademicStandard.trim()
+        : (quickAcademicStandard.trim() || undefined);
 
       while (retries > 0 && !skeleton) {
         try {
@@ -1267,8 +1275,8 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
       const idToken = await user.getIdToken();
 
       const activeAcademicStandard = quickAcademicStandard === 'Custom Academic Benchmark'
-        ? (customAcademicStandard.trim() || 'Custom Dynamic Academic Benchmark')
-        : quickAcademicStandard;
+        ? customAcademicStandard.trim()
+        : (quickAcademicStandard.trim() || undefined);
 
       // Call our server-coordinated endpoint
       const response = await fetch('/api/course/generate-coordinated', {
@@ -2256,6 +2264,18 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
 
   const handleUpload = async () => {
     if (!selectedFile) return;
+    if (!courseCode.trim() || !courseTitle.trim()) {
+      showToast('Please provide both a verified Course Code and Course Title before extracting.', 'error');
+      return;
+    }
+    if (!quickLevel.trim() || !quickSemester.trim()) {
+      showToast('Please provide both the verified Level and Semester before extracting.', 'error');
+      return;
+    }
+    if (typeof quickCreditUnits !== 'number' || !Number.isInteger(quickCreditUnits) || quickCreditUnits < 1 || quickCreditUnits > 12) {
+      showToast('Please enter the verified course credit units (a whole number from 1 to 12) before extracting.', 'error');
+      return;
+    }
     if (!quickDepartment) {
       showToast('Please select a Department before extracting.', 'error');
       return;
@@ -2274,21 +2294,24 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
       // 2. Call AI Vision Extraction API
       setStatusMessage('Analyzing document structure and syllabus...');
 
+      const normalizedCode = courseCode.trim().toUpperCase();
+      const normalizedTitle = courseTitle.trim();
+
       const prompt = `
         You are an expert curriculum designer and university professor.
         Analyze the attached PDF document, which is a university-level course note.
         Extract the full course syllabus and content into a structured JSON format.
 
         CRITICAL INSTRUCTIONS FOR DIAGRAMS AND IMAGES:
-        1. If you encounter a flowchart, system architecture, graph, or structural diagram, describe it in detail using text or a structured list.
-        2. If you encounter a complex photograph or highly detailed illustration (e.g., biology anatomy, real-world photos) that cannot be coded, simply ignore it or replace it with a descriptive placeholder like "[Complex Image: Admin to insert manually]".
+        1. If you encounter a flowchart, system architecture, graph, or structural diagram, describe its academic content faithfully using text or a structured list based on its labels and captions in the document.
+        2. Do NOT insert synthetic bracket placeholders (such as "[Complex Image: ...]") into the lesson markdown. If a decorative photograph has no extractable instructional content, omit it cleanly.
 
         The output must strictly follow this JSON structure:
         {
-          "id": "${courseCode || 'COURSE_CODE'}",
-          "title": "${courseTitle || 'Course Title'}",
-          "description": "A brief summary of the course",
-          "department": "${quickDepartment || 'Department'}",
+          "id": "${normalizedCode}",
+          "title": "${normalizedTitle}",
+          "description": "A brief summary of the course derived from the document",
+          "department": "${quickDepartment}",
           "syllabus": [
             {
               "id": "module_id",
@@ -2313,11 +2336,11 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
         pdfPart.inlineData.data,
         pdfPart.inlineData.mimeType,
         prompt,
-        courseCode,
-        courseTitle,
+        normalizedCode,
+        normalizedTitle,
         quickDepartment,
-        quickLevel,
-        quickSemester,
+        quickLevel.trim(),
+        quickSemester.trim(),
         quickSubject
       );
 
@@ -2326,7 +2349,6 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
 
       const responseText = response.text;
       if (!responseText) throw new Error("No response from AI");
-      // Clean up the response if it contains markdown code blocks
       const cleanJson = responseText.replace(/```(?:json)?\s*([\s\S]*?)\s*```/g, '$1').trim();
       
       let courseData: Course;
@@ -2343,12 +2365,15 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
         throw new Error("Failed to parse AI response. The PDF might be too complex or the AI output was malformed.");
       }
 
-      // 4. Enter Review Mode
+      // 4. Enter Review Mode with strictly verified course metadata
       const finalCourse = {
         ...courseData,
-        id: (courseCode || courseData.id || `COURSE_${Date.now()}`) as any,
-        level: quickLevel,
-        semester: quickSemester,
+        id: normalizedCode as any,
+        title: courseData.title?.trim() || normalizedTitle,
+        level: quickLevel.trim(),
+        semester: quickSemester.trim(),
+        creditUnits: quickCreditUnits,
+        scope: courseScope,
         subject: quickSubject,
         department: quickDepartment
       } as Course;
@@ -2371,7 +2396,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   const handlePublishCourse = async () => {
     if (!selectedFile) return;
     
-    let finalCourseData: Course;
+    let finalCourseData: any;
     try {
       finalCourseData = JSON.parse(rawJsonText);
     } catch (e) {
@@ -2379,7 +2404,22 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
       return;
     }
 
-    const sanitizedId = finalCourseData.id.replace(/\s+/g, '').toUpperCase();
+    const rawId = String(finalCourseData.id || courseCode || '').replace(/\s+/g, '').toUpperCase();
+    if (!rawId) {
+      showToast("A verified Course Code / ID is required before publishing.", "error");
+      return;
+    }
+    const resolvedCredits = Number(finalCourseData.creditUnits ?? quickCreditUnits);
+    if (!Number.isInteger(resolvedCredits) || resolvedCredits < 1 || resolvedCredits > 12) {
+      showToast("Verified course credit units (1 to 12) are required before publishing.", "error");
+      return;
+    }
+    const resolvedScope = String(finalCourseData.scope || courseScope || '').trim().toUpperCase();
+    if (!resolvedScope) {
+      showToast("A verified course scope is required before publishing.", "error");
+      return;
+    }
+
     setIsUploading(true);
     setStatusMessage('Saving course to database...');
     try {
@@ -2393,13 +2433,15 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
           'Authorization': `Bearer ${idToken}`
         },
         body: JSON.stringify({
-          id: sanitizedId,
-          code: sanitizedId,
-          title: finalCourseData.title,
+          id: rawId,
+          code: rawId,
+          title: finalCourseData.title || courseTitle.trim(),
           description: finalCourseData.description || '',
-          level: finalCourseData.level || quickLevel,
+          level: finalCourseData.level || quickLevel.trim(),
           department: finalCourseData.department || quickDepartment,
-          semester: finalCourseData.semester || quickSemester,
+          semester: finalCourseData.semester || quickSemester.trim(),
+          creditUnits: resolvedCredits,
+          scope: resolvedScope,
           syllabus: finalCourseData.syllabus || []
         })
       });
@@ -2408,7 +2450,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
         throw new Error(saveData.error || 'Failed to save course to PostgreSQL catalog');
       }
 
-      LogService.log('success', 'admin', `Published new course: ${finalCourseData.title} (${sanitizedId})`);
+      LogService.log('success', 'admin', `Published new course: ${finalCourseData.title} (${rawId})`);
 
       // Phase 2: Automatic Ingestion
       await ingestCourseToKB(finalCourseData);
@@ -3467,20 +3509,18 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
 
                   <div className="mb-6">
                     <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">
-                      Academic Standard & Curriculum Framework
+                      Academic Standard & Curriculum Framework (Optional)
                     </label>
                     <select 
                       value={quickAcademicStandard}
                       onChange={(e) => setQuickAcademicStandard(e.target.value)}
                       className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     >
-                      <option value="Globally Adaptive (Universal University Standard)">Globally Adaptive (Universal University Standard)</option>
-                      <option value="International Higher Education Curriculum Standard">International Higher Education Curriculum Standard</option>
-                      <option value="Global Accreditation & Outcomes-Based Framework">Global Accreditation & Outcomes-Based Framework</option>
+                      <option value="">None (Use Disciplinary & Level Grounding)</option>
                       <option value="North American University Benchmark (ABET/CSAB Aligned)">North American University Benchmark (ABET/CSAB Aligned)</option>
                       <option value="European Higher Education Area / Bologna Process">European Higher Education Area / Bologna Process</option>
                       <option value="Commonwealth Higher Education Quality Framework">Commonwealth Higher Education Quality Framework</option>
-                      <option value="Custom Academic Benchmark">Custom Academic Benchmark (Enter Custom Standard)...</option>
+                      <option value="Custom Academic Benchmark">Custom Academic Benchmark (Enter Verified Standard)...</option>
                     </select>
 
                     {quickAcademicStandard === 'Custom Academic Benchmark' && (
@@ -3912,6 +3952,19 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
                 />
               </div>
               <div>
+                <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Course Units (Credit Units)</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="12"
+                  step="1"
+                  value={quickCreditUnits}
+                  onChange={(e) => setQuickCreditUnits(e.target.value === '' ? '' : Number(e.target.value))}
+                  placeholder="Enter verified course units (1-12)"
+                  className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+              <div>
                 <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Semester</label>
                 <input
                   type="text"
@@ -3922,6 +3975,18 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
                 />
               </div>
               <div>
+                <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Course Scope</label>
+                <select
+                  value={courseScope}
+                  onChange={(e) => handleCourseScopeChange(e.target.value as CourseScope)}
+                  className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                >
+                  <option value="GLOBAL">Global (All Students)</option>
+                  <option value="FACULTY">Faculty-wide</option>
+                  <option value="DEPARTMENT">Specific Departments</option>
+                </select>
+              </div>
+              <div className="md:col-span-3">
                 <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">Department</label>
                 <select
                   value={quickDepartment}

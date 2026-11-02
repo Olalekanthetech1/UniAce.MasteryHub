@@ -1,17 +1,24 @@
 import { Validator, ValidationResult } from './types';
 
 export class ChemistryValidator implements Validator {
-  async validate(input: string, topic: string): Promise<ValidationResult> {
-    // Example: Basic check for chemical formula syntax
-    // Ensure numbers in formulas (like H2O) are not followed by letters without a space
-    // This is a simplified example.
-    const formulaRegex = /[A-Z][a-z]?\d+[A-Z]/;
-    if (formulaRegex.test(input)) {
-      return {
-        isValid: false,
-        message: "It looks like your chemical formula might be formatted incorrectly.",
-        correction: "Ensure that numbers in chemical formulas are properly subscripted or clearly separated."
-      };
+  async validate(input: string, _topic: string): Promise<ValidationResult> {
+    // Only flag genuine structural syntax errors such as unbalanced parentheses/brackets in chemical formulas
+    const chemTokens = input.match(/\b(?:[A-Z][a-z]?\d*|\(|\)|\[|\]){2,}\b/g) || [];
+    for (const token of chemTokens) {
+      if (!/[()]/.test(token)) continue;
+      let depth = 0;
+      for (const ch of token) {
+        if (ch === '(') depth++;
+        else if (ch === ')') depth--;
+        if (depth < 0) break;
+      }
+      if (depth !== 0) {
+        return {
+          isValid: false,
+          message: `Unbalanced parentheses detected in chemical notation "${token}".`,
+          correction: 'Ensure all polyatomic group parentheses in chemical formulas are properly closed.'
+        };
+      }
     }
     return { isValid: true };
   }

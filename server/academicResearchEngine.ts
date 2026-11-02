@@ -17,7 +17,12 @@ import { fetchFromArxiv } from './academic/arxivAdapter.js';
 import { fetchFromSemanticScholar, lookupPaperSemanticScholar } from './academic/semanticScholarAdapter.js';
 import { fetchFromOpenAlex, fetchOpenAlexConceptDefinitions } from './academic/openAlexAdapter.js';
 import { searchTavily } from './academic/tavilyAdapter.js';
-import { assessResearchEvidence, buildAdaptiveExpansionQuery } from './academic/adaptiveEvidence.js';
+import {
+  assessResearchEvidence,
+  buildAdaptiveExpansionQuery,
+  buildFocusedScholarlyExpansionQuery,
+  tokenizeResearchTerms
+} from './academic/adaptiveEvidence.js';
 import { getPostgresPool } from './postgresPool.js';
 import { getSystemSettingsDoc, setSystemSettingsDoc } from './systemConfigStore.js';
 import { decryptAcademicCredential, encryptAcademicCredential } from './academic/credentialVault.js';
@@ -507,33 +512,41 @@ export async function searchAcademicPapers(input: SearchAcademicPapersInput): Pr
 
   await Promise.all(baseTasks);
 
-  if (minYear !== undefined) {
-    const before = papers.length;
-    for (let index = papers.length - 1; index >= 0; index--) {
-      if (papers[index].year === null || papers[index].year < minYear) papers.splice(index, 1);
-    }
-    if (before > papers.length) {
-      limitations.push(
-        'The minimum publication-year filter excluded ' + (before - papers.length) +
-        ' records with an older or unavailable publication year.'
-      );
-    }
-  }
+  const scoringTerms = tokenizeResearchTerms([query, fieldOfStudy || '', syllabusText || ''].join(' '));
+  const fallbackTerms = query.toLowerCase().split(/\s+/).filter((term) => term.length > 2);
+  const queryTerms = scoringTerms.length > 0 ? scoringTerms : fallbackTerms;
 
-  const queryTerms = query.toLowerCase().split(/\s+/).filter((term) => term.length > 2);
-  for (const paper of papers) paper.relevanceScore = calculateRelevanceScore(paper, queryTerms);
+  let excludedByMinYear = 0;
+  const deduplicateAndRankPapers = (rawPapers: AcademicPaper[], maxItems: number): AcademicPaper[] => {
+    const filtered: AcademicPaper[] = [];
+    for (const paper of rawPapers) {
+      if (minYear !== undefined && (paper.year === null || paper.year < minYear)) {
+        excludedByMinYear++;
+        continue;
+      }
+      paper.relevanceScore = calculateRelevanceScore(paper, queryTerms);
+      filtered.push(paper);
+    }
+    const unique: AcademicPaper[] = [];
+    const seenDois = new Set<string>();
+    for (const paper of filtered) {
+      const normalizedDoi = paper.doi?.toLowerCase().replace(/^https?:\/\/(dx\.)?doi\.org\//, '');
+      if (normalizedDoi && seenDois.has(normalizedDoi)) continue;
+      if (unique.some((existing) => computeTitleSimilarity(existing.title, paper.title) > 0.9)) continue;
+      if (normalizedDoi) seenDois.add(normalizedDoi);
+      unique.push(paper);
+    }
+    unique.sort((a, b) => b.relevanceScore - a.relevanceScore);
+    return unique.slice(0, maxItems);
+  };
 
-  const uniquePapers: AcademicPaper[] = [];
-  const seenDois = new Set<string>();
-  for (const paper of papers) {
-    const normalizedDoi = paper.doi?.toLowerCase().replace(/^https?:\/\/(dx\.)?doi\.org\//, '');
-    if (normalizedDoi && seenDois.has(normalizedDoi)) continue;
-    if (uniquePapers.some((existing) => computeTitleSimilarity(existing.title, paper.title) > 0.9)) continue;
-    if (normalizedDoi) seenDois.add(normalizedDoi);
-    uniquePapers.push(paper);
+  let finalPapers = deduplicateAndRankPapers(papers, limit);
+  if (excludedByMinYear > 0) {
+    limitations.push(
+      'The minimum publication-year filter excluded ' + excludedByMinYear +
+      ' records with an older or unavailable publication year.'
+    );
   }
-  uniquePapers.sort((a, b) => b.relevanceScore - a.relevanceScore);
-  const finalPapers = uniquePapers.slice(0, limit);
   webSources = mergeWebSources([], webSources).slice(0, config.maxWebResults);
 
   let assessment = assessResearchEvidence(
@@ -543,53 +556,175 @@ export async function searchAcademicPapers(input: SearchAcademicPapersInput): Pr
     config.minimumEvidenceCount
   );
 
-  if (config.researchDepth === 'adaptive' && assessment.status !== 'candidate_evidence_found' &&
-      config.maxExpansionRounds > 0) {
-    if (!tavilyEnabled || !config.tavilyApiKey) {
-      limitations.push('Adaptive expansion could not run because Tavily is not both enabled and configured.');
+  if (
+    config.researchDepth === 'adaptive' &&
+    assessment.status !== 'candidate_evidence_found' &&
+    config.maxExpansionRounds > 0
+  ) {
+    const hasScholarlyExpansion =
+      config.providersEnabled.openAlex ||
+      config.providersEnabled.semanticScholar ||
+      config.providersEnabled.arxiv;
+    const hasTavilyExpansion = Boolean(tavilyEnabled && config.tavilyApiKey);
+
+    if (!hasScholarlyExpansion && !hasTavilyExpansion) {
+      limitations.push('Adaptive expansion could not run because no scholarly or web providers are enabled and configured.');
     } else {
-      let expansionQuery = buildAdaptiveExpansionQuery(query, fieldOfStudy, syllabusText, assessment);
+      if (!hasTavilyExpansion) {
+        limitations.push('Adaptive expansion executed across enabled scholarly registries (OpenAlex, Semantic Scholar, arXiv); Tavily web expansion was skipped because Tavily is not both enabled and configured.');
+      }
+      const triedScholarlyQueries = new Set<string>([normalizedQuery.toLowerCase()]);
+
       for (let round = 1; round <= config.maxExpansionRounds; round++) {
-        const expansionStarted = Date.now();
         const passNumber = researchPasses.length + 1;
-        try {
-          const expanded = await searchTavily(expansionQuery, config.tavilyApiKey, {
-            searchDepth: 'advanced',
-            maxResults: config.maxWebResults
-          });
-          webSources = mergeWebSources(webSources, expanded.sources)
-            .slice(0, config.maxWebResults * (round + 1));
-          providerBreakdown.tavily = {
-            count: webSources.length,
-            latencyMs: (providerBreakdown.tavily.latencyMs || 0) + expanded.latencyMs,
-            status: 'ok',
-            searchDepth: 'advanced'
-          };
-          researchPasses.push({
-            pass: passNumber,
-            searchDepth: 'advanced',
-            query: expansionQuery,
-            reason: assessment.expansionReasons.join(' ')
-          });
-          assessment = assessResearchEvidence(
-            normalizedQuery + ' ' + (syllabusText || ''),
-            finalPapers,
-            webSources,
-            config.minimumEvidenceCount
-          );
-          if (assessment.status === 'candidate_evidence_found') break;
-          expansionQuery = buildAdaptiveExpansionQuery(query, fieldOfStudy, syllabusText, assessment);
-        } catch (error) {
-          providerBreakdown.tavily = {
-            count: webSources.length,
-            latencyMs: (providerBreakdown.tavily.latencyMs || 0) + Date.now() - expansionStarted,
-            status: 'error',
-            errorMessage: (error as Error).message,
-            searchDepth: 'advanced'
-          };
-          limitations.push('Adaptive expansion failed: ' + (error as Error).message);
+        const expansionReasonsText = assessment.expansionReasons.join(' ');
+        const scholarlyQuery = buildFocusedScholarlyExpansionQuery(
+          query,
+          fieldOfStudy,
+          syllabusText,
+          assessment,
+          round
+        );
+        const webExpansionQuery = buildAdaptiveExpansionQuery(
+          query,
+          fieldOfStudy,
+          syllabusText,
+          assessment,
+          round
+        );
+
+        const expansionTasks: Promise<void>[] = [];
+        const runScholarlyRound =
+          hasScholarlyExpansion &&
+          scholarlyQuery.length >= 2 &&
+          !triedScholarlyQueries.has(scholarlyQuery.toLowerCase());
+
+        if (runScholarlyRound) {
+          triedScholarlyQueries.add(scholarlyQuery.toLowerCase());
+
+          if (config.providersEnabled.openAlex) {
+            expansionTasks.push((async () => {
+              const stepStart = Date.now();
+              try {
+                const res = await fetchFromOpenAlex(scholarlyQuery, limit, config.openAlexEmail);
+                papers.push(...res.papers);
+                providerBreakdown.openalex = {
+                  count: (providerBreakdown.openalex.count || 0) + res.papers.length,
+                  latencyMs: (providerBreakdown.openalex.latencyMs || 0) + res.latencyMs,
+                  status: 'ok',
+                  searchDepth: 'advanced'
+                };
+              } catch (err) {
+                providerBreakdown.openalex = {
+                  count: providerBreakdown.openalex.count || 0,
+                  latencyMs: (providerBreakdown.openalex.latencyMs || 0) + (Date.now() - stepStart),
+                  status: (providerBreakdown.openalex.count || 0) > 0 ? 'ok' : 'error',
+                  errorMessage: (err as Error).message,
+                  searchDepth: 'advanced'
+                };
+              }
+            })());
+          }
+
+          if (config.providersEnabled.semanticScholar) {
+            expansionTasks.push((async () => {
+              const stepStart = Date.now();
+              try {
+                const res = await fetchFromSemanticScholar(scholarlyQuery, limit, config.semanticScholarApiKey);
+                papers.push(...res.papers);
+                providerBreakdown.semantic_scholar = {
+                  count: (providerBreakdown.semantic_scholar.count || 0) + res.papers.length,
+                  latencyMs: (providerBreakdown.semantic_scholar.latencyMs || 0) + res.latencyMs,
+                  status: 'ok',
+                  searchDepth: 'advanced'
+                };
+              } catch (err) {
+                providerBreakdown.semantic_scholar = {
+                  count: providerBreakdown.semantic_scholar.count || 0,
+                  latencyMs: (providerBreakdown.semantic_scholar.latencyMs || 0) + (Date.now() - stepStart),
+                  status: (providerBreakdown.semantic_scholar.count || 0) > 0 ? 'ok' : 'error',
+                  errorMessage: (err as Error).message,
+                  searchDepth: 'advanced'
+                };
+              }
+            })());
+          }
+
+          if (config.providersEnabled.arxiv) {
+            expansionTasks.push((async () => {
+              const stepStart = Date.now();
+              try {
+                const res = await fetchFromArxiv(scholarlyQuery, scholarlyLimit);
+                papers.push(...res.papers);
+                providerBreakdown.arxiv = {
+                  count: (providerBreakdown.arxiv.count || 0) + res.papers.length,
+                  latencyMs: (providerBreakdown.arxiv.latencyMs || 0) + res.latencyMs,
+                  status: 'ok',
+                  searchDepth: 'advanced'
+                };
+              } catch (err) {
+                providerBreakdown.arxiv = {
+                  count: providerBreakdown.arxiv.count || 0,
+                  latencyMs: (providerBreakdown.arxiv.latencyMs || 0) + (Date.now() - stepStart),
+                  status: (providerBreakdown.arxiv.count || 0) > 0 ? 'ok' : 'error',
+                  errorMessage: (err as Error).message,
+                  searchDepth: 'advanced'
+                };
+              }
+            })());
+          }
+        }
+
+        if (hasTavilyExpansion && config.tavilyApiKey) {
+          expansionTasks.push((async () => {
+            const expansionStarted = Date.now();
+            try {
+              const expanded = await searchTavily(webExpansionQuery, config.tavilyApiKey as string, {
+                searchDepth: 'advanced',
+                maxResults: config.maxWebResults
+              });
+              webSources = mergeWebSources(webSources, expanded.sources)
+                .slice(0, config.maxWebResults * (round + 1));
+              providerBreakdown.tavily = {
+                count: webSources.length,
+                latencyMs: (providerBreakdown.tavily.latencyMs || 0) + expanded.latencyMs,
+                status: 'ok',
+                searchDepth: 'advanced'
+              };
+            } catch (error) {
+              providerBreakdown.tavily = {
+                count: webSources.length,
+                latencyMs: (providerBreakdown.tavily.latencyMs || 0) + Date.now() - expansionStarted,
+                status: webSources.length > 0 ? 'ok' : 'error',
+                errorMessage: (error as Error).message,
+                searchDepth: 'advanced'
+              };
+              limitations.push('Tavily adaptive expansion failed: ' + (error as Error).message);
+            }
+          })());
+        }
+
+        if (expansionTasks.length === 0) {
           break;
         }
+
+        await Promise.all(expansionTasks);
+
+        finalPapers = deduplicateAndRankPapers(papers, limit * (round + 1));
+        researchPasses.push({
+          pass: passNumber,
+          searchDepth: hasTavilyExpansion ? 'advanced' : 'scholarly_only',
+          query: hasTavilyExpansion ? webExpansionQuery : scholarlyQuery,
+          reason: expansionReasonsText
+        });
+
+        assessment = assessResearchEvidence(
+          normalizedQuery + ' ' + (syllabusText || ''),
+          finalPapers,
+          webSources,
+          config.minimumEvidenceCount
+        );
+        if (assessment.status === 'candidate_evidence_found') break;
       }
     }
   }

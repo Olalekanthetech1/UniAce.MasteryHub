@@ -240,17 +240,16 @@ export const AIService = {
         }
       }
 
-      // 3. Symbolic Math Verification
+      // 3. Symbolic Math Verification (only for explicit numeric/algebraic equations, never hyphenated prose)
       if (subject === 'Math') {
-        // Simple regex to find potential equations (e.g., x + 2 = 5)
-        const equationMatch = lastUserMessage.text.match(/([a-zA-Z0-9\+\-\*\/\^]+)\s*=\s*([a-zA-Z0-9\+\-\*\/\^]+)/);
+        const equationMatch = lastUserMessage.text.match(/(?:^|[\s$])(\d+(?:\.\d+)?(?:\s*[+\-*/^]\s*\d+(?:\.\d+)?)+)\s*=\s*(-?\d+(?:\.\d+)?)(?:$|[\s$.,?])/);
         if (equationMatch) {
           const [_, left, right] = equationMatch;
           try {
             const { MathEngine } = await import('./mathEngine');
-            const isCorrect = MathEngine.compare(left, right);
+            const isCorrect = MathEngine.compare(left.trim(), right.trim());
             if (!isCorrect) {
-              lastUserMessage.text = `${lastUserMessage.text}\n\n[MATH ENGINE VERIFICATION: The equation ${left} = ${right} appears to be mathematically incorrect.]`;
+              lastUserMessage.text = `${lastUserMessage.text}\n\n[MATH ENGINE VERIFICATION: The numeric equality ${left.trim()} = ${right.trim()} evaluates as unequal.]`;
             }
           } catch (e) {
             console.warn('Math engine comparison skipped:', e);
@@ -459,18 +458,18 @@ Department: ${department?.trim() || 'not supplied; do not infer'}
 Difficulty: ${difficulty}
 Content Context: ${truncatedContent}
 
-Generate a structured mini-lesson following this exact format:
-- 1 concise explanation of the core concept.
-  - THE "WHY" BEFORE THE "HOW": State why understanding this is essential for professionals in the field, moving away from dry definitions.
-  - COMPARATIVE & MULTI-DIMENSIONAL EXPLANATIONS: Structure complex details or properties using clear Comparison Tables. Ensure tables use valid Markdown GFM format with proper header and separator rows (|---|).
-  - STRUCTURED CASE STUDIES: Inject a real-world failure, standard case study, or concrete industry application of the concept (e.g., specific material classes, industrial processes, mathematical proofs) to anchor the theoretical explanation.
-- 1 worked example showing step-by-step execution.
-- 2 practice questions for the student to solve.
+Generate a focused, discipline-appropriate mini-lesson tailored to "${subTopic.title}":
+- Explain the core concept clearly, grounding why it matters within the discipline before diving into mechanics.
+- Adapt the presentation to the subject matter:
+  * Use Markdown comparison tables (|---|) when contrasting multiple concepts, properties, or frameworks.
+  * Include a concrete case study, primary source example, or real-world application relevant to the discipline.
+  * Provide a step-by-step worked example (mathematical, analytical, or conceptual as appropriate to the topic).
+- Conclude with 2 practice questions for the student to solve.
 
 CRITICAL: Calibrate the depth and complexity to the student's level (${level?.trim() || 'not supplied; do not infer'}).
 CRITICAL: You MUST acknowledge the topic in your VERY FIRST sentence.
-CRITICAL: Ensure Markdown tables are valid and not compressed into single lines.
-Format the output beautifully using Markdown and LaTeX for math.
+CRITICAL: If Markdown tables are used, ensure they are valid GFM and not compressed into single lines.
+Format the output cleanly using Markdown and balanced LaTeX ($...$ and $$...$$) where mathematical notation applies.
       `;
     }
 
@@ -494,15 +493,15 @@ ${mode === 'proactive' ? `2. PROACTIVE CHECK-IN MODE:
    - You MUST NOT explain the topic. 
    - You are ONLY checking if the student needs help or a challenge.
    - Keep it extremely brief (2-3 sentences max).
-   - Do NOT use analogies, do NOT highlight exam pitfalls, do NOT break down processes. Just say hi and ask how they are doing with the topic.` : `2. CURRICULUM ALIGNMENT: Dynamically align with accredited global university standards and international benchmarks to ensure the content is exam-ready and globally competitive.
-3. UNIACE TUTOR STYLE (LECTURER GUIDELINES): 
-   - THE "WHY" BEFORE THE "HOW": Introduce the topic by explaining why understanding it is essential for professionals in the field, moving away from dry definitions.
-   - COMPARATIVE & MULTI-DIMENSIONAL EXPLANATIONS: Structure complex topics using clear Comparison Tables where applicable. Ensure tables are properly formatted in Markdown.
-   - STRUCTURED CASE STUDIES: Where appropriate, inject a real-world failure, standard case study, or concrete industry application of the concept.
-   - Use simple, relatable analogies.
-   - Highlight common exam pitfalls.
-   - Break down complex processes step-by-step.
-   - Format the output beautifully using Markdown and LaTeX for math. Use standard $...$ for inline and $$...$$ for block. Ensure all dollar signs are balanced and correctly closed.`}
+   - Do NOT use analogies, do NOT highlight exam pitfalls, do NOT break down processes. Just say hi and ask how they are doing with the topic.` : `2. CURRICULUM ALIGNMENT: Dynamically align with university academic standards for the discipline so that explanations are rigorous and exam-ready.
+3. DISCIPLINE-ADAPTIVE TEACHING GUIDELINES: 
+   - Introduce the topic by establishing its conceptual and practical importance within the discipline.
+   - Use Markdown comparison tables when contrasting multiple dimensions, theories, or properties.
+   - Ground abstract ideas in discipline-relevant case studies, textual/historical analyses, or empirical applications as appropriate to the subject.
+   - Use accurate conceptual analogies that never introduce scientific or theoretical misconceptions.
+   - Highlight common student misconceptions and exam pitfalls.
+   - Break down complex processes or derivations step-by-step.
+   - Format the output using clean Markdown and balanced LaTeX ($...$ for inline and $$...$$ for block) whenever mathematical or symbolic notation is used.`}
 
 CRITICAL: Do NOT discuss university administration or specific regulatory agencies unless the student's current topic is specifically about them. Focus 100% on academic mastery.
 
@@ -1141,27 +1140,26 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
   },
 
   generateLessonContent: async (courseTitle: string, moduleTitle: string, lessonTitle: string): Promise<string> => {
-    const prompt = `You are a world-class university professor at a top-tier institution. Write a COMPREHENSIVE, RIGOROUS, and EXHAUSTIVE university lecture note for the following topic:
+    if (!courseTitle?.trim() || !moduleTitle?.trim() || !lessonTitle?.trim()) {
+      throw new Error('Verified courseTitle, moduleTitle, and lessonTitle are required to generate lesson content.');
+    }
+    const prompt = `You are a university professor authoring a comprehensive, rigorous university lecture note for the following topic:
     
-    Course: ${courseTitle}
-    Module: ${moduleTitle}
-    Lesson: ${lessonTitle}
+    Course: ${courseTitle.trim()}
+    Module: ${moduleTitle.trim()}
+    Lesson: ${lessonTitle.trim()}
     
-    CRITICAL INSTRUCTIONS (LECTURER GUIDELINES):
-    1. THE "WHY" BEFORE THE "HOW": Introduce this chapter/topic by stating why understanding these concepts and interrelationships is essential for professionals in the field, moving away from dry definitions to practical importance and real-world relevance.
-    2. COMPARATIVE & MULTI-DIMENSIONAL EXPLANATIONS: You MUST structure complex topics using clear Comparison Tables (e.g., comparing material properties, contrasting theories, comparing algorithmic structures).
-    3. STRUCTURED CASE STUDIES: You MUST inject at least one comprehensive real-world failure, standard case study, or concrete industry application of the concept (e.g., specific material classes, industrial processes, mathematical proofs) to anchor the theoretical explanation.
-    4. DO NOT SUMMARIZE. Provide the full depth expected in a 2-hour university lecture.
-    5. Use Markdown for structure (headings, sub-headings, lists, bold text).
-    6. Use LaTeX for ALL mathematical formulas and variables (e.g., $E=mc^2$). Ensure all derivations are shown step-by-step.
-    7. CLEAN FORMATTING SAFETY: Enforce absolute compatibility with mathematical notation ($ ... $ and $$ ... $$) and clean Markdown. Always verify that all inline $ and block $$ delimiters are perfectly closed and balanced to prevent rendering issues in the layout.
-    CRITICAL: You are outputting data to a JSON parser. You MUST double-escape all LaTeX commands (e.g., \\\\frac, \\\\right).
-    8. The content MUST be approximately 1500-2500 words. Be extremely detailed.
-    9. Include historical context, theoretical foundations, complex examples, and modern real-world applications.
-    10. Include a "Deep Dive" section for advanced concepts related to the topic.
-    11. End with a "Comprehensive Summary" and "Review Questions".
+    PEDAGOGICAL & DISCIPLINARY GUIDELINES:
+    1. Establish the conceptual foundation and disciplinary significance of "${lessonTitle.trim()}" within "${courseTitle.trim()}".
+    2. Organize the exposition around the natural structure of the subject matter rather than a generic template:
+       - For quantitative, mathematical, physical, or engineering subjects: include formal definitions, step-by-step mathematical derivations in balanced LaTeX ($...$ and $$...$$), and worked quantitative examples.
+       - For humanities, law, arts, or social sciences: include rigorous theoretical frameworks, primary source or case analysis, comparative perspectives, and critical evaluation without forcing artificial mathematical formulas.
+       - For biomedical or life sciences: include physiological/biochemical mechanisms, structural pathways, and clinical or experimental applications.
+    3. Use Markdown headings, lists, and GitHub-Flavored Markdown tables (|---|) where comparative analysis improves clarity.
+    4. Address common student misconceptions and include worked analytical examples and diagnostic review questions with full explanations.
+    5. Do not fabricate citations, textbook editions, or unverifiable empirical statistics.
     
-    Output ONLY the markdown content. Do not include any other text or conversational filler.`;
+    Output ONLY the markdown content. Do not include conversational preamble.`;
 
     const response = await callAI(prompt, undefined, undefined, 4000, 'high', 'lesson');
     if (typeof response?.text !== 'string' || !response.text.trim()) {
@@ -1385,28 +1383,25 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
   },
 
   getChatAnalytics: async () => {
-    try {
-      const token = await getAuthToken();
-      const response = await fetch('/api/admin/chat-analytics', {
-        headers: {
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        }
-      });
-      if (!response.ok) {
-        console.warn(`Failed to fetch chat analytics (${response.status})`);
-        return { topTopics: [], recentQueries: [] };
+    const token = await getAuthToken();
+    if (!token) throw new Error('Authenticated admin credentials are required for chat analytics.');
+    const response = await fetch('/api/admin/chat-analytics', {
+      headers: {
+        'Authorization': `Bearer ${token}`
       }
-      const ct = response.headers.get('content-type');
-      if (!ct || !ct.includes('application/json')) {
-        console.warn(`Chat analytics: Expected JSON response, got ${ct || 'unknown'}`);
-        return { topTopics: [], recentQueries: [] };
-      }
-      const data = await response.json();
-      return { topTopics: data.topTopics || [], recentQueries: data.recentQueries || [] };
-    } catch (error: any) {
-      console.warn('Get Chat Analytics Warning:', error?.message || error);
-      return { topTopics: [], recentQueries: [] };
+    });
+    if (!response.ok) {
+      throw new Error(`Chat analytics request failed with HTTP ${response.status}.`);
     }
+    const ct = response.headers.get('content-type') || '';
+    if (!ct.includes('application/json')) {
+      throw new Error(`Chat analytics returned unexpected content type: ${ct || 'missing'}.`);
+    }
+    const data = await response.json();
+    if (!Array.isArray(data?.topTopics) || !Array.isArray(data?.recentQueries)) {
+      throw new Error('Chat analytics response did not contain verified topTopics and recentQueries arrays.');
+    }
+    return { topTopics: data.topTopics, recentQueries: data.recentQueries };
   },
 
   generateArchitectPlan: async (timetable: TimetableEntry[], exams: ExamDate[], progress: UserProgress) => {
