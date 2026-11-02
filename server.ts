@@ -1399,21 +1399,39 @@ app.get('/api/courses/:courseId/modules/:moduleId/lessons', verifyAuth, requireC
 app.post('/api/courses/:courseId/modules/:moduleId/lessons/:lessonId', verifyAdmin, async (req, res) => {
   try {
     const { courseId, moduleId, lessonId } = req.params;
-    const { title, content } = req.body;
+    const { title, content, contentBlocks } = req.body || {};
     if (!content && content !== '') {
       return res.status(400).json({ error: 'content is required' });
+    }
+    let serializedContentBlocks: string | null = null;
+    if (contentBlocks !== undefined) {
+      const parsedBlocks = AcademicContentBlockCollectionSchema.safeParse(contentBlocks);
+      if (!parsedBlocks.success) {
+        return res.status(400).json({
+          error: 'Typed academic content blocks failed schema validation.',
+          validationErrors: parsedBlocks.error.issues
+        });
+      }
+      if (!parsedBlocks.data.blocks.some(block => block.type === 'explanation')) {
+        return res.status(400).json({ error: 'Typed lessons require at least one explanation block.' });
+      }
+      serializedContentBlocks = JSON.stringify(parsedBlocks.data);
     }
     const pool = getPostgresPool();
     if (!pool) {
       return res.status(503).json({ error: 'Database service unavailable' });
     }
+    await ensureCourseLearningSchema();
     const lessonTitle = title || lessonId;
     await pool.query(
-      `INSERT INTO course_lessons (id, course_id, module_id, title, content_markdown, order_index, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, 1, NOW(), NOW())
+      `INSERT INTO course_lessons (id, course_id, module_id, title, content_markdown, content_blocks, order_index, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, 1, NOW(), NOW())
        ON CONFLICT (course_id, module_id, id)
-       DO UPDATE SET content_markdown = EXCLUDED.content_markdown, title = COALESCE(EXCLUDED.title, course_lessons.title), updated_at = NOW()`,
-      [lessonId, courseId, moduleId, lessonTitle, content]
+       DO UPDATE SET content_markdown = EXCLUDED.content_markdown,
+         content_blocks = COALESCE(EXCLUDED.content_blocks, course_lessons.content_blocks),
+         title = COALESCE(EXCLUDED.title, course_lessons.title),
+         updated_at = NOW()`,
+      [lessonId, courseId, moduleId, lessonTitle, content, serializedContentBlocks]
     );
     res.json({ success: true, courseId, moduleId, lessonId });
   } catch (err: any) {
