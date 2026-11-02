@@ -70,12 +70,19 @@ export interface CourseQuizEntity {
   passing_score: number; // percentage, e.g. 70
   version: number;
   questions_snapshot_hash: string;
+  quiz_topics: string[];
+  pedagogical_reasoning: string;
   questions: Array<{
     id: string;
+    quiz_topic: string;
     question: string;
     options: string[];
     correct_option_index: number;
     explanation: string;
+    hint: string;
+    difficulty: number;
+    bloom_level: 'Remember' | 'Understand' | 'Apply' | 'Analyze' | 'Evaluate' | 'Create';
+    source_reference: string;
     latex_proof?: string;
   }>;
   created_at: string;

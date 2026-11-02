@@ -12,7 +12,8 @@
 import crypto from 'crypto';
 import { getFeatureFlags } from '../config/features';
 import { catalogCache } from '../cache/catalogCache';
-import { CourseEntity, CourseModuleEntity, CourseLessonEntity, CourseFormulaEntity } from '../../src/types/databaseSchema';
+import { CourseEntity, CourseModuleEntity, CourseLessonEntity, CourseFormulaEntity, CourseQuizEntity } from '../../src/types/databaseSchema';
+import type { Quiz } from '../../src/types';
 import { queryPostgres } from '../postgresPool';
 import { logger } from '../logger';
 import { ensureCourseLearningSchema } from '../services/courseLearningSchema';
@@ -280,6 +281,70 @@ export class CourseRepository {
       return staleCached;
     }
     throw new Error(`Database service unavailable: PostgreSQL lessons for ${courseId}/${moduleId} unreachable`);
+  }
+
+  /**
+   * Fetches a persisted module quiz and maps the database answer index to
+   * the student-facing QuizQuestion contract. Malformed records fail closed.
+   */
+  async getCourseQuiz(courseId: string, moduleId: string): Promise<Quiz | null> {
+    await ensureCourseLearningSchema();
+    const result = await queryPostgres<CourseQuizEntity>(
+      `SELECT id, course_id, module_id, title, passing_score, version,
+              questions_snapshot_hash, quiz_topics, pedagogical_reasoning,
+              questions, created_at, updated_at
+       FROM course_module_quizzes
+       WHERE course_id = $1 AND module_id = $2
+       LIMIT 1`,
+      [courseId, moduleId]
+    );
+    if (result.rows.length === 0) return null;
+
+    const quiz = result.rows[0];
+    if (!Array.isArray(quiz.questions) || quiz.questions.length === 0) {
+      throw new Error(`Persisted module quiz ${courseId}/${moduleId} has no valid question array.`);
+    }
+
+    const questions = quiz.questions.map((question, index) => {
+      if (
+        !question || typeof question.id !== 'string' || !question.id.trim() ||
+        typeof question.question !== 'string' || !question.question.trim() ||
+        !Array.isArray(question.options) || question.options.length !== 4 ||
+        question.options.some(option => typeof option !== 'string' || !option.trim()) ||
+        !Number.isInteger(question.correct_option_index) ||
+        question.correct_option_index < 0 || question.correct_option_index >= question.options.length ||
+        typeof question.explanation !== 'string' || !question.explanation.trim() ||
+        typeof question.hint !== 'string' ||
+        !Number.isInteger(question.difficulty) || question.difficulty < 1 || question.difficulty > 5 ||
+        !['Remember', 'Understand', 'Apply', 'Analyze', 'Evaluate', 'Create'].includes(question.bloom_level) ||
+        typeof question.source_reference !== 'string' || !question.source_reference.trim()
+      ) {
+        throw new Error(`Persisted module quiz ${courseId}/${moduleId} contains a malformed question at index ${index}.`);
+      }
+      return {
+        id: question.id,
+        type: 'multiple-choice' as const,
+        question: question.question,
+        options: question.options,
+        correctAnswer: question.options[question.correct_option_index],
+        explanation: question.explanation,
+        hint: question.hint,
+        difficulty: question.difficulty,
+        bloomLevel: ({
+          Remember: 'remembering',
+          Understand: 'understanding',
+          Apply: 'applying',
+          Analyze: 'analyzing',
+          Evaluate: 'evaluating',
+          Create: 'creating'
+        } as const)[question.bloom_level],
+        sourceReference: question.source_reference
+        // A matching lesson title proves provenance linkage, not independent
+        // semantic or academic verification of the answer key.
+      };
+    });
+
+    return { moduleId, questions };
   }
 
   /**

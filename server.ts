@@ -94,8 +94,10 @@ import {
   buildDomainBriefPrompt,
   buildCurriculumSkeletonPrompt,
   buildOutlineCriticPrompt,
-  buildLessonPrompt
+  buildLessonPrompt,
+  buildModuleQuizPrompt
 } from './server/curriculumEngine.js';
+import { retrieveCourseGenerationResearch, MAX_COURSE_SOURCE_CHARS } from './server/courseGenerationResearch.js';
 import { setupRagRoutes } from './server/routes/rag.js';
 import { setupStudentRoutes, invalidateBootstrapCache } from './server/routes/student.js';
 import { arenaRealtime } from './server/arenaRealtime.js';
@@ -1340,6 +1342,22 @@ app.get('/api/courses/:courseId/modules', verifyAuth, requireCourseAccess, async
     logger.error({ err: err.message, courseId: req.params.courseId }, '[GET /api/courses/:id/modules] Failed');
     const statusCode = (err.message?.includes('Database service unavailable') || err.message?.includes('unreachable')) ? 503 : 500;
     res.status(statusCode).json({ error: 'Failed to retrieve modules', message: err.message });
+  }
+});
+
+app.get('/api/courses/:courseId/modules/:moduleId/quiz', verifyAuth, requireCourseAccess, async (req, res) => {
+  const { courseId, moduleId } = req.params;
+  try {
+    const quiz = await courseRepository.getCourseQuiz(courseId, moduleId);
+    return res.json({ quiz, total: quiz?.questions.length || 0 });
+  } catch (error: any) {
+    logger.error({ error: error?.message || String(error), courseId, moduleId }, '[GET /api/courses/:courseId/modules/:moduleId/quiz] Failed');
+    const unavailable = String(error?.message || '').includes('Database service unavailable') ||
+      String(error?.message || '').includes('unreachable');
+    return res.status(unavailable ? 503 : 500).json({
+      error: 'Failed to retrieve the persisted module quiz.',
+      message: error?.message || 'The quiz could not be verified.'
+    });
   }
 });
 
@@ -3623,12 +3641,42 @@ const CourseFormulaSchema = z.preprocess((val: any) => {
     title: z.string().trim().min(1),
     latex: z.string().trim().min(1),
     description: z.string().trim().min(1)
-  })).min(1).refine(
+  })).refine(
     formulas => new Set(formulas.map(formula => formula.id)).size === formulas.length,
     'Formula identifiers must be unique.'
   )
 }));
 
+
+const CourseModuleQuizSchema = z.preprocess(
+  (value: unknown) => normalizeNestedMathUnicode(value),
+  z.object({
+    pedagogicalReasoning: z.string().trim().min(1),
+    questions: z.array(z.object({
+      id: z.string().trim().min(1),
+      quizTopic: z.string().trim().min(1),
+      question: z.string().trim().min(10),
+      options: z.array(z.string().trim().min(1)).length(4),
+      correctOptionIndex: z.number().int().min(0).max(3),
+      explanation: z.string().trim().min(20),
+      hint: z.string().trim().min(5),
+      difficulty: z.number().int().min(1).max(5),
+      bloomLevel: z.enum(['Remember', 'Understand', 'Apply', 'Analyze', 'Evaluate', 'Create']),
+      sourceReference: z.string().trim().min(1)
+    })).min(8).max(20)
+  }).superRefine((quiz, ctx) => {
+    const ids = quiz.questions.map(question => question.id);
+    if (new Set(ids).size !== ids.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['questions'], message: 'Question identifiers must be unique within the module quiz.' });
+    }
+    quiz.questions.forEach((question, index) => {
+      const normalizedOptions = question.options.map(option => option.toLowerCase());
+      if (new Set(normalizedOptions).size !== normalizedOptions.length) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['questions', index, 'options'], message: 'Each multiple-choice question must have four distinct options.' });
+      }
+    });
+  })
+);
 const VisionToQuizSchema = z.preprocess(
   (val: unknown) => normalizeNestedMathUnicode(val),
   z.object({
@@ -4780,9 +4828,18 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
   if (typeof creditUnits !== 'number' || !Number.isInteger(creditUnits) || creditUnits < 1 || creditUnits > 12) {
     return res.status(400).json({ error: 'Verified course credit units are required.' });
   }
-  if ((!outline || typeof outline !== 'string' || !outline.trim()) &&
-      (!sourceText || typeof sourceText !== 'string' || !sourceText.trim())) {
-    return res.status(400).json({ error: 'An admin-approved syllabus outline or source material is required for source-grounded course generation.' });
+  // A supplied syllabus is optional. The research engine can begin from the
+  // course identity and academic context; when no source is found, provenance
+  // records that limitation and prompts prohibit invented references.
+  const suppliedSourceChars = [outline, sourceText]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .join('\n\n').length;
+  if (suppliedSourceChars > MAX_COURSE_SOURCE_CHARS) {
+    return res.status(413).json({
+      error: 'The combined syllabus outline and extracted source material exceeds ' +
+        MAX_COURSE_SOURCE_CHARS.toLocaleString() +
+        ' characters. No source text was truncated; split or reduce the source document before generation.'
+    });
   }
   if (scope.trim().toUpperCase() === 'FACULTY' &&
       (!Array.isArray(selectedFaculties) || selectedFaculties.length === 0)) {
@@ -4793,6 +4850,16 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
     : [department.trim()];
 
   try {
+    const courseResearch = await retrieveCourseGenerationResearch({
+      courseName,
+      courseCode,
+      department,
+      level,
+      outline,
+      sourceText
+    });
+    console.log(`[Skeleton Gen] Research retrieval: ${courseResearch.metadata.status} (${courseResearch.metadata.papersCount} scholarly records, ${courseResearch.metadata.webSourcesCount} web discoveries).`);
+
     // 1. STAGE 1: INFER AUTHORITATIVE ACADEMIC DOMAIN & GROUNDING BRIEF
     console.log(`[Skeleton Gen] Stage 1: Inferring domain & canonical course references for "${courseName}" (Level: ${level})...`);
     const domainPrompt = buildDomainBriefPrompt({
@@ -4802,7 +4869,8 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
       department,
       level,
       outline,
-      sourceText
+      sourceText,
+      researchContext: courseResearch.context
     });
 
     const domainBrief = await completeWithProviderJSON({
@@ -4841,6 +4909,7 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
         selectedDepartments: effectiveDepartments,
         outline,
         sourceText,
+        researchContext: courseResearch.context,
         academicStandard
       }, feedbackCritique);
 
@@ -4868,7 +4937,8 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
         courseName,
         courseCode,
         level,
-        outline
+        outline,
+        researchContext: courseResearch.context
       });
 
       auditResult = await completeWithProviderJSON({
@@ -4883,6 +4953,8 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
         auditResult.coverageScore >= 75 && 
         auditResult.foundationsScore >= 75 && 
         auditResult.sequencingScore >= 75 && 
+        auditResult.workloadBalanceScore >= 75 &&
+        auditResult.consistencyScore >= 75 &&
         !auditResult.genericFillerDetected;
 
       if (isApproved) {
@@ -4890,11 +4962,11 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
         break;
       } else {
         console.warn(`[Skeleton Gen] Attempt ${attempts} rejected by Critic: ${auditResult.reasoning} (Coverage: ${auditResult.coverageScore}%, Foundations: ${auditResult.foundationsScore}%)`);
-        feedbackCritique = `The previous outline scored Coverage: ${auditResult.coverageScore}%, Foundations: ${auditResult.foundationsScore}%, Sequencing: ${auditResult.sequencingScore}%. Critic Critique: ${auditResult.reasoning}. Missing core topics: ${(auditResult.missingTopics || []).join(', ')}. Sequencing errors: ${(auditResult.sequencingErrors || []).join(', ')}. Please explicitly include foundational orientation in Module 1 and address these required topics.`;
+        feedbackCritique = `The previous outline scored Coverage: ${auditResult.coverageScore}%, Foundations: ${auditResult.foundationsScore}%, Sequencing: ${auditResult.sequencingScore}%, Workload Balance: ${auditResult.workloadBalanceScore}%, Consistency: ${auditResult.consistencyScore}%. Critic Critique: ${auditResult.reasoning}. Missing core topics: ${(auditResult.missingTopics || []).join(', ')}. Sequencing errors: ${(auditResult.sequencingErrors || []).join(', ')}. Correct workload imbalance and internal inconsistencies before resubmission.`;
         
-        if (attempts === MAX_ATTEMPTS && (!skeleton || !Array.isArray(skeleton.modules) || skeleton.modules.length < 4)) {
+        if (attempts === MAX_ATTEMPTS) {
           return res.status(422).json({
-            error: `Zero-Fallback Policy: Failed to generate a verified, high-coverage curriculum for "${courseName}" after ${MAX_ATTEMPTS} attempts. [Audit]: ${auditResult.reasoning} (Coverage Score: ${auditResult.coverageScore}%).`,
+            error: `Zero-Fallback Policy: The curriculum did not pass every required academic audit dimension for "${courseName}" after ${MAX_ATTEMPTS} attempts. Coverage: ${auditResult.coverageScore}%; foundations: ${auditResult.foundationsScore}%; sequencing: ${auditResult.sequencingScore}%; workload balance: ${auditResult.workloadBalanceScore}%; consistency: ${auditResult.consistencyScore}%. ${auditResult.reasoning}`,
             confidenceState: 'failed',
             auditResult
           });
@@ -4902,7 +4974,12 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
       }
     }
 
-    const confidenceState = (auditResult && auditResult.coverageScore >= 90) ? 'verified' : 'needs_review';
+    const confidenceState = (auditResult &&
+      auditResult.coverageScore >= 90 &&
+      auditResult.foundationsScore >= 90 &&
+      auditResult.sequencingScore >= 90 &&
+      auditResult.workloadBalanceScore >= 90 &&
+      auditResult.consistencyScore >= 90) ? 'verified' : 'needs_review';
 
     // Normalize & sort module lessonTitles & learning outcomes in ascending pedagogical order
     const sortedRawModules = [...(skeleton.modules || [])]
@@ -4938,6 +5015,7 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
       coverageScore: auditResult.coverageScore,
       confidenceState,
       rubricAudit: auditResult,
+      research: courseResearch.metadata,
       groundingReferences: domainBrief.canonicalCourseReferences
     });
 
@@ -5131,10 +5209,17 @@ async function executeCoordinatedGenerationJob(
     if (res) return res.status(400).json({ error: 'A valid course audience scope is required.' });
     return;
   }
-  if ((!outline || typeof outline !== 'string' || !outline.trim()) &&
-      (!sourceText || typeof sourceText !== 'string' || !sourceText.trim())) {
-    if (res) return res.status(400).json({ error: 'An admin-approved syllabus outline or source material is required for source-grounded course generation.' });
-    return;
+  // A syllabus/source upload is optional; research retrieval starts from
+  // course identity and academic scope when the administrator has no document.
+  const suppliedSourceChars = [outline, sourceText]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .join('\n\n').length;
+  if (suppliedSourceChars > MAX_COURSE_SOURCE_CHARS) {
+    const message = 'The combined syllabus outline and extracted source material exceeds ' +
+      MAX_COURSE_SOURCE_CHARS.toLocaleString() +
+      ' characters. No source text was truncated; split or reduce the source document before generation.';
+    if (res) return res.status(413).json({ error: message });
+    throw new Error(message);
   }
   if (scope.trim().toUpperCase() === 'FACULTY' &&
       (!Array.isArray(selectedFaculties) || selectedFaculties.length === 0)) {
@@ -5224,9 +5309,25 @@ async function executeCoordinatedGenerationJob(
         );
 
         if (!isResume) {
-          await pool.query(`DELETE FROM course_lessons WHERE course_id = $1`, [courseId]).catch(() => {});
-          await pool.query(`DELETE FROM course_modules WHERE course_id = $1`, [courseId]).catch(() => {});
+          await pool.query(`DELETE FROM course_lessons WHERE course_id = $1`, [courseId]);
+          await pool.query(`DELETE FROM course_module_quizzes WHERE course_id = $1`, [courseId]);
+          await pool.query(`DELETE FROM course_formulas WHERE course_id = $1`, [courseId]);
+          await pool.query(`DELETE FROM course_modules WHERE course_id = $1`, [courseId]);
         }
+
+        await updateCourseGenerationStateInPostgres(courseId, {
+          generationProgress: 6,
+          statusMessage: 'Retrieving live academic evidence using the configured adaptive research depth...'
+        });
+        const courseResearch = await retrieveCourseGenerationResearch({
+          courseName,
+          courseCode: courseId,
+          department: rawDept,
+          level,
+          outline,
+          sourceText
+        });
+        console.log(`[Coordinated Gen] Academic research: ${courseResearch.metadata.status} (${courseResearch.metadata.papersCount} scholarly records, ${courseResearch.metadata.webSourcesCount} web discoveries).`);
 
         // STEP 0: Infer Academic Domain & Canonical References
         await updateCourseGenerationStateInPostgres(courseId, {
@@ -5241,7 +5342,8 @@ async function executeCoordinatedGenerationJob(
           department: rawDept,
           level,
           outline,
-          sourceText
+          sourceText,
+          researchContext: courseResearch.context
         });
 
         const domainBrief: any = await completeWithProviderJSON({
@@ -5272,7 +5374,8 @@ async function executeCoordinatedGenerationJob(
             courseName,
             courseCode: courseId,
             level,
-            outline
+            outline,
+            researchContext: courseResearch.context
           });
           rubricAudit = await completeWithProviderJSON({
             type: 'skeleton',
@@ -5285,6 +5388,8 @@ async function executeCoordinatedGenerationJob(
             rubricAudit.coverageScore >= 75 &&
             rubricAudit.foundationsScore >= 75 &&
             rubricAudit.sequencingScore >= 75 &&
+            rubricAudit.workloadBalanceScore >= 75 &&
+            rubricAudit.consistencyScore >= 75 &&
             !rubricAudit.genericFillerDetected;
           if (!approvedSkeleton) {
             throw new Error(`Reviewed curriculum failed its server-side academic audit: ${rubricAudit.reasoning}`);
@@ -5316,6 +5421,7 @@ async function executeCoordinatedGenerationJob(
               selectedDepartments: effectiveDepartments,
               outline,
               sourceText,
+              researchContext: courseResearch.context,
               academicStandard
             }, feedbackCritique);
 
@@ -5341,7 +5447,8 @@ async function executeCoordinatedGenerationJob(
               courseName,
               courseCode: courseId,
               level,
-              outline
+              outline,
+              researchContext: courseResearch.context
             });
 
             rubricAudit = await completeWithProviderJSON({
@@ -5356,12 +5463,14 @@ async function executeCoordinatedGenerationJob(
               rubricAudit.coverageScore >= 75 && 
               rubricAudit.foundationsScore >= 75 && 
               rubricAudit.sequencingScore >= 75 && 
+              rubricAudit.workloadBalanceScore >= 75 &&
+              rubricAudit.consistencyScore >= 75 &&
               !rubricAudit.genericFillerDetected;
 
             if (isApproved) {
               break;
             } else {
-              feedbackCritique = `Critic Review: Coverage: ${rubricAudit.coverageScore}%, Foundations: ${rubricAudit.foundationsScore}%. Critique: ${rubricAudit.reasoning}. Missing topics: ${(rubricAudit.missingTopics || []).join(', ')}. Please explicitly include foundational orientation in Module 1.`;
+              feedbackCritique = `Critic Review: Coverage: ${rubricAudit.coverageScore}%, Foundations: ${rubricAudit.foundationsScore}%, Sequencing: ${rubricAudit.sequencingScore}%, Workload balance: ${rubricAudit.workloadBalanceScore}%, Consistency: ${rubricAudit.consistencyScore}%. Critique: ${rubricAudit.reasoning}. Missing topics: ${(rubricAudit.missingTopics || []).join(', ')}. Sequencing errors: ${(rubricAudit.sequencingErrors || []).join(', ')}. Correct all failing rubric dimensions before resubmission.`;
               if (attempts === MAX_ATTEMPTS) {
                 await updateCourseGenerationStateInPostgres(courseId, {
                   generationStatus: 'failed',
@@ -5410,6 +5519,7 @@ async function executeCoordinatedGenerationJob(
           rubricAudit,
           canonicalCourseReferences: canonicalRefs,
           groundingReferences: canonicalRefs,
+          research: courseResearch.metadata,
           generationProgress: 20,
           statusMessage: `Curriculum structure audit passed (coverage: ${rubricAudit.coverageScore}%). Generating lessons; factual accuracy remains subject to independent verification...`
         });
@@ -5536,6 +5646,26 @@ async function executeCoordinatedGenerationJob(
                     message: 'Instructional engine does not match the course discipline.'
                   });
                 }
+                const rawDepth = typeof depth === 'string' ? depth.trim().toLowerCase() : 'standard';
+                const normalizedDepth = ['deep-dive', 'in-depth', 'advanced'].includes(rawDepth)
+                  ? 'deep-dive'
+                  : rawDepth === 'introductory' ? 'introductory' : 'standard';
+                const requiredExamples = normalizedDepth === 'deep-dive' ? 3 : normalizedDepth === 'standard' ? 2 : 1;
+                const requiredChecks = normalizedDepth === 'deep-dive' ? 4 : normalizedDepth === 'standard' ? 3 : 2;
+                if (val.instructionalContent.workedExamples.length < requiredExamples) {
+                  ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    path: ['instructionalContent', 'workedExamples'],
+                    message: 'Selected depth requires at least ' + requiredExamples + ' distinct worked examples.'
+                  });
+                }
+                if (val.instructionalContent.knowledgeChecks.length < requiredChecks) {
+                  ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    path: ['instructionalContent', 'knowledgeChecks'],
+                    message: 'Selected depth requires at least ' + requiredChecks + ' reasoning checks.'
+                  });
+                }
                 const check = validateLessonSyntax(val.content || '', domainBrief.pedagogyType);
                 if (!check.isValid) {
                   ctx.addIssue({
@@ -5565,7 +5695,8 @@ async function executeCoordinatedGenerationJob(
                     depth,
                     scope,
                     academicStandard,
-                    sourceText
+                    sourceText,
+                    researchContext: courseResearch.context
                   },
                   targetOutcomeText
                 );
@@ -5662,27 +5793,165 @@ async function executeCoordinatedGenerationJob(
           await Promise.all(chunkPromises);
         }
 
-        // STEP 3: Generate Dynamic Formula Sheet in Neon PostgreSQL
+        // STEP 3: Generate and persist one lesson-grounded assessment for every module.
         await updateCourseGenerationStateInPostgres(courseId, {
-          generationProgress: 95,
-          statusMessage: 'Generating mathematical and core concept sheets...'
+          generationProgress: 92,
+          statusMessage: 'Generating module assessments from persisted lesson content...'
         });
 
-        const formulaPrompt = `Using only the verified course material already generated for "${courseName}", identify the governing equations, quantitative relationships, and core theoretical laws actually supported by that material.
+        for (let moduleIndex = 0; moduleIndex < skeleton.modules.length; moduleIndex++) {
+          if (activeCancelledJobs.has(courseId)) return;
+          const moduleSkeleton = skeleton.modules[moduleIndex];
+          const moduleId = 'm' + (moduleIndex + 1);
+          const moduleTitle = String(moduleSkeleton.title || ('Module ' + (moduleIndex + 1)));
+          const quizTopics: string[] = Array.isArray(moduleSkeleton.quizTopics)
+            ? moduleSkeleton.quizTopics.map((topic: unknown) => String(topic).trim()).filter(Boolean)
+            : [];
+          if (quizTopics.length === 0) {
+            throw new Error('Module ' + moduleTitle + ' has no approved quizTopics. Course generation will not invent an assessment scope.');
+          }
+
+          const moduleLessonsResult = await pool.query(
+            `SELECT title, content_markdown FROM course_lessons
+             WHERE course_id = $1 AND module_id = $2 ORDER BY order_index ASC`,
+            [courseId, moduleId]
+          );
+          const moduleLessons = moduleLessonsResult.rows.map((lesson: any) => ({
+            title: String(lesson.title || ''),
+            content: String(lesson.content_markdown || '')
+          }));
+          if (moduleLessons.length === 0 || moduleLessons.some(lesson => !lesson.title.trim() || lesson.content.trim().length < 800)) {
+            throw new Error('Module ' + moduleTitle + ' does not have complete persisted lesson content. Its quiz cannot be generated from lesson titles alone.');
+          }
+
+          const quizPrompt = buildModuleQuizPrompt({
+            courseName,
+            courseCode: courseId,
+            moduleTitle,
+            moduleOrder: moduleIndex + 1,
+            level,
+            department: rawDept,
+            academicStandard,
+            quizTopics,
+            lessons: moduleLessons
+          });
+          const approvedTopicMap = new Map(quizTopics.map(topic => [topic.toLowerCase(), topic]));
+          const lessonTitleMap = new Map(moduleLessons.map(lesson => [lesson.title.toLowerCase(), lesson.title]));
+          let generatedQuiz: any = null;
+          let quizValidationError = '';
+          for (let quizAttempt = 1; quizAttempt <= 2; quizAttempt++) {
+            generatedQuiz = await completeWithProviderJSON({
+              type: 'module',
+              messages: [
+                { role: 'system', content: 'You are a rigorous university assessment author. Generate only valid JSON and ground every answer in the supplied persisted lessons.\n\n' + latexInstruction },
+                { role: 'user', content: quizPrompt + (quizValidationError ? '\n\n[REQUIRED CORRECTION]: ' + quizValidationError + ' Return a corrected complete quiz.' : '') }
+              ],
+              schema: CourseModuleQuizSchema,
+              requestedProvider,
+              complexity: 'high'
+            });
+            const coveredTopics = new Set((generatedQuiz.questions || []).map((question: any) => String(question.quizTopic || '').trim().toLowerCase()));
+            const missingTopics = quizTopics.filter(topic => !coveredTopics.has(topic.toLowerCase()));
+            const unsupportedReferences = (generatedQuiz.questions || [])
+              .filter((question: any) => !lessonTitleMap.has(String(question.sourceReference || '').trim().toLowerCase()));
+            if (missingTopics.length === 0 && unsupportedReferences.length === 0) break;
+            quizValidationError = [
+              missingTopics.length ? 'Missing exact approved topics: ' + missingTopics.join(', ') : '',
+              unsupportedReferences.length ? 'Every sourceReference must match an exact persisted lesson title.' : ''
+            ].filter(Boolean).join(' ');
+            if (quizAttempt === 2) {
+              throw new Error('Module quiz for ' + moduleTitle + ' failed lesson/topic grounding after two attempts: ' + quizValidationError);
+            }
+          }
+
+          const persistedQuestions = generatedQuiz.questions.map((question: any) => ({
+            id: question.id,
+            quiz_topic: approvedTopicMap.get(String(question.quizTopic).trim().toLowerCase()),
+            question: question.question,
+            options: question.options,
+            correct_option_index: question.correctOptionIndex,
+            explanation: question.explanation,
+            hint: question.hint,
+            difficulty: question.difficulty,
+            bloom_level: question.bloomLevel,
+            source_reference: lessonTitleMap.get(String(question.sourceReference).trim().toLowerCase())
+          }));
+          const questionIds = persistedQuestions.map((question: any) => question.id);
+          if (new Set(questionIds).size !== questionIds.length || persistedQuestions.some((question: any) => !question.quiz_topic || !question.source_reference)) {
+            throw new Error('Module quiz for ' + moduleTitle + ' failed final identity, topic, or source-reference validation.');
+          }
+          const questionsSnapshotHash = crypto.createHash('sha256')
+            .update(JSON.stringify(persistedQuestions))
+            .digest('hex');
+          const quizId = 'quiz_' + crypto.createHash('sha256').update(courseId + ':' + moduleId).digest('hex').slice(0, 32);
+
+          await pool.query(
+            `INSERT INTO course_module_quizzes (
+               id, course_id, module_id, title, passing_score, version,
+               questions_snapshot_hash, quiz_topics, pedagogical_reasoning, questions, created_at, updated_at
+             ) VALUES ($1, $2, $3, $4, 70, 1, $5, $6, $7, $8::jsonb, NOW(), NOW())
+             ON CONFLICT (course_id, module_id) DO UPDATE SET
+               title = EXCLUDED.title,
+               passing_score = EXCLUDED.passing_score,
+               version = course_module_quizzes.version + 1,
+               questions_snapshot_hash = EXCLUDED.questions_snapshot_hash,
+               quiz_topics = EXCLUDED.quiz_topics,
+               pedagogical_reasoning = EXCLUDED.pedagogical_reasoning,
+               questions = EXCLUDED.questions,
+               updated_at = NOW()`,
+            [quizId, courseId, moduleId, moduleTitle + ' Module Quiz', questionsSnapshotHash, quizTopics, generatedQuiz.pedagogicalReasoning, JSON.stringify(persistedQuestions)]
+          );
+        }
+
+        // STEP 4: Generate a formula reference only from lesson material actually persisted in Neon.
+        await updateCourseGenerationStateInPostgres(courseId, {
+          generationProgress: 95,
+          statusMessage: 'Extracting course relationships from persisted lesson content...'
+        });
+
+        const formulaEvidenceResult = await pool.query(
+          `SELECT m.title AS module_title, l.title AS lesson_title, l.content_markdown
+           FROM course_lessons l
+           INNER JOIN course_modules m ON m.id = l.module_id AND m.course_id = l.course_id
+           WHERE l.course_id = $1
+           ORDER BY m.order_index ASC, l.order_index ASC`,
+          [courseId]
+        );
+        if (formulaEvidenceResult.rows.length === 0 || formulaEvidenceResult.rows.some((lesson: any) =>
+          typeof lesson.content_markdown !== 'string' || lesson.content_markdown.trim().length < 800
+        )) {
+          throw new Error('Formula generation requires complete, persisted course lesson content.');
+        }
+        const formulaEvidence = formulaEvidenceResult.rows.map((lesson: any, index: number) =>
+          'LESSON ' + (index + 1) + ' — MODULE: ' + lesson.module_title + ' — TITLE: ' + lesson.lesson_title + '\n' + lesson.content_markdown
+        ).join('\n\n');
+        if (formulaEvidence.length > 150000) {
+          throw new Error('Persisted formula evidence exceeds the 150,000-character processing limit. No lesson material was silently truncated.');
+        }
+
+        const formulaPrompt = `Identify the governing equations, quantitative relationships, and core theoretical laws actually supported by the complete persisted lessons for "${courseName}".
 Domain: ${domainBrief.primaryDomain}
 Pedagogy Type: ${domainBrief.pedagogyType}
 
-Do not invent a formula to fill a quota. Include every distinct relationship that is materially required to explain or solve the generated course content; do not duplicate equivalent equations. If the supplied course material does not support a reliable formula, fail this generation step rather than fabricate one.
+AUTHORITATIVE FORMULA EVIDENCE — ACTUAL LESSON CONTENT RETRIEVED FROM NEON:
+${formulaEvidence}
+
+RULES
+- Use only the supplied persisted lesson text. Do not rely on lesson titles alone or on unsupported prior assumptions.
+- Include distinct equations and relationships that are materially required by the lessons; do not duplicate equivalent expressions.
+- Do not invent formulas, variables, constants, units, or derivations to fill a quota.
+- If the lessons do not support a reliable formula sheet, return an empty formulas array and explain why in pedagogicalReasoning. This is a valid outcome, especially for non-quantitative disciplines.
+- For each formula, explain variables and assumptions using only what the lessons support. Preserve the exact mathematical meaning in LaTeX.
 
 Return strictly a JSON object:
 {
-  "pedagogicalReasoning": "Explain why these relationships are present in the supplied course material",
+  "pedagogicalReasoning": "Explain why the returned formulas are present in the persisted lesson material, or why no formula is appropriate.",
   "formulas": [
     {
-      "id": "A unique, stable identifier for this formula within this course",
+      "id": "A unique identifier within this course",
       "title": "The exact law or equation name",
       "latex": "The governing equation in LaTeX",
-      "description": "Define every variable and state the physical or theoretical meaning grounded in the course material"
+      "description": "Define the variables and state the meaning and assumptions grounded in the supplied lessons"
     }
   ]
 }`;
@@ -5703,6 +5972,10 @@ Return strictly a JSON object:
           });
 
           if (formulaData && Array.isArray(formulaData.formulas)) {
+            // Replace the full formula set atomically at the generation stage;
+            // otherwise a resumed job can retain stale formulas omitted by the
+            // newly generated, lesson-grounded result.
+            await pool.query('DELETE FROM course_formulas WHERE course_id = $1', [courseId]);
             for (const f of formulaData.formulas) {
               const fId = `form_${courseId}_${f.id}`;
               await pool.query(
@@ -5760,11 +6033,19 @@ Return strictly a JSON object:
         }
 
         const provenance = {
-          sources: canonicalRefs,
+          sources: [...new Set([
+            ...canonicalRefs,
+            ...courseResearch.metadata.sourceReferences.map(source => source.url)
+          ])],
           modelVersion: requestedProvider || 'dynamic-multi-provider',
-          promptVersion: 'uniace-mastery-curriculum-v3.0',
+          promptVersion: 'uniace-mastery-curriculum-v4.0',
           generatedAt: new Date().toISOString(),
-          sourceStatus: sourceText ? 'admin_supplied_unverified' : 'model_suggested_unverified',
+          sourceStatus: (outline || sourceText)
+            ? 'admin_supplied_unverified'
+            : (courseResearch.metadata.papersCount + courseResearch.metadata.webSourcesCount > 0)
+              ? 'research_retrieved_unverified'
+              : 'model_suggested_unverified',
+          research: courseResearch.metadata,
           academicAccuracy: 'not_independently_verified',
           rubricAudit
         };
@@ -5778,7 +6059,7 @@ Return strictly a JSON object:
           generationProgress: 100,
           confidenceState: 'needs_review',
           academicVerificationState: 'not_independently_verified',
-          statusMessage: 'Course generated and saved as a draft for academic review. Structural checks passed; factual accuracy and calculations still require independent verification.',
+          statusMessage: 'Course generated and saved as a draft for academic review. Research retrieval status, source evidence, factual accuracy, and calculations remain subject to independent review.',
           published: false,
           status: 'draft'
         });

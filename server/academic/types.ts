@@ -72,7 +72,7 @@ export const SearchAcademicPapersInputSchema = z.object({
   limit: z.number().int().min(1).max(20).default(5),
   minYear: z.number().int().min(1800).max(2200).optional(),
   courseCode: z.string().trim().max(40).optional(),
-  syllabusText: z.string().max(12000).optional()
+  syllabusText: z.string().max(50000).optional()
 });
 
 export type SearchAcademicPapersInput = z.infer<typeof SearchAcademicPapersInputSchema>;

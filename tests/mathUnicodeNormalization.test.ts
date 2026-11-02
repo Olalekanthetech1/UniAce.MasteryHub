@@ -132,7 +132,7 @@ test('normalizes nested instructional content before schema validation', () => {
     misconceptions: [],
     misconceptionRationale: 'The example directly checks the notation.',
     guidedPractice: [practice],
-    independentPractice: [practice],
+    independentPractice: [{ ...practice, hints: [] }],
     knowledgeChecks: [
       {
         prompt: 'What does the subscript identify?',

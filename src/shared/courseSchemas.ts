@@ -257,7 +257,7 @@ export type LessonContent = z.infer<typeof LessonContentSchema>;
  */
 export const InstructionalPracticeItemSchema = z.object({
   prompt: z.string().min(10),
-  hints: z.array(z.string().min(1)).min(1),
+  hints: z.array(z.string().min(1)),
   expectedApproach: z.string().min(10),
   expectedAnswer: z.string().min(1),
   explanation: z.string().min(10),
@@ -323,6 +323,25 @@ export const InstructionalContentSchema = z.preprocess(
     checkedAt: z.string().datetime(),
     policyVersion: z.string().min(1)
   }).optional()
+  }).superRefine((value, ctx) => {
+    value.guidedPractice.forEach((practice, index) => {
+      if (practice.hints.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['guidedPractice', index, 'hints'],
+          message: 'Guided practice must contain at least one progressive hint.'
+        });
+      }
+    });
+    value.independentPractice.forEach((practice, index) => {
+      if (practice.hints.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['independentPractice', index, 'hints'],
+          message: 'Independent practice must not reveal hints before the attempt.'
+        });
+      }
+    });
   })
 );
 export type InstructionalContent = z.infer<typeof InstructionalContentSchema>;
@@ -362,14 +381,41 @@ export const StructuredLessonOutputSchema = z.preprocess(
 export type StructuredLessonOutput = z.infer<typeof StructuredLessonOutputSchema>;
 
 export const CourseProvenanceSchema = z.object({
-  sources: z.array(z.string().min(1)).min(1),
+  // A valid course may have no externally retrieved references; empty is more
+  // accurate than manufacturing citations to satisfy a non-empty constraint.
+  sources: z.array(z.string().min(1)),
   modelVersion: z.string().min(1),
   promptVersion: z.string().min(1),
   generatedAt: z.string(),
   groundingScore: z.number().min(0).max(100).optional(),
-  sourceStatus: z.enum(['admin_supplied_unverified', 'model_suggested_unverified', 'independently_verified']).optional(),
+  sourceStatus: z.enum(['admin_supplied_unverified', 'research_retrieved_unverified', 'model_suggested_unverified', 'independently_verified']).optional(),
   academicAccuracy: z.enum(['not_independently_verified', 'subject_expert_reviewed']).optional(),
-  rubricAudit: OutlineCriticRubricSchema.optional()
+  rubricAudit: OutlineCriticRubricSchema.optional(),
+  research: z.object({
+    status: z.enum(['evidence_found', 'insufficient_evidence', 'no_results', 'unavailable']),
+    runId: z.string().nullable(),
+    researchDepth: z.string().nullable(),
+    retrievedAt: z.string(),
+    papersCount: z.number().int().nonnegative(),
+    webSourcesCount: z.number().int().nonnegative(),
+    evidenceAssessment: z.unknown(),
+    providerBreakdown: z.unknown(),
+    limitations: z.array(z.string()),
+    sourceReferences: z.array(z.object({
+      recordType: z.enum(['scholarly_record', 'web_discovery']),
+      provider: z.enum(['arxiv', 'semantic_scholar', 'openalex', 'tavily']),
+      title: z.string().min(1),
+      url: z.string().url(),
+      authors: z.array(z.string()).optional(),
+      year: z.number().int().nullable().optional(),
+      venue: z.string().nullable().optional(),
+      doi: z.string().nullable().optional(),
+      publicationType: z.enum(['preprint', 'indexed_record']).optional(),
+      authorityClass: z.enum(['scholarly_index', 'institutional_domain', 'general_web', 'unknown']).optional(),
+      verificationStatus: z.literal('unverified')
+    })),
+    errorMessage: z.string().optional()
+  }).optional()
 });
 export type CourseProvenance = z.infer<typeof CourseProvenanceSchema>;
 
@@ -424,7 +470,7 @@ export function deriveCurriculumParameters(level?: string, semester?: string, cr
     targetLessonsPerModule = 4;
   }
 
-  if (depth === 'in-depth' || depth === 'advanced') {
+  if (depth === 'in-depth' || depth === 'advanced' || depth === 'deep-dive') {
     minModules += 1;
     maxModules += 2;
   }
