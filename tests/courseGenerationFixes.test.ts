@@ -287,6 +287,10 @@ test('lesson prompt calibrates deep-dive depth and selects relevant complete sou
     }
   );
   assert.match(prompt, /ADVANCED \/ ANALYTICAL DEPTH/);
+  assert.match(prompt, /instructionalContent\\.contentBlocks/);
+  assert.match(prompt, /interactive_simulation/);
+  assert.match(prompt, /knowledge_check/);
+  assert.match(prompt, /MUST NOT contain an answer, expected reasoning, rubric, hint or answer key/);
   assert.match(prompt, /workedExamples: at least three distinct discipline-appropriate examples/);
   assert.ok(prompt.includes('HYDROSTATIC PRESSURE'));
   assert.ok(!prompt.includes('UNRELATED THERMODYNAMICS'));
