@@ -2171,6 +2171,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   };
 
   const handleDeleteCourse = async (courseId: string) => {
+    if (!window.confirm(`Archive course ${courseId}? It will be removed from the active student catalog and can be restored later.`)) return;
     try {
       const idToken = await auth.currentUser?.getIdToken();
       if (!idToken) throw new Error('Authentication required');
@@ -2194,6 +2195,11 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
   };
 
   const handlePermanentDeleteCourse = async (courseId: string) => {
+    const confirmation = window.prompt(`Permanently delete course ${courseId}? This cannot be undone. Type the exact course ID to confirm.`);
+    if (confirmation !== courseId) {
+      if (confirmation !== null) showToast('Course ID did not match. No deletion was performed.', 'error');
+      return;
+    }
     try {
       const idToken = await auth.currentUser?.getIdToken();
       if (!idToken) throw new Error('Authentication required');
