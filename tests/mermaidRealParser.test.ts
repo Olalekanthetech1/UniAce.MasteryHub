@@ -1,73 +1,95 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import mermaid from 'mermaid';
-import {
-  repairMermaidSyntaxDeterministically,
-  validateAndRecoverMermaidDiagram
-} from '../src/services/mermaidRepairService';
-import { sanitizeLatex } from '../src/services/aiCourseGenerator';
+import { serializeStructuredDiagramToMermaid } from '../src/services/mermaidRepairService';
 
-// These integration checks use Mermaid's installed parser, not the lightweight grammar
-// emulator used by the broader headless recovery tests.
-mermaid.initialize({
-  startOnLoad: false,
-  suppressErrorRendering: true
+const validDiagram = {
+  type: 'flowchart' as const,
+  direction: 'TD' as const,
+  nodes: [
+    { id: 'fluid-density', label: 'Fluid Density (rho = m/V)' },
+    { id: 'specific-weight', label: 'Specific Weight (gamma = rho*g)' }
+  ],
+  edges: [{ from: 'fluid-density', to: 'specific-weight' }]
+};
+
+test('structured diagrams serialize valid node and edge references', () => {
+  const output = serializeStructuredDiagramToMermaid(validDiagram);
+  assert.match(output, /fluid_density\["Fluid Density \(rho = m\/V\)"\]/);
+  assert.match(output, /specific_weight\["Specific Weight \(gamma = rho\*g\)"\]/);
+  assert.match(output, /fluid_density --> specific_weight/);
 });
 
-async function parseWithInstalledMermaid(source: string): Promise<boolean> {
-  const result = await mermaid.parse(source, { suppressErrors: false });
-  return Boolean(result);
-}
+test('rejects distinct source IDs that collide after Mermaid identifier sanitization', () => {
+  const collision = {
+    ...validDiagram,
+    nodes: [
+      { id: 'fluid-density', label: 'Fluid density' },
+      { id: 'fluid_density', label: 'Specific weight' }
+    ],
+    edges: [{ from: 'fluid-density', to: 'fluid_density' }]
+  };
 
-test('real Mermaid parser accepts deterministic repair of engineering labels', async () => {
-  const source = `flowchart TD
-    A[Specific Weight (γ = ρg)]
-    B[Units: N/m³ (SI)]
-    A --> B`;
-
-  const repaired = repairMermaidSyntaxDeterministically(source);
-  assert.equal(repaired.changed, true);
-  assert.equal(await parseWithInstalledMermaid(repaired.repairedChart), true);
-  assert.match(repaired.repairedChart, /A\["Specific Weight \(γ = ρg\)"\]/);
-  assert.match(repaired.repairedChart, /B\["Units: N\/m³ \(SI\)"\]/);
+  assert.throws(
+    () => serializeStructuredDiagramToMermaid(collision),
+    /both normalize to Mermaid ID/
+  );
 });
 
-test('real Mermaid parser validates the complete recovery pipeline output', async () => {
-  const source = `flowchart LR
-    density[Fluid Density ($\\rho = m/V$)]
-    weight[Specific Weight (\\gamma = \\rho g)]
-    density --> weight`;
+test('rejects edges that would otherwise create implicit, undefined Mermaid nodes', () => {
+  const invalid = {
+    ...validDiagram,
+    edges: [{ from: 'fluid-density', to: 'pressure' }]
+  };
 
-  const recovered = await validateAndRecoverMermaidDiagram(source, {
-    parseValidator: parseWithInstalledMermaid,
-    aiRepairFn: null
-  });
-
-  assert.equal(recovered.isValid, true);
-  assert.equal(recovered.stage, 'deterministic_repair');
-  assert.equal(await parseWithInstalledMermaid(recovered.chart), true);
+  assert.throws(
+    () => serializeStructuredDiagramToMermaid(invalid),
+    /undefined target node "pressure"/
+  );
 });
 
-test('LaTeX sanitization isolates Mermaid blocks and leaves them parseable', async () => {
-  const lesson = `Specific weight is $\\gamma = \\rho g$.
+test('rejects subgraphs containing undefined nodes', () => {
+  const invalid = {
+    ...validDiagram,
+    subgraphs: [{
+      id: 'properties',
+      title: 'Fluid properties',
+      nodeIds: ['fluid-density', 'viscosity']
+    }]
+  };
 
-\`\`\`mermaid
-flowchart TD
-  A[Specific Weight (γ = ρg)] --> B[Units: N/m³ (SI)]
-\`\`\`
-
-The equation is used in hydrostatics.`;
-
-  const sanitized = sanitizeLatex(lesson);
-  const block = sanitized.match(/\`\`\`mermaid\\n([\\s\\S]*?)\\n\`\`\`/i);
-  assert.ok(block, 'sanitized lesson should retain its Mermaid code block');
-  assert.equal(await parseWithInstalledMermaid(block[1]), true);
-  assert.ok(sanitized.includes('$\\gamma = \\rho g$'));
+  assert.throws(
+    () => serializeStructuredDiagramToMermaid(invalid),
+    /Subgraph references undefined diagram node "viscosity"/
+  );
 });
 
-test('real Mermaid parser rejects malformed syntax without invoking render', async () => {
-  const malformed = `flowchart TD
-    A[Unclosed label --> B[Valid node]`;
+test('rejects a node assigned to more than one subgraph', () => {
+  const invalid = {
+    ...validDiagram,
+    subgraphs: [
+      { id: 'group-a', title: 'Group A', nodeIds: ['fluid-density'] },
+      { id: 'group-b', title: 'Group B', nodeIds: ['fluid-density'] }
+    ]
+  };
 
-  await assert.rejects(() => parseWithInstalledMermaid(malformed));
+  assert.throws(
+    () => serializeStructuredDiagramToMermaid(invalid),
+    /assigned to more than one subgraph/
+  );
+});
+
+test('rejects subgraph identifiers that collide with diagram node identifiers', () => {
+  const invalid = {
+    ...validDiagram,
+    subgraphs: [{
+      id: 'fluid-density',
+      title: 'Conflicting group',
+      nodeIds: ['specific-weight']
+    }]
+  };
+
+  assert.throws(
+    () => serializeStructuredDiagramToMermaid(invalid),
+    /conflicts with a diagram node/
+  );
 });
