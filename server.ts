@@ -1345,6 +1345,22 @@ app.get('/api/courses/:courseId/modules', verifyAuth, requireCourseAccess, async
   }
 });
 
+app.get('/api/courses/:courseId/modules/:moduleId/quiz', verifyAuth, requireCourseAccess, async (req, res) => {
+  const { courseId, moduleId } = req.params;
+  try {
+    const quiz = await courseRepository.getCourseQuiz(courseId, moduleId);
+    return res.json({ quiz, total: quiz?.questions.length || 0 });
+  } catch (error: any) {
+    logger.error({ error: error?.message || String(error), courseId, moduleId }, '[GET /api/courses/:courseId/modules/:moduleId/quiz] Failed');
+    const unavailable = String(error?.message || '').includes('Database service unavailable') ||
+      String(error?.message || '').includes('unreachable');
+    return res.status(unavailable ? 503 : 500).json({
+      error: 'Failed to retrieve the persisted module quiz.',
+      message: error?.message || 'The quiz could not be verified.'
+    });
+  }
+});
+
 app.get('/api/courses/:courseId/modules/:moduleId/lessons', verifyAuth, requireCourseAccess, async (req, res) => {
   const t0 = Date.now();
   try {
