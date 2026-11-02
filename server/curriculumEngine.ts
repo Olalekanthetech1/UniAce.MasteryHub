@@ -565,7 +565,7 @@ Typed blocks are the canonical ordered lesson representation. The top-level lega
 Return the structured lesson in "instructionalContent.contentBlocks" and protected mastery activities in "instructionalContent". The server compiles typed blocks into the legacy Markdown "content" field; typed blocks are the canonical representation.
 
 TYPED CONTENT BLOCK RULES
-- "contentBlocks" is required and ordered in the same sequence a student should learn. Return 3-40 blocks with unique stable IDs. Include at least one "explanation" block and one "worked_example" block.
+- "contentBlocks" is required and ordered in the same sequence a student should learn. Return 2-40 blocks with unique stable IDs. Include at least one "explanation" block and one "worked_example" block.
 - "explanation": provide substantive Markdown in "markdown"; use a topic-specific "title" where useful.
 - "mathematical_derivation": use only where the discipline and topic require formal mathematics. Include explicit assumptions, at least two logically ordered steps, optional LaTeX "equation" per step, and a justified conclusion where appropriate.
 - "engineering_diagram": use only when a diagram materially improves understanding. Supply "format" as "mermaid" or "svg", valid source without Markdown fences, accurate "altText", and an optional caption. Do not invent relationships, components, dimensions or labels.
