@@ -35,7 +35,7 @@ export default function ParameterizedSimulation({ block }: ParameterizedSimulati
       block.independentVariable,
       block.parameter.symbol
     );
-    if (!validation.valid) {
+    if (validation.valid === false) {
       return { compiled: null, error: validation.reason };
     }
     try {
