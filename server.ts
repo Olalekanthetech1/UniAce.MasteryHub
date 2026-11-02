@@ -5971,6 +5971,18 @@ async function healCourseInPostgres(
     throw new Error('Neon PostgreSQL database service unavailable.');
   }
 
+  const lifecycle = await pool.query(
+    `SELECT status FROM courses WHERE id = $1`,
+    [courseId]
+  );
+  if (lifecycle.rows.length === 0 || lifecycle.rows[0].status !== 'published') {
+    return {
+      status: lifecycle.rows.length === 0 ? 'not_found' : 'not_eligible',
+      healedLessons: 0,
+      emptyModulesPopulated: 0
+    };
+  }
+
   const audit = await auditCourseHealthInPostgres(courseId);
   if (!audit.needsHealing) {
     return { status: 'healthy', healedLessons: 0, emptyModulesPopulated: 0 };
