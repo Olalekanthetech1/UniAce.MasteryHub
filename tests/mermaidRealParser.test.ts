@@ -2,6 +2,22 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { serializeStructuredDiagramToMermaid } from '../src/services/mermaidRepairService';
 
+function assertSchemaIssue(action: () => unknown, expectedMessage: string): void {
+  let thrown: unknown;
+  try {
+    action();
+  } catch (error) {
+    thrown = error;
+  }
+
+  assert.ok(thrown instanceof Error, 'expected structured diagram validation to throw');
+  const issues = (thrown as Error & { issues?: Array<{ message?: string }> }).issues;
+  assert.ok(
+    Array.isArray(issues) && issues.some((issue) => issue.message?.includes(expectedMessage)),
+    `expected validation issue containing: ${expectedMessage}; received: ${String(thrown)}`
+  );
+}
+
 const validDiagram = {
   type: 'flowchart' as const,
   direction: 'TD' as const,
@@ -41,9 +57,9 @@ test('rejects edges that would otherwise create implicit, undefined Mermaid node
     edges: [{ from: 'fluid-density', to: 'pressure' }]
   };
 
-  assert.throws(
+  assertSchemaIssue(
     () => serializeStructuredDiagramToMermaid(invalid),
-    /undefined target node "pressure"/
+    'Edge references undefined target node "pressure".'
   );
 });
 
@@ -57,9 +73,9 @@ test('rejects subgraphs containing undefined nodes', () => {
     }]
   };
 
-  assert.throws(
+  assertSchemaIssue(
     () => serializeStructuredDiagramToMermaid(invalid),
-    /Subgraph references undefined diagram node "viscosity"/
+    'Subgraph references undefined diagram node "viscosity".'
   );
 });
 
