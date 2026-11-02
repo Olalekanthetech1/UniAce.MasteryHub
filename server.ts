@@ -184,6 +184,7 @@ import { jobStreamManager } from './server/services/jobStreamManager';
 import { activeCancelledJobs } from './server/services/courseJobControl.js';
 import { getFeatureFlags, initRuntimeFlagsSync } from './server/config/features';
 import { ensureCourseLearningSchema } from './server/services/courseLearningSchema';
+import { ensureCourseLifecycleSchema } from './server/services/courseLifecycleSchema.js';
 import { ensureCourseAssessmentSchema } from './server/services/courseAssessmentSchema';
 import { redactInstructionalAnswersForStudent, getInstructionalActivityReveal, type InstructionalActivityType } from './server/services/instructionalDelivery.js';
 import { getSystemConfigDoc, setSystemConfigDoc, getSystemSettingsDoc, setSystemSettingsDoc } from './server/systemConfigStore';
@@ -4949,6 +4950,84 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
 // --- Server-Coordinated Async Course Generation Worker & Endpoint (Neon PostgreSQL Primary) ---
 const activeCoordinatedJobSnapshots = new Map<string, Record<string, any>>();
 
+async function ensureCourseGenerationTargetInPostgres(input: {
+  courseId: string;
+  courseName: string;
+  courseDescription?: string | null;
+  level: string;
+  department: string;
+  semester?: string | null;
+  creditUnits: number;
+  scope: string;
+  faculties: string[];
+  departments: string[];
+  allowPublishedResume: boolean;
+}): Promise<void> {
+  const pool = getPostgresPool();
+  if (!pool) throw new Error('Neon PostgreSQL database service unavailable.');
+  await ensureCourseLifecycleSchema();
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Serialize course creation, archive, and permanent-delete operations for this ID.
+    await client.query(
+      'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [input.courseId]
+    );
+
+    const tombstone = await client.query(
+      'SELECT course_id FROM course_lifecycle_tombstones WHERE course_id = $1',
+      [input.courseId]
+    );
+    if (tombstone.rows.length > 0) {
+      throw new Error(`Course ID ${input.courseId} was permanently deleted and cannot be resumed or recreated.`);
+    }
+
+    const existing = await client.query(
+      'SELECT status FROM courses WHERE id = $1 FOR UPDATE',
+      [input.courseId]
+    );
+    if (existing.rows.length > 0) {
+      const status = existing.rows[0].status;
+      if (status === 'archived') {
+        throw new Error(`Course ${input.courseId} is archived; restore it explicitly before generation.`);
+      }
+      if (status === 'published' && !input.allowPublishedResume) {
+        throw new Error(`Course ${input.courseId} is already published; use the explicit course-repair workflow instead of regenerating it.`);
+      }
+    } else {
+      await client.query(
+        `INSERT INTO courses
+          (id, code, title, description, level, department, faculty, semester,
+           credit_units, scope, faculties, departments, status, version, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'draft', 1, NOW(), NOW())`,
+        [
+          input.courseId,
+          input.courseId,
+          input.courseName,
+          typeof input.courseDescription === 'string' ? input.courseDescription : null,
+          input.level,
+          input.department,
+          input.faculties[0] || null,
+          input.semester || null,
+          input.creditUnits,
+          input.scope,
+          input.faculties,
+          input.departments
+        ]
+      );
+    }
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function updateCourseGenerationStateInPostgres(courseId: string, patch: Record<string, any>) {
   const current: Record<string, any> = activeCoordinatedJobSnapshots.get(courseId) || { id: courseId };
   const merged: Record<string, any> = { ...current, ...patch, updatedAt: new Date().toISOString() };
@@ -5075,15 +5154,30 @@ async function executeCoordinatedGenerationJob(
 
   try {
     await ensureCourseLearningSchema();
+    await ensureCourseLifecycleSchema();
     const existingSnap = activeCoordinatedJobSnapshots.get(courseId);
+    const isResume = req.body.resume === true || Boolean(existingSnap && existingSnap.generationStatus === 'generating');
+
+    await ensureCourseGenerationTargetInPostgres({
+      courseId,
+      courseName: courseName.trim(),
+      courseDescription,
+      level: level.trim(),
+      department: rawDept,
+      semester: typeof semester === 'string' ? semester : null,
+      creditUnits,
+      scope: scope.trim().toUpperCase(),
+      faculties: selectedFaculties,
+      departments: effectiveDepartments,
+      allowPublishedResume: isResume
+    });
+
     if (activeRunningCourseJobs.has(courseId) && existingSnap?.generationStatus === 'generating') {
       if (res && !res.headersSent) {
         return res.json({ status: 'started', courseId, alreadyOwned: true });
       }
       return;
     }
-
-    const isResume = req.body.resume === true || Boolean(existingSnap && existingSnap.generationStatus === 'generating');
 
     await updateCourseGenerationStateInPostgres(courseId, {
       id: courseId,
