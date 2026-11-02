@@ -5,6 +5,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import QuizGenerator from './QuizGenerator';
 import QuickCheck from './QuickCheck';
 import MarkdownRenderer from './MarkdownRenderer';
+import AcademicContentBlocksRenderer from './AcademicContentBlocksRenderer';
 import MasteryLessonPanel from './MasteryLessonPanel';
 import PricingModal from './PricingModal';
 import MiniTeacherModal from './MiniTeacherModal';
@@ -73,7 +74,13 @@ export default function ContentArea({
   const [isProactiveQuiz, setIsProactiveQuiz] = useState(false);
   const hasCheckedInRef = useRef<Set<string>>(new Set());
   const [lockedFeatureName, setLockedFeatureName] = useState('');
-  const [fetchedLesson, setFetchedLesson] = useState<{ id: string; content: string; metadata: PipelineMetadata; instructionalContent?: StudentInstructionalContent } | null>(null);
+  const [fetchedLesson, setFetchedLesson] = useState<{
+    id: string;
+    content: string;
+    metadata: PipelineMetadata;
+    instructionalContent?: StudentInstructionalContent;
+    contentBlocks?: import('../shared/academicContentBlocks').AcademicContentBlockCollection;
+  } | null>(null);
   const [moduleLessonsById, setModuleLessonsById] = useState<Record<string, SubTopic>>({});
   const [isFetchingContent, setIsFetchingContent] = useState(false);
   const contentScrollRef = useRef<HTMLDivElement>(null);
@@ -93,7 +100,8 @@ export default function ContentArea({
         id: activeSubTopic.id,
         content: sanitizeLatex(stripThinkTags(activeSubTopic.content)),
         metadata: {} as PipelineMetadata,
-        instructionalContent: activeSubTopic.instructionalContent || (fetchedLesson?.id === activeSubTopic.id ? fetchedLesson.instructionalContent : undefined)
+        instructionalContent: activeSubTopic.instructionalContent || (fetchedLesson?.id === activeSubTopic.id ? fetchedLesson.instructionalContent : undefined),
+        contentBlocks: activeSubTopic.contentBlocks || (fetchedLesson?.id === activeSubTopic.id ? fetchedLesson.contentBlocks : undefined)
       }
     : (fetchedLesson?.id === activeSubTopic?.id && fetchedLesson.content && fetchedLesson.content.trim().length > 0 ? fetchedLesson : null);
 
@@ -189,11 +197,17 @@ export default function ContentArea({
     const loadContent = async () => {
       if (!courseId) return;
       
-      // Skip the network only when both the legacy reader content and structured learning payload are present.
-      // Legacy Markdown-only lessons are fetched once so a migrated structured payload can be loaded.
-      if (activeSubTopic?.content && activeSubTopic.instructionalContent) {
+      // Skip the network only when the lesson already has its legacy fallback, mastery payload and typed blocks.
+      // Older records are fetched once so any persisted typed blocks can be loaded without replacing their Markdown.
+      if (activeSubTopic?.content && activeSubTopic.instructionalContent && activeSubTopic.contentBlocks) {
         const sanitized = sanitizeLatex(stripThinkTags(activeSubTopic.content));
-        setFetchedLesson({ id: activeSubTopic.id, content: sanitized, metadata: {}, instructionalContent: activeSubTopic.instructionalContent });
+        setFetchedLesson({
+          id: activeSubTopic.id,
+          content: sanitized,
+          metadata: {},
+          instructionalContent: activeSubTopic.instructionalContent,
+          contentBlocks: activeSubTopic.contentBlocks
+        });
         onLessonContentChange?.(sanitized);
         setIsFetchingContent(false);
         return;
@@ -217,7 +231,13 @@ export default function ContentArea({
         if (targetLesson && targetLesson.content) {
           console.log(`[ContentArea] Lesson found via Neon API! Content length: ${targetLesson.content.length}`);
           const sanitizedContent = sanitizeLatex(stripThinkTags(targetLesson.content));
-          setFetchedLesson({ id: activeSubTopic.id, content: sanitizedContent, metadata: {}, instructionalContent: targetLesson.instructionalContent });
+          setFetchedLesson({
+            id: activeSubTopic.id,
+            content: sanitizedContent,
+            metadata: {},
+            instructionalContent: targetLesson.instructionalContent,
+            contentBlocks: targetLesson.contentBlocks
+          });
           onLessonContentChange?.(sanitizedContent);
         } else {
           console.log(`[ContentArea] Lesson content not found for ${activeSubTopic?.id}`);
@@ -422,12 +442,14 @@ export default function ContentArea({
 
       const generatedContent = String(payload.lesson.content);
       const instructionalContent = payload.lesson.instructionalContent as StudentInstructionalContent | undefined;
+      const contentBlocks = payload.lesson.contentBlocks as import('../shared/academicContentBlocks').AcademicContentBlockCollection | undefined;
 
       setFetchedLesson({
         id: activeSubTopic.id,
         content: generatedContent,
         metadata: {} as PipelineMetadata,
-        instructionalContent
+        instructionalContent,
+        contentBlocks
       });
       onLessonContentChange?.(generatedContent);
 
@@ -780,7 +802,18 @@ export default function ContentArea({
                   </div>
                 )}
 
-                <MarkdownRenderer content={activeLessonData.content} />
+                {activeLessonData.contentBlocks?.blocks?.length ? (
+                  <AcademicContentBlocksRenderer
+                    collection={activeLessonData.contentBlocks}
+                    instructionalContent={activeLessonData.instructionalContent}
+                    courseId={courseId || ''}
+                    moduleId={module.id}
+                    lessonId={activeSubTopic.id}
+                    hideKnowledgeChecks={Boolean(activeLessonData.contentBlocks?.blocks.some(block => block.type === 'knowledge_check'))}
+                  />
+                ) : (
+                  <MarkdownRenderer content={activeLessonData.content} />
+                )}
                 {activeLessonData.instructionalContent && (
                   <MasteryLessonPanel
                     content={activeLessonData.instructionalContent}
