@@ -5390,6 +5390,8 @@ async function executeCoordinatedGenerationJob(
             rubricAudit.coverageScore >= 75 &&
             rubricAudit.foundationsScore >= 75 &&
             rubricAudit.sequencingScore >= 75 &&
+            rubricAudit.workloadBalanceScore >= 75 &&
+            rubricAudit.consistencyScore >= 75 &&
             !rubricAudit.genericFillerDetected;
           if (!approvedSkeleton) {
             throw new Error(`Reviewed curriculum failed its server-side academic audit: ${rubricAudit.reasoning}`);
@@ -5463,12 +5465,14 @@ async function executeCoordinatedGenerationJob(
               rubricAudit.coverageScore >= 75 && 
               rubricAudit.foundationsScore >= 75 && 
               rubricAudit.sequencingScore >= 75 && 
+              rubricAudit.workloadBalanceScore >= 75 &&
+              rubricAudit.consistencyScore >= 75 &&
               !rubricAudit.genericFillerDetected;
 
             if (isApproved) {
               break;
             } else {
-              feedbackCritique = `Critic Review: Coverage: ${rubricAudit.coverageScore}%, Foundations: ${rubricAudit.foundationsScore}%. Critique: ${rubricAudit.reasoning}. Missing topics: ${(rubricAudit.missingTopics || []).join(', ')}. Please explicitly include foundational orientation in Module 1.`;
+              feedbackCritique = `Critic Review: Coverage: ${rubricAudit.coverageScore}%, Foundations: ${rubricAudit.foundationsScore}%, Sequencing: ${rubricAudit.sequencingScore}%, Workload balance: ${rubricAudit.workloadBalanceScore}%, Consistency: ${rubricAudit.consistencyScore}%. Critique: ${rubricAudit.reasoning}. Missing topics: ${(rubricAudit.missingTopics || []).join(', ')}. Sequencing errors: ${(rubricAudit.sequencingErrors || []).join(', ')}. Correct all failing rubric dimensions before resubmission.`;
               if (attempts === MAX_ATTEMPTS) {
                 await updateCourseGenerationStateInPostgres(courseId, {
                   generationStatus: 'failed',
@@ -6011,7 +6015,8 @@ Return strictly a JSON object:
           modelVersion: requestedProvider || 'dynamic-multi-provider',
           promptVersion: 'uniace-mastery-curriculum-v3.0',
           generatedAt: new Date().toISOString(),
-          sourceStatus: sourceText ? 'admin_supplied_unverified' : 'model_suggested_unverified',
+          sourceStatus: (outline || sourceText) ? 'admin_supplied_unverified' : 'model_suggested_unverified',
+          research: courseResearch.metadata,
           academicAccuracy: 'not_independently_verified',
           rubricAudit
         };
@@ -6025,7 +6030,7 @@ Return strictly a JSON object:
           generationProgress: 100,
           confidenceState: 'needs_review',
           academicVerificationState: 'not_independently_verified',
-          statusMessage: 'Course generated and saved as a draft for academic review. Structural checks passed; factual accuracy and calculations still require independent verification.',
+          statusMessage: 'Course generated and saved as a draft for academic review. Research retrieval status, source evidence, factual accuracy, and calculations remain subject to independent review.',
           published: false,
           status: 'draft'
         });
