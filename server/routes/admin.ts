@@ -1469,6 +1469,9 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
 
     const client = await pool.connect();
     try {
+      // Apply lazy DDL before taking row locks; the review migration alters courses.
+      await ensureCourseReviewSchema();
+      await ensureCourseAssessmentSchema();
       await client.query('BEGIN');
       const course = await client.query(`SELECT id, status FROM courses WHERE id = $1 FOR UPDATE`, [id]);
       if (course.rows.length === 0) {
@@ -1509,7 +1512,6 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
       }
 
       // Preserve a durable audit event for the destructive administrator action.
-      await ensureCourseReviewSchema();
       await client.query(
         `INSERT INTO course_review_events
          (course_id, actor_uid, actor_email, action, from_status, to_status, notes, created_at)
@@ -1531,7 +1533,6 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
       }
 
       // Remove dependent instructional and learner data in the same transaction.
-      await ensureCourseAssessmentSchema();
       await client.query(`DELETE FROM course_lesson_practice_attempts WHERE course_id = $1`, [id]);
       await client.query(`DELETE FROM course_formulas WHERE course_id = $1`, [id]);
       await client.query(`DELETE FROM course_lessons WHERE course_id = $1`, [id]);
