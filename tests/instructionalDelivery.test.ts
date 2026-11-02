@@ -33,6 +33,29 @@ const lesson = {
   }]
 };
 
+test('typed lesson blocks remain available in the student payload without exposing mastery answers', () => {
+  const contentBlocks = [
+    { id: 'explanation-1', type: 'explanation', markdown: 'A substantive explanation of the concept.' },
+    { id: 'knowledge-check-1', type: 'knowledge_check', activityIndex: 0 }
+  ];
+  const source = {
+    ...lesson,
+    contentBlocks,
+    knowledgeChecks: [{
+      ...lesson.knowledgeChecks[0],
+      expectedReasoning: 'Private comparison reasoning.',
+      answerOrRubric: 'Private answer rubric.',
+      misconceptionSignals: ['Private diagnostic signal.']
+    }]
+  };
+
+  const safe = redactInstructionalAnswersForStudent(source);
+  assert.deepEqual(safe.contentBlocks, contentBlocks);
+  assert.equal('expectedReasoning' in safe.knowledgeChecks[0], false);
+  assert.equal('answerOrRubric' in safe.knowledgeChecks[0], false);
+  assert.equal('misconceptionSignals' in safe.knowledgeChecks[0], false);
+});
+
 test('student lesson payload removes practice answers and diagnostic keys', () => {
   const safe = redactInstructionalAnswersForStudent(lesson);
   assert.equal(safe.guidedPractice[0].prompt, lesson.guidedPractice[0].prompt);
