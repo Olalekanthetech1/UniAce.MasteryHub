@@ -791,6 +791,7 @@ export default function ContentArea({
                   <LessonContentBlocksRenderer
                     blocks={lessonContentBlocks}
                     knowledgeChecks={activeLessonData.instructionalContent?.knowledgeChecks || []}
+                    workedExamples={activeLessonData.instructionalContent?.workedExamples || []}
                     courseId={courseId || ''}
                     moduleId={module.id}
                     lessonId={activeSubTopic.id}
