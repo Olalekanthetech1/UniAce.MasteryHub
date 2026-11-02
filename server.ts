@@ -5198,6 +5198,15 @@ async function executeCoordinatedGenerationJob(
     if (res) return res.status(400).json({ error: 'An admin-approved syllabus outline or source material is required for source-grounded course generation.' });
     return;
   }
+  const suppliedSourceChars = [outline, sourceText].reduce((total, value) =>
+    total + (typeof value === 'string' ? value.length : 0), 0);
+  if (suppliedSourceChars > MAX_COURSE_SOURCE_CHARS) {
+    const message = 'The combined syllabus outline and extracted source material exceeds ' +
+      MAX_COURSE_SOURCE_CHARS.toLocaleString() +
+      ' characters. No source text was truncated; split or reduce the source document before generation.';
+    if (res) return res.status(413).json({ error: message });
+    throw new Error(message);
+  }
   if (scope.trim().toUpperCase() === 'FACULTY' &&
       (!Array.isArray(selectedFaculties) || selectedFaculties.length === 0)) {
     if (res) return res.status(400).json({ error: 'At least one faculty must be selected for faculty-scoped generation.' });
@@ -5286,9 +5295,25 @@ async function executeCoordinatedGenerationJob(
         );
 
         if (!isResume) {
-          await pool.query(`DELETE FROM course_lessons WHERE course_id = $1`, [courseId]).catch(() => {});
-          await pool.query(`DELETE FROM course_modules WHERE course_id = $1`, [courseId]).catch(() => {});
+          await pool.query(`DELETE FROM course_lessons WHERE course_id = $1`, [courseId]);
+          await pool.query(`DELETE FROM course_module_quizzes WHERE course_id = $1`, [courseId]);
+          await pool.query(`DELETE FROM course_formulas WHERE course_id = $1`, [courseId]);
+          await pool.query(`DELETE FROM course_modules WHERE course_id = $1`, [courseId]);
         }
+
+        await updateCourseGenerationStateInPostgres(courseId, {
+          generationProgress: 6,
+          statusMessage: 'Retrieving live academic evidence using the configured adaptive research depth...'
+        });
+        const courseResearch = await retrieveCourseGenerationResearch({
+          courseName,
+          courseCode: courseId,
+          department: rawDept,
+          level,
+          outline,
+          sourceText
+        });
+        console.log(`[Coordinated Gen] Academic research: ${courseResearch.metadata.status} (${courseResearch.metadata.papersCount} scholarly records, ${courseResearch.metadata.webSourcesCount} web discoveries).`);
 
         // STEP 0: Infer Academic Domain & Canonical References
         await updateCourseGenerationStateInPostgres(courseId, {
@@ -5303,7 +5328,8 @@ async function executeCoordinatedGenerationJob(
           department: rawDept,
           level,
           outline,
-          sourceText
+          sourceText,
+          researchContext: courseResearch.context
         });
 
         const domainBrief: any = await completeWithProviderJSON({
@@ -5334,7 +5360,8 @@ async function executeCoordinatedGenerationJob(
             courseName,
             courseCode: courseId,
             level,
-            outline
+            outline,
+            researchContext: courseResearch.context
           });
           rubricAudit = await completeWithProviderJSON({
             type: 'skeleton',
@@ -5378,6 +5405,7 @@ async function executeCoordinatedGenerationJob(
               selectedDepartments: effectiveDepartments,
               outline,
               sourceText,
+              researchContext: courseResearch.context,
               academicStandard
             }, feedbackCritique);
 
@@ -5403,7 +5431,8 @@ async function executeCoordinatedGenerationJob(
               courseName,
               courseCode: courseId,
               level,
-              outline
+              outline,
+              researchContext: courseResearch.context
             });
 
             rubricAudit = await completeWithProviderJSON({
@@ -5472,6 +5501,7 @@ async function executeCoordinatedGenerationJob(
           rubricAudit,
           canonicalCourseReferences: canonicalRefs,
           groundingReferences: canonicalRefs,
+          research: courseResearch.metadata,
           generationProgress: 20,
           statusMessage: `Curriculum structure audit passed (coverage: ${rubricAudit.coverageScore}%). Generating lessons; factual accuracy remains subject to independent verification...`
         });
@@ -5627,7 +5657,8 @@ async function executeCoordinatedGenerationJob(
                     depth,
                     scope,
                     academicStandard,
-                    sourceText
+                    sourceText,
+                    researchContext: courseResearch.context
                   },
                   targetOutcomeText
                 );
