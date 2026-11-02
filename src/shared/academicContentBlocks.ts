@@ -236,6 +236,7 @@ export const AcademicContentBlockCollectionSchema = z.object({
   blocks: z.array(AcademicContentBlockSchema).min(1).max(100)
 }).superRefine((collection, ctx) => {
   const seenIds = new Set<string>();
+  const seenKnowledgeChecks = new Set<number>();
   collection.blocks.forEach((block, index) => {
     if (seenIds.has(block.id)) {
       ctx.addIssue({
@@ -245,6 +246,17 @@ export const AcademicContentBlockCollectionSchema = z.object({
       });
     }
     seenIds.add(block.id);
+
+    if (block.type === 'knowledge_check') {
+      if (seenKnowledgeChecks.has(block.activityIndex)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['blocks', index, 'activityIndex'],
+          message: `Knowledge-check activity index ${block.activityIndex} is referenced more than once.`
+        });
+      }
+      seenKnowledgeChecks.add(block.activityIndex);
+    }
   });
 });
 
