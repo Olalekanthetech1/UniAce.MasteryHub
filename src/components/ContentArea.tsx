@@ -5,6 +5,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import QuizGenerator from './QuizGenerator';
 import QuickCheck from './QuickCheck';
 import MarkdownRenderer from './MarkdownRenderer';
+import LessonContentBlocksRenderer from './LessonContentBlocksRenderer';
 import MasteryLessonPanel from './MasteryLessonPanel';
 import PricingModal from './PricingModal';
 import MiniTeacherModal from './MiniTeacherModal';
@@ -17,7 +18,7 @@ import { useCourses } from '../context/CourseContext';
 import { useAuth } from '../context/AuthContext';
 import { usePremiumStatus } from '../hooks/usePremiumStatus';
 import { PipelineMetadata } from '../types';
-import type { StudentInstructionalContent } from '../shared/courseSchemas';
+import { LessonContentBlocksSchema, type StudentInstructionalContent } from '../shared/courseSchemas';
 import { calculateReadingTime, calculateSubTopicReadingTime, calculateModuleReadingTime, type ReadingTimeEstimate } from '../utils/readingTime';
 
 const stripThinkTags = (text: string) => {
@@ -96,6 +97,12 @@ export default function ContentArea({
         instructionalContent: activeSubTopic.instructionalContent || (fetchedLesson?.id === activeSubTopic.id ? fetchedLesson.instructionalContent : undefined)
       }
     : (fetchedLesson?.id === activeSubTopic?.id && fetchedLesson.content && fetchedLesson.content.trim().length > 0 ? fetchedLesson : null);
+
+  const parsedTypedContentBlocks = activeLessonData?.instructionalContent?.contentBlocks
+    ? LessonContentBlocksSchema.safeParse(activeLessonData.instructionalContent.contentBlocks)
+    : null;
+  const lessonContentBlocks = parsedTypedContentBlocks?.success ? parsedTypedContentBlocks.data : null;
+  const hasInvalidTypedContentBlocks = Boolean(parsedTypedContentBlocks && !parsedTypedContentBlocks.success);
 
   const isCurrentLessonLoading = isFetchingContent || (!activeLessonData && !isGenerating);
 
@@ -780,13 +787,33 @@ export default function ContentArea({
                   </div>
                 )}
 
-                <MarkdownRenderer content={activeLessonData.content} />
+                {lessonContentBlocks ? (
+                  <LessonContentBlocksRenderer
+                    blocks={lessonContentBlocks}
+                    knowledgeChecks={activeLessonData.instructionalContent?.knowledgeChecks || []}
+                    courseId={courseId || ''}
+                    moduleId={module.id}
+                    lessonId={activeSubTopic.id}
+                  />
+                ) : (
+                  <>
+                    {hasInvalidTypedContentBlocks && (
+                      <p role="status" className="mb-3 text-xs text-amber-700 dark:text-amber-300">
+                        The structured lesson layout could not be validated. The stored compatible lesson text is displayed instead.
+                      </p>
+                    )}
+                    <MarkdownRenderer content={activeLessonData.content} />
+                  </>
+                )}
                 {activeLessonData.instructionalContent && (
                   <MasteryLessonPanel
                     content={activeLessonData.instructionalContent}
                     courseId={courseId || ''}
                     moduleId={module.id}
                     lessonId={activeSubTopic.id}
+                    excludeKnowledgeCheckIndexes={lessonContentBlocks
+                      ?.filter((block) => block.type === 'knowledge_check')
+                      .map((block) => block.activityIndex) || []}
                   />
                 )}
                 
