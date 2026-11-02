@@ -6032,9 +6032,13 @@ Return strictly a JSON object:
         const provenance = {
           sources: canonicalRefs,
           modelVersion: requestedProvider || 'dynamic-multi-provider',
-          promptVersion: 'uniace-mastery-curriculum-v3.0',
+          promptVersion: 'uniace-mastery-curriculum-v4.0',
           generatedAt: new Date().toISOString(),
-          sourceStatus: (outline || sourceText) ? 'admin_supplied_unverified' : 'model_suggested_unverified',
+          sourceStatus: (outline || sourceText)
+            ? 'admin_supplied_unverified'
+            : (courseResearch.metadata.papersCount + courseResearch.metadata.webSourcesCount > 0)
+              ? 'research_retrieved_unverified'
+              : 'model_suggested_unverified',
           research: courseResearch.metadata,
           academicAccuracy: 'not_independently_verified',
           rubricAudit
