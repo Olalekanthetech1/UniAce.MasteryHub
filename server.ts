@@ -4995,7 +4995,8 @@ async function updateCourseGenerationStateInPostgres(courseId: string, patch: Re
       }
       catalogCache.invalidateCourse(courseId);
     } catch (pgErr: any) {
-      console.warn(`[Coordinated Gen] Postgres course row upsert notice for ${courseId}:`, pgErr.message);
+      console.error(`[Coordinated Gen] Course state persistence rejected for ${courseId}:`, pgErr.message);
+      throw pgErr;
     }
   }
 }
@@ -6459,10 +6460,16 @@ app.post('/api/course/cancel-job', verifyAdmin, async (req, res) => {
 
   if (getFeatureFlags().ENABLE_POSTGRES_GENERATION_JOBS) {
     try {
-      const targetJobId = jobId || (await JobRepository.getActiveJobForCourse(courseId))?.job_id;
+      const targetJob = jobId
+        ? null
+        : await JobRepository.getActiveJobForCourse(courseId);
+      const targetJobId = jobId || targetJob?.job_id;
       if (targetJobId) {
         const cancelledBy = (req as any).user?.uid || 'admin';
-        await JobRepository.cancelJob(targetJobId, cancelledBy);
+        const cancelled = await JobRepository.cancelJob(targetJobId, cancelledBy);
+        if (!cancelled) {
+          return res.status(409).json({ error: 'The generation job is no longer active or could not be cancelled.', courseId, jobId: targetJobId });
+        }
         jobStreamManager.broadcast(targetJobId, 'cancelled', {
           jobId: targetJobId,
           courseId,
@@ -6470,7 +6477,8 @@ app.post('/api/course/cancel-job', verifyAdmin, async (req, res) => {
         });
       }
     } catch (pgErr: any) {
-      console.warn('[Postgres Job] Error cancelling job in PostgreSQL:', pgErr.message);
+      console.error('[Postgres Job] Authoritative cancellation failed:', pgErr.message);
+      return res.status(503).json({ error: 'Generation cancellation could not be confirmed.', courseId });
     }
   }
 
