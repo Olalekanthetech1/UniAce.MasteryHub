@@ -102,6 +102,12 @@ test('rejects duplicate block identifiers', () => {
 
 test('simulation expressions accept arithmetic and allowlisted functions', () => {
   assert.deepEqual(validateSimulationExpression('a*sin(x) + sqrt(x^2)', 'x', 'a'), { valid: true });
+  assert.deepEqual(validateSimulationExpression('log10(abs(x)) + cos(x)', 'x', 'a'), { valid: true });
+});
+
+test('simulation expressions reject bare function identifiers and unapproved callees', () => {
+  assert.equal(validateSimulationExpression('sin', 'x', 'a').valid, false);
+  assert.equal(validateSimulationExpression('custom(x)', 'x', 'a').valid, false);
 });
 
 test('simulation expressions reject unknown symbols and arbitrary code constructs', () => {
