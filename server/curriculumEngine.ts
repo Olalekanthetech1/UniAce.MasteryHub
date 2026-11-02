@@ -621,8 +621,15 @@ export function buildModuleQuizPrompt(options: {
   lessons: Array<{ title: string; content: string }>;
 }): string {
   const { courseName, courseCode, moduleTitle, moduleOrder, level, department, academicStandard, quizTopics, lessons } = options;
-  if (!Array.isArray(quizTopics) || quizTopics.length === 0) {
+  const approvedQuizTopics = Array.isArray(quizTopics)
+    ? [...new Set(quizTopics.map(topic => String(topic).trim()).filter(Boolean))]
+    : [];
+  if (approvedQuizTopics.length === 0) {
     throw new Error('Module ' + moduleTitle + ' has no approved quiz topics; quiz generation cannot infer them.');
+  }
+  if (approvedQuizTopics.length > 20) {
+    throw new Error('Module ' + moduleTitle + ' has ' + approvedQuizTopics.length +
+      ' quiz topics. Split the module into smaller assessable modules; one module quiz supports at most 20 approved topics.');
   }
   if (!Array.isArray(lessons) || lessons.length === 0 || lessons.some(lesson => typeof lesson.content !== 'string' || !lesson.content.trim())) {
     throw new Error('Module ' + moduleTitle + ' has no complete generated lesson material to ground its quiz.');
@@ -639,15 +646,15 @@ export function buildModuleQuizPrompt(options: {
     'ACADEMIC STANDARD: ' + (academicStandard && academicStandard.trim() ? academicStandard.trim() : 'not supplied; do not infer an accreditation standard'),
     '',
     'APPROVED QUIZ TOPICS (every topic must be assessed):',
-    ...quizTopics.map((topic, index) => (index + 1) + '. ' + topic),
+    ...approvedQuizTopics.map((topic, index) => (index + 1) + '. ' + topic),
     '',
     'COMPLETE GENERATED LESSON MATERIAL — THE ONLY AUTHORIZED QUESTION EVIDENCE:',
     lessonEvidence,
     '',
     'ASSESSMENT REQUIREMENTS',
-    '- Generate 8 to 12 distinct multiple-choice questions.',
+    '- Generate between ' + Math.max(8, approvedQuizTopics.length) + ' and 20 distinct multiple-choice questions.',
     '- Every question must be answerable from the supplied generated lessons; do not introduce unsupported facts, formulas, cases, values, or source claims.',
-    '- Cover every approved quiz topic at least once. Set quizTopic to the exact approved topic text.',
+    '- Cover every approved quiz topic at least once. Set quizTopic to the exact approved topic text. Order questions by approved topic order and cover every topic once before assigning a second question to any topic.',
     '- Calibrate to ' + level + '; assess conceptual understanding, application and analysis, not rote recall alone.',
     '- Use exactly four distinct options per question and exactly one defensible correct option.',
     '- correctOptionIndex is zero-based and must point to the correct option.',
