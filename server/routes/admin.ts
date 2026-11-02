@@ -1467,13 +1467,14 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
 
+    await ensureCourseLifecycleSchema();
+    await ensureCourseReviewSchema();
+    await ensureCourseAssessmentSchema();
     const client = await pool.connect();
     try {
-      // Apply lazy DDL before taking row locks; the review migration alters courses.
-      await ensureCourseReviewSchema();
-      await ensureCourseAssessmentSchema();
       await client.query('BEGIN');
-      const course = await client.query(`SELECT id, status FROM courses WHERE id = $1 FOR UPDATE`, [id]);
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [id]);
+      const course = await client.query(`SELECT id, code, title, status FROM courses WHERE id = $1 FOR UPDATE`, [id]);
       if (course.rows.length === 0) {
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Course not found.' });
@@ -1512,6 +1513,12 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
       }
 
       // Preserve a durable audit event for the destructive administrator action.
+      await client.query(
+        `INSERT INTO course_lifecycle_tombstones (course_id, course_code, course_title, deleted_by, deleted_at)
+         VALUES ($1, $2, $3, $4, NOW())
+         ON CONFLICT (course_id) DO NOTHING`,
+        [id, course.rows[0].code || id, course.rows[0].title || null, user.uid]
+      );
       await client.query(
         `INSERT INTO course_review_events
          (course_id, actor_uid, actor_email, action, from_status, to_status, notes, created_at)
@@ -1564,6 +1571,7 @@ Include 3 multiple-choice conceptual questions with step-by-step verified explan
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [id]);
       const course = await client.query(`SELECT id FROM courses WHERE id = $1 FOR UPDATE`, [id]);
       if (course.rows.length === 0) {
         await client.query('ROLLBACK');
