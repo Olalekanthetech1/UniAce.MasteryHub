@@ -90,16 +90,26 @@ export class JobRepository {
     const maxAttempts = input.maxAttempts || 3;
 
     try {
+      // Serialize job creation with archive/delete lifecycle transactions.
+      // The course row lock ensures a concurrent archive either waits and cancels this job,
+      // or wins first and makes this INSERT return no row.
       const insertSql = `
+        WITH eligible_course AS (
+          SELECT id
+          FROM courses
+          WHERE id = $2 AND status <> 'archived'
+          FOR UPDATE
+        )
         INSERT INTO course_generation_jobs (
           job_id, course_id, user_id, status, stage, progress_percent,
           status_message, lease_owner, lease_heartbeat, lease_expires_at,
           attempts_count, max_attempts, request_payload, created_at, updated_at
-        ) VALUES (
-          $1, $2, $3, 'running', 'initialized', 0,
+        )
+        SELECT
+          $1, eligible_course.id, $3, 'running', 'initialized', 0,
           'Initializing course generation worker...', $4, NOW(), NOW() + INTERVAL '30 seconds',
           1, $5, $6::jsonb, NOW(), NOW()
-        )
+        FROM eligible_course
         RETURNING *;
       `;
       const res = await queryPostgres(insertSql, [
@@ -110,6 +120,9 @@ export class JobRepository {
         maxAttempts,
         JSON.stringify(input.requestPayload || {})
       ]);
+      if (res.rows.length === 0) {
+        throw new Error(`Course ${input.courseId} does not exist or is archived; generation job creation rejected.`);
+      }
 
       return {
         job: res.rows[0] as CourseGenerationJobEntity,
