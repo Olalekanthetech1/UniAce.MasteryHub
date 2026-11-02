@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import {
   CourseProvenanceSchema,
   InstructionalContentSchema,
+  LessonContentBlocksSchema,
+  StructuredLessonOutputSchema,
+  renderLessonContentBlocksToMarkdown,
   deriveCurriculumParameters
 } from '../src/shared/courseSchemas';
 import {
@@ -66,6 +69,65 @@ const instructionalContent = () => ({
   }
 });
 
+const typedContentBlocks = () => [
+  {
+    id: 'explanation-1',
+    type: 'explanation' as const,
+    title: 'Hydrostatic pressure',
+    markdown: 'A fluid at rest develops pressure throughout its volume. The pressure field is related to the weight of the fluid above a point, subject to the assumptions of a static fluid and a consistent gravitational field. The pressure distribution must be interpreted using the fluid density, elevation difference and the reference pressure. '.repeat(4)
+  },
+  {
+    id: 'derivation-1',
+    type: 'mathematical_derivation' as const,
+    title: 'Hydrostatic pressure relation',
+    assumptions: ['The fluid is at rest.', 'Density is constant over the interval considered.'],
+    steps: [
+      { explanation: 'Consider vertical force equilibrium on a differential fluid element.', equation: 'dP = -rho g dz' },
+      { explanation: 'Integrate between the free surface and the point at depth h.', equation: 'P - P_0 = rho g h' }
+    ],
+    conclusion: 'The gauge pressure increases linearly with depth for a constant-density fluid.'
+  },
+  {
+    id: 'diagram-1',
+    type: 'engineering_diagram' as const,
+    title: 'Pressure with depth',
+    format: 'mermaid' as const,
+    source: 'flowchart TD\n  A["Free surface"] --> B["Fluid column"]\n  B --> C["Point at depth"]',
+    altText: 'Conceptual diagram showing the free surface, fluid column and a point located below the surface.'
+  },
+  {
+    id: 'example-1',
+    type: 'worked_example' as const,
+    title: 'Pressure at a stated depth',
+    exampleType: 'numerical' as const,
+    problem: 'Determine the gauge pressure at the stated depth using the supplied fluid properties.',
+    givens: [{ name: 'Fluid density', value: '1000', unit: 'kg/m^3' }],
+    assumptions: ['The fluid is static.', 'Density and gravitational acceleration are constant.'],
+    steps: [
+      { explanation: 'Identify the hydrostatic pressure relation and the depth variable.', equation: 'p = rho g h' },
+      { explanation: 'Substitute the supplied values and preserve consistent SI units.', equation: 'p = 1000 * 9.81 * h' }
+    ],
+    finalAnswer: 'The pressure is calculated from the substituted values once the stated depth is supplied.',
+    verification: 'The resulting unit is pascal because kg/(m s^2) is equivalent to N/m^2.'
+  },
+  {
+    id: 'simulation-1',
+    type: 'interactive_simulation' as const,
+    title: 'Explore pressure versus depth',
+    description: 'Adjust the declared density parameter and observe how the pressure-depth relationship changes.',
+    expression: 'rho * 9.81 * x',
+    xRange: [0, 5] as [number, number],
+    xLabel: 'Depth (m)',
+    yLabel: 'Gauge pressure (Pa)',
+    parameters: [{ id: 'rho', label: 'Density', unit: 'kg/m^3', min: 500, max: 1500, step: 50, initial: 1000 }]
+  },
+  {
+    id: 'knowledge-check-1',
+    type: 'knowledge_check' as const,
+    activityIndex: 0
+  }
+];
+
 const domainBrief = {
   primaryDomain: 'Fluid Mechanics',
   subDisciplines: ['Fluid statics', 'Fluid dynamics', 'Hydraulics'],
@@ -82,6 +144,79 @@ const domainBrief = {
     'Conservation laws'
   ]
 };
+
+test('legacy instructional content remains valid when typed content blocks are absent', () => {
+  assert.equal(InstructionalContentSchema.safeParse(instructionalContent()).success, true);
+});
+
+test('typed content block contract validates all six block variants and compiles Markdown', () => {
+  const blocks = typedContentBlocks();
+  const parsedBlocks = LessonContentBlocksSchema.safeParse(blocks);
+  assert.equal(parsedBlocks.success, true);
+
+  const compiled = renderLessonContentBlocksToMarkdown(blocks);
+  assert.ok(compiled.includes('## Hydrostatic pressure'));
+  assert.ok(compiled.includes('$\n'));
+  assert.ok(compiled.includes('flowchart TD'));
+  assert.ok(compiled.includes('## Explore pressure versus depth'));
+  assert.ok(compiled.includes('Complete Check 1'));
+
+  const instructional = {
+    ...instructionalContent(),
+    contentBlocks: blocks
+  };
+  assert.equal(InstructionalContentSchema.safeParse(instructional).success, true);
+
+  const generated = StructuredLessonOutputSchema.safeParse({
+    title: 'Hydrostatic Pressure',
+    pedagogicalReasoning: 'The block sequence proceeds from explanation to formal development, application and retrieval.',
+    content: 'This input is replaced by the canonical Markdown adapter.',
+    instructionalContent: instructional
+  });
+  assert.equal(generated.success, true);
+  if (generated.success) {
+    assert.equal(generated.data.instructionalContent.contentBlocks?.length, 6);
+    assert.ok(generated.data.content.includes('flowchart TD'));
+    assert.ok(generated.data.content.length >= 800);
+  }
+});
+
+test('typed simulation blocks reject undeclared identifiers and invalid slider ranges', () => {
+  const blocks = typedContentBlocks();
+  const simulationIndex = blocks.findIndex((block) => block.type === 'interactive_simulation');
+  const simulation = blocks[simulationIndex];
+  if (simulation.type !== 'interactive_simulation') throw new Error('Simulation fixture missing');
+
+  const unknownSymbol = blocks.map((block, index) => index === simulationIndex
+    ? { ...simulation, expression: 'rho * hiddenValue * x' }
+    : block);
+  assert.equal(LessonContentBlocksSchema.safeParse(unknownSymbol).success, false);
+
+  const invalidRange = blocks.map((block, index) => index === simulationIndex
+    ? { ...simulation, parameters: [{ ...simulation.parameters[0], min: 1500, max: 500 }] }
+    : block);
+  assert.equal(LessonContentBlocksSchema.safeParse(invalidRange).success, false);
+});
+
+test('typed knowledge-check blocks must point to an existing protected activity', () => {
+  const invalid = typedContentBlocks().map((block) => block.type === 'knowledge_check'
+    ? { ...block, activityIndex: 99 }
+    : block);
+  assert.equal(LessonContentBlocksSchema.safeParse(invalid).success, true);
+  assert.equal(
+    InstructionalContentSchema.safeParse({ ...instructionalContent(), contentBlocks: invalid }).success,
+    false
+  );
+});
+
+test('new lesson output cannot omit typed content blocks', () => {
+  const generated = StructuredLessonOutputSchema.safeParse({
+    title: 'Hydrostatic Pressure',
+    content: 'A sufficiently long legacy Markdown lesson. '.repeat(30),
+    instructionalContent: instructionalContent()
+  });
+  assert.equal(generated.success, false);
+});
 
 test('independent practice accepts an empty hint array while guided practice still requires hints', () => {
   assert.equal(InstructionalContentSchema.safeParse(instructionalContent()).success, true);
