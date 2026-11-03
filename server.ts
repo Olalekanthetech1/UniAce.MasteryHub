@@ -4822,22 +4822,30 @@ async function completeWithProviderJSON<T = any>(opts: CompleteProviderOptions<T
         let parsed = parseRobustJSON<T>(resp.text);
         if (opts.schema) {
           let validation = opts.schema.safeParse(parsed);
-          if (!validation.success) {
-            console.warn(`[AI Completion] Initial schema validation failed with ${prov.name}:`, validation.error.issues);
-            // Re-prompt once with exact parse/schema error rather than regex-repairing
+          let currentText = resp.text;
+          for (let attempt = 1; !validation.success && attempt <= 2; attempt++) {
+            const errorSummary = validation.error.issues
+              .map((i: any) => `${i.path.join('.') || '<root>'}: ${i.message}`)
+              .join('; ');
+            console.warn(`[AI Completion] Schema validation attempt ${attempt} failed with ${prov.name}: ${errorSummary}`);
             const rePromptMessages = [
               ...opts.messages,
-              { role: 'assistant', content: resp.text },
-              { role: 'user', content: `Your output failed schema validation with error: ${validation.error.issues.map((i: any) => `${i.path.join('.')}: ${i.message}`).join(', ')}. Return ONLY the corrected JSON object matching the schema with no extra text.` }
+              { role: 'assistant', content: currentText },
+              {
+                role: 'user',
+                content: `Your JSON output failed schema validation with the following errors: ${errorSummary}. Fix every listed field (preserving all valid sections and meeting all array count and string length requirements) and return ONLY the complete corrected JSON object with no extra text.`
+              }
             ];
             const rePromptResp = await executeWithAdaptiveProgress(rePromptMessages);
-            if (rePromptResp && rePromptResp.text) {
-              parsed = parseRobustJSON<T>(rePromptResp.text);
-              validation = opts.schema.safeParse(parsed);
-              if (!validation.success) {
-                throw new Error(`Schema validation failed after re-prompt: ${validation.error.issues.map((i: any) => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
-              }
+            if (!rePromptResp || !rePromptResp.text) {
+              break;
             }
+            currentText = rePromptResp.text;
+            parsed = parseRobustJSON<T>(currentText);
+            validation = opts.schema.safeParse(parsed);
+          }
+          if (!validation.success) {
+            throw new Error(`Schema validation failed after re-prompt: ${validation.error.issues.map((i: any) => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
           }
           return validation.data;
         }

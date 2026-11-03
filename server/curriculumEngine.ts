@@ -538,6 +538,30 @@ export function buildLessonPrompt(
     ? domainBrief.foundationalAxioms.join('; ')
     : 'Use established principles of the discipline';
 
+  const requiredExamplesCount = normalizedDepth === 'deep-dive' ? 3 : normalizedDepth === 'standard' ? 2 : 1;
+  const requiredChecksCount = normalizedDepth === 'deep-dive' ? 4 : normalizedDepth === 'standard' ? 3 : 2;
+  const workedExamplesIllustration = JSON.stringify(
+    Array.from({ length: requiredExamplesCount }, (_, idx) => ({
+      title: `Distinct example ${idx + 1} title`,
+      exampleType: idx % 2 === 0 ? 'numerical' : 'conceptual',
+      problem: `Complete problem statement ${idx + 1}...`,
+      reasoningSteps: ['Step 1 derivation or reasoning...', 'Step 2 calculation or analysis...'],
+      solution: 'Complete final answer with units and interpretation...',
+      verification: 'Dimensional, limiting-case, or logical reasonableness check...'
+    }))
+  );
+  const knowledgeChecksIllustration = JSON.stringify(
+    Array.from({ length: requiredChecksCount }, (_, idx) => ({
+      prompt: `Distinct reasoning check ${idx + 1} prompt...`,
+      responseMode: idx % 2 === 0 ? 'explain' : 'calculate',
+      expectedReasoning: 'Expected analytical reasoning...',
+      answerOrRubric: 'Complete expected answer or grading rubric...',
+      misconceptionSignals: ['Specific misconception signal...'],
+      difficulty: Math.min(5, idx + 2),
+      learningOutcome: '...'
+    }))
+  );
+
   return `Create a university lesson for "${topicTitle}" in Module ${moduleOrder}: "${moduleTitle}" of "${courseName}".
 
 ACADEMIC CONTEXT
@@ -584,11 +608,11 @@ STRUCTURED CONTENT RULES
 - conceptIntroduction: intuition before technical detail.
 - deepExplanation: mechanisms, assumptions, relationships and boundaries.
 - formalDevelopment: relevant derivation, proof, argument, causal mechanism, research method or analytical framework.
-- workedExamples: ${normalizedDepth === 'deep-dive' ? 'at least three' : normalizedDepth === 'standard' ? 'at least two' : 'at least one'} distinct discipline-appropriate examples with problem, ordered reasoning, solution and a genuine reasonableness/logic check.
+- workedExamples: ${normalizedDepth === 'deep-dive' ? 'at least three' : normalizedDepth === 'standard' ? 'at least two' : 'at least one'} distinct discipline-appropriate examples (minimum ${requiredExamplesCount} items in the array) with problem, ordered reasoning, a complete final solution statement (with units/interpretation), and a genuine reasonableness/logic check.
 - applications and misconceptions: include only defensible items; otherwise return [] and explain why in applicationRationale or misconceptionRationale.
 - guidedPractice: at least one exercise with progressive hints, approach, answer and explanation.
 - independentPractice: at least one new no-hint exercise with answer/explanation for later reveal.
-- knowledgeChecks: ${normalizedDepth === 'deep-dive' ? 'at least four' : normalizedDepth === 'standard' ? 'at least three' : 'at least two'} reasoning checks, not recall alone.
+- knowledgeChecks: ${normalizedDepth === 'deep-dive' ? 'at least four' : normalizedDepth === 'standard' ? 'at least three' : 'at least two'} reasoning checks (minimum ${requiredChecksCount} items in the array), not recall alone.
 - mastery.targetLevel: appropriate target 1-5 for this lesson; it is not evidence that any student has achieved that level.
 - mastery.criteria: observable evidence required before advancement.
 - mastery.retentionPrompts: later active-retrieval prompts.
@@ -613,7 +637,7 @@ contentBlocks must follow this versioned structure (include only blocks justifie
  ]
 }
 The derivation, diagram, worked-example, structured_block, and simulation objects above are optional structural illustrations. Replace every placeholder and illustrative value with topic-grounded values or omit the corresponding block. Never copy them as factual course data.
-instructionalContent must follow this shape:
+instructionalContent must follow this shape (including at least ${requiredExamplesCount} workedExamples and at least ${requiredChecksCount} knowledgeChecks):
 {
  "frameworkVersion":"understand-explore-apply-verify-master-v1",
  "disciplineEngine":"${domainBrief.pedagogyType}",
@@ -622,14 +646,14 @@ instructionalContent must follow this shape:
  "conceptIntroduction":"...",
  "deepExplanation":"...",
  "formalDevelopment":"...",
- "workedExamples":[{"title":"...","exampleType":"numerical","problem":"...","reasoningSteps":["...","..."],"solution":"...","verification":"..."}],
+ "workedExamples":${workedExamplesIllustration},
  "applications":[{"context":"...","conceptConnection":"...","constraintsOrAssumptions":"..."}],
  "applicationRationale":"...",
  "misconceptions":[{"misconception":"...","whyItIsWrong":"...","correction":"..."}],
  "misconceptionRationale":"...",
  "guidedPractice":[{"prompt":"...","hints":["..."],"expectedApproach":"...","expectedAnswer":"...","explanation":"...","diagnosticSignals":["..."]}],
  "independentPractice":[{"prompt":"...","hints":[],"expectedApproach":"...","expectedAnswer":"...","explanation":"...","diagnosticSignals":["..."]}],
- "knowledgeChecks":[{"prompt":"...","responseMode":"explain","expectedReasoning":"...","answerOrRubric":"...","misconceptionSignals":["..."],"difficulty":2,"learningOutcome":"..."}],
+ "knowledgeChecks":${knowledgeChecksIllustration},
  "mastery":{"targetLevel":3,"criteria":["..."],"retentionPrompts":["..."]}
 }
 These are schema illustrations, not course facts. Return strict JSON without fences or commentary.`;

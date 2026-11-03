@@ -297,12 +297,16 @@ function calculateRelevanceScore(paper: AcademicPaper, queryTerms: string[]): nu
   return Number(score.toFixed(2));
 }
 
+function toAcademicCacheConfigKey(cacheKey: string): string {
+  return 'acad_cache_' + cacheKey.slice(0, 48);
+}
+
 async function getCachedSearch(cacheKey: string, cacheTtlHours: number): Promise<AcademicSearchResponse | null> {
   const pool = getPostgresPool();
   if (!pool) return null;
   try {
     const result = await pool.query('SELECT data FROM system_config WHERE key = $1 LIMIT 1', [
-      'academic_cache_' + cacheKey
+      toAcademicCacheConfigKey(cacheKey)
     ]);
     const data = result.rows[0]?.data as (AcademicSearchResponse & { cachedAt?: string }) | undefined;
     if (!data || !data.cachedAt || !Array.isArray(data.papers) || !Array.isArray(data.webSources) ||
@@ -326,7 +330,7 @@ async function setCachedSearch(cacheKey: string, response: AcademicSearchRespons
     await pool.query(
       'INSERT INTO system_config (key, data, updated_at) VALUES ($1, $2::jsonb, NOW()) ' +
       'ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()',
-      ['academic_cache_' + cacheKey, JSON.stringify(payload)]
+      [toAcademicCacheConfigKey(cacheKey), JSON.stringify(payload)]
     );
   } catch (error) {
     console.warn('[AcademicResearch] Cache write failed; live research result remains available.', error);
@@ -338,8 +342,9 @@ async function logAcademicTelemetry(query: string, response: AcademicSearchRespo
   if (!pool) return;
   try {
     await pool.query(
-      "INSERT INTO system_logs (id, level, category, message, metadata, created_at) " +
-      "VALUES ($1, 'info', 'academic_research', $2, $3::jsonb, NOW())",
+      "INSERT INTO system_logs (log_id, level, category, message, details, created_at) " +
+      "VALUES ($1, 'info', 'academic_research', $2, $3::jsonb, NOW()) " +
+      "ON CONFLICT (log_id) DO NOTHING",
       [
         'acad_' + randomUUID(),
         'Academic research: ' + query.slice(0, 100) + ' (' + response.totalResults + ' records)',

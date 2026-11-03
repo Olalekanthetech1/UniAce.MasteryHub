@@ -282,12 +282,12 @@ export const InstructionalContentSchema = z.preprocess(
   deepExplanation: z.string().min(80),
   formalDevelopment: z.string().min(40),
   workedExamples: z.array(z.object({
-    title: z.string().min(1),
+    title: z.string().trim().min(1),
     exampleType: z.enum(['numerical', 'conceptual', 'proof', 'case-analysis', 'experimental', 'design']),
-    problem: z.string().min(10),
-    reasoningSteps: z.array(z.string().min(5)).min(2),
-    solution: z.string().min(10),
-    verification: z.string().min(10)
+    problem: z.string().trim().min(5),
+    reasoningSteps: z.array(z.string().trim().min(3)).min(2),
+    solution: z.string().trim().min(1),
+    verification: z.string().trim().min(5)
   })).min(1),
   applications: z.array(z.object({
     context: z.string().min(1),
