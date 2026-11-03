@@ -1,7 +1,7 @@
 import jsPDF from 'jspdf';
-import html2canvas from 'html2canvas';
 import * as XLSX from 'xlsx';
 import toast from 'react-hot-toast';
+import { renderElementToCanvasSafe } from './html2canvasSafe';
 
 /**
  * Export any HTML element to a PDF file using html2canvas and jsPDF.
@@ -13,7 +13,7 @@ export async function exportElementToPdf(
 ): Promise<boolean> {
   const toastId = toast.loading('Generating high-resolution PDF...');
   try {
-    const canvas = await html2canvas(element, {
+    const canvas = await renderElementToCanvasSafe(element, {
       scale: 2,
       useCORS: true,
       logging: false,

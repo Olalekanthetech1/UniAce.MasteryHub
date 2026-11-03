@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
 import toast from 'react-hot-toast';
+import { renderElementToCanvasSafe } from '../../utils/html2canvasSafe';
 import {
   Sparkles,
   Download,
@@ -281,10 +281,11 @@ export default function DynamicFlyerStudio() {
     if (!posterRef.current) return;
     setIsExportingPng(true);
     try {
-      const canvas = await html2canvas(posterRef.current, {
+      const canvas = await renderElementToCanvasSafe(posterRef.current, {
         scale: 2.5,
         useCORS: true,
         allowTaint: true,
+        logging: false,
         backgroundColor: palette.topBg,
       });
       const dataUrl = canvas.toDataURL('image/png', 1.0);
@@ -313,10 +314,11 @@ export default function DynamicFlyerStudio() {
     if (!posterRef.current) return;
     setIsExportingPdf(true);
     try {
-      const canvas = await html2canvas(posterRef.current, {
+      const canvas = await renderElementToCanvasSafe(posterRef.current, {
         scale: 2.5,
         useCORS: true,
         allowTaint: true,
+        logging: false,
         backgroundColor: palette.topBg,
       });
       const imgData = canvas.toDataURL('image/png', 1.0);

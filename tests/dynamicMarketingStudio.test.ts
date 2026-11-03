@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateQrMatrix } from '../src/utils/qrCodeSvg';
+import { convertModernCssColorsToRgb } from '../src/utils/html2canvasSafe';
 import {
   resolveDynamicCapabilities,
   buildDynamicFlyerConfig,
@@ -104,3 +105,27 @@ test('buildDynamicDemoScenarios creates a live course spotlight scenario and res
   assert.ok(!sprintViews.includes('arena'));
   assert.ok(sprintViews.includes('flashcards'));
 });
+
+test('convertModernCssColorsToRgb converts oklab, oklch, color-mix, and gradient interpolation into html2canvas-safe rgb/rgba', () => {
+  const shadow = '0px 25px 50px -12px oklab(0% 0 0 / 0.25)';
+  const convertedShadow = convertModernCssColorsToRgb(shadow);
+  assert.ok(!convertedShadow.includes('oklab'), 'oklab should be completely removed');
+  assert.equal(convertedShadow, '0px 25px 50px -12px rgba(0, 0, 0, 0.25)');
+
+  const gradient =
+    'linear-gradient(to bottom right in oklab, oklch(0.696 0.17 162.48) 0%, oklab(0.999994 0.000045 0.00002 / 0.15) 100%)';
+  const convertedGradient = convertModernCssColorsToRgb(gradient);
+  assert.ok(!convertedGradient.includes('oklab'), 'gradient should not contain oklab');
+  assert.ok(!convertedGradient.includes('oklch'), 'gradient should not contain oklch');
+  assert.ok(
+    convertedGradient.startsWith('linear-gradient(to bottom right, rgb('),
+    `Expected clean linear-gradient, got: ${convertedGradient}`
+  );
+
+  const nestedMix = 'color-mix(in oklab, oklch(0.7 0.15 160) 40%, transparent)';
+  const convertedMix = convertModernCssColorsToRgb(nestedMix);
+  assert.ok(!convertedMix.includes('color-mix'), 'color-mix should be resolved');
+  assert.ok(!convertedMix.includes('oklch'), 'nested oklch should be resolved');
+  assert.ok(/^rgba?\(/.test(convertedMix), `Expected rgb/rgba output, got: ${convertedMix}`);
+});
+
