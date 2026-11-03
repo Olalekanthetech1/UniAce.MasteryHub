@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { BookOpen, CheckCircle2, Clock3, FileText, RefreshCw, Search, Send, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, BookOpen, CheckCircle2, Clock3, FileText, Play, RefreshCw, Search, Send, ShieldCheck, Trash2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import MarkdownRenderer from '../MarkdownRenderer';
 import { asDisplayMath } from '../../shared/mathText';
@@ -19,11 +19,14 @@ interface DraftCourse {
   scope: string;
   status: string;
   review_status: ReviewStatus;
+  generation_status?: 'generating' | 'failed' | 'cancelled' | 'completed';
+  generation_error?: string | null;
   review_notes?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
   module_count: number;
   lesson_count: number;
+  empty_module_count?: number;
 }
 interface DraftLesson {
   id: string;
@@ -235,6 +238,7 @@ function StructuredLessonPreview({ content }: { content: any }) {
 export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublished }: Props) {
   const { user } = useAuth();
   const [drafts, setDrafts] = useState<DraftCourse[]>([]);
+  const [incompleteDrafts, setIncompleteDrafts] = useState<DraftCourse[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [bundle, setBundle] = useState<ReviewBundle | null>(null);
   const [search, setSearch] = useState('');
@@ -243,6 +247,10 @@ export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublish
   const [loadingQueue, setLoadingQueue] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [busy, setBusy] = useState<ReviewAction | 'publish' | null>(null);
+  const [resumingCourseId, setResumingCourseId] = useState<string | null>(null);
+  const [resumeStatusMap, setResumeStatusMap] = useState<Record<string, { progress: number; message: string }>>({});
+  const [discardingCourseId, setDiscardingCourseId] = useState<string | null>(null);
+  const [confirmDiscardId, setConfirmDiscardId] = useState<string | null>(null);
   const [queueError, setQueueError] = useState('');
   const [detailError, setDetailError] = useState('');
   const [reloadDetail, setReloadDetail] = useState(0);
@@ -270,17 +278,101 @@ export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublish
       if (!response.ok) throw new Error(data?.error || 'Unable to load the draft queue.');
       if (!Array.isArray(data?.courses)) throw new Error('The draft queue response is incomplete.');
       setDrafts(data.courses);
+      setIncompleteDrafts(Array.isArray(data?.incompleteCourses) ? data.incompleteCourses : []);
     } catch (error: any) {
       setDrafts([]);
+      setIncompleteDrafts([]);
       setQueueError(error?.message || 'Unable to load the draft queue.');
     } finally {
       setLoadingQueue(false);
     }
   };
 
+  const handleResumeIncompleteDraft = async (courseId: string) => {
+    setResumingCourseId(courseId);
+    setQueueError('');
+    setResumeStatusMap((prev) => ({
+      ...prev,
+      [courseId]: { progress: 10, message: 'Resuming generation from checkpoint…' }
+    }));
+    try {
+      const response = await fetch('/api/admin/courses/' + encodeURIComponent(courseId) + '/resume-generation', {
+        method: 'POST',
+        headers: { ...(await headers()), 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(data?.error || 'Unable to resume course generation.');
+      }
+
+      // Poll live course generation status until completed, failed, or cancelled
+      let attempts = 0;
+      while (attempts < 180) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        attempts++;
+        const statusRes = await fetch('/api/course/status/' + encodeURIComponent(courseId), {
+          headers: await headers()
+        });
+        const statusData = await statusRes.json().catch(() => null);
+        if (!statusRes.ok || !statusData) continue;
+
+        const genStatus = statusData.generationStatus;
+        const progress = typeof statusData.generationProgress === 'number' ? statusData.generationProgress : 25;
+        const message = statusData.statusMessage || 'Authoring remaining modules and lessons…';
+
+        setResumeStatusMap((prev) => ({
+          ...prev,
+          [courseId]: { progress, message }
+        }));
+
+        if (genStatus === 'completed') {
+          await loadQueue();
+          setSelectedId(courseId);
+          break;
+        }
+        if (genStatus === 'failed' || genStatus === 'cancelled') {
+          await loadQueue();
+          throw new Error(statusData.generationError || statusData.statusMessage || 'Course generation stopped before completion.');
+        }
+      }
+    } catch (error: any) {
+      setQueueError(error?.message || 'Unable to resume course generation.');
+      await loadQueue();
+    } finally {
+      setResumingCourseId(null);
+    }
+  };
+
+  const handleDiscardIncompleteDraft = async (courseId: string) => {
+    setDiscardingCourseId(courseId);
+    setQueueError('');
+    try {
+      const response = await fetch('/api/admin/courses/' + encodeURIComponent(courseId) + '/failed-draft', {
+        method: 'DELETE',
+        headers: await headers()
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(data?.error || 'Unable to discard incomplete draft.');
+      }
+      setConfirmDiscardId(null);
+      if (selectedId === courseId) {
+        setSelectedId('');
+        setBundle(null);
+      }
+      await loadQueue();
+    } catch (error: any) {
+      setQueueError(error?.message || 'Unable to discard incomplete draft.');
+    } finally {
+      setDiscardingCourseId(null);
+    }
+  };
+
   useEffect(() => {
     if (!user) {
       setDrafts([]);
+      setIncompleteDrafts([]);
       setSelectedId('');
       setBundle(null);
       return;
@@ -415,6 +507,127 @@ export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublish
       </div>
 
       {queueError && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 dark:bg-rose-950/30 dark:border-rose-900 p-3 text-sm text-rose-700 dark:text-rose-300">{queueError}</div>}
+
+      {incompleteDrafts.length > 0 && (
+        <section className="rounded-2xl border border-amber-200 dark:border-amber-900/70 bg-amber-50/60 dark:bg-amber-950/20 p-4 sm:p-5 space-y-3" aria-label="Interrupted or incomplete course generations">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-amber-800 dark:text-amber-300">
+              <AlertTriangle size={18} />
+              <h3 className="font-bold text-sm sm:text-base">Interrupted / Incomplete Generations ({incompleteDrafts.length})</h3>
+            </div>
+            <span className="text-xs text-amber-700 dark:text-amber-400">
+              Excluded from Pending Review until all modules and lessons finish generating
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            {incompleteDrafts.map((course) => {
+              const isResuming = resumingCourseId === course.id || course.generation_status === 'generating';
+              const isDiscarding = discardingCourseId === course.id;
+              const liveProgress = resumeStatusMap[course.id];
+              const badgeText = isResuming
+                ? 'Generating…'
+                : course.generation_status === 'cancelled'
+                  ? 'Generation cancelled'
+                  : 'Generation failed';
+
+              return (
+                <div key={course.id} className="rounded-xl border border-amber-200/80 dark:border-amber-900/60 bg-white dark:bg-slate-900 p-4 space-y-3 shadow-xs">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <span className="text-xs font-bold uppercase tracking-wide text-amber-700 dark:text-amber-400">{course.code || course.id}</span>
+                      <h4 className="font-bold text-sm text-slate-900 dark:text-white mt-0.5">{course.title}</h4>
+                      <p className="text-xs text-slate-500 mt-0.5">{course.department || 'Department not recorded'} · {course.level || 'Level not recorded'}</p>
+                    </div>
+                    <span className="rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 px-2.5 py-1 text-[11px] font-semibold">
+                      {badgeText}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap gap-3 text-xs text-slate-600 dark:text-slate-400">
+                    <span>{Number(course.module_count) || 0} modules saved</span>
+                    <span>·</span>
+                    <span>{Number(course.lesson_count) || 0} lessons saved</span>
+                    {Number(course.empty_module_count) > 0 && (
+                      <>
+                        <span>·</span>
+                        <span className="text-rose-600 dark:text-rose-400 font-medium">
+                          {Number(course.empty_module_count)} module(s) with 0 lessons
+                        </span>
+                      </>
+                    )}
+                  </div>
+
+                  {liveProgress ? (
+                    <div className="rounded-lg bg-indigo-50 dark:bg-indigo-950/40 p-2.5 space-y-1.5">
+                      <div className="flex items-center justify-between text-xs font-medium text-indigo-700 dark:text-indigo-300">
+                        <span className="truncate">{liveProgress.message}</span>
+                        <span>{liveProgress.progress}%</span>
+                      </div>
+                      <div className="h-1.5 w-full rounded-full bg-indigo-100 dark:bg-indigo-900 overflow-hidden">
+                        <div className="h-full bg-indigo-600 transition-all duration-300" style={{ width: `${Math.max(5, Math.min(100, liveProgress.progress))}%` }} />
+                      </div>
+                    </div>
+                  ) : course.generation_error ? (
+                    <p className="text-xs text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/30 rounded-lg p-2.5 break-words">
+                      {course.generation_error}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-slate-500">
+                      Generation stopped before all curriculum modules and lessons were completed.
+                    </p>
+                  )}
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => void handleResumeIncompleteDraft(course.id)}
+                      disabled={isResuming || isDiscarding}
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                    >
+                      {isResuming ? <RefreshCw size={14} className="animate-spin" /> : <Play size={14} />}
+                      {isResuming ? 'Resuming generation…' : 'Resume generation'}
+                    </button>
+
+                    {confirmDiscardId === course.id ? (
+                      <div className="inline-flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => void handleDiscardIncompleteDraft(course.id)}
+                          disabled={isDiscarding || isResuming}
+                          className="inline-flex items-center gap-1 rounded-xl bg-rose-600 px-3 py-2 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-50"
+                        >
+                          <Trash2 size={13} />
+                          {isDiscarding ? 'Discarding…' : 'Confirm discard'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDiscardId(null)}
+                          disabled={isDiscarding}
+                          className="rounded-xl border border-slate-200 dark:border-slate-700 px-2.5 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDiscardId(course.id)}
+                        disabled={isResuming || isDiscarding}
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 dark:border-rose-900/70 px-3 py-2 text-xs font-semibold text-rose-700 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/40 disabled:opacity-50"
+                      >
+                        <Trash2 size={14} />
+                        Discard failed draft
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(260px,0.8fr)_minmax(0,2fr)] gap-5">
         <aside className="rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
           <div className="p-4 border-b border-slate-200 dark:border-slate-700 space-y-3">

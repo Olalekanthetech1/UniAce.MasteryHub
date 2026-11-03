@@ -1210,16 +1210,88 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
     if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
     try {
       await ensureCourseReviewSchema();
+      await ensureCourseLearningSchema();
       const result = await pool.query(
-        "SELECT c.id, c.code, c.title, c.description, c.department, c.faculty, c.level, c.semester, c.scope, " +
-        "c.status, c.review_status, c.review_notes, c.created_at, c.updated_at, " +
+        "SELECT c.id, c.code, c.title, c.description, c.department, c.faculty, c.level, c.semester, c.scope, c.credit_units, " +
+        "c.status, c.review_status, c.review_notes, COALESCE(c.generation_status, 'completed') AS generation_status, c.generation_error, " +
+        "c.created_at, c.updated_at, " +
         "(SELECT COUNT(*) FROM course_modules cm WHERE cm.course_id = c.id AND COALESCE(cm.is_archived, FALSE) = FALSE)::int AS module_count, " +
-        "(SELECT COUNT(*) FROM course_lessons cl WHERE cl.course_id = c.id)::int AS lesson_count " +
+        "(SELECT COUNT(*) FROM course_lessons cl WHERE cl.course_id = c.id AND LENGTH(TRIM(COALESCE(cl.content_markdown, ''))) >= 600)::int AS lesson_count, " +
+        "(SELECT COUNT(*) FROM course_modules cm WHERE cm.course_id = c.id AND COALESCE(cm.is_archived, FALSE) = FALSE " +
+        " AND NOT EXISTS (SELECT 1 FROM course_lessons cl WHERE cl.course_id = c.id AND cl.module_id = cm.id AND LENGTH(TRIM(COALESCE(cl.content_markdown, ''))) >= 600))::int AS empty_module_count " +
         "FROM courses c WHERE c.status = 'draft' ORDER BY c.updated_at DESC NULLS LAST"
       );
-      return res.json({ success: true, courses: result.rows });
+      const completedDrafts: any[] = [];
+      const incompleteCourses: any[] = [];
+      for (const row of result.rows) {
+        const isStructurallyComplete =
+          row.generation_status === 'completed' &&
+          Number(row.module_count) > 0 &&
+          Number(row.lesson_count) > 0 &&
+          Number(row.empty_module_count) === 0;
+        if (isStructurallyComplete) {
+          completedDrafts.push(row);
+        } else {
+          incompleteCourses.push({
+            ...row,
+            generation_status: row.generation_status === 'completed' ? 'failed' : row.generation_status,
+            generation_error:
+              row.generation_error ||
+              (Number(row.module_count) === 0
+                ? 'Course generation stopped before any modules were saved.'
+                : Number(row.lesson_count) === 0
+                  ? `Course generation stopped with ${row.module_count} module(s) and 0 completed lessons.`
+                  : `Course generation stopped early (${row.empty_module_count} of ${row.module_count} module(s) have no completed lessons).`)
+          });
+        }
+      }
+      return res.json({ success: true, courses: completedDrafts, incompleteCourses });
     } catch (error: any) {
       return res.status(500).json({ error: error?.message || 'Failed to load draft review queue' });
+    }
+  });
+
+  app.delete('/api/admin/courses/:id/failed-draft', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    if (!(await checkIsAdmin(user.uid, user.email))) return res.status(403).json({ error: 'Admin privileges required' });
+    const { id } = req.params;
+    const pool = getPostgresPool();
+    if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
+    await ensureCourseReviewSchema();
+    await ensureCourseLearningSchema();
+    await ensureCourseAssessmentSchema();
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [id]);
+      const courseRes = await client.query(
+        'SELECT id, status FROM courses WHERE id = $1 FOR UPDATE',
+        [id]
+      );
+      if (courseRes.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Draft course not found.' });
+      }
+      if (courseRes.rows[0].status !== 'draft') {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'Only unpublished draft courses can be discarded from the generation queue.' });
+      }
+      await client.query('DELETE FROM course_lesson_practice_attempts WHERE course_id = $1', [id]);
+      await client.query('DELETE FROM course_module_quizzes WHERE course_id = $1', [id]);
+      await client.query('DELETE FROM course_formulas WHERE course_id = $1', [id]);
+      await client.query('DELETE FROM course_lessons WHERE course_id = $1', [id]);
+      await client.query('DELETE FROM course_modules WHERE course_id = $1', [id]);
+      await client.query('DELETE FROM course_review_events WHERE course_id = $1', [id]);
+      await client.query('DELETE FROM courses WHERE id = $1', [id]);
+      await client.query('COMMIT');
+      activeCancelledJobs.add(id);
+      catalogCache.invalidateAll();
+      return res.json({ success: true, courseId: id });
+    } catch (error: any) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      return res.status(500).json({ error: error?.message || 'Failed to discard incomplete draft course.' });
+    } finally {
+      client.release();
     }
   });
 
@@ -1233,11 +1305,16 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
       await ensureCourseLearningSchema();
       const courseResult = await pool.query(
         "SELECT id, code, title, description, department, faculty, level, semester, scope, status, " +
-        "review_status, review_notes, reviewed_by, reviewed_at, created_at, updated_at " +
+        "review_status, review_notes, reviewed_by, reviewed_at, COALESCE(generation_status, 'completed') AS generation_status, generation_error, created_at, updated_at " +
         "FROM courses WHERE id = $1 AND status = 'draft' LIMIT 1",
         [req.params.id]
       );
       if (courseResult.rows.length === 0) return res.status(404).json({ error: 'Draft course not found.' });
+      if (courseResult.rows[0].generation_status !== 'completed') {
+        return res.status(409).json({
+          error: 'Course generation did not complete. Resume or discard this incomplete course before starting academic review.'
+        });
+      }
 
       const modulesResult = await pool.query(
         "SELECT id, title, description, order_index FROM course_modules " +
@@ -1312,7 +1389,7 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
       client = await pool.connect();
       await client.query('BEGIN');
       const currentResult = await client.query(
-        "SELECT status, review_status FROM courses WHERE id = $1 FOR UPDATE",
+        "SELECT status, review_status, COALESCE(generation_status, 'completed') AS generation_status FROM courses WHERE id = $1 FOR UPDATE",
         [req.params.id]
       );
       if (currentResult.rows.length === 0) {
@@ -1323,6 +1400,11 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
       const current = currentResult.rows[0];
       if (current.status !== 'draft') {
         const error: any = new Error('Only unpublished draft courses can enter the review workflow.');
+        error.statusCode = 409;
+        throw error;
+      }
+      if (current.generation_status !== 'completed') {
+        const error: any = new Error('Incomplete or failed course generations cannot enter the academic review workflow until generation completes.');
         error.statusCode = 409;
         throw error;
       }

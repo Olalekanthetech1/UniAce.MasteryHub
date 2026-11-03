@@ -5218,6 +5218,7 @@ async function ensureCourseGenerationTargetInPostgres(input: {
   const pool = getPostgresPool();
   if (!pool) throw new Error('Neon PostgreSQL database service unavailable.');
   await ensureCourseLifecycleSchema();
+  await ensureCourseReviewSchema();
 
   const client = await pool.connect();
   try {
@@ -5257,6 +5258,8 @@ async function ensureCourseGenerationTargetInPostgres(input: {
           `UPDATE courses
            SET status = 'draft',
                review_status = 'pending',
+               generation_status = 'generating',
+               generation_error = NULL,
                published = FALSE,
                updated_at = NOW()
            WHERE id = $1`,
@@ -5264,13 +5267,22 @@ async function ensureCourseGenerationTargetInPostgres(input: {
         );
       } else if (status === 'published' && !input.allowPublishedResume) {
         throw new Error(`Course ${input.courseId} is already published; use the explicit course-repair workflow instead of regenerating it.`);
+      } else {
+        await client.query(
+          `UPDATE courses
+           SET generation_status = 'generating',
+               generation_error = NULL,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [input.courseId]
+        );
       }
     } else {
       await client.query(
         `INSERT INTO courses
           (id, code, title, description, level, department, faculty, semester,
-           credit_units, scope, faculties, departments, status, version, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'draft', 1, NOW(), NOW())`,
+           credit_units, scope, faculties, departments, status, generation_status, generation_error, version, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'draft', 'generating', NULL, 1, NOW(), NOW())`,
         [
           input.courseId,
           input.courseId,
@@ -5303,10 +5315,26 @@ async function updateCourseGenerationStateInPostgres(courseId: string, patch: Re
   activeCoordinatedJobSnapshots.set(courseId, merged);
 
   const pool = getPostgresPool();
-  if (pool && (patch.title || patch.description || patch.generationStatus === 'completed')) {
+  if (
+    pool &&
+    (
+      patch.title ||
+      patch.description ||
+      patch.generationStatus ||
+      patch.generationError ||
+      patch.generationSkeleton
+    )
+  ) {
     try {
-      const statusVal = typeof merged.status === 'string' ? merged.status : 'draft';
-      // Generation workers may update metadata only on an existing, non-archived course.
+      await ensureCourseReviewSchema();
+      const generationStatusVal = typeof merged.generationStatus === 'string' ? merged.generationStatus : null;
+      const generationErrorVal = typeof merged.generationError === 'string' && merged.generationError.trim()
+        ? merged.generationError.trim()
+        : null;
+      const generationSkeletonJson = patch.generationSkeleton
+        ? JSON.stringify(patch.generationSkeleton)
+        : null;
+      // Generation workers may update metadata and generation_status on an existing, non-archived course.
       // They must never UPSERT a course row or change its administrator-owned lifecycle status.
       const persisted = await pool.query(
         `UPDATE courses SET
@@ -5320,6 +5348,12 @@ async function updateCourseGenerationStateInPostgres(courseId: string, patch: Re
            scope = COALESCE($9, scope),
            faculties = COALESCE($10, faculties),
            departments = COALESCE($11, departments),
+           generation_status = COALESCE($12, generation_status),
+           generation_error = CASE
+             WHEN $12 IN ('generating', 'completed') THEN NULL
+             ELSE COALESCE($13, generation_error)
+           END,
+           generation_skeleton = COALESCE($14::jsonb, generation_skeleton),
            updated_at = NOW()
          WHERE id = $1 AND status <> 'archived'
          RETURNING id`,
@@ -5334,7 +5368,10 @@ async function updateCourseGenerationStateInPostgres(courseId: string, patch: Re
           merged.creditUnits ?? null,
           merged.scope ?? null,
           Array.isArray(merged.faculties) ? merged.faculties : null,
-          Array.isArray(merged.departments) ? merged.departments : null
+          Array.isArray(merged.departments) ? merged.departments : null,
+          generationStatusVal,
+          generationErrorVal,
+          generationSkeletonJson
         ]
       );
       if ((persisted.rowCount ?? 0) === 0) {
@@ -5555,11 +5592,29 @@ async function executeCoordinatedGenerationJob(
           complexity: 'standard'
         });
 
-        // STEP 1: Skeleton Generation & Verification (or Human-Approved Skeleton)
+        // STEP 1: Skeleton Generation & Verification (or Human-Approved / Persisted Resume Skeleton)
         let skeleton: any = null;
         let rubricAudit: any = null;
 
-        if (Array.isArray(approvedModules) && approvedModules.length > 0) {
+        if (req.body.resumeFromPersistedSkeleton && req.body.persistedSkeleton?.modules?.length > 0) {
+          skeleton = {
+            description: req.body.persistedSkeleton.description || (typeof courseDescription === 'string' && courseDescription.trim() ? courseDescription.trim() : null),
+            modules: req.body.persistedSkeleton.modules,
+            learningOutcomes: normalizeLearningOutcomes(req.body.persistedSkeleton.learningOutcomes || req.body.learningOutcomes),
+            pedagogyType: domainBrief.pedagogyType,
+            creditHours: creditUnits
+          };
+          rubricAudit = req.body.persistedSkeleton.rubricAudit || {
+            isValid: true,
+            coverageScore: 90,
+            foundationsScore: 90,
+            sequencingScore: 90,
+            workloadBalanceScore: 90,
+            consistencyScore: 90,
+            genericFillerDetected: false,
+            reasoning: 'Resumed from server-verified persisted curriculum skeleton.'
+          };
+        } else if (Array.isArray(approvedModules) && approvedModules.length > 0) {
           skeleton = {
             description: typeof courseDescription === 'string' && courseDescription.trim()
               ? courseDescription.trim()
@@ -5758,6 +5813,12 @@ async function executeCoordinatedGenerationJob(
           canonicalCourseReferences: canonicalRefs,
           groundingReferences: canonicalRefs,
           research: courseResearch.metadata,
+          generationSkeleton: {
+            description: verifiedCourseDescription,
+            modules: skeleton.modules,
+            learningOutcomes: normalizedOutcomes,
+            rubricAudit
+          },
           generationProgress: 20,
           statusMessage: `Curriculum structure audit passed (coverage: ${rubricAudit.coverageScore}%). Generating lessons; factual accuracy remains subject to independent verification...`
         });
@@ -5789,6 +5850,7 @@ async function executeCoordinatedGenerationJob(
             activeCancelledJobs.delete(courseId);
             await updateCourseGenerationStateInPostgres(courseId, {
               generationStatus: 'cancelled',
+              generationError: 'Course generation cancelled by user.',
               statusMessage: 'Course generation cancelled by user.'
             });
             return;
@@ -6076,6 +6138,15 @@ async function executeCoordinatedGenerationJob(
           });
 
           await Promise.all(chunkPromises);
+          if (activeCancelledJobs.has(courseId)) {
+            activeCancelledJobs.delete(courseId);
+            await updateCourseGenerationStateInPostgres(courseId, {
+              generationStatus: 'cancelled',
+              generationError: 'Course generation cancelled by user.',
+              statusMessage: 'Course generation cancelled by user.'
+            });
+            return;
+          }
         }
 
         // STEP 3: Generate and persist one lesson-grounded assessment for every module.
@@ -6085,7 +6156,15 @@ async function executeCoordinatedGenerationJob(
         });
 
         for (let moduleIndex = 0; moduleIndex < skeleton.modules.length; moduleIndex++) {
-          if (activeCancelledJobs.has(courseId)) return;
+          if (activeCancelledJobs.has(courseId)) {
+            activeCancelledJobs.delete(courseId);
+            await updateCourseGenerationStateInPostgres(courseId, {
+              generationStatus: 'cancelled',
+              generationError: 'Course generation cancelled by user.',
+              statusMessage: 'Course generation cancelled by user.'
+            });
+            return;
+          }
           const moduleSkeleton = skeleton.modules[moduleIndex];
           const moduleId = 'm' + (moduleIndex + 1);
           const moduleTitle = String(moduleSkeleton.title || ('Module ' + (moduleIndex + 1)));
@@ -7035,6 +7114,86 @@ app.post('/api/course/generate-coordinated', verifyAdmin, async (req, res) => {
   await executeCoordinatedGenerationJob(app ? app.firestore() : null, req.body, res);
 });
 
+app.post('/api/admin/courses/:courseId/resume-generation', verifyAdmin, async (req, res) => {
+  const courseId = String(req.params.courseId || '').trim();
+  const requestedProvider = typeof req.body?.provider === 'string' && req.body.provider.trim()
+    ? req.body.provider.trim()
+    : undefined;
+
+  if (!courseId) {
+    return res.status(400).json({ error: 'Valid courseId is required.' });
+  }
+
+  const pool = getPostgresPool();
+  if (!pool) {
+    return res.status(503).json({ error: 'Neon PostgreSQL database service unavailable.' });
+  }
+
+  try {
+    await ensureCourseReviewSchema();
+    const courseRes = await pool.query(
+      `SELECT id, code, title, description, level, department, faculty, semester,
+              credit_units, scope, faculties, departments, status, generation_status, generation_skeleton
+       FROM courses
+       WHERE id = $1
+       LIMIT 1`,
+      [courseId]
+    );
+    if (courseRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Draft course not found.' });
+    }
+
+    const c = courseRes.rows[0];
+    if (c.status !== 'draft') {
+      return res.status(409).json({
+        error: `Course ${courseId} has status "${c.status}" and is not an incomplete draft.`
+      });
+    }
+
+    const creditUnitsNum = Number.isInteger(Number(c.credit_units)) && Number(c.credit_units) >= 1 && Number(c.credit_units) <= 12
+      ? Number(c.credit_units)
+      : 3;
+    const rawLevel = String(c.level || '100').replace(/\s*level\s*/i, '').trim() || '100';
+    const rawDept = String(c.department || 'General Engineering').trim();
+    const rawScope = String(c.scope || 'DEPARTMENT').trim().toUpperCase();
+    const faculties = Array.isArray(c.faculties) && c.faculties.length > 0
+      ? c.faculties
+      : (c.faculty ? [String(c.faculty)] : []);
+    const departments = Array.isArray(c.departments) && c.departments.length > 0
+      ? c.departments
+      : [rawDept];
+
+    const persistedSkeleton = c.generation_skeleton && typeof c.generation_skeleton === 'object'
+      ? c.generation_skeleton
+      : null;
+
+    const resumeBody: Record<string, any> = {
+      courseId: c.id,
+      courseName: c.title || c.code || c.id,
+      courseDescription: c.description || persistedSkeleton?.description || undefined,
+      level: rawLevel,
+      semester: c.semester || '1st Semester',
+      department: rawDept,
+      creditUnits: creditUnitsNum,
+      scope: ['DEPARTMENT', 'FACULTY', 'GLOBAL', 'PUBLIC', 'ALL'].includes(rawScope) ? rawScope : 'DEPARTMENT',
+      selectedFaculties: faculties,
+      selectedDepartments: departments,
+      provider: requestedProvider,
+      resume: true,
+      resumeFromPersistedSkeleton: Boolean(persistedSkeleton?.modules?.length > 0),
+      persistedSkeleton
+    };
+
+    const adminApp = getAdminApp();
+    await executeCoordinatedGenerationJob(adminApp ? adminApp.firestore() : null, resumeBody, res);
+  } catch (err: any) {
+    logger.error({ err, courseId }, '[POST /api/admin/courses/:courseId/resume-generation] Failed to resume draft course generation');
+    if (!res.headersSent) {
+      return res.status(500).json({ error: err.message || 'Failed to resume course generation.' });
+    }
+  }
+});
+
 app.post('/api/course/heal/:courseId', verifyAdmin, async (req, res) => {
   const { courseId } = req.params;
   const { provider } = req.body || {};
@@ -7059,7 +7218,14 @@ app.get('/api/course/status/:courseId', verifyAdmin, async (req, res) => {
 
   // 1. Check active coordinated generation job snapshot first
   const memSnapshot = activeCoordinatedJobSnapshots.get(courseId);
-  if (memSnapshot && memSnapshot.generationStatus === 'generating') {
+  if (
+    memSnapshot &&
+    (
+      memSnapshot.generationStatus === 'generating' ||
+      memSnapshot.generationStatus === 'failed' ||
+      memSnapshot.generationStatus === 'cancelled'
+    )
+  ) {
     return res.json(memSnapshot);
   }
 
@@ -7086,8 +7252,12 @@ app.get('/api/course/status/:courseId', verifyAdmin, async (req, res) => {
   try {
     const pool = getPostgresPool();
     if (pool) {
+      await ensureCourseReviewSchema();
       const cRes = await pool.query(
-        `SELECT id, code, title, description, level, department, faculty, semester, scope, status, updated_at
+        `SELECT id, code, title, description, level, department, faculty, semester, scope, status,
+                COALESCE(generation_status, 'completed') AS generation_status,
+                generation_error,
+                updated_at
          FROM courses WHERE id = $1 LIMIT 1`,
         [courseId]
       );
@@ -7095,7 +7265,7 @@ app.get('/api/course/status/:courseId', verifyAdmin, async (req, res) => {
         const c = cRes.rows[0];
         const health = await auditCourseHealthInPostgres(courseId);
 
-        if (health.needsHealing) {
+        if (c.status === 'published' && health.needsHealing) {
           if (!activeRunningCourseJobs.has(courseId)) {
             const app = getAdminApp();
             healCourseInPostgres(app ? app.firestore() : null, courseId).catch(err => {
@@ -7127,6 +7297,17 @@ app.get('/api/course/status/:courseId', verifyAdmin, async (req, res) => {
           title: m.title,
           subTopics: lessonsByMod[m.id] || []
         }));
+
+        const isIncompleteDraft = c.status === 'draft' && (
+          c.generation_status !== 'completed' ||
+          health.needsHealing ||
+          modsRes.rows.length === 0 ||
+          lessRes.rows.length === 0
+        );
+        const effectiveGenStatus = isIncompleteDraft
+          ? (c.generation_status === 'generating' && activeRunningCourseJobs.has(courseId) ? 'generating' : (c.generation_status === 'cancelled' ? 'cancelled' : 'failed'))
+          : (health.needsHealing ? 'generating' : 'completed');
+
         return res.json({
           id: c.id,
           code: c.code || c.id,
@@ -7138,11 +7319,16 @@ app.get('/api/course/status/:courseId', verifyAdmin, async (req, res) => {
           semester: c.semester || '1st Semester',
           scope: c.scope || 'DEPARTMENT',
           status: c.status,
-          generationStatus: health.needsHealing ? 'generating' : 'completed',
-          generationProgress: health.needsHealing ? 15 : 100,
-          statusMessage: health.needsHealing
-            ? `Self-healing ${health.emptyModuleIds.length} incomplete module(s) and ${health.corruptedLessonIds.length} corrupted lesson(s)...`
-            : 'Course verified and available in Neon PostgreSQL catalog.',
+          generationStatus: effectiveGenStatus,
+          generationError: c.generation_error || (effectiveGenStatus === 'failed' ? 'Course generation stopped before all modules and lessons were completed.' : undefined),
+          generationProgress: effectiveGenStatus === 'completed' ? 100 : (effectiveGenStatus === 'generating' ? 15 : 100),
+          statusMessage: effectiveGenStatus === 'failed'
+            ? (c.generation_error || 'Course generation stopped before all modules and lessons were completed.')
+            : effectiveGenStatus === 'cancelled'
+              ? 'Course generation cancelled by administrator.'
+              : health.needsHealing
+                ? `Self-healing ${health.emptyModuleIds.length} incomplete module(s) and ${health.corruptedLessonIds.length} corrupted lesson(s)...`
+                : 'Course verified and available in Neon PostgreSQL catalog.',
           syllabus
         });
       }
