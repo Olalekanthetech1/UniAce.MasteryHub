@@ -21,12 +21,32 @@ interface DraftCourse {
   review_status: ReviewStatus;
   generation_status?: 'generating' | 'failed' | 'cancelled' | 'completed';
   generation_error?: string | null;
+  is_actively_running?: boolean;
+  generation_progress?: number | null;
+  status_message?: string | null;
+  current_module?: string | null;
+  current_lesson?: string | null;
+  completed_lessons?: number | null;
+  total_lessons?: number | null;
+  active_provider?: string | null;
+  elapsed_seconds?: number | null;
   review_notes?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
   module_count: number;
   lesson_count: number;
   empty_module_count?: number;
+}
+interface LiveJobTelemetry {
+  progress: number;
+  message: string;
+  currentModule?: string | null;
+  currentLesson?: string | null;
+  completedLessons?: number | null;
+  totalLessons?: number | null;
+  activeProvider?: string | null;
+  elapsedSeconds?: number | null;
+  updatedAt?: string | null;
 }
 interface DraftLesson {
   id: string;
@@ -248,7 +268,7 @@ export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublish
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [busy, setBusy] = useState<ReviewAction | 'publish' | null>(null);
   const [resumingCourseId, setResumingCourseId] = useState<string | null>(null);
-  const [resumeStatusMap, setResumeStatusMap] = useState<Record<string, { progress: number; message: string }>>({});
+  const [resumeStatusMap, setResumeStatusMap] = useState<Record<string, LiveJobTelemetry>>({});
   const [discardingCourseId, setDiscardingCourseId] = useState<string | null>(null);
   const [confirmDiscardId, setConfirmDiscardId] = useState<string | null>(null);
   const [queueError, setQueueError] = useState('');
@@ -269,23 +289,88 @@ export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublish
     return { Authorization: 'Bearer ' + await user.getIdToken() };
   };
 
-  const loadQueue = async () => {
-    setLoadingQueue(true);
-    setQueueError('');
+  const loadQueue = async (silent = false) => {
+    if (!silent) {
+      setLoadingQueue(true);
+      setQueueError('');
+    }
     try {
       const response = await fetch('/api/admin/courses/drafts', { headers: await headers() });
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new Error(data?.error || 'Unable to load the draft queue.');
       if (!Array.isArray(data?.courses)) throw new Error('The draft queue response is incomplete.');
       setDrafts(data.courses);
-      setIncompleteDrafts(Array.isArray(data?.incompleteCourses) ? data.incompleteCourses : []);
+      const nextIncomplete: DraftCourse[] = Array.isArray(data?.incompleteCourses) ? data.incompleteCourses : [];
+      setIncompleteDrafts(nextIncomplete);
+
+      // Hydrate live telemetry map for any job actively running on the server
+      setResumeStatusMap((prev) => {
+        const next = { ...prev };
+        for (const item of nextIncomplete) {
+          if (item.is_actively_running) {
+            next[item.id] = {
+              progress: typeof item.generation_progress === 'number' ? item.generation_progress : (prev[item.id]?.progress ?? 10),
+              message: item.status_message || prev[item.id]?.message || 'Authoring course curriculum on server…',
+              currentModule: item.current_module ?? prev[item.id]?.currentModule ?? null,
+              currentLesson: item.current_lesson ?? prev[item.id]?.currentLesson ?? null,
+              completedLessons: item.completed_lessons ?? prev[item.id]?.completedLessons ?? item.lesson_count ?? 0,
+              totalLessons: item.total_lessons ?? prev[item.id]?.totalLessons ?? null,
+              activeProvider: item.active_provider ?? prev[item.id]?.activeProvider ?? null,
+              elapsedSeconds: item.elapsed_seconds ?? prev[item.id]?.elapsedSeconds ?? null,
+              updatedAt: item.updated_at ?? null
+            };
+          } else if (resumingCourseId !== item.id) {
+            delete next[item.id];
+          }
+        }
+        return next;
+      });
     } catch (error: any) {
-      setDrafts([]);
-      setIncompleteDrafts([]);
-      setQueueError(error?.message || 'Unable to load the draft queue.');
+      if (!silent) {
+        setDrafts([]);
+        setIncompleteDrafts([]);
+        setQueueError(error?.message || 'Unable to load the draft queue.');
+      }
     } finally {
-      setLoadingQueue(false);
+      if (!silent) setLoadingQueue(false);
     }
+  };
+
+  const pollCourseStatusOnce = async (courseId: string): Promise<'generating' | 'completed' | 'failed' | 'cancelled'> => {
+    const statusRes = await fetch('/api/course/status/' + encodeURIComponent(courseId), {
+      headers: await headers()
+    });
+    const statusData = await statusRes.json().catch(() => null);
+    if (!statusRes.ok || !statusData) return 'generating';
+
+    const genStatus = statusData.generationStatus as 'generating' | 'completed' | 'failed' | 'cancelled';
+    const progress = typeof statusData.generationProgress === 'number' ? statusData.generationProgress : 15;
+    const message = statusData.statusMessage || 'Authoring remaining modules and lessons…';
+
+    if (genStatus === 'generating') {
+      setResumeStatusMap((prev) => ({
+        ...prev,
+        [courseId]: {
+          progress,
+          message,
+          currentModule: statusData.currentModule || null,
+          currentLesson: statusData.currentLesson || null,
+          completedLessons: typeof statusData.completedLessons === 'number' ? statusData.completedLessons : null,
+          totalLessons: typeof statusData.totalLessons === 'number' ? statusData.totalLessons : null,
+          activeProvider: statusData.activeProvider || null,
+          elapsedSeconds: typeof statusData.elapsedSeconds === 'number' ? statusData.elapsedSeconds : null,
+          updatedAt: statusData.updatedAt || new Date().toISOString()
+        }
+      }));
+    } else {
+      setResumeStatusMap((prev) => {
+        const next = { ...prev };
+        delete next[courseId];
+        return next;
+      });
+    }
+
+    return genStatus;
   };
 
   const handleResumeIncompleteDraft = async (courseId: string) => {
@@ -293,7 +378,11 @@ export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublish
     setQueueError('');
     setResumeStatusMap((prev) => ({
       ...prev,
-      [courseId]: { progress: 10, message: 'Resuming generation from checkpoint…' }
+      [courseId]: {
+        progress: 8,
+        message: 'Starting server generation worker from checkpoint…',
+        updatedAt: new Date().toISOString()
+      }
     }));
     try {
       const response = await fetch('/api/admin/courses/' + encodeURIComponent(courseId) + '/resume-generation', {
@@ -306,39 +395,25 @@ export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublish
         throw new Error(data?.error || 'Unable to resume course generation.');
       }
 
-      // Poll live course generation status until completed, failed, or cancelled
+      // Poll live course generation status and refresh saved module/lesson counts
       let attempts = 0;
-      while (attempts < 180) {
+      while (attempts < 240) {
         await new Promise((resolve) => setTimeout(resolve, 3000));
         attempts++;
-        const statusRes = await fetch('/api/course/status/' + encodeURIComponent(courseId), {
-          headers: await headers()
-        });
-        const statusData = await statusRes.json().catch(() => null);
-        if (!statusRes.ok || !statusData) continue;
-
-        const genStatus = statusData.generationStatus;
-        const progress = typeof statusData.generationProgress === 'number' ? statusData.generationProgress : 25;
-        const message = statusData.statusMessage || 'Authoring remaining modules and lessons…';
-
-        setResumeStatusMap((prev) => ({
-          ...prev,
-          [courseId]: { progress, message }
-        }));
+        const genStatus = await pollCourseStatusOnce(courseId);
+        await loadQueue(true);
 
         if (genStatus === 'completed') {
-          await loadQueue();
           setSelectedId(courseId);
           break;
         }
         if (genStatus === 'failed' || genStatus === 'cancelled') {
-          await loadQueue();
-          throw new Error(statusData.generationError || statusData.statusMessage || 'Course generation stopped before completion.');
+          throw new Error('Course generation stopped before all modules and lessons were completed.');
         }
       }
     } catch (error: any) {
       setQueueError(error?.message || 'Unable to resume course generation.');
-      await loadQueue();
+      await loadQueue(true);
     } finally {
       setResumingCourseId(null);
     }
@@ -379,6 +454,26 @@ export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublish
     }
     void loadQueue();
   }, [user, refreshKey]);
+
+  // Automatically poll live telemetry if any incomplete draft is actively running on the server on page load
+  useEffect(() => {
+    if (!user || resumingCourseId) return;
+    const runningIds = incompleteDrafts
+      .filter((item) => item.is_actively_running === true)
+      .map((item) => item.id);
+    if (runningIds.length === 0) return;
+
+    const timer = setInterval(() => {
+      void (async () => {
+        for (const id of runningIds) {
+          await pollCourseStatusOnce(id).catch(() => undefined);
+        }
+        await loadQueue(true);
+      })();
+    }, 3000);
+
+    return () => clearInterval(timer);
+  }, [user, incompleteDrafts, resumingCourseId]);
 
   useEffect(() => {
     setApprovalChecks({ subjectExpert: false, calculations: false, curriculum: false, rendering: false });
@@ -522,11 +617,25 @@ export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublish
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
             {incompleteDrafts.map((course) => {
-              const isResuming = resumingCourseId === course.id || course.generation_status === 'generating';
+              const isActivelyRunning = resumingCourseId === course.id || course.is_actively_running === true;
               const isDiscarding = discardingCourseId === course.id;
-              const liveProgress = resumeStatusMap[course.id];
-              const badgeText = isResuming
-                ? 'Generating…'
+              const liveProgress = resumeStatusMap[course.id] || (
+                isActivelyRunning
+                  ? {
+                      progress: typeof course.generation_progress === 'number' ? course.generation_progress : 10,
+                      message: course.status_message || 'Authoring course curriculum on server…',
+                      currentModule: course.current_module || null,
+                      currentLesson: course.current_lesson || null,
+                      completedLessons: course.completed_lessons ?? course.lesson_count ?? 0,
+                      totalLessons: course.total_lessons ?? null,
+                      activeProvider: course.active_provider || null,
+                      elapsedSeconds: course.elapsed_seconds ?? null,
+                      updatedAt: course.updated_at || null
+                    }
+                  : null
+              );
+              const badgeText = isActivelyRunning
+                ? 'Active worker running…'
                 : course.generation_status === 'cancelled'
                   ? 'Generation cancelled'
                   : 'Generation failed';
@@ -539,16 +648,25 @@ export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublish
                       <h4 className="font-bold text-sm text-slate-900 dark:text-white mt-0.5">{course.title}</h4>
                       <p className="text-xs text-slate-500 mt-0.5">{course.department || 'Department not recorded'} · {course.level || 'Level not recorded'}</p>
                     </div>
-                    <span className="rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 px-2.5 py-1 text-[11px] font-semibold">
+                    <span className={
+                      'rounded-full px-2.5 py-1 text-[11px] font-semibold ' +
+                      (isActivelyRunning
+                        ? 'bg-indigo-100 dark:bg-indigo-950/60 text-indigo-800 dark:text-indigo-300'
+                        : 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300')
+                    }>
                       {badgeText}
                     </span>
                   </div>
 
                   <div className="flex flex-wrap gap-3 text-xs text-slate-600 dark:text-slate-400">
-                    <span>{Number(course.module_count) || 0} modules saved</span>
+                    <span>{Number(course.module_count) || 0} modules saved in Neon</span>
                     <span>·</span>
-                    <span>{Number(course.lesson_count) || 0} lessons saved</span>
-                    {Number(course.empty_module_count) > 0 && (
+                    <span>
+                      {liveProgress?.totalLessons
+                        ? `${liveProgress.completedLessons ?? Number(course.lesson_count) ?? 0} / ${liveProgress.totalLessons} lessons saved`
+                        : `${Number(course.lesson_count) || 0} lessons saved`}
+                    </span>
+                    {!isActivelyRunning && Number(course.empty_module_count) > 0 && (
                       <>
                         <span>·</span>
                         <span className="text-rose-600 dark:text-rose-400 font-medium">
@@ -558,14 +676,25 @@ export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublish
                     )}
                   </div>
 
-                  {liveProgress ? (
-                    <div className="rounded-lg bg-indigo-50 dark:bg-indigo-950/40 p-2.5 space-y-1.5">
-                      <div className="flex items-center justify-between text-xs font-medium text-indigo-700 dark:text-indigo-300">
+                  {isActivelyRunning && liveProgress ? (
+                    <div className="rounded-lg border border-indigo-200 dark:border-indigo-900 bg-indigo-50/80 dark:bg-indigo-950/40 p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2 text-xs font-semibold text-indigo-800 dark:text-indigo-200">
                         <span className="truncate">{liveProgress.message}</span>
-                        <span>{liveProgress.progress}%</span>
+                        <span className="shrink-0">{liveProgress.progress}%</span>
                       </div>
-                      <div className="h-1.5 w-full rounded-full bg-indigo-100 dark:bg-indigo-900 overflow-hidden">
+                      <div className="h-2 w-full rounded-full bg-indigo-100 dark:bg-indigo-900 overflow-hidden">
                         <div className="h-full bg-indigo-600 transition-all duration-300" style={{ width: `${Math.max(5, Math.min(100, liveProgress.progress))}%` }} />
+                      </div>
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-indigo-700 dark:text-indigo-300">
+                        <span>
+                          {liveProgress.currentModule
+                            ? `Module: ${liveProgress.currentModule}${liveProgress.currentLesson ? ` · Lesson: ${liveProgress.currentLesson}` : ''}`
+                            : 'Verifying academic sources & curriculum structure…'}
+                        </span>
+                        <span>
+                          {liveProgress.activeProvider ? `Provider: ${liveProgress.activeProvider}` : ''}
+                          {typeof liveProgress.elapsedSeconds === 'number' ? ` · ${liveProgress.elapsedSeconds}s elapsed` : ''}
+                        </span>
                       </div>
                     </div>
                   ) : course.generation_error ? (
@@ -582,11 +711,11 @@ export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublish
                     <button
                       type="button"
                       onClick={() => void handleResumeIncompleteDraft(course.id)}
-                      disabled={isResuming || isDiscarding}
+                      disabled={isActivelyRunning || isDiscarding}
                       className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
                     >
-                      {isResuming ? <RefreshCw size={14} className="animate-spin" /> : <Play size={14} />}
-                      {isResuming ? 'Resuming generation…' : 'Resume generation'}
+                      {isActivelyRunning ? <RefreshCw size={14} className="animate-spin" /> : <Play size={14} />}
+                      {isActivelyRunning ? 'Worker generating live…' : 'Resume generation'}
                     </button>
 
                     {confirmDiscardId === course.id ? (
@@ -594,7 +723,7 @@ export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublish
                         <button
                           type="button"
                           onClick={() => void handleDiscardIncompleteDraft(course.id)}
-                          disabled={isDiscarding || isResuming}
+                          disabled={isDiscarding}
                           className="inline-flex items-center gap-1 rounded-xl bg-rose-600 px-3 py-2 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-50"
                         >
                           <Trash2 size={13} />
@@ -613,7 +742,7 @@ export default function DraftCourseReviewPanel({ refreshKey = 0, onCoursePublish
                       <button
                         type="button"
                         onClick={() => setConfirmDiscardId(course.id)}
-                        disabled={isResuming || isDiscarding}
+                        disabled={isDiscarding}
                         className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 dark:border-rose-900/70 px-3 py-2 text-xs font-semibold text-rose-700 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/40 disabled:opacity-50"
                       >
                         <Trash2 size={14} />

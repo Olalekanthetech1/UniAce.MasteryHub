@@ -603,6 +603,162 @@ export class DynamicKeyRotator {
   }
 }
 
+export interface PrepareProviderMessagesOptions {
+  jsonMode?: boolean;
+  providerName?: string;
+}
+
+export function messageContentToString(content: any): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part: any) => {
+        if (typeof part === 'string') return part;
+        if (part && typeof part.text === 'string') return part.text;
+        return JSON.stringify(part);
+      })
+      .filter((s: string) => s.length > 0)
+      .join('\n');
+  }
+  if (content === null || content === undefined) return '';
+  if (typeof content === 'object') return JSON.stringify(content);
+  return String(content);
+}
+
+function shouldAttemptFallbackModel(error: any): boolean {
+  const status = error?.status || error?.statusCode;
+  const msg = String(error?.message || error || '').toLowerCase();
+  return (
+    status === 404 ||
+    status === 413 ||
+    status === 429 ||
+    status === 502 ||
+    status === 503 ||
+    msg.includes('decommissioned') ||
+    msg.includes('not found') ||
+    msg.includes('does not exist') ||
+    msg.includes('is not supported') ||
+    msg.includes('overloaded') ||
+    msg.includes('rate limit')
+  );
+}
+
+/**
+ * Globally validates and deep-clones live provider messages across all AI providers.
+ * - Never mutates caller message objects in-place.
+ * - Zero truncation, zero placeholder text, zero fabricated roles or content.
+ * - Fails transparently with ModelProviderError if messages are empty or malformed.
+ */
+export function prepareProviderMessages(
+  messages: any[],
+  options?: PrepareProviderMessagesOptions
+): Array<{ role: 'system' | 'user' | 'assistant'; content: any }> {
+  const providerLabel = options?.providerName || 'AI provider';
+  if (!Array.isArray(messages) || messages.length === 0) {
+    throw new ModelProviderError(
+      `Cannot invoke ${providerLabel} with an empty messages array.`,
+      providerLabel,
+      400,
+      false
+    );
+  }
+
+  const normalized: Array<{ role: 'system' | 'user' | 'assistant'; content: any }> = [];
+
+  for (let i = 0; i < messages.length; i++) {
+    const raw = messages[i];
+    if (!raw || typeof raw !== 'object') {
+      throw new ModelProviderError(
+        `Invalid message at index ${i} for ${providerLabel}: expected a message object with role and content.`,
+        providerLabel,
+        400,
+        false
+      );
+    }
+
+    const rawRole = typeof raw.role === 'string' ? raw.role.trim().toLowerCase() : '';
+    let role: 'system' | 'user' | 'assistant';
+    if (rawRole === 'system') {
+      role = 'system';
+    } else if (rawRole === 'user') {
+      role = 'user';
+    } else if (rawRole === 'assistant' || rawRole === 'model' || rawRole === 'chatbot') {
+      role = 'assistant';
+    } else {
+      throw new ModelProviderError(
+        `Invalid message role "${String(raw.role ?? '')}" at index ${i} for ${providerLabel}.`,
+        providerLabel,
+        400,
+        false
+      );
+    }
+
+    let content: any;
+    if (typeof raw.content === 'string') {
+      content = raw.content;
+    } else if (Array.isArray(raw.content)) {
+      content = raw.content.map((part: any) => (part && typeof part === 'object' ? { ...part } : part));
+    } else if (Array.isArray(raw.parts)) {
+      content = raw.parts
+        .map((part: any) => (typeof part?.text === 'string' ? part.text : JSON.stringify(part)))
+        .join('\n');
+    } else if (typeof raw.message === 'string') {
+      content = raw.message;
+    } else if (raw.content !== null && raw.content !== undefined && typeof raw.content === 'object') {
+      content = JSON.stringify(raw.content);
+    } else {
+      content = '';
+    }
+
+    const isEmpty =
+      typeof content === 'string'
+        ? content.trim().length === 0
+        : Array.isArray(content)
+          ? content.length === 0
+          : true;
+
+    if (isEmpty) {
+      throw new ModelProviderError(
+        `Message at index ${i} (role: "${role}") for ${providerLabel} has empty content.`,
+        providerLabel,
+        400,
+        false
+      );
+    }
+
+    normalized.push({ role, content });
+  }
+
+  const hasNonSystemMessage = normalized.some((m) => m.role !== 'system');
+  if (!hasNonSystemMessage) {
+    throw new ModelProviderError(
+      `Cannot invoke ${providerLabel}: messages array must include at least one non-system message.`,
+      providerLabel,
+      400,
+      false
+    );
+  }
+
+  if (options?.jsonMode && normalized.length > 0) {
+    const lastIdx = normalized.length - 1;
+    const lastMessage = { ...normalized[lastIdx] };
+    const jsonRequirement =
+      " (Your response MUST be a valid JSON object. Ensure the word 'json' is present in your internal reasoning if applicable, and the output is strictly JSON.)";
+
+    const anyHasJson = normalized.some((m) => messageContentToString(m.content).toLowerCase().includes('json'));
+    if (!anyHasJson) {
+      if (typeof lastMessage.content === 'string') {
+        lastMessage.content = lastMessage.content + jsonRequirement;
+      } else if (Array.isArray(lastMessage.content)) {
+        lastMessage.content = [...lastMessage.content, { type: 'text', text: jsonRequirement }];
+      }
+      normalized[lastIdx] = lastMessage;
+    }
+  }
+
+  return normalized;
+}
+
 export class GeminiDirectProvider implements ModelProvider {
   private rotator: DynamicKeyRotator;
   public readonly name = 'gemini_direct';
@@ -620,8 +776,9 @@ export class GeminiDirectProvider implements ModelProvider {
   }
 
   private transformMessagesToGemini(messages: any[]) {
-    const systemMessage = messages.find(m => m.role === 'system');
-    const otherMessages = messages.filter(m => m.role !== 'system');
+    const prepared = prepareProviderMessages(messages, { providerName: this.name });
+    const systemMessage = prepared.find(m => m.role === 'system');
+    const otherMessages = prepared.filter(m => m.role !== 'system');
 
     const transformContent = (content: any) => {
       if (typeof content === 'string') {
@@ -663,25 +820,6 @@ export class GeminiDirectProvider implements ModelProvider {
     return { contents, systemInstruction };
   }
 
-  private ensureJsonInMessages(messages: any[]) {
-    if (!messages || messages.length === 0) return;
-    const lastMessage = messages[messages.length - 1];
-    const jsonRequirement = " (Your response MUST be a valid JSON object. Ensure the word 'json' is present in your internal reasoning if applicable, and the output is strictly JSON.)";
-    
-    if (typeof lastMessage.content === 'string') {
-      if (!lastMessage.content.toLowerCase().includes('json')) {
-        lastMessage.content += jsonRequirement;
-      }
-    } else if (Array.isArray(lastMessage.content)) {
-      const hasJson = lastMessage.content.some((part: any) => 
-        part.type === 'text' && part.text.toLowerCase().includes('json')
-      );
-      if (!hasJson) {
-        lastMessage.content.push({ type: 'text', text: jsonRequirement });
-      }
-    }
-  }
-
   async generate(messages: any[], options: ModelCallOptions): Promise<ModelResponse> {
     return retry(async () => {
       const apiKey = await this.rotator.getNextKey();
@@ -700,11 +838,11 @@ export class GeminiDirectProvider implements ModelProvider {
       }
       const fallbackModel = (await this.rotator.getFallbackModel() || '').trim();
       const ai = new GoogleGenAI({ apiKey });
-      const { contents, systemInstruction } = this.transformMessagesToGemini(messages);
-      
-      if (options.jsonMode) {
-        this.ensureJsonInMessages(messages);
-      }
+      const preparedMessages = prepareProviderMessages(messages, {
+        jsonMode: options?.jsonMode,
+        providerName: this.name
+      });
+      const { contents, systemInstruction } = this.transformMessagesToGemini(preparedMessages);
 
       const executeGenerate = async (targetModel: string) => {
         const timeoutPromise = new Promise<never>((_, reject) =>
@@ -750,7 +888,7 @@ export class GeminiDirectProvider implements ModelProvider {
         if (isKeyInvalidOrExhaustedError(error)) {
           await this.rotator.markKeyExhausted(apiKey);
         }
-        if (fallbackModel && fallbackModel !== primaryModel && (status === 404 || status === 429 || status === 503)) {
+        if (fallbackModel && fallbackModel !== primaryModel && shouldAttemptFallbackModel(error)) {
           console.warn(`[GeminiDirect] Primary model '${primaryModel}' failed with status ${status}. Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeGenerate(fallbackModel);
@@ -785,10 +923,11 @@ export class GeminiDirectProvider implements ModelProvider {
       }
       const fallbackModel = (await this.rotator.getFallbackModel() || '').trim();
       const ai = new GoogleGenAI({ apiKey });
-      if (options?.jsonMode) {
-        this.ensureJsonInMessages(messages);
-      }
-      const { contents, systemInstruction } = this.transformMessagesToGemini(messages);
+      const preparedMessages = prepareProviderMessages(messages, {
+        jsonMode: options?.jsonMode,
+        providerName: this.name
+      });
+      const { contents, systemInstruction } = this.transformMessagesToGemini(preparedMessages);
 
       const executeStream = async (targetModel: string) => {
         if (options?.signal?.aborted) {
@@ -837,7 +976,7 @@ export class GeminiDirectProvider implements ModelProvider {
         if (isKeyInvalidOrExhaustedError(error)) {
           await this.rotator.markKeyExhausted(apiKey);
         }
-        if (fallbackModel && fallbackModel !== primaryModel && (status === 404 || status === 429 || status === 503)) {
+        if (fallbackModel && fallbackModel !== primaryModel && shouldAttemptFallbackModel(error)) {
           console.warn(`[GeminiDirect Stream] Primary model '${primaryModel}' failed with status ${status}. Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeStream(fallbackModel);
@@ -865,25 +1004,6 @@ export class OpenRouterFreeProvider implements ModelProvider {
     this.rotator = new DynamicKeyRotator('openrouter', apiKey);
   }
 
-  private ensureJsonInMessages(messages: any[]) {
-    if (!messages || messages.length === 0) return;
-    const lastMessage = messages[messages.length - 1];
-    const jsonRequirement = " (Your response MUST be a valid JSON object. Ensure the word 'json' is present in your internal reasoning if applicable, and the output is strictly JSON.)";
-    
-    if (typeof lastMessage.content === 'string') {
-      if (!lastMessage.content.toLowerCase().includes('json')) {
-        lastMessage.content += jsonRequirement;
-      }
-    } else if (Array.isArray(lastMessage.content)) {
-      const hasJson = lastMessage.content.some((part: any) => 
-        part.type === 'text' && part.text.toLowerCase().includes('json')
-      );
-      if (!hasJson) {
-        lastMessage.content.push({ type: 'text', text: jsonRequirement });
-      }
-    }
-  }
-
   async generate(messages: any[], options: ModelCallOptions): Promise<ModelResponse> {
     return retry(async () => {
       const apiKey = await this.rotator.getNextKey();
@@ -899,15 +1019,16 @@ export class OpenRouterFreeProvider implements ModelProvider {
         }
       });
 
-      if (options.jsonMode) {
-        this.ensureJsonInMessages(messages);
-      }
+      const preparedMessages = prepareProviderMessages(messages, {
+        jsonMode: options?.jsonMode,
+        providerName: this.name
+      });
 
       try {
-        // Try free model first
+        // Try primary model first
         const response = await openai.chat.completions.create({
           model: model,
-          messages: messages,
+          messages: preparedMessages as any,
           max_tokens: 8192,
           temperature: options.temperature ?? 0.5,
           response_format: options.jsonMode ? { type: "json_object" } : undefined
@@ -925,14 +1046,12 @@ export class OpenRouterFreeProvider implements ModelProvider {
         };
       } catch (error: any) {
         if (isClientAbortError(error, options?.signal)) throw error;
-        // If rate limited (429), fallback to paid model
-        if (error.status === 429) {
-          if (!fallbackModel) throw error;
-          console.log(`[OpenRouterFree] Rate limit hit on ${model}, falling back to ${fallbackModel}`);
+        if (fallbackModel && fallbackModel !== model && shouldAttemptFallbackModel(error)) {
+          console.log(`[OpenRouterFree] Primary model '${model}' failed, falling back to '${fallbackModel}'`);
           try {
             const paidResponse = await openai.chat.completions.create({
               model: fallbackModel,
-              messages: messages,
+              messages: preparedMessages as any,
               max_tokens: 8192,
               temperature: options.temperature ?? 0.5,
               response_format: options.jsonMode ? { type: "json_object" } : undefined
@@ -981,13 +1100,18 @@ export class OpenRouterFreeProvider implements ModelProvider {
         }
       });
 
+      const preparedMessages = prepareProviderMessages(messages, {
+        jsonMode: options?.jsonMode,
+        providerName: this.name
+      });
+
       try {
-        // Try free model first
+        // Try primary model first
         const stream = await openai.chat.completions.create({
           model: model,
-          messages: messages,
+          messages: preparedMessages as any,
           max_tokens: 8192,
-          temperature: 0.5,
+          temperature: options?.temperature ?? 0.5,
           stream: true
         }, { signal: options?.signal });
 
@@ -1038,14 +1162,12 @@ export class OpenRouterFreeProvider implements ModelProvider {
         };
       } catch (error: any) {
         if (isClientAbortError(error, options?.signal)) throw error;
-        // If rate limited (429), fallback to paid model
-        if (error.status === 429) {
-          if (!fallbackModel) throw error;
-          console.log(`[OpenRouterFree Stream] Rate limit hit on ${model}, falling back to ${fallbackModel}`);
+        if (fallbackModel && fallbackModel !== model && shouldAttemptFallbackModel(error)) {
+          console.log(`[OpenRouterFree Stream] Primary model '${model}' failed, falling back to '${fallbackModel}'`);
           try {
             const paidStream = await openai.chat.completions.create({
               model: fallbackModel,
-              messages: messages,
+              messages: preparedMessages as any,
               max_tokens: 8192,
               temperature: options.temperature ?? 0.5,
               stream: true
@@ -1122,25 +1244,6 @@ export class MistralProvider implements ModelProvider {
     this.rotator = new DynamicKeyRotator('mistral_direct', apiKey);
   }
 
-  private ensureJsonInMessages(messages: any[]) {
-    if (!messages || messages.length === 0) return;
-    const lastMessage = messages[messages.length - 1];
-    const jsonRequirement = " (Your response MUST be a valid JSON object. Ensure the word 'json' is present in your internal reasoning if applicable, and the output is strictly JSON.)";
-    
-    if (typeof lastMessage.content === 'string') {
-      if (!lastMessage.content.toLowerCase().includes('json')) {
-        lastMessage.content += jsonRequirement;
-      }
-    } else if (Array.isArray(lastMessage.content)) {
-      const hasJson = lastMessage.content.some((part: any) => 
-        part.type === 'text' && part.text.toLowerCase().includes('json')
-      );
-      if (!hasJson) {
-        lastMessage.content.push({ type: 'text', text: jsonRequirement });
-      }
-    }
-  }
-
   async generate(messages: any[], options: ModelCallOptions): Promise<ModelResponse> {
     return retry(async () => {
       const apiKey = await this.rotator.getNextKey();
@@ -1156,16 +1259,17 @@ export class MistralProvider implements ModelProvider {
       const fallbackModel = (await this.rotator.getFallbackModel() || '').trim();
       const mistral = new Mistral({ apiKey: apiKey });
 
-      if (options.jsonMode) {
-        this.ensureJsonInMessages(messages);
-      }
+      const preparedMessages = prepareProviderMessages(messages, {
+        jsonMode: options?.jsonMode,
+        providerName: this.name
+      });
 
       const executeGenerate = async (targetModel: string) => {
         const response = await raceWithAbort(mistral.chat.complete({
           model: targetModel,
           temperature: options.temperature ?? 0.5,
           maxTokens: 8192,
-          messages: messages,
+          messages: preparedMessages as any,
           responseFormat: options.jsonMode ? { type: "json_object" } : undefined
         }), options?.signal);
 
@@ -1186,7 +1290,7 @@ export class MistralProvider implements ModelProvider {
       } catch (error: any) {
         if (isClientAbortError(error, options?.signal)) throw error;
         const status = error.status || error.statusCode;
-        if (fallbackModel && fallbackModel !== primaryModel && (status === 404 || status === 429)) {
+        if (fallbackModel && fallbackModel !== primaryModel && shouldAttemptFallbackModel(error)) {
           console.warn(`[Mistral] Primary model '${primaryModel}' failed with status ${status}. Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeGenerate(fallbackModel);
@@ -1223,9 +1327,10 @@ export class MistralProvider implements ModelProvider {
       const fallbackModel = (await this.rotator.getFallbackModel() || '').trim();
       const mistral = new Mistral({ apiKey: apiKey });
 
-      if (options.jsonMode) {
-        this.ensureJsonInMessages(messages);
-      }
+      const preparedMessages = prepareProviderMessages(messages, {
+        jsonMode: options?.jsonMode,
+        providerName: this.name
+      });
 
       const executeStream = async (targetModel: string) => {
         if (options?.signal?.aborted) {
@@ -1235,7 +1340,7 @@ export class MistralProvider implements ModelProvider {
           model: targetModel,
           temperature: options.temperature ?? 0.5,
           maxTokens: 8192,
-          messages: messages,
+          messages: preparedMessages as any,
           responseFormat: options.jsonMode ? { type: "json_object" } : undefined
         }), options?.signal);
 
@@ -1268,7 +1373,7 @@ export class MistralProvider implements ModelProvider {
       } catch (error: any) {
         if (isClientAbortError(error, options?.signal)) throw error;
         const status = error.status || error.statusCode;
-        if (fallbackModel && fallbackModel !== primaryModel && (status === 404 || status === 429)) {
+        if (fallbackModel && fallbackModel !== primaryModel && shouldAttemptFallbackModel(error)) {
           console.warn(`[Mistral Stream] Primary model '${primaryModel}' failed with status ${status}. Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeStream(fallbackModel);
@@ -1299,25 +1404,6 @@ export class GroqProvider implements ModelProvider {
     this.rotator = new DynamicKeyRotator('groq', apiKey);
   }
 
-  private ensureJsonInMessages(messages: any[]) {
-    if (!messages || messages.length === 0) return;
-    const lastMessage = messages[messages.length - 1];
-    const jsonRequirement = " (Your response MUST be a valid JSON object. Ensure the word 'json' is present in your internal reasoning if applicable, and the output is strictly JSON.)";
-    
-    if (typeof lastMessage.content === 'string') {
-      if (!lastMessage.content.toLowerCase().includes('json')) {
-        lastMessage.content += jsonRequirement;
-      }
-    } else if (Array.isArray(lastMessage.content)) {
-      const hasJson = lastMessage.content.some((part: any) => 
-        part.type === 'text' && part.text.toLowerCase().includes('json')
-      );
-      if (!hasJson) {
-        lastMessage.content.push({ type: 'text', text: jsonRequirement });
-      }
-    }
-  }
-
   async generate(messages: any[], options: ModelCallOptions): Promise<ModelResponse> {
     return retry(async () => {
       const apiKey = await this.rotator.getNextKey();
@@ -1333,21 +1419,17 @@ export class GroqProvider implements ModelProvider {
       const fallbackModel = (await this.rotator.getFallbackModel() || '').trim();
       const groq = new Groq({ apiKey: apiKey, timeout: 60000 });
 
-      // Truncate messages for Groq to avoid TPM limits (especially for 8b model)
-      // Free tier TPM is often 6000. We target 5000 to be safe and leave room for response.
-      const maxTokens = options.complexity === 'high' ? 5000 : 3000;
-      const truncatedMessages = this.truncateMessages(messages, maxTokens);
-
-      if (options.jsonMode) {
-        this.ensureJsonInMessages(truncatedMessages);
-      }
+      const preparedMessages = prepareProviderMessages(messages, {
+        jsonMode: options?.jsonMode,
+        providerName: this.name
+      });
 
       const executeGenerate = async (targetModel: string) => {
         const response = await groq.chat.completions.create({
           model: targetModel,
           temperature: options.temperature ?? 0.5,
           max_tokens: options.complexity === 'high' ? 4096 : 2048,
-          messages: truncatedMessages,
+          messages: preparedMessages as any,
           response_format: options.jsonMode ? { type: "json_object" } : undefined
         }, { signal: options?.signal });
 
@@ -1368,7 +1450,8 @@ export class GroqProvider implements ModelProvider {
       } catch (error: any) {
         if (isClientAbortError(error, options?.signal)) throw error;
         const status = error.status || error.statusCode;
-        if (fallbackModel && fallbackModel !== primaryModel && (status === 404 || status === 429)) {
+
+        if (fallbackModel && fallbackModel !== primaryModel && shouldAttemptFallbackModel(error)) {
           console.warn(`[Groq] Primary model '${primaryModel}' failed with status ${status}. Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeGenerate(fallbackModel);
@@ -1405,19 +1488,17 @@ export class GroqProvider implements ModelProvider {
       const fallbackModel = (await this.rotator.getFallbackModel() || '').trim();
       const groq = new Groq({ apiKey: apiKey, timeout: 60000 });
 
-      // Truncate messages for Groq to avoid TPM limits
-      const maxTokens = options.complexity === 'high' ? 4000 : 2500;
-      const truncatedMessages = this.truncateMessages(messages, maxTokens);
-      if (options.jsonMode) {
-        this.ensureJsonInMessages(truncatedMessages);
-      }
+      const preparedMessages = prepareProviderMessages(messages, {
+        jsonMode: options?.jsonMode,
+        providerName: this.name
+      });
 
       const executeStream = async (targetModel: string) => {
         const stream = await groq.chat.completions.create({
           model: targetModel,
           temperature: options.temperature ?? 0.5,
           max_tokens: options.complexity === 'high' ? 4096 : 2048,
-          messages: truncatedMessages,
+          messages: preparedMessages as any,
           stream: true
         }, { signal: options?.signal });
 
@@ -1473,7 +1554,8 @@ export class GroqProvider implements ModelProvider {
       } catch (error: any) {
         if (isClientAbortError(error, options?.signal)) throw error;
         const status = error.status || error.statusCode;
-        if (fallbackModel && fallbackModel !== primaryModel && (status === 404 || status === 429)) {
+
+        if (fallbackModel && fallbackModel !== primaryModel && shouldAttemptFallbackModel(error)) {
           console.warn(`[Groq Stream] Primary model '${primaryModel}' failed with status ${status}. Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeStream(fallbackModel);
@@ -1494,63 +1576,6 @@ export class GroqProvider implements ModelProvider {
       }
     }, 'Groq', 3, 1200, options?.signal);
   }
-
-  private truncateMessages(messages: any[], maxTokens: number): any[] {
-    if (!messages || messages.length === 0) return [];
-    
-    // Conservative estimate: 1 token ≈ 3.5 characters
-    let currentTokens = 0;
-    const truncated = [];
-    
-    // Always keep the system message if it exists
-    const systemMessage = messages.find(m => m.role === 'system');
-    let systemTokens = 0;
-    if (systemMessage) {
-      systemTokens = Math.ceil((systemMessage.content?.length || 0) / 3.5);
-      // If system message alone is too big, truncate it (rare but possible)
-      if (systemTokens > maxTokens * 0.4) {
-        const allowedChars = Math.floor(maxTokens * 0.4 * 3.5);
-        systemMessage.content = systemMessage.content.substring(0, allowedChars) + "... [truncated]";
-        systemTokens = Math.ceil(systemMessage.content.length / 3.5);
-      }
-      currentTokens += systemTokens;
-    }
-
-    // Process other messages from newest to oldest
-    const otherMessages = messages.filter(m => m.role !== 'system');
-    for (let i = otherMessages.length - 1; i >= 0; i--) {
-      const msg = otherMessages[i];
-      let content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-      let estimatedTokens = Math.ceil(content.length / 3.5);
-      
-      // If the very first (newest) message is too large, truncate it
-      if (i === otherMessages.length - 1 && currentTokens + estimatedTokens > maxTokens) {
-        const allowedTokens = maxTokens - currentTokens;
-        if (allowedTokens > 100) {
-          const allowedChars = Math.floor(allowedTokens * 3.5);
-          content = content.substring(0, allowedChars) + "... [truncated]";
-          estimatedTokens = Math.ceil(content.length / 3.5);
-          msg.content = content;
-        } else {
-          // Too little space left, skip this message
-          continue;
-        }
-      }
-
-      if (currentTokens + estimatedTokens > maxTokens) {
-        break;
-      }
-      
-      currentTokens += estimatedTokens;
-      truncated.unshift(msg);
-    }
-    
-    if (systemMessage) {
-      truncated.unshift(systemMessage);
-    }
-    
-    return truncated;
-  }
 }
 
 export class CohereProvider implements ModelProvider {
@@ -1559,25 +1584,6 @@ export class CohereProvider implements ModelProvider {
 
   constructor(apiKey: string = '') {
     this.rotator = new DynamicKeyRotator('cohere', apiKey);
-  }
-
-  private ensureJsonInMessages(messages: any[]) {
-    if (!messages || messages.length === 0) return;
-    const lastMessage = messages[messages.length - 1];
-    const jsonRequirement = " (Your response MUST be a valid JSON object. Ensure the word 'json' is present in your internal reasoning if applicable, and the output is strictly JSON.)";
-    
-    if (typeof lastMessage.content === 'string') {
-      if (!lastMessage.content.toLowerCase().includes('json')) {
-        lastMessage.content += jsonRequirement;
-      }
-    } else if (Array.isArray(lastMessage.content)) {
-      const hasJson = lastMessage.content.some((part: any) => 
-        part.type === 'text' && part.text.toLowerCase().includes('json')
-      );
-      if (!hasJson) {
-        lastMessage.content.push({ type: 'text', text: jsonRequirement });
-      }
-    }
   }
 
   async generate(messages: any[], options: ModelCallOptions): Promise<ModelResponse> {
@@ -1595,15 +1601,16 @@ export class CohereProvider implements ModelProvider {
       const fallbackModel = (await this.rotator.getFallbackModel() || '').trim();
       const cohere = new CohereClient({ token: apiKey });
       
-      if (options.jsonMode) {
-        this.ensureJsonInMessages(messages);
-      }
+      const preparedMessages = prepareProviderMessages(messages, {
+        jsonMode: options?.jsonMode,
+        providerName: this.name
+      });
 
-      const chatHistory = messages.slice(0, -1).map(m => ({
+      const chatHistory = preparedMessages.slice(0, -1).map(m => ({
         role: m.role === 'assistant' ? 'CHATBOT' : (m.role === 'system' ? 'SYSTEM' : 'USER'),
-        message: m.content
+        message: messageContentToString(m.content)
       }));
-      const lastMessage = messages[messages.length - 1].content;
+      const lastMessage = messageContentToString(preparedMessages[preparedMessages.length - 1].content);
 
       const executeGenerate = async (targetModel: string) => {
         const response = await raceWithAbort(cohere.chat({
@@ -1630,7 +1637,7 @@ export class CohereProvider implements ModelProvider {
       } catch (error: any) {
         if (isClientAbortError(error, options?.signal)) throw error;
         const status = error.statusCode || error.status;
-        if (fallbackModel && fallbackModel !== primaryModel && (status === 404 || status === 429)) {
+        if (fallbackModel && fallbackModel !== primaryModel && shouldAttemptFallbackModel(error)) {
           console.warn(`[Cohere] Primary model '${primaryModel}' failed with status ${status}. Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeGenerate(fallbackModel);
@@ -1667,11 +1674,16 @@ export class CohereProvider implements ModelProvider {
       const fallbackModel = (await this.rotator.getFallbackModel() || '').trim();
       const cohere = new CohereClient({ token: apiKey });
       
-      const chatHistory = messages.slice(0, -1).map(m => ({
+      const preparedMessages = prepareProviderMessages(messages, {
+        jsonMode: options?.jsonMode,
+        providerName: this.name
+      });
+
+      const chatHistory = preparedMessages.slice(0, -1).map(m => ({
         role: m.role === 'assistant' ? 'CHATBOT' : (m.role === 'system' ? 'SYSTEM' : 'USER'),
-        message: m.content
+        message: messageContentToString(m.content)
       }));
-      const lastMessage = messages[messages.length - 1].content;
+      const lastMessage = messageContentToString(preparedMessages[preparedMessages.length - 1].content);
 
       const executeStream = async (targetModel: string) => {
         if (options?.signal?.aborted) {
@@ -1712,7 +1724,7 @@ export class CohereProvider implements ModelProvider {
       } catch (error: any) {
         if (isClientAbortError(error, options?.signal)) throw error;
         const status = error.statusCode || error.status;
-        if (fallbackModel && fallbackModel !== primaryModel && (status === 404 || status === 429)) {
+        if (fallbackModel && fallbackModel !== primaryModel && shouldAttemptFallbackModel(error)) {
           console.warn(`[Cohere Stream] Primary model '${primaryModel}' failed with status ${status}. Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeStream(fallbackModel);
@@ -1758,11 +1770,16 @@ export class HuggingFaceProvider implements ModelProvider {
       const fallbackModel = (await this.rotator.getFallbackModel() || '').trim();
       const hf = new HfInference(apiKey);
 
+      const preparedMessages = prepareProviderMessages(messages, {
+        jsonMode: options?.jsonMode,
+        providerName: this.name
+      });
+
       const executeGenerate = async (targetModel: string) => {
         try {
           const response = await raceWithAbort(hf.chatCompletion({
             model: targetModel,
-            messages: messages,
+            messages: preparedMessages as any,
             max_tokens: 4096,
             temperature: options.temperature ?? 0.5
           }), options?.signal);
@@ -1797,7 +1814,7 @@ export class HuggingFaceProvider implements ModelProvider {
                            error.message?.toLowerCase().includes('quota') ||
                            error.message?.toLowerCase().includes('http error');
         
-        if (fallbackModel && fallbackModel !== primaryModel && (status === 404 || status === 429 || isQuotaError)) {
+        if (fallbackModel && fallbackModel !== primaryModel && (shouldAttemptFallbackModel(error) || isQuotaError)) {
           console.warn(`[HuggingFace] Primary model '${primaryModel}' failed. Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeGenerate(fallbackModel);
@@ -1835,6 +1852,11 @@ export class HuggingFaceProvider implements ModelProvider {
       const fallbackModel = (await this.rotator.getFallbackModel() || '').trim();
       const hf = new HfInference(apiKey);
 
+      const preparedMessages = prepareProviderMessages(messages, {
+        jsonMode: options?.jsonMode,
+        providerName: this.name
+      });
+
       const executeStream = async (targetModel: string) => {
         try {
           if (options?.signal?.aborted) {
@@ -1842,7 +1864,7 @@ export class HuggingFaceProvider implements ModelProvider {
           }
           const stream = hf.chatCompletionStream({
             model: targetModel,
-            messages: messages,
+            messages: preparedMessages as any,
             max_tokens: 4096,
             temperature: options.temperature ?? 0.5
           });
@@ -1889,7 +1911,7 @@ export class HuggingFaceProvider implements ModelProvider {
                            error.message?.toLowerCase().includes('quota') ||
                            error.message?.toLowerCase().includes('http error');
         
-        if (fallbackModel && fallbackModel !== primaryModel && (status === 404 || status === 429 || isQuotaError)) {
+        if (fallbackModel && fallbackModel !== primaryModel && (shouldAttemptFallbackModel(error) || isQuotaError)) {
           console.warn(`[HuggingFace Stream] Primary model '${primaryModel}' failed. Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeStream(fallbackModel);
@@ -1919,25 +1941,6 @@ export class NvidiaProvider implements ModelProvider {
 
   constructor(apiKey: string = '') {
     this.rotator = new DynamicKeyRotator('nvidia', apiKey);
-  }
-
-  private ensureJsonInMessages(messages: any[]) {
-    if (!messages || messages.length === 0) return;
-    const lastMessage = messages[messages.length - 1];
-    const jsonRequirement = " (Your response MUST be a valid JSON object. Ensure the output is strictly valid JSON with no markdown backticks unless part of JSON strings.)";
-    
-    if (typeof lastMessage.content === 'string') {
-      if (!lastMessage.content.toLowerCase().includes('json')) {
-        lastMessage.content += jsonRequirement;
-      }
-    } else if (Array.isArray(lastMessage.content)) {
-      const hasJson = lastMessage.content.some((part: any) => 
-        part.type === 'text' && part.text.toLowerCase().includes('json')
-      );
-      if (!hasJson) {
-        lastMessage.content.push({ type: 'text', text: jsonRequirement });
-      }
-    }
   }
 
   private normalizeNvidiaModel(model: string): string {
@@ -1970,14 +1973,15 @@ export class NvidiaProvider implements ModelProvider {
         timeout: 60000,
       });
 
-      if (options.jsonMode) {
-        this.ensureJsonInMessages(messages);
-      }
+      const preparedMessages = prepareProviderMessages(messages, {
+        jsonMode: options?.jsonMode,
+        providerName: this.name
+      });
 
       const executeGenerate = async (targetModel: string) => {
         const response = await openai.chat.completions.create({
           model: targetModel,
-          messages: messages,
+          messages: preparedMessages as any,
           max_tokens: 8192,
           temperature: options.temperature ?? 0.5,
           response_format: options.jsonMode ? { type: "json_object" } : undefined
@@ -2000,7 +2004,7 @@ export class NvidiaProvider implements ModelProvider {
       } catch (error: any) {
         if (isClientAbortError(error, options?.signal)) throw error;
         const status = error.status || error.statusCode;
-        if (fallbackModel && fallbackModel !== primaryModel && (status === 404 || status === 429)) {
+        if (fallbackModel && fallbackModel !== primaryModel && shouldAttemptFallbackModel(error)) {
           console.warn(`[Nvidia] Primary model '${primaryModel}' failed with status ${status}. Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeGenerate(fallbackModel);
@@ -2043,14 +2047,15 @@ export class NvidiaProvider implements ModelProvider {
         timeout: 60000,
       });
 
-      if (options.jsonMode) {
-        this.ensureJsonInMessages(messages);
-      }
+      const preparedMessages = prepareProviderMessages(messages, {
+        jsonMode: options?.jsonMode,
+        providerName: this.name
+      });
 
       const executeStream = async (targetModel: string) => {
         const stream = await openai.chat.completions.create({
           model: targetModel,
-          messages: messages,
+          messages: preparedMessages as any,
           max_tokens: 8192,
           temperature: options.temperature ?? 0.5,
           stream: true,
@@ -2109,7 +2114,7 @@ export class NvidiaProvider implements ModelProvider {
       } catch (error: any) {
         if (isClientAbortError(error, options?.signal)) throw error;
         const status = error.status || error.statusCode;
-        if (fallbackModel && fallbackModel !== primaryModel && (status === 404 || status === 429)) {
+        if (fallbackModel && fallbackModel !== primaryModel && shouldAttemptFallbackModel(error)) {
           console.warn(`[Nvidia Stream] Primary model '${primaryModel}' failed with status ${status}. Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeStream(fallbackModel);

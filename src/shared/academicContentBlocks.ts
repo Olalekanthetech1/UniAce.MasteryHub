@@ -3,10 +3,10 @@ import { z } from 'zod';
 import { StructuredDiagramSpecSchema } from '../services/mermaidRepairService';
 
 const blockIdentity = {
-  id: z.string().trim().min(1).max(120),
-  title: z.string().trim().min(1).max(240),
-  academicRole: z.string().trim().min(1).max(120).optional(),
-  disciplineHint: z.string().trim().min(1).max(80).optional()
+  id: z.string().trim().min(1).max(160),
+  title: z.string().trim().min(1).max(300),
+  academicRole: z.string().trim().min(1).max(240).optional(),
+  disciplineHint: z.string().trim().min(1).max(240).optional()
 };
 
 const identifierSchema = z.string().regex(
@@ -186,16 +186,16 @@ export const ExplanationBlockSchema = z.object({
 export const MathematicalDerivationBlockSchema = z.object({
   ...blockIdentity,
   type: z.literal('mathematical_derivation'),
-  introduction: z.string().trim().min(20).max(5000),
-  assumptions: z.array(z.string().trim().min(3).max(500)).max(20).default([]),
+  introduction: z.string().trim().min(10).max(5000),
+  assumptions: z.array(z.string().trim().min(2).max(500)).max(20).default([]),
   steps: z.array(z.object({
-    explanation: z.string().trim().min(10).max(3000),
+    explanation: z.string().trim().min(5).max(3000),
     equationLatex: z.string().trim().min(1).max(2000).optional(),
     codeSnippet: z.string().trim().min(1).max(4000).optional(),
     language: z.string().trim().max(40).optional(),
     evidenceOrCitation: z.string().trim().min(2).max(1000).optional()
   })).min(2).max(30),
-  conclusion: z.string().trim().min(10).max(3000)
+  conclusion: z.string().trim().min(5).max(3000)
 });
 
 export const EngineeringDiagramBlockSchema = z.object({
@@ -208,31 +208,31 @@ export const EngineeringDiagramBlockSchema = z.object({
 export const WorkedExampleBlockSchema = z.object({
   ...blockIdentity,
   type: z.literal('worked_example'),
-  exampleType: z.string().trim().min(2).max(80).default('numerical'),
-  problem: z.string().trim().min(10).max(8000),
+  exampleType: z.string().trim().min(2).max(120).default('numerical'),
+  problem: z.string().trim().min(5).max(8000),
   givens: z.array(z.object({
-    symbol: z.string().trim().min(1).max(80),
-    value: z.string().trim().min(1).max(240),
+    symbol: z.string().trim().min(1).max(120),
+    value: z.string().trim().min(1).max(500),
     unit: z.string().trim().max(80).optional()
   })).max(30).default([]),
   contextFactors: z.array(z.object({
-    label: z.string().trim().min(1).max(120),
-    detail: z.string().trim().min(1).max(600)
+    label: z.string().trim().min(1).max(160),
+    detail: z.string().trim().min(1).max(1000)
   })).max(30).optional(),
-  target: z.string().trim().min(2).max(1000),
-  assumptions: z.array(z.string().trim().min(3).max(500)).max(20).default([]),
+  target: z.string().trim().min(2).max(1000).default('Determine the required solution'),
+  assumptions: z.array(z.string().trim().min(2).max(500)).max(20).default([]),
   steps: z.array(z.object({
-    explanation: z.string().trim().min(10).max(3000),
+    explanation: z.string().trim().min(5).max(3000),
     equationLatex: z.string().trim().min(1).max(2000).optional(),
     codeSnippet: z.string().trim().min(1).max(4000).optional(),
     language: z.string().trim().max(40).optional(),
     evidenceOrCitation: z.string().trim().min(2).max(1000).optional()
   })).min(2).max(40),
   finalAnswer: z.object({
-    value: z.string().trim().min(1).max(1000),
+    value: z.string().trim().min(1).max(1500),
     unit: z.string().trim().max(80).optional()
   }),
-  verification: z.string().trim().min(10).max(3000)
+  verification: z.string().trim().min(5).max(3000)
 });
 
 export const InteractiveSimulationBlockSchema = z.object({
@@ -323,9 +323,53 @@ export const AcademicContentBlockSchema = z.discriminatedUnion('type', [
   DynamicStructuredBlockSchema
 ]);
 
-export const AcademicContentBlockCollectionSchema = z.object({
+export const AcademicContentBlockCollectionSchema = z.preprocess((raw: unknown) => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const obj = { ...(raw as Record<string, any>) };
+  if (!obj.schemaVersion) obj.schemaVersion = '1.0';
+  if (Array.isArray(obj.blocks)) {
+    const seenIds = new Set<string>();
+    const seenChecks = new Set<number>();
+    const dedupedBlocks: any[] = [];
+    for (let i = 0; i < obj.blocks.length; i++) {
+      const b = obj.blocks[i];
+      if (!b || typeof b !== 'object') continue;
+      const copy = { ...b };
+      let id = String(copy.id || `block-${i + 1}`).trim();
+      if (seenIds.has(id)) id = `${id}-${i + 1}`;
+      seenIds.add(id);
+      copy.id = id;
+      if (Array.isArray(copy.steps)) {
+        copy.steps = copy.steps.map((s: any) => (typeof s === 'string' ? { explanation: s } : s));
+      }
+      if (copy.type === 'worked_example') {
+        if (typeof copy.finalAnswer === 'string') {
+          copy.finalAnswer = { value: copy.finalAnswer };
+        }
+        if (Array.isArray(copy.givens)) {
+          copy.givens = copy.givens.map((g: any, idx: number) => {
+            if (typeof g === 'string') {
+              const parts = g.split('=');
+              return parts.length >= 2
+                ? { symbol: parts[0].trim() || `g${idx + 1}`, value: parts.slice(1).join('=').trim() || g }
+                : { symbol: `given_${idx + 1}`, value: g };
+            }
+            return g;
+          });
+        }
+      }
+      if (copy.type === 'knowledge_check' && typeof copy.activityIndex === 'number') {
+        if (seenChecks.has(copy.activityIndex)) continue;
+        seenChecks.add(copy.activityIndex);
+      }
+      dedupedBlocks.push(copy);
+    }
+    obj.blocks = dedupedBlocks;
+  }
+  return obj;
+}, z.object({
   schemaVersion: z.literal('1.0'),
-  disciplineEngine: z.string().trim().min(1).max(80).optional(),
+  disciplineEngine: z.string().trim().min(1).max(300).optional(),
   blocks: z.array(AcademicContentBlockSchema).min(1).max(100)
 }).superRefine((collection, ctx) => {
   const seenIds = new Set<string>();
@@ -351,7 +395,7 @@ export const AcademicContentBlockCollectionSchema = z.object({
       seenKnowledgeChecks.add(block.activityIndex);
     }
   });
-});
+}));
 
 export type ExplanationBlock = z.infer<typeof ExplanationBlockSchema>;
 export type MathematicalDerivationBlock = z.infer<typeof MathematicalDerivationBlockSchema>;

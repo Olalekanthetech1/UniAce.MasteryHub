@@ -13,77 +13,513 @@ import {
 export const BloomLevelEnum = z.enum(['Remember', 'Understand', 'Apply', 'Analyze', 'Evaluate', 'Create']);
 export type BloomLevel = z.infer<typeof BloomLevelEnum>;
 
-export const LearningOutcomeSchema = z.object({
-  outcome: z.string().min(1, 'Outcome text cannot be empty'),
-  bloomLevel: BloomLevelEnum
-});
+export function normalizeBloomLevel(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw;
+  const cleaned = raw.trim().toLowerCase();
+  if (/^(?:remember|remembering|knowledge|recall|recognize|identify)\b/.test(cleaned)) return 'Remember';
+  if (/^(?:understand|understanding|comprehend|comprehension|explain|interpret)\b/.test(cleaned)) return 'Understand';
+  if (/^(?:apply|applying|application|implement|execute|solve)\b/.test(cleaned)) return 'Apply';
+  if (/^(?:analy[sz]e|analy[sz]ing|analysis|differentiate|examine)\b/.test(cleaned)) return 'Analyze';
+  if (/^(?:evaluate|evaluating|evaluation|assess|critique|judge)\b/.test(cleaned)) return 'Evaluate';
+  if (/^(?:create|creating|creation|synthesi[sz]e|synthesis|design|construct|formulate)\b/.test(cleaned)) return 'Create';
+  return raw.trim();
+}
+
+/**
+ * Deterministically normalizes either a plain string or a structured object/array
+ * returned by any LLM provider into a clean string without fabricating content.
+ */
+export function normalizeStringOrStructuredEntry(input: unknown): unknown {
+  return normalizeStringOrStructuredEntryInternal(input, 0);
+}
+
+function normalizeStringOrStructuredEntryInternal(input: unknown, depth: number = 0): unknown {
+  if (typeof input === 'string') {
+    return input.trim();
+  }
+  if (typeof input === 'number' || typeof input === 'boolean') {
+    return String(input);
+  }
+  if (depth > 6 || !input || typeof input !== 'object') {
+    return input;
+  }
+  if (Array.isArray(input)) {
+    const items = input
+      .map((item) => normalizeStringOrStructuredEntryInternal(item, depth + 1))
+      .filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+    return items.length > 0 ? items.join('; ') : input;
+  }
+
+  const record = input as Record<string, unknown>;
+  const asCleanString = (val: unknown): string => {
+    if (typeof val === 'string') return val.trim();
+    if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+    if (val === null || val === undefined) return '';
+    if (Array.isArray(val)) {
+      return val
+        .map((item) => {
+          const resolved = normalizeStringOrStructuredEntryInternal(item, depth + 1);
+          return typeof resolved === 'string' ? resolved.trim() : '';
+        })
+        .filter(Boolean)
+        .join(', ');
+    }
+    if (typeof val === 'object') {
+      const resolved = normalizeStringOrStructuredEntryInternal(val, depth + 1);
+      return typeof resolved === 'string' ? resolved.trim() : '';
+    }
+    return '';
+  };
+
+  const primary =
+    asCleanString(record.citation) ||
+    asCleanString(record.reference) ||
+    asCleanString(record.title) ||
+    asCleanString(record.name) ||
+    asCleanString(record.topic) ||
+    asCleanString(record.axiom) ||
+    asCleanString(record.principle) ||
+    asCleanString(record.concept) ||
+    asCleanString(record.objective) ||
+    asCleanString(record.outcome) ||
+    asCleanString(record.step) ||
+    asCleanString(record.hint) ||
+    asCleanString(record.signal) ||
+    asCleanString(record.criterion) ||
+    asCleanString(record.prompt) ||
+    asCleanString(record.question) ||
+    asCleanString(record.option) ||
+    asCleanString(record.statement) ||
+    asCleanString(record.content) ||
+    asCleanString(record.text) ||
+    asCleanString(record.value) ||
+    asCleanString(record.label);
+
+  const author = asCleanString(record.authors) || asCleanString(record.author);
+  const edition = asCleanString(record.edition);
+  const year = asCleanString(record.year);
+  const source = asCleanString(record.source) || asCleanString(record.publisher) || asCleanString(record.institution);
+  const description = asCleanString(record.description) || asCleanString(record.summary) || asCleanString(record.explanation);
+  const url = asCleanString(record.url) || asCleanString(record.link) || asCleanString(record.doi);
+
+  const parts: string[] = [];
+  if (primary) parts.push(primary);
+  if (author && !primary.includes(author)) parts.push(author);
+  if (edition && !primary.includes(edition)) parts.push(edition);
+  if (year && !primary.includes(year)) parts.push(`(${year})`);
+  if (source && !primary.includes(source)) parts.push(source);
+  if (description && !primary.includes(description)) parts.push(description);
+  if (url && !primary.includes(url)) parts.push(url);
+
+  if (parts.length > 0) {
+    return parts.join(' — ');
+  }
+
+  const fallbackParts = Object.values(record)
+    .map(asCleanString)
+    .filter(Boolean);
+  if (fallbackParts.length > 0) {
+    return fallbackParts.join(' — ');
+  }
+
+  return input;
+}
+
+/**
+ * Dynamically inspects Zod validation issues for any schema and any provider, and
+ * resolves in-place any field path where a string was expected by the schema but
+ * the model returned a structured object or array.
+ */
+export function resolveExpectedStringPathsInPayload(
+  payload: unknown,
+  issues: ReadonlyArray<{ code?: string; expected?: unknown; message?: string; path?: ReadonlyArray<PropertyKey> }>
+): boolean {
+  if (!payload || typeof payload !== 'object') return false;
+  let mutated = false;
+
+  for (const issue of issues) {
+    const expectsString =
+      issue.expected === 'string' ||
+      (typeof issue.message === 'string' && /expected string/i.test(issue.message));
+    const path = issue.path;
+    if (!expectsString || !Array.isArray(path) || path.length === 0) continue;
+
+    let cursor: any = payload;
+    for (let idx = 0; idx < path.length - 1; idx++) {
+      const key = path[idx];
+      if (cursor == null || typeof cursor !== 'object') {
+        cursor = null;
+        break;
+      }
+      cursor = cursor[key as any];
+    }
+    if (!cursor || typeof cursor !== 'object') continue;
+
+    const leafKey = path[path.length - 1] as any;
+    const currentValue = cursor[leafKey];
+    if (currentValue && typeof currentValue === 'object') {
+      const normalized = normalizeStringOrStructuredEntry(currentValue);
+      if (typeof normalized === 'string' && normalized.length > 0) {
+        cursor[leafKey] = normalized;
+        mutated = true;
+      }
+    }
+  }
+
+  return mutated;
+}
+
+export const NormalizedStringSchema = z.preprocess(
+  (val) => normalizeStringOrStructuredEntry(val),
+  z.string().min(1)
+);
+
+/**
+ * Dynamic disciplinary pedagogy descriptor resolved at runtime from the course
+ * and domain without hardcoded discipline enum buckets.
+ */
+export const DisciplinePedagogyTypeSchema = NormalizedStringSchema;
+export const DisciplinePedagogyTypeEnum = DisciplinePedagogyTypeSchema;
+export type DisciplinePedagogyType = z.infer<typeof DisciplinePedagogyTypeSchema>;
+
+export const LearningOutcomeSchema = z.preprocess(
+  (val: unknown) => {
+    if (!val || typeof val !== 'object' || Array.isArray(val)) return val;
+    const raw = val as Record<string, unknown>;
+    const rawOutcome =
+      raw.outcome ??
+      raw.description ??
+      raw.text ??
+      raw.statement ??
+      raw.objective ??
+      raw.title;
+    const rawBloom =
+      raw.bloomLevel ??
+      raw.bloom_level ??
+      raw.bloom ??
+      raw.taxonomyLevel ??
+      raw.taxonomy_level ??
+      raw.level;
+    return {
+      ...raw,
+      outcome: normalizeStringOrStructuredEntry(rawOutcome),
+      bloomLevel: normalizeBloomLevel(rawBloom)
+    };
+  },
+  z.object({
+    outcome: z.string().min(1, 'Outcome text cannot be empty'),
+    bloomLevel: BloomLevelEnum
+  })
+);
 export type LearningOutcome = z.infer<typeof LearningOutcomeSchema>;
 
-export const DisciplinePedagogyTypeEnum = z.enum([
-  'STEM_MATHEMATICAL',
-  'HUMANITIES_LAW_ARTS',
-  'SOCIAL_SCIENCES_BUSINESS',
-  'BIOMEDICAL_LIFE_SCIENCES',
-  'GENERAL_FOUNDATIONS'
-]);
-export type DisciplinePedagogyType = z.infer<typeof DisciplinePedagogyTypeEnum>;
+function resolveDomainBriefPayload(val: unknown): unknown {
+  if (!val || typeof val !== 'object' || Array.isArray(val)) return val;
+  let obj = { ...(val as Record<string, any>) };
+  if (
+    obj.primaryDomain === undefined &&
+    obj.primary_domain === undefined &&
+    ((obj.domainBrief && typeof obj.domainBrief === 'object' && !Array.isArray(obj.domainBrief)) ||
+     (obj.domain_brief && typeof obj.domain_brief === 'object' && !Array.isArray(obj.domain_brief)) ||
+     (obj.data && typeof obj.data === 'object' && !Array.isArray(obj.data)))
+  ) {
+    const inner = (obj.domainBrief || obj.domain_brief || obj.data) as Record<string, any>;
+    obj = { ...obj, ...inner };
+  }
+  if (obj.primaryDomain === undefined && obj.primary_domain !== undefined) obj.primaryDomain = obj.primary_domain;
+  if (obj.subDisciplines === undefined && obj.sub_disciplines !== undefined) obj.subDisciplines = obj.sub_disciplines;
+  if (obj.pedagogyType === undefined) {
+    obj.pedagogyType = obj.pedagogy_type ?? obj.disciplineEngine ?? obj.discipline_engine ?? obj.primaryDomain;
+  }
+  if (obj.courseLevelFramework === undefined && obj.course_level_framework !== undefined) {
+    obj.courseLevelFramework = obj.course_level_framework;
+  }
+  if (obj.canonicalCourseReferences === undefined) {
+    obj.canonicalCourseReferences = obj.canonical_course_references ?? obj.references ?? [];
+  }
+  if (obj.foundationalAxioms === undefined) {
+    obj.foundationalAxioms = obj.foundational_axioms ?? obj.foundationalPrinciples ?? obj.foundational_principles;
+  }
+  if (obj.coreCourseTopics === undefined) {
+    obj.coreCourseTopics = obj.core_course_topics ?? obj.coreTopics ?? obj.core_topics;
+  }
+  return obj;
+}
 
-export const DomainBriefSchema = z.object({
-  primaryDomain: z.string().min(1),
-  subDisciplines: z.array(z.string()).min(1),
-  pedagogyType: DisciplinePedagogyTypeEnum,
-  courseLevelFramework: z.string().min(1),
-  canonicalCourseReferences: z.array(z.string()),
-  foundationalAxioms: z.array(z.string()).min(1),
-  coreCourseTopics: z.array(z.string()).min(6)
-});
+export const DomainBriefSchema = z.preprocess(
+  resolveDomainBriefPayload,
+  z.object({
+    primaryDomain: NormalizedStringSchema,
+    subDisciplines: z.array(NormalizedStringSchema).min(1),
+    pedagogyType: DisciplinePedagogyTypeSchema,
+    courseLevelFramework: NormalizedStringSchema,
+    canonicalCourseReferences: z.preprocess(
+      (val) => {
+        if (!Array.isArray(val)) return val;
+        return val
+          .map((item) => normalizeStringOrStructuredEntry(item))
+          .filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+      },
+      z.array(z.string())
+    ),
+    foundationalAxioms: z.array(NormalizedStringSchema).min(1),
+    coreCourseTopics: z.array(NormalizedStringSchema).min(6)
+  })
+);
 export type DomainBrief = z.infer<typeof DomainBriefSchema>;
 
 export const CourseLessonOutlineSchema = z.object({
   id: z.string().optional(),
-  title: z.string().min(1),
-  learningOutcomeIds: z.array(z.string()).optional(),
-  coreConcepts: z.array(z.string()).optional()
+  title: NormalizedStringSchema,
+  learningOutcomeIds: z.array(z.preprocess((v) => (typeof v === 'number' ? String(v) : v), z.string())).optional(),
+  coreConcepts: z.array(NormalizedStringSchema).optional()
 });
 export type CourseLessonOutline = z.infer<typeof CourseLessonOutlineSchema>;
 
-export const CourseModuleOutlineSchema = z.object({
-  id: z.string().optional(),
-  title: z.string().min(1),
-  order: z.number().int().optional(),
-  isFoundationModule: z.boolean(),
-  topics: z.array(z.string()).optional(),
-  lessonTitles: z.array(z.string()).optional(),
-  lessons: z.array(z.union([z.string(), CourseLessonOutlineSchema])).optional(),
-  quizTopics: z.array(z.string().min(1)).min(1),
-  learningOutcomeIds: z.array(z.string().min(1)).min(1)
-});
+function resolveModuleOutlinePayload(val: unknown, index?: number): unknown {
+  if (!val || typeof val !== 'object' || Array.isArray(val)) return val;
+  const obj = { ...(val as Record<string, any>) };
+  if (obj.title === undefined) {
+    obj.title = obj.moduleTitle ?? obj.module_title ?? obj.name;
+  }
+  if (typeof obj.isFoundationModule !== 'boolean') {
+    if (typeof obj.is_foundation_module === 'boolean') {
+      obj.isFoundationModule = obj.is_foundation_module;
+    } else if (typeof obj.order === 'number') {
+      obj.isFoundationModule = obj.order === 1;
+    } else if (typeof index === 'number') {
+      obj.isFoundationModule = index === 0;
+    }
+  }
+  if (obj.lessonTitles === undefined) {
+    const rawLessons = obj.lesson_titles ?? obj.lessons ?? obj.topics ?? obj.subTopics ?? obj.sub_topics;
+    if (Array.isArray(rawLessons)) {
+      obj.lessonTitles = rawLessons.map((item: any) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object') {
+          return item.title ?? item.lessonTitle ?? item.lesson_title ?? item.topic ?? item.name ?? item;
+        }
+        return item;
+      });
+    }
+  }
+  if (obj.quizTopics === undefined) {
+    obj.quizTopics = obj.quiz_topics ?? obj.assessmentTopics ?? obj.assessment_topics ?? obj.keyTopics ?? obj.key_topics;
+  }
+  if (obj.learningOutcomeIds === undefined) {
+    obj.learningOutcomeIds =
+      obj.learning_outcome_ids ??
+      obj.outcomeIds ??
+      obj.outcome_ids ??
+      obj.mappedOutcomes ??
+      obj.mapped_outcomes;
+  }
+  if (Array.isArray(obj.learningOutcomeIds)) {
+    obj.learningOutcomeIds = obj.learningOutcomeIds.map((id: unknown) =>
+      typeof id === 'number' ? String(id) : normalizeStringOrStructuredEntry(id)
+    );
+  }
+  return obj;
+}
+
+export const CourseModuleOutlineSchema = z.preprocess(
+  (val) => resolveModuleOutlinePayload(val),
+  z.object({
+    id: z.string().optional(),
+    title: NormalizedStringSchema,
+    order: z.number().int().optional(),
+    isFoundationModule: z.boolean(),
+    topics: z.array(NormalizedStringSchema).optional(),
+    lessonTitles: z.array(NormalizedStringSchema).optional(),
+    lessons: z.array(z.union([z.string(), CourseLessonOutlineSchema])).optional(),
+    quizTopics: z.array(NormalizedStringSchema).min(1),
+    learningOutcomeIds: z.array(z.string().min(1)).min(1)
+  })
+);
 export type CourseModuleOutline = z.infer<typeof CourseModuleOutlineSchema>;
 
-export const CourseSkeletonSchema = z.object({
-  pedagogicalReasoning: z.string().trim().min(1),
-  description: z.string().trim().min(1),
-  pedagogyType: DisciplinePedagogyTypeEnum,
-  creditHours: z.number().int().min(1).max(12),
-  learningOutcomes: z.array(LearningOutcomeSchema).min(1),
-  modules: z.array(CourseModuleOutlineSchema).min(1)
-});
+function resolveCourseSkeletonPayload(val: unknown): unknown {
+  if (!val || typeof val !== 'object' || Array.isArray(val)) return val;
+  let obj = { ...(val as Record<string, any>) };
+
+  // Unwrap if the entire skeleton was placed inside a single wrapper key
+  const wrapperCandidates = [
+    obj.courseSkeleton,
+    obj.course_skeleton,
+    obj.skeleton,
+    obj.syllabus,
+    obj.curriculum,
+    obj.course,
+    obj.outline,
+    obj.data
+  ];
+  for (const candidate of wrapperCandidates) {
+    if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+      obj = { ...(candidate as Record<string, any>), ...obj };
+    }
+  }
+
+  // Extract metadata fields when nested inside courseMetadata / metadata / courseInfo
+  const meta =
+    (obj.courseMetadata && typeof obj.courseMetadata === 'object' && !Array.isArray(obj.courseMetadata) ? obj.courseMetadata : null) ||
+    (obj.course_metadata && typeof obj.course_metadata === 'object' && !Array.isArray(obj.course_metadata) ? obj.course_metadata : null) ||
+    (obj.metadata && typeof obj.metadata === 'object' && !Array.isArray(obj.metadata) ? obj.metadata : null) ||
+    (obj.courseInfo && typeof obj.courseInfo === 'object' && !Array.isArray(obj.courseInfo) ? obj.courseInfo : null) ||
+    (obj.course_info && typeof obj.course_info === 'object' && !Array.isArray(obj.course_info) ? obj.course_info : null);
+
+  if (obj.description === undefined) {
+    obj.description =
+      meta?.description ??
+      obj.courseDescription ??
+      obj.course_description ??
+      obj.overview ??
+      obj.courseOverview ??
+      obj.summary ??
+      meta?.overview ??
+      meta?.summary;
+  }
+
+  if (obj.pedagogyType === undefined) {
+    obj.pedagogyType =
+      obj.pedagogy_type ??
+      meta?.pedagogyType ??
+      meta?.pedagogy_type ??
+      obj.disciplineEngine ??
+      obj.discipline_engine ??
+      meta?.discipline ??
+      meta?.primaryDomain ??
+      obj.primaryDomain;
+  }
+
+  if (obj.creditHours === undefined) {
+    obj.creditHours =
+      obj.credit_hours ??
+      obj.creditUnits ??
+      obj.credit_units ??
+      obj.credits ??
+      meta?.creditHours ??
+      meta?.credit_hours ??
+      meta?.creditUnits ??
+      meta?.credit_units ??
+      meta?.credits;
+  }
+  if (typeof obj.creditHours === 'string') {
+    const match = obj.creditHours.trim().match(/^(\d+)/);
+    if (match) {
+      obj.creditHours = Number.parseInt(match[1], 10);
+    }
+  }
+
+  if (obj.pedagogicalReasoning === undefined) {
+    obj.pedagogicalReasoning =
+      obj.pedagogical_reasoning ??
+      obj.rationale ??
+      obj.curriculumRationale ??
+      obj.curriculum_rationale ??
+      meta?.pedagogicalReasoning ??
+      meta?.rationale;
+  }
+
+  if (obj.learningOutcomes === undefined) {
+    obj.learningOutcomes =
+      obj.learning_outcomes ??
+      obj.outcomes ??
+      obj.courseOutcomes ??
+      obj.course_outcomes ??
+      meta?.learningOutcomes ??
+      meta?.learning_outcomes;
+  }
+
+  if (obj.modules === undefined) {
+    obj.modules =
+      obj.courseModules ??
+      obj.course_modules ??
+      (Array.isArray(obj.syllabus) ? obj.syllabus : undefined) ??
+      obj.units;
+  }
+
+  if (Array.isArray(obj.modules)) {
+    obj.modules = obj.modules.map((mod: unknown, idx: number) => resolveModuleOutlinePayload(mod, idx));
+  }
+
+  return obj;
+}
+
+export const CourseSkeletonSchema = z.preprocess(
+  resolveCourseSkeletonPayload,
+  z.object({
+    pedagogicalReasoning: NormalizedStringSchema,
+    description: NormalizedStringSchema,
+    pedagogyType: DisciplinePedagogyTypeSchema,
+    creditHours: z.number().int().min(1).max(12),
+    learningOutcomes: z.array(LearningOutcomeSchema).min(1),
+    modules: z.array(CourseModuleOutlineSchema).min(1)
+  })
+);
 export type CourseSkeleton = z.infer<typeof CourseSkeletonSchema>;
 
-export const OutlineCriticRubricSchema = z.object({
-  isValid: z.boolean(),
-  coverageScore: z.number().min(0).max(100),
-  consistencyScore: z.number().min(0).max(100),
-  foundationsScore: z.number().min(0).max(100),
-  workloadBalanceScore: z.number().min(0).max(100),
-  sequencingScore: z.number().min(0).max(100),
-  coveredTopics: z.array(z.string()),
-  missingTopics: z.array(z.string()),
-  sequencingErrors: z.array(z.string()),
-  genericFillerDetected: z.boolean(),
-  confidenceState: z.enum(['verified', 'needs_review', 'failed']),
-  reasoning: z.string()
-});
+function resolveCriticConfidenceState(rawPayload: Record<string, any>): unknown {
+  const rawState = typeof rawPayload.confidenceState === 'string'
+    ? rawPayload.confidenceState.trim().toLowerCase()
+    : '';
+  if (rawState === 'verified' || rawState === 'needs_review' || rawState === 'failed') {
+    return rawState;
+  }
+
+  const scores = [
+    rawPayload.coverageScore,
+    rawPayload.consistencyScore,
+    rawPayload.foundationsScore,
+    rawPayload.workloadBalanceScore,
+    rawPayload.sequencingScore
+  ];
+  const allScoresValid = scores.every(
+    (s) => typeof s === 'number' && Number.isFinite(s) && s >= 0 && s <= 100
+  );
+  const hasBooleanFlags =
+    typeof rawPayload.isValid === 'boolean' &&
+    typeof rawPayload.genericFillerDetected === 'boolean';
+
+  // Only compute confidenceState when all verified rubric scores and flags are present in the live output
+  if (!allScoresValid || !hasBooleanFlags) {
+    return rawPayload.confidenceState;
+  }
+
+  if (
+    rawPayload.isValid === false ||
+    rawPayload.genericFillerDetected === true ||
+    scores.some((s: number) => s < 75)
+  ) {
+    return 'failed';
+  }
+  if (scores.every((s: number) => s >= 90)) {
+    return 'verified';
+  }
+  return 'needs_review';
+}
+
+export const OutlineCriticRubricSchema = z.preprocess(
+  (val: unknown) => {
+    if (!val || typeof val !== 'object' || Array.isArray(val)) return val;
+    const obj = { ...(val as Record<string, any>) };
+    obj.confidenceState = resolveCriticConfidenceState(obj);
+    return obj;
+  },
+  z.object({
+    isValid: z.boolean(),
+    coverageScore: z.number().min(0).max(100),
+    consistencyScore: z.number().min(0).max(100),
+    foundationsScore: z.number().min(0).max(100),
+    workloadBalanceScore: z.number().min(0).max(100),
+    sequencingScore: z.number().min(0).max(100),
+    coveredTopics: z.array(NormalizedStringSchema),
+    missingTopics: z.array(NormalizedStringSchema),
+    sequencingErrors: z.array(NormalizedStringSchema),
+    genericFillerDetected: z.boolean(),
+    confidenceState: z.enum(['verified', 'needs_review', 'failed']),
+    reasoning: NormalizedStringSchema
+  })
+);
 export type OutlineCriticRubric = z.infer<typeof OutlineCriticRubricSchema>;
 
 import {
@@ -242,7 +678,7 @@ export const LessonContentSchema = z.preprocess((val: any) => {
   }
   return val;
 }, z.object({
-  pedagogicalReasoning: z.string().optional(),
+  pedagogicalReasoning: NormalizedStringSchema.optional(),
   title: z.string().optional(),
   content: z.string()
     .min(600, 'Lesson content must be comprehensive university-level prose (at least 600 characters).')
@@ -258,64 +694,86 @@ export type LessonContent = z.infer<typeof LessonContentSchema>;
  * Optional collections can be empty when a component is not appropriate.
  */
 export const InstructionalPracticeItemSchema = z.object({
-  prompt: z.string().min(10),
-  hints: z.array(z.string().min(1)),
-  expectedApproach: z.string().min(10),
-  expectedAnswer: z.string().min(1),
-  explanation: z.string().min(10),
-  diagnosticSignals: z.array(z.string().min(1))
+  prompt: NormalizedStringSchema.pipe(z.string().min(5)),
+  hints: z.array(NormalizedStringSchema).default([]),
+  expectedApproach: NormalizedStringSchema.pipe(z.string().min(5)),
+  expectedAnswer: NormalizedStringSchema.pipe(z.string().min(1)),
+  explanation: NormalizedStringSchema.pipe(z.string().min(5)),
+  diagnosticSignals: z.array(NormalizedStringSchema).default([])
 });
 export type InstructionalPracticeItem = z.infer<typeof InstructionalPracticeItemSchema>;
 
+function normalizeInstructionalContentKeys(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const obj = { ...(raw as Record<string, any>) };
+  if (obj.frameworkVersion === undefined && obj.framework_version !== undefined) obj.frameworkVersion = obj.framework_version;
+  if (typeof obj.frameworkVersion !== 'string' || !obj.frameworkVersion.trim()) {
+    obj.frameworkVersion = 'understand-explore-apply-verify-master-v1';
+  }
+  if (obj.disciplineEngine === undefined && obj.discipline_engine !== undefined) obj.disciplineEngine = obj.discipline_engine;
+  if (obj.disciplineEngine === undefined && obj.pedagogyType !== undefined) obj.disciplineEngine = obj.pedagogyType;
+  if (obj.learningObjectives === undefined && obj.learning_objectives !== undefined) obj.learningObjectives = obj.learning_objectives;
+  if (obj.conceptIntroduction === undefined && obj.concept_introduction !== undefined) obj.conceptIntroduction = obj.concept_introduction;
+  if (obj.deepExplanation === undefined && obj.deep_explanation !== undefined) obj.deepExplanation = obj.deep_explanation;
+  if (obj.formalDevelopment === undefined && obj.formal_development !== undefined) obj.formalDevelopment = obj.formal_development;
+  if (obj.workedExamples === undefined && obj.worked_examples !== undefined) obj.workedExamples = obj.worked_examples;
+  if (obj.applicationRationale === undefined && obj.application_rationale !== undefined) obj.applicationRationale = obj.application_rationale;
+  if (obj.misconceptionRationale === undefined && obj.misconception_rationale !== undefined) obj.misconceptionRationale = obj.misconception_rationale;
+  if (obj.guidedPractice === undefined && obj.guided_practice !== undefined) obj.guidedPractice = obj.guided_practice;
+  if (obj.independentPractice === undefined && obj.independent_practice !== undefined) obj.independentPractice = obj.independent_practice;
+  if (obj.knowledgeChecks === undefined && obj.knowledge_checks !== undefined) obj.knowledgeChecks = obj.knowledge_checks;
+  return obj;
+}
+
 export const InstructionalContentSchema = z.preprocess(
-  (value: unknown) => normalizeNestedMathUnicode(value),
+  (value: unknown) => normalizeNestedMathUnicode(normalizeInstructionalContentKeys(value)),
   z.object({
   frameworkVersion: z.literal('understand-explore-apply-verify-master-v1'),
-  disciplineEngine: DisciplinePedagogyTypeEnum,
-  learningObjectives: z.array(z.string().min(1)).min(1).max(8),
+  disciplineEngine: DisciplinePedagogyTypeSchema,
+  learningObjectives: z.array(NormalizedStringSchema).min(1).max(12),
   prerequisites: z.array(z.object({
-    concept: z.string().min(1),
-    whyNeeded: z.string().min(10),
-    readinessCheck: z.string().min(5)
-  })),
-  conceptIntroduction: z.string().min(30),
-  deepExplanation: z.string().min(80),
-  formalDevelopment: z.string().min(40),
+    concept: NormalizedStringSchema,
+    whyNeeded: NormalizedStringSchema.pipe(z.string().min(5)),
+    readinessCheck: NormalizedStringSchema.pipe(z.string().min(3))
+  })).default([]),
+  conceptIntroduction: NormalizedStringSchema.pipe(z.string().min(20)),
+  deepExplanation: NormalizedStringSchema.pipe(z.string().min(60)),
+  formalDevelopment: NormalizedStringSchema.pipe(z.string().min(30)),
   workedExamples: z.array(z.object({
-    title: z.string().trim().min(1),
-    exampleType: z.enum(['numerical', 'conceptual', 'proof', 'case-analysis', 'experimental', 'design']),
-    problem: z.string().trim().min(5),
-    reasoningSteps: z.array(z.string().trim().min(3)).min(2),
-    solution: z.string().trim().min(1),
-    verification: z.string().trim().min(5)
+    title: NormalizedStringSchema,
+    exampleType: z.string().trim().min(2).max(80),
+    problem: NormalizedStringSchema.pipe(z.string().min(5)),
+    reasoningSteps: z.array(z.preprocess(normalizeStringOrStructuredEntry, z.string().trim().min(3))).min(2),
+    solution: NormalizedStringSchema,
+    verification: NormalizedStringSchema.pipe(z.string().min(3))
   })).min(1),
   applications: z.array(z.object({
-    context: z.string().min(1),
-    conceptConnection: z.string().min(10),
-    constraintsOrAssumptions: z.string().min(5)
-  })),
-  applicationRationale: z.string().min(10),
+    context: NormalizedStringSchema,
+    conceptConnection: NormalizedStringSchema.pipe(z.string().min(5)),
+    constraintsOrAssumptions: NormalizedStringSchema.pipe(z.string().min(3))
+  })).default([]),
+  applicationRationale: NormalizedStringSchema.pipe(z.string().min(5)),
   misconceptions: z.array(z.object({
-    misconception: z.string().min(5),
-    whyItIsWrong: z.string().min(10),
-    correction: z.string().min(10)
-  })),
-  misconceptionRationale: z.string().min(10),
+    misconception: NormalizedStringSchema.pipe(z.string().min(3)),
+    whyItIsWrong: NormalizedStringSchema.pipe(z.string().min(5)),
+    correction: NormalizedStringSchema.pipe(z.string().min(5))
+  })).default([]),
+  misconceptionRationale: NormalizedStringSchema.pipe(z.string().min(5)),
   guidedPractice: z.array(InstructionalPracticeItemSchema).min(1),
   independentPractice: z.array(InstructionalPracticeItemSchema).min(1),
   knowledgeChecks: z.array(z.object({
-    prompt: z.string().min(10),
-    responseMode: z.enum(['explain', 'calculate', 'compare', 'interpret', 'construct', 'multiple-choice']),
-    expectedReasoning: z.string().min(10),
-    answerOrRubric: z.string().min(10),
-    misconceptionSignals: z.array(z.string().min(1)),
-    difficulty: z.number().int().min(1).max(5),
-    learningOutcome: z.string().optional()
+    prompt: NormalizedStringSchema.pipe(z.string().min(5)),
+    responseMode: z.string().trim().min(2).max(60),
+    expectedReasoning: NormalizedStringSchema.pipe(z.string().min(5)),
+    answerOrRubric: NormalizedStringSchema.pipe(z.string().min(5)),
+    misconceptionSignals: z.array(NormalizedStringSchema).default([]),
+    difficulty: z.coerce.number().int().min(1).max(5),
+    learningOutcome: NormalizedStringSchema.optional()
   })).min(2),
   mastery: z.object({
-    targetLevel: z.number().int().min(1).max(5),
-    criteria: z.array(z.string().min(5)).min(1),
-    retentionPrompts: z.array(z.string().min(5)).min(1)
+    targetLevel: z.coerce.number().int().min(1).max(5),
+    criteria: z.array(z.preprocess(normalizeStringOrStructuredEntry, z.string().min(3))).min(1),
+    retentionPrompts: z.array(z.preprocess(normalizeStringOrStructuredEntry, z.string().min(3))).min(1)
   }),
   verification: z.object({
     structureValidation: z.enum(['passed', 'failed']),
@@ -369,11 +827,133 @@ export type StudentInstructionalContent = Omit<
   knowledgeChecks: StudentKnowledgeCheckPrompt[];
 };
 
+const INSTRUCTIONAL_CONTENT_FIELD_NAMES = [
+  'frameworkVersion', 'framework_version',
+  'disciplineEngine', 'discipline_engine',
+  'learningObjectives', 'learning_objectives',
+  'prerequisites',
+  'conceptIntroduction', 'concept_introduction',
+  'deepExplanation', 'deep_explanation',
+  'formalDevelopment', 'formal_development',
+  'workedExamples', 'worked_examples',
+  'applications',
+  'applicationRationale', 'application_rationale',
+  'misconceptions',
+  'misconceptionRationale', 'misconception_rationale',
+  'guidedPractice', 'guided_practice',
+  'independentPractice', 'independent_practice',
+  'knowledgeChecks', 'knowledge_checks',
+  'mastery',
+  'verification'
+] as const;
+
+function resolveStructuredLessonPayload(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  let obj = { ...(value as Record<string, any>) };
+
+  // Unwrap if the provider nested the entire lesson inside { lesson: { ... } } or { data: { ... } }
+  if (
+    obj.content === undefined &&
+    obj.title === undefined &&
+    ((obj.lesson && typeof obj.lesson === 'object' && !Array.isArray(obj.lesson)) ||
+     (obj.data && typeof obj.data === 'object' && !Array.isArray(obj.data)))
+  ) {
+    const inner = (obj.lesson || obj.data) as Record<string, any>;
+    obj = { ...obj, ...inner };
+  }
+
+  if (obj.contentBlocks === undefined) {
+    const aliasBlocks = obj.content_blocks ?? obj.academicBlocks ?? obj.academic_blocks;
+    if (aliasBlocks && typeof aliasBlocks === 'object' && !Array.isArray(aliasBlocks)) {
+      obj.contentBlocks = aliasBlocks;
+    }
+  }
+
+  if (obj.instructionalContent === undefined) {
+    const aliasInstructional =
+      obj.instructional_content ??
+      obj.structuredContent ??
+      obj.structured_content ??
+      obj.masteryContent ??
+      obj.mastery_content ??
+      obj.instructionalData ??
+      obj.instructional_data ??
+      (obj.contentBlocks && typeof obj.contentBlocks === 'object' ? (obj.contentBlocks as any).instructionalContent : undefined);
+
+    if (aliasInstructional && typeof aliasInstructional === 'object' && !Array.isArray(aliasInstructional)) {
+      obj.instructionalContent = aliasInstructional;
+    } else {
+      // Check if the provider flattened the InstructionalContentSchema fields onto the top-level object
+      const hasTopLevelInstructionalFields =
+        obj.workedExamples !== undefined ||
+        obj.worked_examples !== undefined ||
+        obj.conceptIntroduction !== undefined ||
+        obj.concept_introduction !== undefined ||
+        obj.deepExplanation !== undefined ||
+        obj.deep_explanation !== undefined ||
+        obj.knowledgeChecks !== undefined ||
+        obj.knowledge_checks !== undefined ||
+        obj.guidedPractice !== undefined ||
+        obj.guided_practice !== undefined;
+
+      if (hasTopLevelInstructionalFields) {
+        const extracted: Record<string, any> = {};
+        for (const key of INSTRUCTIONAL_CONTENT_FIELD_NAMES) {
+          if (obj[key] !== undefined) {
+            extracted[key] = obj[key];
+          }
+        }
+        obj.instructionalContent = extracted;
+      }
+    }
+  }
+
+  // Synchronize disciplineEngine between contentBlocks and instructionalContent if one is missing
+  if (obj.instructionalContent && typeof obj.instructionalContent === 'object' && !Array.isArray(obj.instructionalContent)) {
+    const ic = { ...(obj.instructionalContent as Record<string, any>) };
+    if (!ic.disciplineEngine && !ic.discipline_engine && obj.contentBlocks && typeof obj.contentBlocks === 'object') {
+      const cbEngine = (obj.contentBlocks as Record<string, any>).disciplineEngine;
+      if (cbEngine) ic.disciplineEngine = cbEngine;
+    }
+    obj.instructionalContent = ic;
+  }
+
+  if (obj.contentBlocks && typeof obj.contentBlocks === 'object' && !Array.isArray(obj.contentBlocks)) {
+    const cb = { ...(obj.contentBlocks as Record<string, any>) };
+    if (!cb.schemaVersion) cb.schemaVersion = '1.0';
+    if (!cb.disciplineEngine && obj.instructionalContent && typeof obj.instructionalContent === 'object') {
+      const icEngine = (obj.instructionalContent as Record<string, any>).disciplineEngine;
+      if (icEngine) cb.disciplineEngine = icEngine;
+    }
+    if (
+      Array.isArray(cb.blocks) &&
+      obj.instructionalContent &&
+      typeof obj.instructionalContent === 'object' &&
+      Array.isArray((obj.instructionalContent as any).knowledgeChecks)
+    ) {
+      const kcCount = (obj.instructionalContent as any).knowledgeChecks.length;
+      if (kcCount > 0) {
+        cb.blocks = cb.blocks.map((block: any) => {
+          if (block && typeof block === 'object' && block.type === 'knowledge_check' && typeof block.activityIndex === 'number') {
+            if (block.activityIndex >= kcCount) {
+              return { ...block, activityIndex: Math.max(0, kcCount - 1) };
+            }
+          }
+          return block;
+        });
+      }
+    }
+    obj.contentBlocks = cb;
+  }
+
+  return obj;
+}
+
 export const StructuredLessonOutputSchema = z.preprocess(
-  (value: unknown) => normalizeNestedMathUnicode(value),
+  (value: unknown) => normalizeNestedMathUnicode(resolveStructuredLessonPayload(value)),
   z.object({
-  pedagogicalReasoning: z.string().optional(),
-  title: z.string().min(1),
+  pedagogicalReasoning: NormalizedStringSchema.optional(),
+  title: NormalizedStringSchema,
   content: z.string().min(800).refine((value) => !isBareDiagramOrFragment(value), {
     message: 'Lesson content must include substantive academic prose, not only a diagram or fragment.'
   }),
@@ -464,11 +1044,12 @@ export function normalizeLearningOutcomes(raw: unknown): LearningOutcome[] {
     if (!item || typeof item !== 'object') {
       throw new Error(`Learning outcome at index ${idx} must be an object with "outcome" and "bloomLevel".`);
     }
-    const outcome = String(item.outcome || item.title || item.description || item.text || '').trim();
+    const rawOutcome = item.outcome ?? item.title ?? item.description ?? item.text ?? item.statement ?? '';
+    const outcome = String(normalizeStringOrStructuredEntry(rawOutcome) || '').trim();
     if (!outcome) {
       throw new Error(`Learning outcome at index ${idx} is missing its outcome text.`);
     }
-    const rawBloom = String(item.bloomLevel || '').trim() as BloomLevel;
+    const rawBloom = normalizeBloomLevel(item.bloomLevel ?? item.bloom_level ?? item.level ?? item.cognitiveLevel) as BloomLevel;
     if (!validBloomLevels.has(rawBloom)) {
       throw new Error(`Learning outcome "${outcome}" is missing a valid Bloom taxonomy level (Remember, Understand, Apply, Analyze, Evaluate, Create).`);
     }
@@ -489,24 +1070,24 @@ export function deriveCurriculumParameters(level?: string, semester?: string, cr
     throw new Error('Verified academic level is required to derive curriculum parameters.');
   }
   const credits = creditUnits;
-  let minModules = Math.max(3, credits * 2 - 1);
-  let maxModules = Math.max(minModules + 2, Math.min(14, credits * 3 + 2));
+  let minModules = Math.max(3, credits);
+  let maxModules = Math.max(minModules + 1, Math.min(8, credits + 1));
   let minLessonsPerModule = 2;
-  let maxLessonsPerModule = 6;
+  let maxLessonsPerModule = 3;
 
   const normalizedLevel = level.trim().toLowerCase();
   if (normalizedLevel.includes('400') || normalizedLevel.includes('500') || normalizedLevel.includes('grad') || normalizedLevel.includes('advanced')) {
-    minModules = Math.max(4, credits * 2);
-    maxModules = Math.max(minModules + 2, Math.min(15, credits * 3 + 3));
+    minModules = Math.max(4, credits + 1);
+    maxModules = Math.max(minModules + 1, Math.min(10, credits + 2));
   }
 
   if (depth === 'in-depth' || depth === 'advanced' || depth === 'deep-dive') {
     minModules += 1;
     maxModules += 2;
-    maxLessonsPerModule = 7;
+    maxLessonsPerModule = 5;
   }
 
-  const targetLessonsPerModule = Math.max(minLessonsPerModule, Math.min(maxLessonsPerModule, credits + 1));
+  const targetLessonsPerModule = Math.max(minLessonsPerModule, Math.min(maxLessonsPerModule, credits));
 
   return {
     credits,

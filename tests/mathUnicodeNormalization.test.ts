@@ -113,7 +113,7 @@ test('normalizes nested instructional content before schema validation', () => {
   };
   const parsed = InstructionalContentSchema.parse({
     frameworkVersion: 'understand-explore-apply-verify-master-v1',
-    disciplineEngine: 'STEM_MATHEMATICAL',
+    disciplineEngine: 'Analytical Mathematics & Symbolic Logic',
     learningObjectives: ['Interpret $x₂$ correctly.'],
     prerequisites: [],
     conceptIntroduction: 'Begin by interpreting the notation $x₂$ in context.',

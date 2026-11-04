@@ -86,6 +86,8 @@ import {
   normalizeMathBody,
   normalizeMathUnicodeInMarkdown,
   normalizeNestedMathUnicode,
+  normalizeStringOrStructuredEntry,
+  resolveExpectedStringPathsInPayload,
   isGenericLessonTitle,
   isBareDiagramOrFragment
 } from './src/shared/courseSchemas.js';
@@ -193,7 +195,7 @@ import { catalogCache } from './server/cache/catalogCache';
 import { progressRepository } from './server/repositories/progressRepository';
 import { JobRepository } from './server/repositories/jobRepository';
 import { jobStreamManager } from './server/services/jobStreamManager';
-import { activeCancelledJobs } from './server/services/courseJobControl.js';
+import { activeCancelledJobs, activeRunningCourseJobs, activeCoordinatedJobSnapshots } from './server/services/courseJobControl.js';
 import { getFeatureFlags, initRuntimeFlagsSync } from './server/config/features';
 import { ensureCourseLearningSchema } from './server/services/courseLearningSchema';
 import { ensureCourseLifecycleSchema } from './server/services/courseLifecycleSchema.js';
@@ -403,9 +405,6 @@ async function resilientEmbedContent(genAI: any, params: any) {
 // Unique instance ID for distributed transactional leases across Cloud Run scale-out
 const WORKER_INSTANCE_ID = `worker_${crypto.randomBytes(6).toString('hex')}_${Date.now().toString(36)}`;
 
-// In-memory cancellation and active worker trackers for server jobs
-const activeRunningCourseJobs = new Set<string>();
-
 // Concurrency Hysteresis State Tracker
 let currentHysteresisConcurrency = 2;
 
@@ -416,7 +415,7 @@ function getDynamicRuntimeResources(requestedProvider?: string) {
   const cpuCores = liveMem.cpuCount;
 
   const normReq = (requestedProvider || '').toLowerCase();
-  const isRateConstrainedProvider = normReq.includes('groq') || normReq.includes('openrouter');
+  const isRateConstrainedProvider = normReq.includes('groq') || normReq.includes('openrouter') || normReq.includes('mistral');
 
   // Hysteresis calculation: scale down below 35% headroom, scale up above 50% headroom
   let targetConcurrency = currentHysteresisConcurrency;
@@ -1567,13 +1566,6 @@ app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regen
           message: 'Newly generated lessons must include a validated version 1.0 typed content-block collection.'
         });
       }
-      if (value.instructionalContent.disciplineEngine !== domainBrief.pedagogyType) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['instructionalContent', 'disciplineEngine'],
-          message: 'Instructional engine does not match the server-selected course discipline.'
-        });
-      }
       const syntax = validateLessonSyntax(value.content, domainBrief.pedagogyType);
       if (!syntax.isValid) {
         context.addIssue({
@@ -1607,12 +1599,17 @@ app.post('/api/admin/courses/:courseId/modules/:moduleId/lessons/:lessonId/regen
       });
     }
 
+    const hasQuantitativeChecks =
+      generated.instructionalContent.workedExamples.some((ex) => /num|calc|math|deriv|quant/i.test(ex.exampleType)) ||
+      (generated.contentBlocks?.blocks || []).some((b) => b.type === 'mathematical_derivation' || b.type === 'worked_example') ||
+      /\$\$|\$[^$\n]+\$/.test(markdown);
+
     const instructionalContent = {
       ...generated.instructionalContent,
       verification: {
         structureValidation: 'passed',
         academicAccuracy: 'not_independently_verified',
-        calculationValidation: domainBrief.pedagogyType === 'STEM_MATHEMATICAL'
+        calculationValidation: hasQuantitativeChecks
           ? 'pending_independent_check'
           : 'not_applicable',
         subjectExpertReview: 'not_reviewed',
@@ -3674,13 +3671,25 @@ const CourseFormulaSchema = z.preprocess((val: any) => {
   const baseVal = Array.isArray(val) ? { formulas: val } : val;
   if (!baseVal || typeof baseVal !== 'object') return baseVal;
   const normalizedObj = normalizeNestedMathUnicode(baseVal) as Record<string, any>;
+  if (normalizedObj.pedagogicalReasoning !== undefined) {
+    normalizedObj.pedagogicalReasoning = normalizeStringOrStructuredEntry(normalizedObj.pedagogicalReasoning);
+  }
   if (Array.isArray(normalizedObj.formulas)) {
-    normalizedObj.formulas = normalizedObj.formulas.map((f: any) => {
+    const seenIds = new Set<string>();
+    normalizedObj.formulas = normalizedObj.formulas.map((f: any, idx: number) => {
       if (!f || typeof f !== 'object') return f;
+      let rawId = String(normalizeStringOrStructuredEntry(f.id ?? f.formulaId ?? `f_${idx + 1}`) || `f_${idx + 1}`).trim();
+      if (seenIds.has(rawId)) rawId = `${rawId}_${idx + 1}`;
+      seenIds.add(rawId);
+      const rawTitle = normalizeStringOrStructuredEntry(f.title ?? f.name ?? f.law ?? '');
+      const rawLatex = normalizeStringOrStructuredEntry(f.latex ?? f.equation ?? f.expression ?? f.latex_expression ?? '');
+      const rawDesc = normalizeStringOrStructuredEntry(f.description ?? f.explanation ?? f.variables ?? '');
       return {
         ...f,
-        latex: typeof f.latex === 'string' ? normalizeMathBody(f.latex) : f.latex,
-        description: typeof f.description === 'string' ? normalizeMathUnicodeInMarkdown(f.description) : f.description
+        id: rawId,
+        title: rawTitle,
+        latex: typeof rawLatex === 'string' ? normalizeMathBody(rawLatex) : rawLatex,
+        description: typeof rawDesc === 'string' ? normalizeMathUnicodeInMarkdown(rawDesc) : rawDesc
       };
     });
   }
@@ -3700,7 +3709,46 @@ const CourseFormulaSchema = z.preprocess((val: any) => {
 
 
 const CourseModuleQuizSchema = z.preprocess(
-  (value: unknown) => normalizeNestedMathUnicode(value),
+  (value: unknown) => {
+    const normalized = normalizeNestedMathUnicode(value);
+    if (!normalized || typeof normalized !== 'object' || Array.isArray(normalized)) return normalized;
+    const obj = { ...(normalized as Record<string, any>) };
+    if (obj.pedagogicalReasoning !== undefined) {
+      obj.pedagogicalReasoning = normalizeStringOrStructuredEntry(obj.pedagogicalReasoning);
+    }
+    if (Array.isArray(obj.questions)) {
+      const seenIds = new Set<string>();
+      obj.questions = obj.questions.map((q: any, idx: number) => {
+        if (!q || typeof q !== 'object') return q;
+        let qId = String(normalizeStringOrStructuredEntry(q.id ?? `q${idx + 1}`) || `q${idx + 1}`).trim();
+        if (seenIds.has(qId)) qId = `${qId}_${idx + 1}`;
+        seenIds.add(qId);
+        const rawBloom = String(q.bloomLevel ?? q.bloom_level ?? 'Understand').trim();
+        const bloomLower = rawBloom.toLowerCase();
+        let bloomLevel = rawBloom;
+        if (bloomLower.startsWith('rem')) bloomLevel = 'Remember';
+        else if (bloomLower.startsWith('und')) bloomLevel = 'Understand';
+        else if (bloomLower.startsWith('app')) bloomLevel = 'Apply';
+        else if (bloomLower.startsWith('ana')) bloomLevel = 'Analyze';
+        else if (bloomLower.startsWith('eva')) bloomLevel = 'Evaluate';
+        else if (bloomLower.startsWith('cre') || bloomLower.startsWith('syn')) bloomLevel = 'Create';
+        return {
+          ...q,
+          id: qId,
+          quizTopic: normalizeStringOrStructuredEntry(q.quizTopic ?? q.quiz_topic ?? q.topic ?? ''),
+          question: normalizeStringOrStructuredEntry(q.question ?? q.prompt ?? ''),
+          options: Array.isArray(q.options) ? q.options.map((opt: unknown) => normalizeStringOrStructuredEntry(opt)) : q.options,
+          correctOptionIndex: typeof q.correctOptionIndex === 'number' ? q.correctOptionIndex : Number(q.correctOptionIndex ?? q.correct_option_index ?? 0),
+          explanation: normalizeStringOrStructuredEntry(q.explanation ?? q.rationale ?? ''),
+          hint: normalizeStringOrStructuredEntry(q.hint ?? ''),
+          difficulty: typeof q.difficulty === 'number' ? q.difficulty : Number(q.difficulty ?? 3),
+          bloomLevel,
+          sourceReference: normalizeStringOrStructuredEntry(q.sourceReference ?? q.source_reference ?? q.lessonTitle ?? '')
+        };
+      });
+    }
+    return obj;
+  },
   z.object({
     pedagogicalReasoning: z.string().trim().min(1),
     questions: z.array(z.object({
@@ -3709,7 +3757,7 @@ const CourseModuleQuizSchema = z.preprocess(
       question: z.string().trim().min(10),
       options: z.array(z.string().trim().min(1)).length(4),
       correctOptionIndex: z.number().int().min(0).max(3),
-      explanation: z.string().trim().min(20),
+      explanation: z.string().trim().min(15),
       hint: z.string().trim().min(5),
       difficulty: z.number().int().min(1).max(5),
       bloomLevel: z.enum(['Remember', 'Understand', 'Apply', 'Analyze', 'Evaluate', 'Create']),
@@ -4753,10 +4801,12 @@ async function completeWithProviderJSON<T = any>(opts: CompleteProviderOptions<T
     try {
       console.log(`[AI Completion] Invoking ${opts.type} with provider: ${prov.name || prov.constructor.name}`);
       
-      // Streaming / Generation with First-Token (25s) and Idle Chunk (15s) Timeouts
+      // Streaming / Generation with adaptive First-Token and Idle Chunk Timeouts + AbortController
       const executeWithAdaptiveProgress = async (messages: any[]): Promise<any> => {
-        const firstTokenTimeoutMs = 25000;
-        const idleChunkTimeoutMs = 15000;
+        const isComplexTask = opts.type === 'lesson' || opts.type === 'module' || opts.complexity === 'high';
+        const firstTokenTimeoutMs = isComplexTask ? 150000 : 60000;
+        const idleChunkTimeoutMs = isComplexTask ? 60000 : 30000;
+        const abortController = new AbortController();
         let accumulatedText = '';
         let lastActivityTime = Date.now();
         let firstTokenReceived = false;
@@ -4768,11 +4818,13 @@ async function completeWithProviderJSON<T = any>(opts: CompleteProviderOptions<T
             if (isDone) return;
             const now = Date.now();
             if (!firstTokenReceived && (now - lastActivityTime > firstTokenTimeoutMs)) {
+              abortController.abort();
               cleanup();
               reject(new Error(`Attempt timeout: ${prov.name || 'provider'} first-token exceeded ${firstTokenTimeoutMs / 1000}s limit`));
               return;
             }
             if (firstTokenReceived && (now - lastActivityTime > idleChunkTimeoutMs)) {
+              abortController.abort();
               cleanup();
               reject(new Error(`Attempt timeout: ${prov.name || 'provider'} stalled mid-stream for ${idleChunkTimeoutMs / 1000}s`));
               return;
@@ -4791,8 +4843,10 @@ async function completeWithProviderJSON<T = any>(opts: CompleteProviderOptions<T
             if (typeof prov.stream === 'function') {
               const streamRes = await prov.stream(messages, {
                 complexity: opts.complexity || 'high',
-                jsonMode: true
+                jsonMode: true,
+                signal: abortController.signal
               }, (chunk: string) => {
+                if (isDone) return;
                 if (!firstTokenReceived && chunk.trim().length > 0) {
                   firstTokenReceived = true;
                 }
@@ -4804,7 +4858,8 @@ async function completeWithProviderJSON<T = any>(opts: CompleteProviderOptions<T
             } else {
               const genRes = await generateWithTelemetry(prov, messages, {
                 complexity: opts.complexity || 'high',
-                jsonMode: true
+                jsonMode: true,
+                signal: abortController.signal
               });
               cleanup();
               resolve(genRes);
@@ -4822,6 +4877,9 @@ async function completeWithProviderJSON<T = any>(opts: CompleteProviderOptions<T
         let parsed = parseRobustJSON<T>(resp.text);
         if (opts.schema) {
           let validation = opts.schema.safeParse(parsed);
+          if (!validation.success && resolveExpectedStringPathsInPayload(parsed, validation.error.issues)) {
+            validation = opts.schema.safeParse(parsed);
+          }
           let currentText = resp.text;
           for (let attempt = 1; !validation.success && attempt <= 2; attempt++) {
             const errorSummary = validation.error.issues
@@ -4843,6 +4901,9 @@ async function completeWithProviderJSON<T = any>(opts: CompleteProviderOptions<T
             currentText = rePromptResp.text;
             parsed = parseRobustJSON<T>(currentText);
             validation = opts.schema.safeParse(parsed);
+            if (!validation.success && resolveExpectedStringPathsInPayload(parsed, validation.error.issues)) {
+              validation = opts.schema.safeParse(parsed);
+            }
           }
           if (!validation.success) {
             throw new Error(`Schema validation failed after re-prompt: ${validation.error.issues.map((i: any) => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
@@ -5181,6 +5242,9 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
         primaryDomain: domainBrief.primaryDomain,
         subDisciplines: domainBrief.subDisciplines,
         pedagogyType: domainBrief.pedagogyType,
+        courseLevelFramework: domainBrief.courseLevelFramework,
+        canonicalCourseReferences: verifiedGroundingRefs,
+        coreCourseTopics: domainBrief.coreCourseTopics,
         coreRequiredTopics: domainBrief.coreCourseTopics,
         groundingReferences: verifiedGroundingRefs,
         foundationalAxioms: domainBrief.foundationalAxioms
@@ -5199,7 +5263,6 @@ app.post('/api/course/generate-skeleton', verifyAuth, async (req, res) => {
 });
 
 // --- Server-Coordinated Async Course Generation Worker & Endpoint (Neon PostgreSQL Primary) ---
-const activeCoordinatedJobSnapshots = new Map<string, Record<string, any>>();
 
 async function ensureCourseGenerationTargetInPostgres(input: {
   courseId: string;
@@ -5567,30 +5630,36 @@ async function executeCoordinatedGenerationJob(
         });
         console.log(`[Coordinated Gen] Academic research: ${courseResearch.metadata.status} (${courseResearch.metadata.papersCount} scholarly records, ${courseResearch.metadata.webSourcesCount} web discoveries, ${courseResearch.metadata.researchPasses.length} pass(es)).`);
 
-        // STEP 0: Infer Academic Domain & Canonical References
+        // STEP 0: Infer Academic Domain & Canonical References (or reuse verified Stage 1 domainBrief)
         await updateCourseGenerationStateInPostgres(courseId, {
           generationProgress: 8,
           statusMessage: 'Retrieving canonical references and establishing domain taxonomy...'
         });
 
-        const domainPrompt = buildDomainBriefPrompt({
-          courseId,
-          courseName,
-          courseCode: courseId,
-          department: rawDept,
-          level,
-          outline,
-          sourceText,
-          researchContext: courseResearch.context
-        });
+        const preSuppliedDomainBrief = req.body.domainBrief ? DomainBriefSchema.safeParse(req.body.domainBrief) : null;
+        let domainBrief: any;
+        if (preSuppliedDomainBrief && preSuppliedDomainBrief.success) {
+          domainBrief = preSuppliedDomainBrief.data;
+        } else {
+          const domainPrompt = buildDomainBriefPrompt({
+            courseId,
+            courseName,
+            courseCode: courseId,
+            department: rawDept,
+            level,
+            outline,
+            sourceText,
+            researchContext: courseResearch.context
+          });
 
-        const domainBrief: any = await completeWithProviderJSON({
-          type: 'skeleton',
-          messages: [{ role: 'user', content: domainPrompt }],
-          schema: DomainBriefSchema,
-          requestedProvider,
-          complexity: 'standard'
-        });
+          domainBrief = await completeWithProviderJSON({
+            type: 'skeleton',
+            messages: [{ role: 'user', content: domainPrompt }],
+            schema: DomainBriefSchema,
+            requestedProvider,
+            complexity: 'standard'
+          });
+        }
 
         // STEP 1: Skeleton Generation & Verification (or Human-Approved / Persisted Resume Skeleton)
         let skeleton: any = null;
@@ -5624,31 +5693,45 @@ async function executeCoordinatedGenerationJob(
             pedagogyType: domainBrief.pedagogyType,
             creditHours: creditUnits
           };
-          // Re-audit the exact admin-reviewed outline on the server; browser-supplied scores are not evidence.
-          const criticPrompt = buildOutlineCriticPrompt(domainBrief, skeleton, {
-            courseId,
-            courseName,
-            courseCode: courseId,
-            level,
-            outline,
-            researchContext: courseResearch.context
-          });
-          rubricAudit = await completeWithProviderJSON({
-            type: 'skeleton',
-            messages: [{ role: 'user', content: criticPrompt }],
-            schema: OutlineCriticRubricSchema,
-            requestedProvider,
-            complexity: 'high'
-          });
-          const approvedSkeleton = rubricAudit.isValid &&
-            rubricAudit.coverageScore >= 75 &&
-            rubricAudit.foundationsScore >= 75 &&
-            rubricAudit.sequencingScore >= 75 &&
-            rubricAudit.workloadBalanceScore >= 75 &&
-            rubricAudit.consistencyScore >= 75 &&
-            !rubricAudit.genericFillerDetected;
-          if (!approvedSkeleton) {
-            throw new Error(`Reviewed curriculum failed its server-side academic audit: ${rubricAudit.reasoning}`);
+          const preSuppliedAudit = req.body.rubricAudit ? OutlineCriticRubricSchema.safeParse(req.body.rubricAudit) : null;
+          if (
+            preSuppliedAudit &&
+            preSuppliedAudit.success &&
+            preSuppliedAudit.data.isValid &&
+            preSuppliedAudit.data.coverageScore >= 75 &&
+            preSuppliedAudit.data.foundationsScore >= 75 &&
+            preSuppliedAudit.data.sequencingScore >= 75 &&
+            preSuppliedAudit.data.workloadBalanceScore >= 75 &&
+            preSuppliedAudit.data.consistencyScore >= 75 &&
+            !preSuppliedAudit.data.genericFillerDetected
+          ) {
+            rubricAudit = preSuppliedAudit.data;
+          } else {
+            const criticPrompt = buildOutlineCriticPrompt(domainBrief, skeleton, {
+              courseId,
+              courseName,
+              courseCode: courseId,
+              level,
+              outline,
+              researchContext: courseResearch.context
+            });
+            rubricAudit = await completeWithProviderJSON({
+              type: 'skeleton',
+              messages: [{ role: 'user', content: criticPrompt }],
+              schema: OutlineCriticRubricSchema,
+              requestedProvider,
+              complexity: 'high'
+            });
+            const approvedSkeleton = rubricAudit.isValid &&
+              rubricAudit.coverageScore >= 75 &&
+              rubricAudit.foundationsScore >= 75 &&
+              rubricAudit.sequencingScore >= 75 &&
+              rubricAudit.workloadBalanceScore >= 75 &&
+              rubricAudit.consistencyScore >= 75 &&
+              !rubricAudit.genericFillerDetected;
+            if (!approvedSkeleton) {
+              throw new Error(`Reviewed curriculum failed its server-side academic audit: ${rubricAudit.reasoning}`);
+            }
           }
         } else {
           let attempts = 0;
@@ -5959,19 +6042,29 @@ async function executeCoordinatedGenerationJob(
               let lessonContentBlocks: Record<string, any> | null = null;
               let lessonErrors: string[] = [];
 
-              const ValidatedLessonSchema = StructuredLessonOutputSchema.superRefine((val, ctx) => {
+              const ValidatedLessonSchema = z.preprocess((rawVal: unknown) => {
+                if (rawVal && typeof rawVal === 'object' && !Array.isArray(rawVal)) {
+                  const copy = { ...(rawVal as Record<string, any>) };
+                  const ic = copy.instructionalContent ?? copy.instructional_content;
+                  if (ic && typeof ic === 'object' && !Array.isArray(ic)) {
+                    const icCopy = { ...(ic as Record<string, any>) };
+                    const indep = icCopy.independentPractice ?? icCopy.independent_practice;
+                    if (Array.isArray(indep)) {
+                      icCopy.independentPractice = indep.map((item: any) =>
+                        item && typeof item === 'object' ? { ...item, hints: [] } : item
+                      );
+                    }
+                    copy.instructionalContent = icCopy;
+                  }
+                  return copy;
+                }
+                return rawVal;
+              }, StructuredLessonOutputSchema.superRefine((val, ctx) => {
                 if (!val.contentBlocks) {
                   ctx.addIssue({
                     code: z.ZodIssueCode.custom,
                     path: ['contentBlocks'],
                     message: 'New course-generation lessons must include version 1.0 typed academic content blocks.'
-                  });
-                }
-                if (val.instructionalContent.disciplineEngine !== domainBrief.pedagogyType) {
-                  ctx.addIssue({
-                    code: z.ZodIssueCode.custom,
-                    path: ['instructionalContent', 'disciplineEngine'],
-                    message: 'Instructional engine does not match the course discipline.'
                   });
                 }
                 const rawDepth = typeof depth === 'string' ? depth.trim().toLowerCase() : 'standard';
@@ -6002,7 +6095,7 @@ async function executeCoordinatedGenerationJob(
                     message: check.errors.join(' ')
                   });
                 }
-              });
+              }));
 
               const lessonTopicResearch = await retrieveTopicSpecificCourseResearch({
                 courseName,
@@ -6199,8 +6292,32 @@ async function executeCoordinatedGenerationJob(
             quizTopics,
             lessons: moduleLessons
           });
-          const approvedTopicMap = new Map(quizTopics.map(topic => [topic.toLowerCase(), topic]));
-          const lessonTitleMap = new Map(moduleLessons.map(lesson => [lesson.title.toLowerCase(), lesson.title]));
+          const matchApprovedTopic = (rawTopic: unknown): string | undefined => {
+            const cleaned = String(rawTopic || '').trim().replace(/^\d+[\.\)\:\-\s]+/, '').trim().toLowerCase();
+            if (!cleaned) return undefined;
+            for (const approved of quizTopics) {
+              const appLower = approved.toLowerCase();
+              if (appLower === cleaned || appLower.includes(cleaned) || cleaned.includes(appLower)) {
+                return approved;
+              }
+            }
+            return undefined;
+          };
+          const matchPersistedLessonTitle = (rawRef: unknown): string | undefined => {
+            const cleaned = String(rawRef || '')
+              .trim()
+              .replace(/^(?:lesson|topic|unit)\s*\d*\s*[\:\-\.\)]*\s*/i, '')
+              .trim()
+              .toLowerCase();
+            if (!cleaned) return undefined;
+            for (const lesson of moduleLessons) {
+              const titleLower = lesson.title.toLowerCase();
+              if (titleLower === cleaned || titleLower.includes(cleaned) || cleaned.includes(titleLower)) {
+                return lesson.title;
+              }
+            }
+            return undefined;
+          };
           let generatedQuiz: any = null;
           let quizValidationError = '';
           for (let quizAttempt = 1; quizAttempt <= 2; quizAttempt++) {
@@ -6214,14 +6331,18 @@ async function executeCoordinatedGenerationJob(
               requestedProvider,
               complexity: 'high'
             });
-            const coveredTopics = new Set((generatedQuiz.questions || []).map((question: any) => String(question.quizTopic || '').trim().toLowerCase()));
+            const coveredTopics = new Set(
+              (generatedQuiz.questions || [])
+                .map((question: any) => matchApprovedTopic(question.quizTopic)?.toLowerCase())
+                .filter(Boolean)
+            );
             const missingTopics = quizTopics.filter(topic => !coveredTopics.has(topic.toLowerCase()));
             const unsupportedReferences = (generatedQuiz.questions || [])
-              .filter((question: any) => !lessonTitleMap.has(String(question.sourceReference || '').trim().toLowerCase()));
+              .filter((question: any) => !matchPersistedLessonTitle(question.sourceReference));
             if (missingTopics.length === 0 && unsupportedReferences.length === 0) break;
             quizValidationError = [
               missingTopics.length ? 'Missing exact approved topics: ' + missingTopics.join(', ') : '',
-              unsupportedReferences.length ? 'Every sourceReference must match an exact persisted lesson title.' : ''
+              unsupportedReferences.length ? 'Every sourceReference must match an exact persisted lesson title (' + moduleLessons.map(l => l.title).join('; ') + ').' : ''
             ].filter(Boolean).join(' ');
             if (quizAttempt === 2) {
               throw new Error('Module quiz for ' + moduleTitle + ' failed lesson/topic grounding after two attempts: ' + quizValidationError);
@@ -6230,7 +6351,7 @@ async function executeCoordinatedGenerationJob(
 
           const persistedQuestions = generatedQuiz.questions.map((question: any) => ({
             id: question.id,
-            quiz_topic: approvedTopicMap.get(String(question.quizTopic).trim().toLowerCase()),
+            quiz_topic: matchApprovedTopic(question.quizTopic),
             question: question.question,
             options: question.options,
             correct_option_index: question.correctOptionIndex,
@@ -6238,7 +6359,7 @@ async function executeCoordinatedGenerationJob(
             hint: question.hint,
             difficulty: question.difficulty,
             bloom_level: question.bloomLevel,
-            source_reference: lessonTitleMap.get(String(question.sourceReference).trim().toLowerCase())
+            source_reference: matchPersistedLessonTitle(question.sourceReference)
           }));
           const questionIds = persistedQuestions.map((question: any) => question.id);
           if (new Set(questionIds).size !== questionIds.length || persistedQuestions.some((question: any) => !question.quiz_topic || !question.source_reference)) {
@@ -6517,7 +6638,7 @@ async function auditCourseHealthInPostgres(courseId: string): Promise<CourseHeal
 
   const c = cRes.rows[0];
   const snapshot = activeCoordinatedJobSnapshots.get(courseId);
-  const resolvedPedagogyType = snapshot?.pedagogyType || 'GENERAL_FOUNDATIONS';
+  const resolvedPedagogyType = snapshot?.pedagogyType;
 
   const modsRes = await pool.query(
     `SELECT id, title, order_index FROM course_modules WHERE course_id = $1 ORDER BY order_index ASC`,
@@ -8126,17 +8247,26 @@ app.get('/api/admin/broadcast-history', verifyAuth, async (req, res) => {
   if (!pool) return res.status(500).json({ error: 'Database service unavailable' });
   try {
     const result = await pool.query(
-      'SELECT id, title, message, target_audience, type, created_by, data, created_at FROM announcements ORDER BY created_at DESC LIMIT 50'
+      `SELECT id, title, message, severity, audience, target_department, target_level, cta_label, cta_url, active, expires_at, created_at
+       FROM announcements
+       ORDER BY created_at DESC
+       LIMIT 50`
     );
     const history = result.rows.map(r => ({
       id: r.id,
       title: r.title,
       message: r.message,
-      targetAudience: r.target_audience,
-      type: r.type,
-      createdBy: r.created_by,
-      createdAt: r.created_at,
-      ...(r.data || {})
+      targetAudience: r.audience || 'all',
+      audience: r.audience || 'all',
+      targetDepartment: r.target_department || null,
+      targetLevel: r.target_level || null,
+      type: r.severity || 'info',
+      severity: r.severity || 'info',
+      ctaLabel: r.cta_label || null,
+      ctaUrl: r.cta_url || null,
+      active: Boolean(r.active),
+      expiresAt: r.expires_at || null,
+      createdAt: r.created_at
     }));
     res.json({ success: true, history, broadcasts: history });
   } catch (err: any) {

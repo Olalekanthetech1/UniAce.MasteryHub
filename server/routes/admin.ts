@@ -21,7 +21,7 @@ import { ensureCourseLearningSchema } from '../services/courseLearningSchema';
 import { ensureCourseReviewSchema } from '../services/courseReviewSchema';
 import { ensureCourseAssessmentSchema } from '../services/courseAssessmentSchema';
 import { ensureCourseLifecycleSchema } from '../services/courseLifecycleSchema.js';
-import { activeCancelledJobs } from '../services/courseJobControl.js';
+import { activeCancelledJobs, activeRunningCourseJobs, activeCoordinatedJobSnapshots } from '../services/courseJobControl.js';
 import {
   getSystemConfigDoc,
   setSystemConfigDoc,
@@ -1224,24 +1224,62 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
       const completedDrafts: any[] = [];
       const incompleteCourses: any[] = [];
       for (const row of result.rows) {
+        const isActivelyRunning = activeRunningCourseJobs.has(row.id);
+        const liveSnap = activeCoordinatedJobSnapshots.get(row.id);
+
         const isStructurallyComplete =
+          !isActivelyRunning &&
           row.generation_status === 'completed' &&
           Number(row.module_count) > 0 &&
           Number(row.lesson_count) > 0 &&
           Number(row.empty_module_count) === 0;
+
         if (isStructurallyComplete) {
           completedDrafts.push(row);
         } else {
+          // If PostgreSQL says 'generating' but no background worker is actually running in memory,
+          // reconcile the stale 'generating' state to 'failed' so the UI never fakes active generation.
+          let effectiveStatus: 'generating' | 'failed' | 'cancelled' = 'failed';
+          if (isActivelyRunning) {
+            effectiveStatus = 'generating';
+          } else if (row.generation_status === 'cancelled') {
+            effectiveStatus = 'cancelled';
+          } else {
+            effectiveStatus = 'failed';
+            if (row.generation_status === 'generating') {
+              await pool.query(
+                `UPDATE courses
+                 SET generation_status = 'failed',
+                     generation_error = COALESCE(generation_error, 'Course generation was interrupted before completion.'),
+                     updated_at = NOW()
+                 WHERE id = $1 AND status = 'draft'`,
+                [row.id]
+              ).catch(() => undefined);
+            }
+          }
+
+          const fallbackErrorMessage =
+            Number(row.module_count) === 0
+              ? 'Course generation stopped before any modules were saved.'
+              : Number(row.lesson_count) === 0
+                ? `Course generation stopped with ${row.module_count} module(s) and 0 completed lessons.`
+                : `Course generation stopped early (${row.empty_module_count} of ${row.module_count} module(s) have no completed lessons).`;
+
           incompleteCourses.push({
             ...row,
-            generation_status: row.generation_status === 'completed' ? 'failed' : row.generation_status,
-            generation_error:
-              row.generation_error ||
-              (Number(row.module_count) === 0
-                ? 'Course generation stopped before any modules were saved.'
-                : Number(row.lesson_count) === 0
-                  ? `Course generation stopped with ${row.module_count} module(s) and 0 completed lessons.`
-                  : `Course generation stopped early (${row.empty_module_count} of ${row.module_count} module(s) have no completed lessons).`)
+            generation_status: effectiveStatus,
+            is_actively_running: isActivelyRunning,
+            generation_progress: isActivelyRunning ? (liveSnap?.generationProgress ?? 10) : null,
+            status_message: isActivelyRunning ? (liveSnap?.statusMessage || 'Authoring course curriculum on server…') : null,
+            current_module: isActivelyRunning ? (liveSnap?.currentModule || null) : null,
+            current_lesson: isActivelyRunning ? (liveSnap?.currentLesson || null) : null,
+            completed_lessons: isActivelyRunning ? (liveSnap?.completedLessons ?? Number(row.lesson_count) ?? 0) : Number(row.lesson_count) || 0,
+            total_lessons: isActivelyRunning ? (liveSnap?.totalLessons ?? null) : null,
+            active_provider: isActivelyRunning ? (liveSnap?.activeProvider || null) : null,
+            elapsed_seconds: isActivelyRunning ? (liveSnap?.elapsedSeconds ?? null) : null,
+            generation_error: isActivelyRunning
+              ? null
+              : (row.generation_error || fallbackErrorMessage)
           });
         }
       }

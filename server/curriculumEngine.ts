@@ -62,7 +62,7 @@ export interface CurriculumGenerationOptions {
  */
 export function validateLessonSyntax(
   content: string,
-  pedagogyType: DisciplinePedagogyType = 'STEM_MATHEMATICAL'
+  _pedagogyType?: DisciplinePedagogyType
 ): {
   isValid: boolean;
   errors: string[];
@@ -244,14 +244,9 @@ ${sourceText && sourceText.trim() ? `\n[COMPLETE ADMIN-SUPPLIED SOURCE MATERIAL 
 ${researchContext && researchContext.trim() ? `\n[RETRIEVED ACADEMIC EVIDENCE — SUPPLEMENTARY, SOURCE-ATTRIBUTED]:\n${researchContext}\n` : '\n[RESEARCH STATUS]: No retrieved academic evidence was supplied. Do not invent sources, citations, textbook editions, institutional syllabi, or evidence claims.\n'}
 
 [GROUNDING & COURSE-LEVEL TAXONOMY TASK]:
-1. Identify the primary authoritative academic discipline.
-2. Determine the Pedagogy Type based on the nature of the discipline:
-   - "STEM_MATHEMATICAL": Physical sciences, engineering, mathematics, computer science (emphasizes formal derivations, quantitative models, KaTeX equations, physical laws).
-   - "HUMANITIES_LAW_ARTS": History, philosophy, literature, law, languages (emphasizes primary source analysis, textual critique, legal precedence, ethical discourse).
-   - "SOCIAL_SCIENCES_BUSINESS": Economics, finance, management, sociology, psychology (emphasizes empirical methodology, behavioral/market case studies, statistical interpretation).
-   - "BIOMEDICAL_LIFE_SCIENCES": Biology, medicine, pharmacology, biochemistry (emphasizes biochemical pathways, physiological mechanisms, clinical implications).
-   - "GENERAL_FOUNDATIONS": Interdisciplinary survey or academic study skills.
-3. Calibrate the "courseLevelFramework" specifically to "${normalizedLevel} Level" university expectations:
+1. Identify the primary authoritative academic discipline ("primaryDomain").
+2. Dynamically resolve the discipline-authentic Pedagogy Type ("pedagogyType") from the actual nature of "${courseName}" and its methodology (e.g., "Applied Engineering Mathematics", "Theoretical & Analytical Mechanics", "Comparative Legal & Doctrinal Analysis", "Biochemical & Physiological Systems", "Quantitative Econometrics", etc.). Do NOT use synthetic bucket labels; state the authentic disciplinary pedagogy as a concise plain text string.
+3. Calibrate the "courseLevelFramework" specifically to "${normalizedLevel} Level" university expectations as a concise plain text string (NEVER as an object):
    - 100 Level: First-year foundational principles, introductory concepts, fundamental definitions, and broad disciplinary orientation.
    - 200 Level: Second-year core analytical methods, intermediate theory, and structured problem-solving.
    - 300 Level: Third-year upper-division specialized mechanisms, rigorous derivations, and applied systems analysis.
@@ -260,16 +255,16 @@ ${researchContext && researchContext.trim() ? `\n[RETRIEVED ACADEMIC EVIDENCE �
 5. List 8-14 core course topics that define the syllabus of this course at ${normalizedLevel} Level:
    - CRITICAL: If an [ADMIN-PROVIDED SYLLABUS OUTLINE] is present above, you MUST extract and include EVERY topic, unit, and theme from the admin's outline into "coreCourseTopics", ordered logically for ${normalizedLevel} Level.
    - If no admin outline is provided, propose coherent university-level core topics appropriate for "${courseName}" (${courseCode || ''}) at ${normalizedLevel} Level without claiming they are copied from an external accredited syllabus.
-6. Identify canonical references only when a specific title/author/edition or institutional source is explicitly present in the admin-supplied material or retrieved evidence above. Do not infer or invent references. Include source URLs where available; return an empty array when no such reference is present.
+6. Identify canonical references only when a specific title/author/edition or institutional source is explicitly present in the admin-supplied material or retrieved evidence above. Do not infer or invent references. Format each reference as a single plain string (including source URL where available), NEVER as an object; return an empty array [] when no such reference is present.
 7. Identify 3-4 course-specific foundational concepts, laws, principles, methods, or models students need to understand the subject. These foundations are not automatically historical; do not infer that a history topic or timeline belongs in the course.
 
-Return strictly a JSON object:
+Return strictly a JSON object (every string field and every array item below MUST be a plain string only, never a nested object):
 {
   "primaryDomain": "Authoritative academic discipline",
   "subDisciplines": ["Sub-discipline 1", "Sub-discipline 2", "Sub-discipline 3"],
-  "pedagogyType": "STEM_MATHEMATICAL",
+  "pedagogyType": "Discipline-authentic pedagogical methodology for ${courseName}",
   "courseLevelFramework": "${normalizedLevel} Level University Curriculum Standard",
-  "canonicalCourseReferences": ["Exact source-attributed references found in admin-supplied or retrieved material; empty array when no reference is present"],
+  "canonicalCourseReferences": ["Author — Title (Year) — URL"],
   "foundationalAxioms": [
     "Foundational Principle 1",
     "Foundational Principle 2",
@@ -421,9 +416,9 @@ Depth: ${depth}
 Academic Standard: ${normalizedAcademicStandard}
 ${sourceText ? `COMPLETE ADMIN-SUPPLIED SOURCE MATERIAL:\n${sourceText}` : ''}
 
-Return strictly a JSON object:
+Return strictly a JSON object with ONLY the 6 root keys shown below at the top level (do NOT nest "description", "pedagogyType", or "creditHours" inside "courseMetadata", do NOT add extra keys like "courseSchedule" or "resources", and ensure "pedagogicalReasoning" is a single plain text string, NEVER a nested object):
 {
-  "pedagogicalReasoning": "Curriculum architecture rationale ${domainBrief.canonicalCourseReferences.length > 0 ? `grounded in ${domainBrief.canonicalCourseReferences.join(' and ')} ` : ''}for ${domainBrief.primaryDomain} at ${normalizedLevel} Level",
+  "pedagogicalReasoning": "Single plain-text paragraph explaining the curriculum architecture rationale ${domainBrief.canonicalCourseReferences.length > 0 ? `grounded in ${domainBrief.canonicalCourseReferences.join(' and ')} ` : ''}for ${domainBrief.primaryDomain} at ${normalizedLevel} Level",
   "description": "Comprehensive ${normalizedLevel} Level course overview rooted in ${domainBrief.primaryDomain}",
   "pedagogyType": "${domainBrief.pedagogyType}",
   "creditHours": ${params.credits},
@@ -435,7 +430,7 @@ Return strictly a JSON object:
     {
       "title": "A precise title describing the first course-relevant foundational topic",
       "isFoundationModule": true,
-      "lessonTitles": ["Lesson 1 Title", "Lesson 2 Title", "Lesson 3 Title", "Lesson 4 Title"],
+      "lessonTitles": ["Lesson 1 Title", "Lesson 2 Title"],
       "quizTopics": ["Concept 1", "Concept 2"],
       "learningOutcomeIds": ["0", "1"]
     }
@@ -478,7 +473,7 @@ ${moduleSummary}
 4. WORKLOAD BALANCE & DENSITY (0-100): Does the module count (${proposedSkeleton.modules?.length || 0}) and lesson count provide legitimate ${normalizedLevel} Level university depth without superficial rushing or bloated repetition?
 5. INTERNAL CONSISTENCY (0-100): Are module titles, lesson titles, learning-outcome mappings, quiz topics, course scope, and the stated pedagogy internally aligned? Penalize contradictory sequencing, duplicated modules/lessons, orphaned or invalid learning-outcome references, quiz topics not covered by lessons, and descriptions that conflict with the proposed structure. A high score requires coherent naming, scope, terminology, and assessment alignment.
 
-Return strictly a JSON object:
+Return strictly a JSON object (note: "confidenceState" MUST be one of "verified", "needs_review", or "failed", and "reasoning" MUST be a single plain text string, never a nested object):
 {
   "isValid": true,
   "coverageScore": 90,
@@ -588,7 +583,7 @@ When including a conceptual flowchart in 'content', prefer a structured \`\`\`di
 Return BOTH readable Markdown in "content", versioned typed blocks in "contentBlocks", and structured mastery data in "instructionalContent".
 
 DYNAMIC ACADEMIC CONTENT BLOCK RULES
-- contentBlocks.schemaVersion must be "1.0"; contentBlocks.disciplineEngine should be "${domainBrief.primaryDomain}"; contentBlocks.blocks must be an ordered array of typed academic elements dynamically adapted to "${domainBrief.primaryDomain}" and "${topicTitle}".
+- contentBlocks.schemaVersion must be "1.0"; contentBlocks.disciplineEngine must be "${domainBrief.pedagogyType}"; contentBlocks.blocks must be an ordered array of typed academic elements dynamically adapted to "${domainBrief.primaryDomain}" and "${topicTitle}".
 - Every block has a unique stable id, a title, an optional "academicRole" badge label tailored to "${domainBrief.primaryDomain}" (for example, a discipline-authentic role label describing the pedagogical function of that block in this subject), and a type discriminator.
 - Always include at least one foundational "explanation" (or "structured_block") with substantive, topic-specific teaching prose. An "explanation" block may also include optional "keyTakeaways", "sections", "items", "table", "codeSnippet", "citations", or "callout".
 - Use "mathematical_derivation" when the topic requires step-by-step formal reasoning, derivation, proof, argument progression, algorithmic trace, or mechanistic pathway; each step includes "explanation" and optional "equationLatex", "codeSnippet" ("language"), or "evidenceOrCitation".
@@ -610,8 +605,8 @@ STRUCTURED CONTENT RULES
 - formalDevelopment: relevant derivation, proof, argument, causal mechanism, research method or analytical framework.
 - workedExamples: ${normalizedDepth === 'deep-dive' ? 'at least three' : normalizedDepth === 'standard' ? 'at least two' : 'at least one'} distinct discipline-appropriate examples (minimum ${requiredExamplesCount} items in the array) with problem, ordered reasoning, a complete final solution statement (with units/interpretation), and a genuine reasonableness/logic check.
 - applications and misconceptions: include only defensible items; otherwise return [] and explain why in applicationRationale or misconceptionRationale.
-- guidedPractice: at least one exercise with progressive hints, approach, answer and explanation.
-- independentPractice: at least one new no-hint exercise with answer/explanation for later reveal.
+- guidedPractice: at least one exercise with progressive hints (non-empty "hints" array), approach, answer and explanation.
+- independentPractice: at least one new no-hint exercise with an empty hints array ("hints": []) and answer/explanation for later reveal.
 - knowledgeChecks: ${normalizedDepth === 'deep-dive' ? 'at least four' : normalizedDepth === 'standard' ? 'at least three' : 'at least two'} reasoning checks (minimum ${requiredChecksCount} items in the array), not recall alone.
 - mastery.targetLevel: appropriate target 1-5 for this lesson; it is not evidence that any student has achieved that level.
 - mastery.criteria: observable evidence required before advancement.
@@ -621,42 +616,44 @@ ACADEMIC INTEGRITY
 Do not invent syllabus topics, facts, laws, equations, numerical data, case studies, source references or verification claims. State assumptions and limits. Ensure examples, units, derivations and explanations are internally consistent. Qualify insufficiently grounded information. Use balanced LaTeX delimiters.
 
 STRICT JSON
-Return one valid JSON object only with top-level keys "title", "pedagogicalReasoning", "content", "contentBlocks", "instructionalContent".
-contentBlocks must follow this versioned structure (include only blocks justified by the lesson; the values below illustrate field shapes, not facts):
+Return ONE valid JSON object only with ALL FIVE top-level keys ("title", "pedagogicalReasoning", "content", "contentBlocks", and "instructionalContent") nested inside the single root JSON object as shown below ("pedagogicalReasoning" must be a single plain text string, include only contentBlocks.blocks justified by the lesson, and include at least ${requiredExamplesCount} workedExamples and at least ${requiredChecksCount} knowledgeChecks inside "instructionalContent"):
 {
- "schemaVersion":"1.0",
- "disciplineEngine":"${domainBrief.primaryDomain}",
- "blocks":[
-  {"id":"explanation-1","title":"Topic explanation","academicRole":"Discipline-authentic role label","type":"explanation","body":"Substantive lesson-specific explanation..."},
-  {"id":"derivation-1","title":"Formal development","academicRole":"Discipline-authentic reasoning label","type":"mathematical_derivation","introduction":"Context and governing principle...","assumptions":["Explicit assumption..."],"steps":[{"explanation":"Reasoning step...","equationLatex":"\\text{optional equation}","evidenceOrCitation":"optional source/principle"},{"explanation":"Next step..."}],"conclusion":"What the reasoning establishes..."},
-  {"id":"diagram-1","title":"Conceptual diagram","academicRole":"Discipline-authentic diagram label","type":"engineering_diagram","description":"What the diagram explains...","diagram":{"type":"flowchart","direction":"TD","nodes":[{"id":"n1","label":"Concept one"},{"id":"n2","label":"Concept two"}],"edges":[{"from":"n1","to":"n2"}]}},
-  {"id":"example-1","title":"Worked application","academicRole":"Discipline-authentic case/example label","type":"worked_example","exampleType":"case-or-problem-type","problem":"A course-specific problem or scenario...","givens":[{"symbol":"x","value":"supplied value","unit":"optional unit"}],"contextFactors":[{"label":"Context factor","detail":"Supplied qualitative context"}],"target":"Requested quantity or analytical objective...","assumptions":["Only explicitly justified assumptions..."],"steps":[{"explanation":"Step 1..."},{"explanation":"Step 2..."}],"finalAnswer":{"value":"Computed result or reasoned conclusion","unit":"optional unit"},"verification":"Independent unit, logic or reasonableness check..."},
-  {"id":"structured-1","title":"Specialized disciplinary section","academicRole":"Discipline-authentic label","type":"structured_block","customType":"comparative_analysis","summary":"Optional overview...","table":{"caption":"Optional table","headers":["Column 1","Column 2"],"rows":[["Cell 1","Cell 2"]]}},
-  {"id":"simulation-1","title":"Parameter exploration","academicRole":"Interactive Model","type":"interactive_simulation","simulationType":"parameterized_curve","description":"What relationship the student can explore...","expression":"a*x","independentVariable":"x","domain":{"min":0,"max":1},"parameter":{"symbol":"a","label":"Parameter meaning","initialValue":1,"min":0,"max":2,"step":0.1}},
-  {"id":"check-1","title":"Reasoning check","type":"knowledge_check","activityIndex":0}
- ]
+  "title": "${topicTitle}",
+  "pedagogicalReasoning": "Concise plain-text pedagogical plan for this lesson...",
+  "content": "## Heading 1\\n\\nSubstantive university Markdown prose (>= 800 characters)...\\n\\n## Heading 2\\n\\n...\\n\\n## Heading 3\\n\\n...",
+  "contentBlocks": {
+    "schemaVersion": "1.0",
+    "disciplineEngine": "${domainBrief.pedagogyType}",
+    "blocks": [
+      {"id":"explanation-1","title":"Topic explanation","academicRole":"Discipline-authentic role label","type":"explanation","body":"Substantive lesson-specific explanation..."},
+      {"id":"derivation-1","title":"Formal development","academicRole":"Discipline-authentic reasoning label","type":"mathematical_derivation","introduction":"Context and governing principle...","assumptions":["Explicit assumption..."],"steps":[{"explanation":"Reasoning step...","equationLatex":"\\text{optional equation}","evidenceOrCitation":"optional source/principle"},{"explanation":"Next step..."}],"conclusion":"What the reasoning establishes..."},
+      {"id":"diagram-1","title":"Conceptual diagram","academicRole":"Discipline-authentic diagram label","type":"engineering_diagram","description":"What the diagram explains...","diagram":{"type":"flowchart","direction":"TD","nodes":[{"id":"n1","label":"Concept one"},{"id":"n2","label":"Concept two"}],"edges":[{"from":"n1","to":"n2"}]}},
+      {"id":"example-1","title":"Worked application","academicRole":"Discipline-authentic case/example label","type":"worked_example","exampleType":"case-or-problem-type","problem":"A course-specific problem or scenario...","givens":[{"symbol":"x","value":"supplied value","unit":"optional unit"}],"contextFactors":[{"label":"Context factor","detail":"Supplied qualitative context"}],"target":"Requested quantity or analytical objective...","assumptions":["Only explicitly justified assumptions..."],"steps":[{"explanation":"Step 1..."},{"explanation":"Step 2..."}],"finalAnswer":{"value":"Computed result or reasoned conclusion","unit":"optional unit"},"verification":"Independent unit, logic or reasonableness check..."},
+      {"id":"structured-1","title":"Specialized disciplinary section","academicRole":"Discipline-authentic label","type":"structured_block","customType":"comparative_analysis","summary":"Optional overview...","table":{"caption":"Optional table","headers":["Column 1","Column 2"],"rows":[["Cell 1","Cell 2"]]}},
+      {"id":"simulation-1","title":"Parameter exploration","academicRole":"Interactive Model","type":"interactive_simulation","simulationType":"parameterized_curve","description":"What relationship the student can explore...","expression":"a*x","independentVariable":"x","domain":{"min":0,"max":1},"parameter":{"symbol":"a","label":"Parameter meaning","initialValue":1,"min":0,"max":2,"step":0.1}},
+      {"id":"check-1","title":"Reasoning check","type":"knowledge_check","activityIndex":0}
+    ]
+  },
+  "instructionalContent": {
+    "frameworkVersion": "understand-explore-apply-verify-master-v1",
+    "disciplineEngine": "${domainBrief.pedagogyType}",
+    "learningObjectives": ["..."],
+    "prerequisites": [{"concept":"...","whyNeeded":"...","readinessCheck":"..."}],
+    "conceptIntroduction": "...",
+    "deepExplanation": "...",
+    "formalDevelopment": "...",
+    "workedExamples": ${workedExamplesIllustration},
+    "applications": [{"context":"...","conceptConnection":"...","constraintsOrAssumptions":"..."}],
+    "applicationRationale": "...",
+    "misconceptions": [{"misconception":"...","whyItIsWrong":"...","correction":"..."}],
+    "misconceptionRationale": "...",
+    "guidedPractice": [{"prompt":"...","hints":["..."],"expectedApproach":"...","expectedAnswer":"...","explanation":"...","diagnosticSignals":["..."]}],
+    "independentPractice": [{"prompt":"...","hints":[],"expectedApproach":"...","expectedAnswer":"...","explanation":"...","diagnosticSignals":["..."]}],
+    "knowledgeChecks": ${knowledgeChecksIllustration},
+    "mastery": {"targetLevel":3,"criteria":["..."],"retentionPrompts":["..."]}
+  }
 }
-The derivation, diagram, worked-example, structured_block, and simulation objects above are optional structural illustrations. Replace every placeholder and illustrative value with topic-grounded values or omit the corresponding block. Never copy them as factual course data.
-instructionalContent must follow this shape (including at least ${requiredExamplesCount} workedExamples and at least ${requiredChecksCount} knowledgeChecks):
-{
- "frameworkVersion":"understand-explore-apply-verify-master-v1",
- "disciplineEngine":"${domainBrief.pedagogyType}",
- "learningObjectives":["..."],
- "prerequisites":[{"concept":"...","whyNeeded":"...","readinessCheck":"..."}],
- "conceptIntroduction":"...",
- "deepExplanation":"...",
- "formalDevelopment":"...",
- "workedExamples":${workedExamplesIllustration},
- "applications":[{"context":"...","conceptConnection":"...","constraintsOrAssumptions":"..."}],
- "applicationRationale":"...",
- "misconceptions":[{"misconception":"...","whyItIsWrong":"...","correction":"..."}],
- "misconceptionRationale":"...",
- "guidedPractice":[{"prompt":"...","hints":["..."],"expectedApproach":"...","expectedAnswer":"...","explanation":"...","diagnosticSignals":["..."]}],
- "independentPractice":[{"prompt":"...","hints":[],"expectedApproach":"...","expectedAnswer":"...","explanation":"...","diagnosticSignals":["..."]}],
- "knowledgeChecks":${knowledgeChecksIllustration},
- "mastery":{"targetLevel":3,"criteria":["..."],"retentionPrompts":["..."]}
-}
-These are schema illustrations, not course facts. Return strict JSON without fences or commentary.`;
+The derivation, diagram, worked-example, structured_block, and simulation objects in contentBlocks.blocks are optional structural illustrations. Replace every placeholder and illustrative value with topic-grounded values or omit the corresponding block. Never copy them as factual course data. Return strict JSON without fences or commentary.`;
 }
 
 /** Select complete relevant source blocks rather than an arbitrary document prefix. */

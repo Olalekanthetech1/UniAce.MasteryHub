@@ -135,18 +135,22 @@ export default defineConfig(({mode}) => {
     },
     build: {
       outDir: 'dist',
-      chunkSizeWarningLimit: 6000,
+      chunkSizeWarningLimit: 3000,
       sourcemap: false,
+      reportCompressedSize: false,
       rollupOptions: {
+        maxParallelFileOps: 2,
         output: {
           manualChunks(id) {
             if (id.includes('node_modules')) {
+              if (id.includes('mermaid')) return 'vendor-mermaid';
+              if (id.includes('recharts')) return 'vendor-recharts';
+              if (id.includes('d3')) return 'vendor-d3';
               if (id.includes('pdfjs-dist')) return 'vendor-pdfjs';
               if (id.includes('mathjs')) return 'vendor-mathjs';
               if (id.includes('xlsx')) return 'vendor-xlsx';
               if (id.includes('jspdf') || id.includes('html2canvas')) return 'vendor-pdfgen';
               if (id.includes('katex')) return 'vendor-katex';
-              if (id.includes('recharts') || id.includes('d3') || id.includes('mermaid')) return 'vendor-charts';
               if (id.includes('highlight.js')) return 'vendor-highlight';
               if (id.includes('firebase')) return 'vendor-firebase';
               if (id.includes('lucide-react')) return 'vendor-lucide';
