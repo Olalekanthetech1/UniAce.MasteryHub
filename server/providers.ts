@@ -178,10 +178,19 @@ async function retry<T>(fn: () => Promise<T>, providerName: string, retries = 3,
       return retry(fn, providerName, retries - 1, delay, signal);
     }
 
-    // Retry transient errors: 429 (rate limits), 5xx (server errors), and network timeouts
-    const isRateLimit = statusCode === 429 || rawMsg.includes('rate limit') || rawMsg.includes('quota') || rawMsg.includes('too many requests');
+    // Retry transient errors: 429 (rate limits), 5xx (server errors), network timeouts, and upstream SSE stream framing drops
+    const isRateLimit = statusCode === 429 || rawMsg.includes('rate limit') || rawMsg.includes('quota') || rawMsg.includes('too many requests') || rawMsg.includes('resource_exhausted');
     const isServer5xx = statusCode && statusCode >= 500 && statusCode <= 599;
-    const isNetworkOrTimeout = error.name === 'AbortError' || rawMsg.includes('timeout') || rawMsg.includes('econnreset') || rawMsg.includes('fetch failed');
+    const isNetworkOrTimeout =
+      error.name === 'AbortError' ||
+      rawMsg.includes('timeout') ||
+      rawMsg.includes('econnreset') ||
+      rawMsg.includes('fetch failed') ||
+      rawMsg.includes('incomplete json segment') ||
+      rawMsg.includes('truncated json') ||
+      rawMsg.includes('empty response') ||
+      rawMsg.includes('socket hang up') ||
+      rawMsg.includes('terminated');
 
     const canRetry = (isRateLimit || isServer5xx || isNetworkOrTimeout) && retries > 0;
 
@@ -630,16 +639,24 @@ function shouldAttemptFallbackModel(error: any): boolean {
   const msg = String(error?.message || error || '').toLowerCase();
   return (
     status === 404 ||
+    status === 408 ||
     status === 413 ||
     status === 429 ||
+    status === 500 ||
     status === 502 ||
     status === 503 ||
+    status === 504 ||
     msg.includes('decommissioned') ||
     msg.includes('not found') ||
     msg.includes('does not exist') ||
     msg.includes('is not supported') ||
     msg.includes('overloaded') ||
-    msg.includes('rate limit')
+    msg.includes('rate limit') ||
+    msg.includes('incomplete json') ||
+    msg.includes('truncated json') ||
+    msg.includes('empty response') ||
+    msg.includes('timeout') ||
+    msg.includes('unavailable')
   );
 }
 
@@ -837,16 +854,33 @@ export class GeminiDirectProvider implements ModelProvider {
         );
       }
       const fallbackModel = (await this.rotator.getFallbackModel() || '').trim();
-      const ai = new GoogleGenAI({ apiKey });
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build'
+          }
+        }
+      });
       const preparedMessages = prepareProviderMessages(messages, {
         jsonMode: options?.jsonMode,
         providerName: this.name
       });
       const { contents, systemInstruction } = this.transformMessagesToGemini(preparedMessages);
 
+      const isTruncatedJsonPayload = (rawText: string): boolean => {
+        if (!options?.jsonMode) return false;
+        const cleaned = (rawText || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        if (cleaned.length < 2) return true;
+        const hasOpen = cleaned.includes('{') || cleaned.includes('[');
+        const hasClose = cleaned.includes('}') || cleaned.includes(']');
+        return !hasOpen || !hasClose;
+      };
+
       const executeGenerate = async (targetModel: string) => {
+        const timeoutMs = options?.complexity === 'high' ? 120000 : 60000;
         const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new ModelProviderError(`Gemini request timed out after 60s for model ${targetModel}`, 'gemini_direct', 408, true)), 60000)
+          setTimeout(() => reject(new ModelProviderError(`Gemini request timed out after ${timeoutMs / 1000}s for model ${targetModel}`, 'gemini_direct', 408, true)), timeoutMs)
         );
 
         const response = await raceWithAbort(Promise.race([
@@ -857,13 +891,15 @@ export class GeminiDirectProvider implements ModelProvider {
               systemInstruction,
               responseMimeType: options.jsonMode ? "application/json" : "text/plain",
               temperature: options.temperature ?? 0.5,
-              maxOutputTokens: 8192,
             }
           }),
           timeoutPromise
         ]), options?.signal);
 
-        if (!response.text) throw new Error('Empty response from Gemini');
+        if (!response.text) throw new ModelProviderError(`Empty response from Gemini model ${targetModel}`, 'gemini_direct', 502, true);
+        if (isTruncatedJsonPayload(response.text)) {
+          throw new ModelProviderError(`Truncated JSON response from Gemini model ${targetModel}`, 'gemini_direct', 502, true);
+        }
         const upstreamModel = typeof (response as any)?.modelVersion === 'string' && (response as any).modelVersion.trim()
           ? (response as any).modelVersion.trim()
           : null;
@@ -889,7 +925,7 @@ export class GeminiDirectProvider implements ModelProvider {
           await this.rotator.markKeyExhausted(apiKey);
         }
         if (fallbackModel && fallbackModel !== primaryModel && shouldAttemptFallbackModel(error)) {
-          console.warn(`[GeminiDirect] Primary model '${primaryModel}' failed with status ${status}. Attempting configured fallback '${fallbackModel}'...`);
+          console.warn(`[GeminiDirect] Primary model '${primaryModel}' failed (${status || error.message}). Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeGenerate(fallbackModel);
           } catch (fallbackErr: any) {
@@ -922,42 +958,116 @@ export class GeminiDirectProvider implements ModelProvider {
         );
       }
       const fallbackModel = (await this.rotator.getFallbackModel() || '').trim();
-      const ai = new GoogleGenAI({ apiKey });
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build'
+          }
+        }
+      });
       const preparedMessages = prepareProviderMessages(messages, {
         jsonMode: options?.jsonMode,
         providerName: this.name
       });
       const { contents, systemInstruction } = this.transformMessagesToGemini(preparedMessages);
 
-      const executeStream = async (targetModel: string) => {
+      const isTruncatedJsonPayload = (rawText: string): boolean => {
+        if (!options?.jsonMode) return false;
+        const cleaned = (rawText || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        if (cleaned.length < 2) return true;
+        const hasOpen = cleaned.includes('{') || cleaned.includes('[');
+        const hasClose = cleaned.includes('}') || cleaned.includes(']');
+        return !hasOpen || !hasClose;
+      };
+
+      const executeNonStreamingFallback = async (targetModel: string): Promise<ModelResponse> => {
         if (options?.signal?.aborted) {
-          throw createStreamAbortError('Gemini stream aborted before start');
+          throw createStreamAbortError('Gemini fallback request aborted before start');
         }
-        const result = await raceWithAbort(ai.models.generateContentStream({
+        const response = await raceWithAbort(ai.models.generateContent({
           model: targetModel,
           contents,
           config: {
             systemInstruction,
             responseMimeType: options?.jsonMode ? "application/json" : "text/plain",
             temperature: options?.temperature ?? 0.5,
-            maxOutputTokens: 8192,
           }
         }), options?.signal);
+        const text = response.text || '';
+        if (!text.trim()) {
+          throw new ModelProviderError(`Empty response from Gemini model ${targetModel}`, 'gemini_direct', 502, true);
+        }
+        if (isTruncatedJsonPayload(text)) {
+          throw new ModelProviderError(`Truncated JSON response from Gemini model ${targetModel}`, 'gemini_direct', 502, true);
+        }
+        onChunk(text);
+        const upstreamModel = typeof (response as any)?.modelVersion === 'string' && (response as any).modelVersion.trim()
+          ? (response as any).modelVersion.trim()
+          : null;
+        return {
+          text,
+          usage: {
+            promptTokens: response.usageMetadata?.promptTokenCount || 0,
+            completionTokens: response.usageMetadata?.candidatesTokenCount || 0,
+            totalTokens: response.usageMetadata?.totalTokenCount || 0
+          },
+          finishReason: 'stop',
+          upstreamModel
+        };
+      };
 
+      const executeStream = async (targetModel: string) => {
+        if (options?.signal?.aborted) {
+          throw createStreamAbortError('Gemini stream aborted before start');
+        }
         let fullText = '';
         let upstreamModel: string | null = null;
-        for await (const chunk of result) {
-          if (options?.signal?.aborted) {
-            throw createStreamAbortError('Gemini stream aborted mid-generation');
+        try {
+          const result = await raceWithAbort(ai.models.generateContentStream({
+            model: targetModel,
+            contents,
+            config: {
+              systemInstruction,
+              responseMimeType: options?.jsonMode ? "application/json" : "text/plain",
+              temperature: options?.temperature ?? 0.5,
+            }
+          }), options?.signal);
+
+          for await (const chunk of result) {
+            if (options?.signal?.aborted) {
+              throw createStreamAbortError('Gemini stream aborted mid-generation');
+            }
+            if (!upstreamModel && typeof (chunk as any)?.modelVersion === 'string' && (chunk as any).modelVersion.trim()) {
+              upstreamModel = (chunk as any).modelVersion.trim();
+            }
+            const text = chunk.text;
+            if (text) {
+              fullText += text;
+              onChunk(text);
+            }
           }
-          if (!upstreamModel && typeof (chunk as any)?.modelVersion === 'string' && (chunk as any).modelVersion.trim()) {
-            upstreamModel = (chunk as any).modelVersion.trim();
+        } catch (streamErr: any) {
+          if (isClientAbortError(streamErr, options?.signal)) throw streamErr;
+          const errMsg = String(streamErr?.message || streamErr || '').toLowerCase();
+          if (errMsg.includes('incomplete json segment') && options?.jsonMode) {
+            if (!isTruncatedJsonPayload(fullText)) {
+              return {
+                text: fullText,
+                usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+                finishReason: 'stop',
+                upstreamModel
+              };
+            }
+            console.warn(`[GeminiDirect Stream] SSE segment interrupted on '${targetModel}'; recovering via non-streaming generateContent...`);
+            return await executeNonStreamingFallback(targetModel);
           }
-          const text = chunk.text;
-          if (text) {
-            fullText += text;
-            onChunk(text);
-          }
+          throw streamErr;
+        }
+
+        if (isTruncatedJsonPayload(fullText)) {
+          console.warn(`[GeminiDirect Stream] Streamed JSON payload from '${targetModel}' was truncated (${fullText.length} chars); recovering via non-streaming generateContent...`);
+          return await executeNonStreamingFallback(targetModel);
         }
 
         return {
@@ -977,7 +1087,7 @@ export class GeminiDirectProvider implements ModelProvider {
           await this.rotator.markKeyExhausted(apiKey);
         }
         if (fallbackModel && fallbackModel !== primaryModel && shouldAttemptFallbackModel(error)) {
-          console.warn(`[GeminiDirect Stream] Primary model '${primaryModel}' failed with status ${status}. Attempting configured fallback '${fallbackModel}'...`);
+          console.warn(`[GeminiDirect Stream] Primary model '${primaryModel}' failed (${status || error.message}). Attempting configured fallback '${fallbackModel}'...`);
           try {
             return await executeStream(fallbackModel);
           } catch (fallbackErr: any) {
@@ -1428,7 +1538,7 @@ export class GroqProvider implements ModelProvider {
         const response = await groq.chat.completions.create({
           model: targetModel,
           temperature: options.temperature ?? 0.5,
-          max_tokens: options.complexity === 'high' ? 4096 : 2048,
+          max_tokens: options.complexity === 'high' || options.jsonMode ? 8192 : 4096,
           messages: preparedMessages as any,
           response_format: options.jsonMode ? { type: "json_object" } : undefined
         }, { signal: options?.signal });
@@ -1497,7 +1607,7 @@ export class GroqProvider implements ModelProvider {
         const stream = await groq.chat.completions.create({
           model: targetModel,
           temperature: options.temperature ?? 0.5,
-          max_tokens: options.complexity === 'high' ? 4096 : 2048,
+          max_tokens: options.complexity === 'high' || options.jsonMode ? 8192 : 4096,
           messages: preparedMessages as any,
           stream: true
         }, { signal: options?.signal });

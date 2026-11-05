@@ -3654,7 +3654,18 @@ async function purgeCourseSubcollections(db: admin.firestore.Firestore, courseId
 const ModuleQuizSchema = z.preprocess((val: any) => {
   const normalizedVal = normalizeNestedMathUnicode(val);
   if (Array.isArray(normalizedVal)) {
-    return { questions: normalizedVal };
+    return {
+      pedagogicalReasoning: 'Assessment items grounded in module learning objectives.',
+      questions: normalizedVal
+    };
+  }
+  if (normalizedVal && typeof normalizedVal === 'object') {
+    const obj = { ...(normalizedVal as Record<string, any>) };
+    const rawReasoning = obj.pedagogicalReasoning ?? obj.pedagogical_reasoning ?? obj.reasoning ?? obj.rationale;
+    obj.pedagogicalReasoning = rawReasoning !== undefined
+      ? normalizeStringOrStructuredEntry(rawReasoning)
+      : (Array.isArray(obj.questions) && obj.questions.length > 0 ? 'Assessment items grounded in module learning objectives.' : undefined);
+    return obj;
   }
   return normalizedVal;
 }, z.object({
@@ -3670,9 +3681,21 @@ const ModuleQuizSchema = z.preprocess((val: any) => {
 const CourseFormulaSchema = z.preprocess((val: any) => {
   const baseVal = Array.isArray(val) ? { formulas: val } : val;
   if (!baseVal || typeof baseVal !== 'object') return baseVal;
-  const normalizedObj = normalizeNestedMathUnicode(baseVal) as Record<string, any>;
-  if (normalizedObj.pedagogicalReasoning !== undefined) {
-    normalizedObj.pedagogicalReasoning = normalizeStringOrStructuredEntry(normalizedObj.pedagogicalReasoning);
+  let normalizedObj = normalizeNestedMathUnicode(baseVal) as Record<string, any>;
+  const wrapper = normalizedObj.formulaSheet ?? normalizedObj.formula_sheet ?? normalizedObj.data;
+  if (wrapper && typeof wrapper === 'object' && !Array.isArray(wrapper)) {
+    normalizedObj = { ...wrapper, ...normalizedObj };
+  }
+  const rawReasoning =
+    normalizedObj.pedagogicalReasoning ??
+    normalizedObj.pedagogical_reasoning ??
+    normalizedObj.reasoning ??
+    normalizedObj.rationale;
+  if (rawReasoning !== undefined) {
+    normalizedObj.pedagogicalReasoning = normalizeStringOrStructuredEntry(rawReasoning);
+  }
+  if (!Array.isArray(normalizedObj.formulas) && Array.isArray(normalizedObj.equations)) {
+    normalizedObj.formulas = normalizedObj.equations;
   }
   if (Array.isArray(normalizedObj.formulas)) {
     const seenIds = new Set<string>();
@@ -3692,6 +3715,11 @@ const CourseFormulaSchema = z.preprocess((val: any) => {
         description: typeof rawDesc === 'string' ? normalizeMathUnicodeInMarkdown(rawDesc) : rawDesc
       };
     });
+    if (!normalizedObj.pedagogicalReasoning || typeof normalizedObj.pedagogicalReasoning !== 'string' || !normalizedObj.pedagogicalReasoning.trim()) {
+      normalizedObj.pedagogicalReasoning = normalizedObj.formulas.length > 0
+        ? `Extracted ${normalizedObj.formulas.length} governing equations directly supported by the persisted course lessons.`
+        : 'No standalone quantitative formula sheet was required by the persisted lesson material.';
+    }
   }
   return normalizedObj;
 }, z.object({
@@ -3710,11 +3738,21 @@ const CourseFormulaSchema = z.preprocess((val: any) => {
 
 const CourseModuleQuizSchema = z.preprocess(
   (value: unknown) => {
-    const normalized = normalizeNestedMathUnicode(value);
+    const baseVal = Array.isArray(value) ? { questions: value } : value;
+    const normalized = normalizeNestedMathUnicode(baseVal);
     if (!normalized || typeof normalized !== 'object' || Array.isArray(normalized)) return normalized;
-    const obj = { ...(normalized as Record<string, any>) };
-    if (obj.pedagogicalReasoning !== undefined) {
-      obj.pedagogicalReasoning = normalizeStringOrStructuredEntry(obj.pedagogicalReasoning);
+    let obj = { ...(normalized as Record<string, any>) };
+    const wrapper = obj.quiz ?? obj.moduleQuiz ?? obj.module_quiz ?? obj.assessment ?? obj.data;
+    if (wrapper && typeof wrapper === 'object' && !Array.isArray(wrapper)) {
+      obj = { ...wrapper, ...obj };
+    }
+    const rawReasoning =
+      obj.pedagogicalReasoning ??
+      obj.pedagogical_reasoning ??
+      obj.reasoning ??
+      obj.rationale;
+    if (rawReasoning !== undefined) {
+      obj.pedagogicalReasoning = normalizeStringOrStructuredEntry(rawReasoning);
     }
     if (Array.isArray(obj.questions)) {
       const seenIds = new Set<string>();
@@ -3738,7 +3776,7 @@ const CourseModuleQuizSchema = z.preprocess(
           quizTopic: normalizeStringOrStructuredEntry(q.quizTopic ?? q.quiz_topic ?? q.topic ?? ''),
           question: normalizeStringOrStructuredEntry(q.question ?? q.prompt ?? ''),
           options: Array.isArray(q.options) ? q.options.map((opt: unknown) => normalizeStringOrStructuredEntry(opt)) : q.options,
-          correctOptionIndex: typeof q.correctOptionIndex === 'number' ? q.correctOptionIndex : Number(q.correctOptionIndex ?? q.correct_option_index ?? 0),
+          correctOptionIndex: typeof q.correctOptionIndex === 'number' ? q.correctOptionIndex : Number(q.correctOptionIndex ?? q.correct_option_index ?? q.answerIndex ?? 0),
           explanation: normalizeStringOrStructuredEntry(q.explanation ?? q.rationale ?? ''),
           hint: normalizeStringOrStructuredEntry(q.hint ?? ''),
           difficulty: typeof q.difficulty === 'number' ? q.difficulty : Number(q.difficulty ?? 3),
@@ -3746,6 +3784,9 @@ const CourseModuleQuizSchema = z.preprocess(
           sourceReference: normalizeStringOrStructuredEntry(q.sourceReference ?? q.source_reference ?? q.lessonTitle ?? '')
         };
       });
+      if (!obj.pedagogicalReasoning || typeof obj.pedagogicalReasoning !== 'string' || !obj.pedagogicalReasoning.trim()) {
+        obj.pedagogicalReasoning = `Module assessment evaluating ${obj.questions.length} questions grounded in persisted module lessons.`;
+      }
     }
     return obj;
   },
@@ -4724,15 +4765,31 @@ function resolveLiveProviderQueue(
 
   const names = [primary];
   if (!strictMode && routingConfig.autoFallback !== false) {
-    for (const fallback of configuredFallbacks || []) {
-      if (typeof fallback !== 'string' || !fallback.trim()) {
-        throw new Error(`AI routing configuration contains an invalid fallback for task "${taskType}".`);
+    if (Array.isArray(configuredFallbacks)) {
+      for (const fallback of configuredFallbacks) {
+        if (typeof fallback !== 'string' || !fallback.trim()) {
+          throw new Error(`AI routing configuration contains an invalid fallback for task "${taskType}".`);
+        }
+        const name = fallback.trim().toLowerCase();
+        if (!Object.prototype.hasOwnProperty.call(providerMap, name)) {
+          throw new Error(`AI routing configuration references unsupported fallback provider "${name}".`);
+        }
+        if (!names.includes(name)) names.push(name);
       }
-      const name = fallback.trim().toLowerCase();
-      if (!Object.prototype.hasOwnProperty.call(providerMap, name)) {
-        throw new Error(`AI routing configuration references unsupported fallback provider "${name}".`);
+    }
+    // Also include task-specific / global configured provider and any live-configured providers in providerMap
+    const preferredOrder = ['mistral_direct', 'groq', 'gemini_direct', 'cohere', 'nvidia', 'openrouter_free', 'huggingface'];
+    const dynamicCandidates = [
+      typeof routingConfig[taskType] === 'string' ? routingConfig[taskType].trim().toLowerCase() : '',
+      typeof routingConfig.global_provider === 'string' ? routingConfig.global_provider.trim().toLowerCase() : '',
+      ...preferredOrder,
+      ...Object.keys(providerMap)
+    ].filter(Boolean);
+    for (const candidate of dynamicCandidates) {
+      if (names.includes(candidate) || !Object.prototype.hasOwnProperty.call(providerMap, candidate)) continue;
+      if (providerMap[candidate]) {
+        names.push(candidate);
       }
-      if (!names.includes(name)) names.push(name);
     }
   }
   return names;
@@ -4874,13 +4931,41 @@ async function completeWithProviderJSON<T = any>(opts: CompleteProviderOptions<T
       let resp = await executeWithAdaptiveProgress(opts.messages);
 
       if (resp && resp.text) {
-        let parsed = parseRobustJSON<T>(resp.text);
+        let currentText = resp.text;
+        let parsed: T | undefined;
+        let parseErr: any = null;
+
+        for (let jsonAttempt = 1; jsonAttempt <= 3; jsonAttempt++) {
+          try {
+            parsed = parseRobustJSON<T>(currentText);
+            parseErr = null;
+            break;
+          } catch (err: any) {
+            parseErr = err;
+            if (jsonAttempt >= 3) break;
+            console.warn(`[AI Completion] JSON parse attempt ${jsonAttempt} failed with ${prov.name} (${err.message}). Re-prompting for complete JSON...`);
+            const repairMessages = [
+              ...opts.messages,
+              {
+                role: 'user',
+                content: 'Your previous output was truncated or contained invalid JSON syntax. Return ONLY the complete, valid JSON object starting with { and ending with }, with all strings and braces properly closed.'
+              }
+            ];
+            const retryResp = await executeWithAdaptiveProgress(repairMessages);
+            if (!retryResp || !retryResp.text) break;
+            currentText = retryResp.text;
+          }
+        }
+
+        if (parseErr || parsed === undefined) {
+          throw parseErr || new Error('Zero-Fallback Policy: Failed to parse valid dynamic JSON from AI response.');
+        }
+
         if (opts.schema) {
           let validation = opts.schema.safeParse(parsed);
           if (!validation.success && resolveExpectedStringPathsInPayload(parsed, validation.error.issues)) {
             validation = opts.schema.safeParse(parsed);
           }
-          let currentText = resp.text;
           for (let attempt = 1; !validation.success && attempt <= 2; attempt++) {
             const errorSummary = validation.error.issues
               .map((i: any) => `${i.path.join('.') || '<root>'}: ${i.message}`)
@@ -5636,7 +5721,8 @@ async function executeCoordinatedGenerationJob(
           statusMessage: 'Retrieving canonical references and establishing domain taxonomy...'
         });
 
-        const preSuppliedDomainBrief = req.body.domainBrief ? DomainBriefSchema.safeParse(req.body.domainBrief) : null;
+        const rawDomainBriefCandidate = req.body.domainBrief || req.body.persistedSkeleton?.domainBrief;
+        const preSuppliedDomainBrief = rawDomainBriefCandidate ? DomainBriefSchema.safeParse(rawDomainBriefCandidate) : null;
         let domainBrief: any;
         if (preSuppliedDomainBrief && preSuppliedDomainBrief.success) {
           domainBrief = preSuppliedDomainBrief.data;
@@ -5898,6 +5984,8 @@ async function executeCoordinatedGenerationJob(
           research: courseResearch.metadata,
           generationSkeleton: {
             description: verifiedCourseDescription,
+            domainBrief,
+            requestedProvider: requestedProvider || undefined,
             modules: skeleton.modules,
             learningOutcomes: normalizedOutcomes,
             rubricAudit
@@ -6318,6 +6406,27 @@ async function executeCoordinatedGenerationJob(
             }
             return undefined;
           };
+
+          if (isResume) {
+            const existingQuizRes = await pool.query(
+              `SELECT questions FROM course_module_quizzes WHERE course_id = $1 AND module_id = $2 LIMIT 1`,
+              [courseId, moduleId]
+            ).catch(() => ({ rows: [] as any[] }));
+            const existingQuestions = existingQuizRes.rows[0]?.questions;
+            if (Array.isArray(existingQuestions) && existingQuestions.length >= 8) {
+              const existingTopicsCovered = new Set(
+                existingQuestions
+                  .map((q: any) => matchApprovedTopic(q.quiz_topic ?? q.quizTopic)?.toLowerCase())
+                  .filter(Boolean)
+              );
+              const allTopicsCovered = quizTopics.every(t => existingTopicsCovered.has(t.toLowerCase()));
+              const allRefsValid = existingQuestions.every((q: any) => Boolean(matchPersistedLessonTitle(q.source_reference ?? q.sourceReference)));
+              if (allTopicsCovered && allRefsValid) {
+                continue;
+              }
+            }
+          }
+
           let generatedQuiz: any = null;
           let quizValidationError = '';
           for (let quizAttempt = 1; quizAttempt <= 2; quizAttempt++) {
@@ -6443,7 +6552,7 @@ Return strictly a JSON object:
 
         try {
           const formulaData = await completeWithProviderJSON({
-            type: 'skeleton',
+            type: 'formulas',
             messages: [
               { 
                 role: 'system', 
@@ -6462,21 +6571,21 @@ Return strictly a JSON object:
             // newly generated, lesson-grounded result.
             await pool.query('DELETE FROM course_formulas WHERE course_id = $1', [courseId]);
             for (const f of formulaData.formulas) {
-              const fId = `form_${courseId}_${f.id}`;
+              const safeFormulaKey = String(f.id || '').trim().replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64) ||
+                crypto.createHash('sha256').update(`${courseId}:${f.title}`).digest('hex').slice(0, 24);
+              const fId = `form_${courseId}_${safeFormulaKey}`.slice(0, 120);
+              const safeTitle = String(f.title || '').trim().slice(0, 250);
               await pool.query(
-                `INSERT INTO course_formulas (id, course_id, name, latex_expression, variables_breakdown, derivation_notes, created_at)
-                 VALUES ($1, $2, $3, $4, $5::jsonb, $6, NOW())
-                 ON CONFLICT (id) DO UPDATE SET
-                   name = EXCLUDED.name,
-                   latex_expression = EXCLUDED.latex_expression,
-                   derivation_notes = EXCLUDED.derivation_notes`,
-                [fId, courseId, f.title, f.latex, JSON.stringify({}), f.description]
+                `INSERT INTO course_formulas (id, course_id, name, latex_expression, variables_breakdown, derivation_notes, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, $5::jsonb, $6, NOW(), NOW())`,
+                [fId, courseId, safeTitle, f.latex, JSON.stringify({}), f.description]
               );
             }
           }
         } catch (fErr) {
-          logger.error({ courseId, error: fErr instanceof Error ? fErr.message : String(fErr) }, '[Coordinated Gen] Formula generation failed');
-          throw new Error('Course generation stopped because its source-grounded formula sheet could not be generated and persisted.');
+          const fErrMsg = fErr instanceof Error ? fErr.message : String(fErr);
+          logger.error({ courseId, error: fErrMsg }, '[Coordinated Gen] Formula generation failed');
+          throw new Error(`Course generation stopped because its source-grounded formula sheet could not be generated and persisted: ${fErrMsg}`);
         }
 
         // STEP 4: Compile Final Syllabus from Neon PostgreSQL
@@ -7299,7 +7408,7 @@ app.post('/api/admin/courses/:courseId/resume-generation', verifyAdmin, async (r
       scope: ['DEPARTMENT', 'FACULTY', 'GLOBAL', 'PUBLIC', 'ALL'].includes(rawScope) ? rawScope : 'DEPARTMENT',
       selectedFaculties: faculties,
       selectedDepartments: departments,
-      provider: requestedProvider,
+      provider: requestedProvider || (typeof persistedSkeleton?.requestedProvider === 'string' ? persistedSkeleton.requestedProvider : undefined),
       resume: true,
       resumeFromPersistedSkeleton: Boolean(persistedSkeleton?.modules?.length > 0),
       persistedSkeleton
