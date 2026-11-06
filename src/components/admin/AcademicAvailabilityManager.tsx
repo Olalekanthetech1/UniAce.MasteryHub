@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { GraduationCap, Loader2, Plus, RefreshCw, History, BookOpenCheck } from 'lucide-react';
+import { GraduationCap, Loader2, Plus, RefreshCw, History } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useCourses } from '../../context/CourseContext';
 import {
@@ -230,7 +230,7 @@ export default function AcademicAvailabilityManager() {
 
       <div className="mt-6 border-t border-slate-100 pt-5 dark:border-slate-700">
         <h3 className="mb-3 flex items-center gap-2 text-base font-bold text-slate-900 dark:text-white">
-          <BookOpenCheck size={18} className="text-indigo-500" />
+          <History size={18} className="text-indigo-500" />
           Recent availability changes
         </h3>
         {auditLoading ? (
