@@ -201,6 +201,7 @@ import { getFeatureFlags, initRuntimeFlagsSync } from './server/config/features'
 import { ensureCourseLearningSchema } from './server/services/courseLearningSchema';
 import { ensureCourseLifecycleSchema } from './server/services/courseLifecycleSchema.js';
 import { ensureCourseAssessmentSchema } from './server/services/courseAssessmentSchema';
+import { recordVerifiedMarketingPaidConversion } from './server/services/marketingStudioEvents';
 import { redactInstructionalAnswersForStudent, getInstructionalActivityReveal, type InstructionalActivityType } from './server/services/instructionalDelivery.js';
 import { getSystemConfigDoc, getSystemConfigDocs, setSystemConfigDoc, getSystemSettingsDoc, setSystemSettingsDoc } from './server/systemConfigStore';
 
@@ -2552,7 +2553,7 @@ async function processPaymentSuccess(uid: string, reference: string, amount: num
   const app = getAdminApp();
   const commissionRate = await getDynamicCommissionRate();
 
-  return executeTransactionalPaymentSuccess({
+  const result = await executeTransactionalPaymentSuccess({
     app,
     uid,
     reference,
@@ -2561,6 +2562,24 @@ async function processPaymentSuccess(uid: string, reference: string, amount: num
     metadata,
     commissionRateOverride: commissionRate
   });
+
+  // Paystack metadata is trusted here only because callers reach this function
+  // after the webhook HMAC check or server-side transaction verification.
+  // The UNIQUE payment reference makes the paid-conversion event idempotent.
+  const campaignId = metadata?.campaignId;
+  if (!result.alreadyProcessed && typeof campaignId === 'string' && campaignId.trim()) {
+    try {
+      await recordVerifiedMarketingPaidConversion(campaignId, reference);
+    } catch (trackingError: any) {
+      // Tracking must never roll back an already-committed payment or Sparks credit.
+      logger.warn({
+        reference,
+        error: trackingError?.message || String(trackingError)
+      }, '[MarketingCampaignAnalytics] Verified payment conversion could not be recorded');
+    }
+  }
+
+  return result;
 }
 
 // Strict Rate Limiter for AI Generation Endpoints (Denial of Wallet Protection)

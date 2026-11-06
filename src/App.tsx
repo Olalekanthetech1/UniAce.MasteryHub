@@ -60,6 +60,7 @@ import { generateModuleContent, generateCourseSkeleton } from './services/aiCour
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { InstitutionProvider } from './context/InstitutionContext';
 import { safeFetchJson } from './utils/safeFetch';
+import { captureAndTrackCampaignLanding } from './services/marketingCampaignTracking';
 
 const queryClient = new QueryClient();
 
@@ -88,6 +89,12 @@ function AppContent() {
   const { isRecording, stopAndSaveReel, elapsedSeconds } = useDemoReel();
   const isAdmin = Boolean(user && profile?.role === 'admin');
   
+  // Campaign attribution is captured only when the user reaches UniAce with
+  // explicit campaign parameters on the URL.
+  useEffect(() => {
+    void captureAndTrackCampaignLanding();
+  }, []);
+
   // Activate advanced self-healing for robust dynamic client-state integrity
   useSelfHealing();
 

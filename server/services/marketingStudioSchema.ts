@@ -40,6 +40,22 @@ export async function ensureMarketingStudioSchema(): Promise<void> {
           CREATE INDEX IF NOT EXISTS idx_admin_marketing_asset_versions_history
           ON admin_marketing_asset_versions (asset_key, version DESC, created_at DESC)
         `);
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS marketing_campaign_events (
+            event_id TEXT PRIMARY KEY,
+            campaign_id TEXT NOT NULL,
+            event_type TEXT NOT NULL CHECK (
+              event_type IN ('qr_landing', 'landing_visit', 'registration_completed', 'paid_conversion')
+            ),
+            visitor_id TEXT,
+            dedupe_key TEXT NOT NULL UNIQUE,
+            occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `);
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_marketing_campaign_events_campaign_time
+          ON marketing_campaign_events (campaign_id, occurred_at DESC)
+        `);
         await client.query('COMMIT');
       } catch (error) {
         await client.query('ROLLBACK').catch(() => undefined);

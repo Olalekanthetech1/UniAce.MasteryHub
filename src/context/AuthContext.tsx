@@ -7,13 +7,15 @@ import {
   signOut, 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword,
-  updateProfile 
+  updateProfile,
+  getAdditionalUserInfo 
 } from "firebase/auth";
 import { getToken } from "firebase/messaging";
 import toast from "react-hot-toast";
 import { auth, messaging } from "../firebase";
 import { LogService } from "../services/logService";
 import { PlanType } from "../types";
+import { trackCampaignRegistration } from "../services/marketingCampaignTracking";
 
 interface UserProfile {
   uid: string;
@@ -555,8 +557,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     try {
       console.log("AuthContext: Starting signInWithPopup...");
-      await signInWithPopup(auth, provider);
+      const credential = await signInWithPopup(auth, provider);
       console.log("AuthContext: signInWithPopup completed successfully.");
+      if (getAdditionalUserInfo(credential)?.isNewUser) {
+        void trackCampaignRegistration().catch((trackingError) => {
+          console.warn('[MarketingCampaignTracking] New Google registration was not attributed:', trackingError);
+        });
+      }
     } catch (error: any) {
       console.error("Error signing in with Google", error);
       if (error.code === 'auth/popup-closed-by-user' || error.code === 'auth/cancelled-popup-request') {
@@ -605,6 +612,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (displayName && cred.user) {
       await updateProfile(cred.user, { displayName });
     }
+    void trackCampaignRegistration().catch((trackingError) => {
+      console.warn('[MarketingCampaignTracking] New email registration was not attributed:', trackingError);
+    });
   };
 
   const logout = async () => {

@@ -2796,6 +2796,134 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
     }
   });
 
+
+  const publicMarketingEventLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 80,
+    message: { error: 'Marketing event rate limit reached.' },
+    standardHeaders: true,
+    legacyHeaders: false
+  });
+
+  const MarketingCampaignIdSchema = z.string().trim().min(3).max(180).regex(/^[a-z0-9:_-]+$/i);
+  const insertMarketingCampaignEvent = async (
+    campaignId: string,
+    eventType: 'qr_landing' | 'landing_visit' | 'registration_completed' | 'paid_conversion',
+    visitorId: string | null,
+    dedupeMaterial: string
+  ): Promise<boolean> => {
+    await ensureMarketingStudioSchema();
+    const pool = getPostgresPool();
+    if (!pool) throw new Error('Marketing campaign event storage is unavailable.');
+    const eventId = crypto.randomUUID();
+    const dedupeKey = crypto.createHash('sha256').update(dedupeMaterial).digest('hex');
+    const result = await pool.query(
+      `INSERT INTO marketing_campaign_events
+        (event_id, campaign_id, event_type, visitor_id, dedupe_key, occurred_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())
+       ON CONFLICT (dedupe_key) DO NOTHING
+       RETURNING event_id`,
+      [eventId, campaignId, eventType, visitorId, dedupeKey]
+    );
+    return result.rowCount === 1;
+  };
+
+  /** Public, minimal event ingestion. It accepts only browser-observed campaign landings. */
+  app.post('/api/marketing/campaign-events', publicMarketingEventLimiter, async (req: any, res: any) => {
+    const schema = z.object({
+      campaignId: MarketingCampaignIdSchema,
+      eventType: z.enum(['qr_landing', 'landing_visit']),
+      visitorId: z.string().trim().min(16).max(80).regex(/^[a-z0-9_-]+$/i)
+    }).strict();
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'The campaign landing event did not match the required schema.' });
+    try {
+      const { campaignId, eventType, visitorId } = parsed.data;
+      const utcDay = new Date().toISOString().slice(0, 10);
+      const recorded = await insertMarketingCampaignEvent(
+        campaignId,
+        eventType,
+        visitorId,
+        `landing|${campaignId}|${eventType}|${visitorId}|${utcDay}`
+      );
+      return res.status(202).json({ accepted: true, recorded });
+    } catch (error: any) {
+      console.error('[MarketingCampaignAnalytics] Landing event persistence failed:', error?.message || error);
+      return res.status(503).json({ error: 'The marketing event could not be persisted.' });
+    }
+  });
+
+  /** Signup events are accepted only for a Firebase account created in the last 30 minutes. */
+  app.post('/api/marketing/campaign-events/registration', verifyAuth, async (req: any, res: any) => {
+    const schema = z.object({
+      campaignId: MarketingCampaignIdSchema,
+      visitorId: z.string().trim().min(16).max(80).regex(/^[a-z0-9_-]+$/i)
+    }).strict();
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'A valid campaign attribution is required.' });
+    try {
+      const firebaseApp = getAdminApp();
+      if (!firebaseApp) return res.status(503).json({ error: 'Firebase account verification is unavailable.' });
+      const account = await admin.auth(firebaseApp).getUser(req.user.uid);
+      const createdAtMs = Date.parse(account.metadata.creationTime);
+      const ageMs = Date.now() - createdAtMs;
+      if (!Number.isFinite(createdAtMs) || ageMs < -60000 || ageMs > 30 * 60 * 1000) {
+        return res.status(403).json({ error: 'Registration conversion can only be recorded for a newly created account.' });
+      }
+      const { campaignId, visitorId } = parsed.data;
+      const recorded = await insertMarketingCampaignEvent(
+        campaignId,
+        'registration_completed',
+        visitorId,
+        `registration|${campaignId}|${req.user.uid}`
+      );
+      return res.status(202).json({ accepted: true, recorded });
+    } catch (error: any) {
+      console.error('[MarketingCampaignAnalytics] Registration event persistence failed:', error?.message || error);
+      return res.status(503).json({ error: 'The registration event could not be verified or persisted.' });
+    }
+  });
+
+  /** Aggregated event counts are visible only to administrators. */
+  app.get('/api/admin/marketing/analytics', verifyAuth, async (req: any, res: any) => {
+    try {
+      const isAdmin = await checkIsAdmin(req.user?.uid, req.user?.email);
+      if (!isAdmin) return res.status(403).json({ error: 'Administrator privileges are required.' });
+      const campaignId = typeof req.query?.campaignId === 'string' ? req.query.campaignId.trim() : '';
+      if (!MarketingCampaignIdSchema.safeParse(campaignId).success) {
+        return res.status(400).json({ error: 'A valid campaignId is required.' });
+      }
+      await ensureMarketingStudioSchema();
+      const pool = getPostgresPool();
+      if (!pool) return res.status(503).json({ error: 'Campaign analytics are unavailable.' });
+      const result = await pool.query(
+        `SELECT
+           COUNT(*) FILTER (WHERE event_type = 'qr_landing')::int AS qr_landings,
+           COUNT(*) FILTER (WHERE event_type = 'landing_visit')::int AS landing_visits,
+           COUNT(*) FILTER (WHERE event_type = 'registration_completed')::int AS registrations,
+           COUNT(*) FILTER (WHERE event_type = 'paid_conversion')::int AS paid_conversions,
+           COUNT(DISTINCT visitor_id)::int AS unique_visitors,
+           MAX(occurred_at) AS last_event_at
+         FROM marketing_campaign_events
+         WHERE campaign_id = $1`,
+        [campaignId]
+      );
+      const row = result.rows[0] || {};
+      const metrics = {
+        qrLandings: Number(row.qr_landings || 0),
+        landingVisits: Number(row.landing_visits || 0),
+        registrations: Number(row.registrations || 0),
+        paidConversions: Number(row.paid_conversions || 0),
+        uniqueVisitors: Number(row.unique_visitors || 0),
+        lastEventAt: row.last_event_at ? new Date(row.last_event_at).toISOString() : null
+      };
+      return res.json({ campaignId, metrics, source: 'recorded_marketing_campaign_events' });
+    } catch (error: any) {
+      console.error('[MarketingCampaignAnalytics] Analytics query failed:', error?.message || error);
+      return res.status(503).json({ error: 'Campaign analytics could not be loaded from Neon PostgreSQL.' });
+    }
+  });
+
   // Admin Support Overview, Ticket Status, and Broadcast (Neon PostgreSQL)
   app.get('/api/admin/support/overview', verifyAuth, async (req: any, res: any) => {
     try {

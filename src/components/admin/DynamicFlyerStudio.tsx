@@ -38,6 +38,7 @@ import {
   User,
   Save,
   History,
+  BarChart3,
 } from 'lucide-react';
 import { useMarketingSnapshot } from '../../hooks/useMarketingSnapshot';
 import { toMarketingCourseMap } from '../../services/marketingSnapshot';
@@ -50,6 +51,10 @@ import {
   synthesizeFlyerWithAI,
 } from '../../services/demoReelService';
 import { generateQrMatrix } from '../../utils/qrCodeSvg';
+import {
+  getMarketingCampaignAnalytics,
+  MarketingCampaignAnalytics,
+} from '../../services/marketingCampaignTracking';
 import {
   getMarketingAssetVersion,
   listMarketingAssetVersions,
@@ -101,6 +106,29 @@ const FLYER_EXPORT_SIZES: Record<FlyerExportFormat, { width: number; height: num
   vertical: { width: 1080, height: 1920, label: '9:16 Vertical · 1080 × 1920' },
   landscape: { width: 1920, height: 1080, label: '16:9 Landscape · 1920 × 1080' },
 };
+
+function buildFlyerCampaignId(
+  scope: MarketingTargetScope,
+  courseId: string,
+  faculty: string,
+  department: string
+): string {
+  const target = scope === 'course'
+    ? courseId
+    : scope === 'faculty'
+      ? faculty
+      : scope === 'department'
+        ? department
+        : 'all';
+  const slug = String(target || 'unselected')
+    .normalize('NFKC')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 100) || 'unselected';
+  return `flyer:${scope}:${slug}`;
+}
 
 function drawWrappedCanvasText(
   ctx: CanvasRenderingContext2D,
@@ -379,6 +407,9 @@ export default function DynamicFlyerStudio() {
   const [restoringVersionId, setRestoringVersionId] = useState<string | null>(null);
   const [assetHistory, setAssetHistory] = useState<MarketingAssetVersion[]>([]);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [campaignAnalytics, setCampaignAnalytics] = useState<MarketingCampaignAnalytics | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [analyticsError, setAnalyticsError] = useState<string | null>(null);
   const [activeCaptionTab, setActiveCaptionTab] = useState<'whatsapp' | 'twitter' | 'linkedin' | 'tiktok'>('whatsapp');
   const [copiedCaption, setCopiedCaption] = useState<string | null>(null);
 
@@ -455,6 +486,13 @@ export default function DynamicFlyerStudio() {
     [flyerConfig?.capabilities]
   );
 
+  const currentAssetKey = buildFlyerCampaignId(
+    targetScope,
+    selectedCourseId,
+    selectedFaculty,
+    selectedDepartment
+  );
+
   const qrResult = useMemo(() => {
     if (!flyerConfig?.qrTargetUrl?.trim()) {
       return { matrix: [] as boolean[][], error: 'Enter a valid HTTP(S) destination for the QR code.' };
@@ -464,6 +502,9 @@ export default function DynamicFlyerStudio() {
       if (!['http:', 'https:'].includes(destination.protocol) || !destination.hostname) {
         throw new Error('QR destination must use HTTP or HTTPS.');
       }
+      destination.searchParams.set('utm_campaign', currentAssetKey);
+      destination.searchParams.set('utm_source', 'uniace_flyer');
+      destination.searchParams.set('utm_medium', 'qr');
       return { matrix: generateQrMatrix(destination.toString()), error: null as string | null };
     } catch (error: any) {
       return {
@@ -471,27 +512,10 @@ export default function DynamicFlyerStudio() {
         error: error?.message || 'QR destination could not be encoded.'
       };
     }
-  }, [flyerConfig?.qrTargetUrl]);
+  }, [flyerConfig?.qrTargetUrl, currentAssetKey]);
   const qrMatrix = qrResult.matrix;
 
   const palette = THEME_PALETTES[flyerConfig?.themeId || 'emerald_gold'] || THEME_PALETTES.emerald_gold;
-  const currentAssetKey = useMemo(() => {
-    const target = targetScope === 'course'
-      ? selectedCourseId
-      : targetScope === 'faculty'
-        ? selectedFaculty
-        : targetScope === 'department'
-          ? selectedDepartment
-          : 'all';
-    const slug = String(target || 'unselected')
-      .normalize('NFKC')
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 100) || 'unselected';
-    return `flyer:${targetScope}:${slug}`;
-  }, [targetScope, selectedCourseId, selectedFaculty, selectedDepartment]);
 
   useEffect(() => {
     let active = true;
@@ -509,6 +533,26 @@ export default function DynamicFlyerStudio() {
       })
       .finally(() => {
         if (active) setIsLoadingHistory(false);
+      });
+    return () => { active = false; };
+  }, [currentAssetKey]);
+
+  useEffect(() => {
+    let active = true;
+    setAnalyticsLoading(true);
+    setAnalyticsError(null);
+    getMarketingCampaignAnalytics(currentAssetKey)
+      .then((metrics) => {
+        if (active) setCampaignAnalytics(metrics);
+      })
+      .catch((error: any) => {
+        if (active) {
+          setCampaignAnalytics(null);
+          setAnalyticsError(error?.message || 'Campaign metrics could not be verified.');
+        }
+      })
+      .finally(() => {
+        if (active) setAnalyticsLoading(false);
       });
     return () => { active = false; };
   }, [currentAssetKey]);
@@ -1289,6 +1333,69 @@ export default function DynamicFlyerStudio() {
         <p className="px-1 text-[11px] text-slate-500 dark:text-slate-400">
           Social PNG exports are composed at exact 1080 × 1080, 1080 × 1920 or 1920 × 1080 dimensions. The A4 PDF remains a separate portrait print layout.
         </p>
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2 text-sm font-black text-slate-900 dark:text-white">
+                <BarChart3 size={17} className="text-emerald-600" />
+                Recorded campaign performance
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                Metrics are read from persisted campaign events for <code>{currentAssetKey}</code>; no estimated or preview activity is included.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setAnalyticsLoading(true);
+                setAnalyticsError(null);
+                getMarketingCampaignAnalytics(currentAssetKey)
+                  .then(setCampaignAnalytics)
+                  .catch((error: any) => {
+                    setCampaignAnalytics(null);
+                    setAnalyticsError(error?.message || 'Campaign metrics could not be verified.');
+                  })
+                  .finally(() => setAnalyticsLoading(false));
+              }}
+              disabled={analyticsLoading}
+              className="rounded-lg border border-slate-300 px-3 py-2 text-[11px] font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700"
+            >
+              {analyticsLoading ? 'Refreshing…' : 'Refresh metrics'}
+            </button>
+          </div>
+          {analyticsError && (
+            <p role="alert" className="mt-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-[11px] text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+              {analyticsError}
+            </p>
+          )}
+          {!analyticsError && analyticsLoading && !campaignAnalytics && (
+            <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">Loading recorded campaign events…</p>
+          )}
+          {campaignAnalytics && (
+            <>
+              <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-5">
+                {[
+                  ['QR-attributed landings', campaignAnalytics.metrics.qrLandings],
+                  ['Landing visits', campaignAnalytics.metrics.landingVisits],
+                  ['Completed registrations', campaignAnalytics.metrics.registrations],
+                  ['Paid conversions', campaignAnalytics.metrics.paidConversions],
+                  ['Unique sessions', campaignAnalytics.metrics.uniqueVisitors],
+                ].map(([label, value]) => (
+                  <div key={String(label)} className="rounded-xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900">
+                    <div className="text-xl font-black tabular-nums text-slate-900 dark:text-white">
+                      {Number(value).toLocaleString()}
+                    </div>
+                    <div className="mt-1 text-[10px] font-semibold leading-4 text-slate-500 dark:text-slate-400">{label}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 text-[10px] leading-4 text-slate-500 dark:text-slate-400">
+                QR-attributed landings count opens of the QR-tagged URL that reach an instrumented UniAce page; they do not measure physical camera scans. Unique sessions are browser sessions, not verified people. {campaignAnalytics.metrics.lastEventAt ? `Last recorded event: ${new Date(campaignAnalytics.metrics.lastEventAt).toLocaleString()}.` : 'No campaign events have been recorded yet.'}
+              </div>
+            </>
+          )}
+        </div>
+
         <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
