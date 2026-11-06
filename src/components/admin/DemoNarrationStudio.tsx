@@ -470,6 +470,18 @@ export default function DemoNarrationStudio({
     setOperationError(null);
     setUploadProgress(null);
     setJob(null);
+    const effectiveVoiceSettings: Partial<VoiceSettings> | undefined = voiceSettings
+      ? { ...voiceSettings }
+      : undefined;
+    if (effectiveVoiceSettings && selectedModel.canUseStyle !== true) {
+      delete effectiveVoiceSettings.style;
+    }
+    if (effectiveVoiceSettings && selectedModel.canUseSpeakerBoost !== true) {
+      delete effectiveVoiceSettings.use_speaker_boost;
+    }
+    const settingsForRequest = effectiveVoiceSettings && Object.keys(effectiveVoiceSettings).length > 0
+      ? effectiveVoiceSettings
+      : undefined;
     let uploadId: string | null = null;
     try {
       const fileName = videoFileName || (videoMimeType.includes('mp4') ? 'uniace-browser-recording.mp4' : 'uniace-browser-recording.webm');
@@ -498,7 +510,7 @@ export default function DemoNarrationStudio({
           voiceId: selectedVoice.voiceId,
           modelId: selectedModel.modelId,
           script: script.trim(),
-          ...(voiceSettings ? { voiceSettings } : {}),
+          ...(settingsForRequest ? { voiceSettings: settingsForRequest } : {}),
           originalAudioMode,
           originalAudioVolume,
           narrationVolume,
