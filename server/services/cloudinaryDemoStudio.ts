@@ -221,7 +221,7 @@ export async function uploadCloudinaryLocalAsset(input: {
   if (!finalResponse) throw new Error('Cloudinary did not return a completed upload response.');
   const normalized = normalizeAsset(finalResponse, {
     assetId: requireAssetString(finalResponse?.asset_id, 'asset ID'),
-    publicId: input.folder.replace(/\\/+$/, '') + '/' + input.publicId,
+    publicId: input.folder + '/' + input.publicId,
     resourceType: input.resourceType,
     deliveryType: 'authenticated',
     expectedBytes: stat.size
