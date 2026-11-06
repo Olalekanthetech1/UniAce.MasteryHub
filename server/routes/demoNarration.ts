@@ -1095,7 +1095,7 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
         receivedBytes: 0,
         complete: false,
         cloudinaryFolder: config.folderPrefix,
-        cloudinaryPublicId: publicId,
+        cloudinaryPublicId: config.folderPrefix.replace(/\\/+$/, '') + '/' + publicId,
         cloudinaryAsset: null,
         expiresAt: Date.now() + UPLOAD_TTL_MS
       };
