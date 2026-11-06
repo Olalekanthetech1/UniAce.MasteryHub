@@ -95,7 +95,7 @@ export default defineConfig(({mode}) => {
               urlPattern: ({ url }) =>
                 url.origin === self.location.origin &&
                 url.pathname.startsWith('/assets/') &&
-                /\\.(?:js|mjs)$/i.test(url.pathname),
+                /\.(?:js|mjs)$/i.test(url.pathname),
               handler: 'CacheFirst',
               options: {
                 cacheName: 'uniace-feature-chunks-v1',
