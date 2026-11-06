@@ -328,17 +328,14 @@ export const AcademicContentBlockCollectionSchema = z.preprocess((raw: unknown) 
   const obj = { ...(raw as Record<string, any>) };
   if (!obj.schemaVersion) obj.schemaVersion = '1.0';
   if (Array.isArray(obj.blocks)) {
-    const seenIds = new Set<string>();
-    const seenChecks = new Set<number>();
     const dedupedBlocks: any[] = [];
     for (let i = 0; i < obj.blocks.length; i++) {
       const b = obj.blocks[i];
       if (!b || typeof b !== 'object') continue;
       const copy = { ...b };
-      let id = String(copy.id || `block-${i + 1}`).trim();
-      if (seenIds.has(id)) id = `${id}-${i + 1}`;
-      seenIds.add(id);
-      copy.id = id;
+      // Preserve supplied IDs so the collection validator can reject duplicates.
+      // Silently rewriting IDs would mask malformed content and break stable references.
+      copy.id = String(copy.id || `block-${i + 1}`).trim();
       if (Array.isArray(copy.steps)) {
         copy.steps = copy.steps.map((s: any) => (typeof s === 'string' ? { explanation: s } : s));
       }
@@ -357,10 +354,6 @@ export const AcademicContentBlockCollectionSchema = z.preprocess((raw: unknown) 
             return g;
           });
         }
-      }
-      if (copy.type === 'knowledge_check' && typeof copy.activityIndex === 'number') {
-        if (seenChecks.has(copy.activityIndex)) continue;
-        seenChecks.add(copy.activityIndex);
       }
       dedupedBlocks.push(copy);
     }

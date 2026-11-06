@@ -4,6 +4,24 @@ import { normalizeSemester } from '../utils/normalization';
 import { safeFetchJson } from '../utils/safeFetch';
 import { auth } from '../firebase';
 
+export type StudentAvailability = 'live' | 'coming_soon' | 'hidden';
+export interface AcademicLevelOption {
+  level_key: string;
+  label: string;
+  availability: StudentAvailability;
+  sort_order: number;
+}
+
+export interface AcademicAvailabilityAuditEntry {
+  id: string;
+  entity_type: 'academic_level' | 'course';
+  entity_id: string;
+  previous_state: string | null;
+  next_state: string;
+  actor_uid: string;
+  created_at: string;
+}
+
 export const sanitizeForFirestore = (obj: any): any => {
   if (obj === undefined) return null;
   if (obj === null) return null;
@@ -65,6 +83,8 @@ export const CourseService = {
         ...(Number.isInteger(c.creditUnits ?? c.credit_units) ? { creditUnits: Number(c.creditUnits ?? c.credit_units) } : {}),
         scope: c.scope,
         status: c.status,
+        studentVisibility: c.student_visibility ?? c.studentVisibility,
+        levelAvailability: c.level_availability ?? c.levelAvailability,
         syllabus: Array.isArray(c.syllabus) ? sortCourseSyllabus(c.syllabus) : []
       };
     });
@@ -98,6 +118,8 @@ export const CourseService = {
       ...(Number.isInteger(c.creditUnits ?? c.credit_units) ? { creditUnits: Number(c.creditUnits ?? c.credit_units) } : {}),
       scope: c.scope,
       status: c.status,
+      studentVisibility: c.student_visibility ?? c.studentVisibility,
+      levelAvailability: c.level_availability ?? c.levelAvailability,
       syllabus: Array.isArray(c.syllabus) ? sortCourseSyllabus(c.syllabus) : []
     };
   },
@@ -277,6 +299,72 @@ export const CourseService = {
     });
     if (!res.ok) {
       throw new Error(`Failed to publish course ${courseId} via Neon`);
+    }
+  },
+
+  async getAcademicLevels(): Promise<AcademicLevelOption[]> {
+    const headers = await buildAuthHeaders();
+    const res = await safeFetchJson<any>('/api/academic-levels', { headers });
+    if (!res.ok || !res.data || !Array.isArray(res.data.levels)) {
+      throw new Error(res.error || 'Academic level availability could not be verified.');
+    }
+    return res.data.levels as AcademicLevelOption[];
+  },
+
+  async getAdminAcademicLevels(): Promise<AcademicLevelOption[]> {
+    const headers = await buildAuthHeaders();
+    const res = await safeFetchJson<any>('/api/admin/academic-levels', { headers });
+    if (!res.ok || !res.data || !Array.isArray(res.data.levels)) {
+      throw new Error(res.error || 'Academic level settings could not be loaded.');
+    }
+    return res.data.levels as AcademicLevelOption[];
+  },
+
+  async createAcademicLevel(input: { levelKey: string; label: string; availability?: StudentAvailability; sortOrder?: number }): Promise<void> {
+    const headers = await buildAuthHeaders(undefined, { 'Content-Type': 'application/json' });
+    const res = await fetch('/api/admin/academic-levels', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(input)
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Failed to add academic level.');
+    }
+  },
+
+  async updateAcademicLevel(levelKey: string, input: { availability?: StudentAvailability; label?: string; sortOrder?: number }): Promise<void> {
+    const headers = await buildAuthHeaders(undefined, { 'Content-Type': 'application/json' });
+    const res = await fetch(`/api/admin/academic-levels/${encodeURIComponent(levelKey)}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify(input)
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Failed to update academic level.');
+    }
+  },
+
+  async getAcademicAvailabilityAudit(limit = 15): Promise<AcademicAvailabilityAuditEntry[]> {
+    const headers = await buildAuthHeaders();
+    const res = await safeFetchJson<any>(`/api/admin/academic-availability/audit?limit=${encodeURIComponent(String(limit))}`, { headers });
+    if (!res.ok || !res.data || !Array.isArray(res.data.entries)) {
+      throw new Error(res.error || 'Availability history could not be loaded.');
+    }
+    return res.data.entries as AcademicAvailabilityAuditEntry[];
+  },
+
+  async updateCourseAvailability(courseId: string, availability: StudentAvailability): Promise<void> {
+    const headers = await buildAuthHeaders(undefined, { 'Content-Type': 'application/json' });
+    const res = await fetch(`/api/admin/courses/${encodeURIComponent(courseId)}/availability`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ availability })
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `Failed to update availability for ${courseId}.`);
     }
   },
 

@@ -4,6 +4,7 @@ import { getPostgresPool } from '../postgresPool';
 import { logger } from '../logger';
 import { arenaRealtime } from '../arenaRealtime';
 import { validateRecordedHumanReplay } from '../services/arenaReplay';
+import { listStudentVisibleAcademicLevels } from '../services/academicAvailability';
 
 // In-memory UID-keyed cache for bootstrap payloads (60-second TTL)
 interface BootstrapCacheEntry {
@@ -26,6 +27,20 @@ const systemConfigCache = new Map<string, { data: any; cachedAt: number }>();
 const SYSTEM_CONFIG_TTL_MS = 5 * 60 * 1000;
 
 export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
+  // Dynamic student level options. Coming-soon levels remain visible but cannot be selected;
+  // hidden levels are omitted. The database remains the authoritative source.
+  app.get('/api/academic-levels', verifyAuth, async (req, res) => {
+    try {
+      const levels = await listStudentVisibleAcademicLevels();
+      res.set('Cache-Control', 'private, no-store');
+      res.set('Vary', 'Authorization');
+      return res.json({ success: true, levels });
+    } catch (error: any) {
+      logger.error({ error: error?.message || String(error) }, '[GET /api/academic-levels] Failed to load academic level availability');
+      return res.status(503).json({ error: 'Academic level availability is temporarily unavailable. Please retry.' });
+    }
+  });
+
   /**
    * GET /api/user/bootstrap
    * Consolidated bootstrap endpoint:

@@ -31,13 +31,16 @@ jobs:
         uses: oven-sh/setup-bun@v2
 
       - name: Install locked dependencies
+        id: install_deps
         run: bun install --frozen-lockfile
 
       - name: Unit tests
         run: bun run test
 
       - name: TypeScript validation
+        if: ${{ always() && steps.install_deps.outcome == 'success' }}
         run: bun run lint
 
       - name: Production build
+        if: ${{ always() && steps.install_deps.outcome == 'success' }}
         run: bun run build

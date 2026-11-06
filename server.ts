@@ -1141,7 +1141,7 @@ async function resolveCourseAccessForUser(uid: string, email: string | undefined
   );
   return {
     allowed: decision.allowed,
-    statusCode: decision.allowed ? 200 : 403,
+    statusCode: decision.allowed ? 200 : (decision.reason === 'availability_hidden' ? 404 : 403),
     reason: decision.reason,
     course
   };
@@ -1209,7 +1209,7 @@ app.get('/api/catalog/full', verifyAuth, async (req: any, res: any) => {
             record,
             accessContext.account!.learning_profile,
             accessContext.institution!
-          ).allowed)
+          ).visible)
           .map(record => record.id)
       );
       courses = catalogCourses.filter(course => eligibleIds.has(course.id));
@@ -1278,7 +1278,7 @@ app.get('/api/courses', verifyAuth, async (req: any, res: any) => {
             record,
             accessContext.account!.learning_profile,
             accessContext.institution!
-          ).allowed)
+          ).visible)
           .map(record => record.id)
       );
       courses = allPublishedCourses.filter(course => eligibleIds.has(course.id));

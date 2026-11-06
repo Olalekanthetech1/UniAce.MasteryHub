@@ -102,6 +102,16 @@ test('rejects duplicate block identifiers', () => {
   assert.throws(() => AcademicContentBlockCollectionSchema.parse(invalid), /Duplicate academic content block ID/);
 });
 
+test('rejects duplicate knowledge-check activity references', () => {
+  const invalid = structuredClone(collection);
+  const originalCheck = invalid.blocks.find(block => block.type === 'knowledge_check')!;
+  invalid.blocks.push({ ...originalCheck, id: 'check-pressure-duplicate' });
+  assert.throws(
+    () => AcademicContentBlockCollectionSchema.parse(invalid),
+    /Knowledge-check activity index 0 is referenced more than once/
+  );
+});
+
 test('simulation expressions accept arithmetic and allowlisted functions', () => {
   assert.deepEqual(validateSimulationExpression('a*sin(x) + sqrt(x^2)', 'x', 'a'), { valid: true });
   assert.deepEqual(validateSimulationExpression('log10(abs(x)) + cos(x)', 'x', 'a'), { valid: true });

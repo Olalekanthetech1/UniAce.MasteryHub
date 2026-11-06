@@ -12,6 +12,8 @@ import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import AdminQuestionBank from './AdminQuestionBank';
 import { ApiDebuggerPage } from './ApiDebuggerPage';
 import CourseEditModal from './CourseEditModal';
+import AcademicAvailabilityManager from './admin/AcademicAvailabilityManager';
+import CourseAvailabilityControl from './admin/CourseAvailabilityControl';
 import CourseCreateModal from './CourseCreateModal';
 import ApiKeyManagerModal from './ApiKeyManagerModal';
 import { CurriculumManager } from './CurriculumManager';
@@ -4182,6 +4184,9 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
           )}
         </div>
 
+          {/* Academic availability is separate from publication and archiving. */}
+          {!showArchived && isAdmin && <AcademicAvailabilityManager />}
+
           {/* Existing Courses List */}
           {isAdmin && (
             <DraftCourseReviewPanel
@@ -4251,6 +4256,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
                     </div>
                   </div>
                   <div className="flex w-full sm:w-auto flex-wrap items-center gap-2">
+                    {!showArchived && <CourseAvailabilityControl course={course} onChanged={refreshCourses} />}
                     {!showArchived && (
                       <>
                         <button

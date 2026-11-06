@@ -31,6 +31,7 @@ export interface CourseOffering {
 }
 
 export interface Course {
+  // Student-facing availability is independent of publication status.
   id: CourseId;
   title: string;
   description: string;
@@ -56,6 +57,8 @@ export interface Course {
   deleted?: boolean;
   deletedAt?: string;
   status?: string;
+  studentVisibility?: 'live' | 'coming_soon' | 'hidden';
+  levelAvailability?: 'live' | 'coming_soon' | 'hidden';
   faculty?: string;
   syllabusStatus?: 'pending' | 'generating' | 'ready' | 'failed';
   syllabusStatusTimestamp?: string;

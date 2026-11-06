@@ -17,6 +17,7 @@ import type { Quiz } from '../../src/types';
 import { queryPostgres } from '../postgresPool';
 import { logger } from '../logger';
 import { ensureCourseLearningSchema } from '../services/courseLearningSchema';
+import { ensureAcademicAvailabilitySchema, listAcademicLevelAvailability, normalizeAcademicLevelKey } from '../services/academicAvailability';
 import { sortCourseSyllabus, getModuleOrderIndex, getLessonOrderIndex } from '../../src/shared/courseSchemas';
 
 export interface CourseQueryFilter {
@@ -86,6 +87,7 @@ function mapCourseRecord(row: any): CourseEntity {
     thumbnail_url: typeof row.thumbnail_url === 'string' ? row.thumbnail_url : null,
     author_id: typeof row.author_id === 'string' && row.author_id.trim() ? row.author_id : null,
     status: row.status,
+    student_visibility: row.student_visibility,
     version,
     created_at: toPersistedIso(row.created_at, 'created_at'),
     updated_at: toPersistedIso(row.updated_at, 'updated_at'),
@@ -101,6 +103,7 @@ export class CourseRepository {
    */
   async listPublishedCourses(filter: CourseQueryFilter = {}, forceRefresh = false): Promise<CourseEntity[]> {
     await ensureCourseLearningSchema();
+    await ensureAcademicAvailabilitySchema();
     const flags = getFeatureFlags();
     const cacheKey = `catalog:list:${filter.department || 'all'}:${filter.level || 'all'}`;
 
@@ -115,7 +118,7 @@ export class CourseRepository {
       try {
         let sql = `
           SELECT id, code, title, description, level, department, faculty, semester, credit_units, faculties, departments, scope,
-                 thumbnail_url, author_id, status, version, created_at, updated_at
+                 thumbnail_url, author_id, status, student_visibility, version, created_at, updated_at
           FROM courses
           WHERE 1=1
         `;
@@ -164,6 +167,7 @@ export class CourseRepository {
    */
   async getCourseById(courseId: string): Promise<CourseEntity | null> {
     await ensureCourseLearningSchema();
+    await ensureAcademicAvailabilitySchema();
     const flags = getFeatureFlags();
     const cacheKey = `catalog:course:${courseId}`;
 
@@ -176,7 +180,7 @@ export class CourseRepository {
       try {
         const sql = `
           SELECT id, code, title, description, level, department, faculty, semester, credit_units, faculties, departments, scope,
-                 thumbnail_url, author_id, status, version, created_at, updated_at
+                 thumbnail_url, author_id, status, student_visibility, version, created_at, updated_at
           FROM courses
           WHERE id = $1
           LIMIT 1
@@ -477,6 +481,7 @@ export class CourseRepository {
    */
   async getFullCatalogWithSyllabus(forceRefresh = false): Promise<{ courses: any[]; etag: string; maxUpdatedAt: string | null }> {
     await ensureCourseLearningSchema();
+    await ensureAcademicAvailabilitySchema();
     const flags = getFeatureFlags();
     const cacheKey = 'catalog:full:published';
 
@@ -489,8 +494,10 @@ export class CourseRepository {
 
     if (flags.ENABLE_POSTGRES_CATALOG) {
       try {
+        const academicLevels = await listAcademicLevelAvailability();
+        const levelAvailabilityByKey = new Map(academicLevels.map(item => [normalizeAcademicLevelKey(item.level_key), item.availability] as const));
         const coursesRes = await queryPostgres<any>(
-          `SELECT id, title, description, department, faculty, faculties, departments, level, semester, credit_units, status, scope, updated_at
+          `SELECT id, title, description, department, faculty, faculties, departments, level, semester, credit_units, status, student_visibility, scope, updated_at
            FROM courses
            WHERE status = 'published'
            ORDER BY id ASC`
@@ -563,6 +570,8 @@ export class CourseRepository {
             creditUnits,
             scope: typeof c.scope === 'string' ? c.scope : null,
             status: c.status,
+            student_visibility: c.student_visibility,
+            level_availability: levelAvailabilityByKey.get(normalizeAcademicLevelKey(String(c.level ?? ''))) || 'hidden',
             syllabus: sortCourseSyllabus(cMods)
           };
         });
