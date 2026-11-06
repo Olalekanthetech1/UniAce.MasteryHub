@@ -149,9 +149,11 @@ function uploadDirectToCloudinary(
   blob: Blob,
   onProgress: (percentage: number | null) => void
 ): Promise<{ assetId: string; publicId: string }> {
-  return new Promise((resolve, reject) => {
+  const chunkSize = 6 * 1024 * 1024;
+  const uploadId = window.crypto?.randomUUID?.() || 'uniace-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  const sendChunk = (start: number, end: number): Promise<any> => new Promise((resolve, reject) => {
     const form = new FormData();
-    form.append('file', blob);
+    form.append('file', blob.slice(start, end + 1), 'chunk');
     form.append('api_key', signature.apiKey);
     form.append('timestamp', String(signature.timestamp));
     form.append('signature', signature.signature);
@@ -159,31 +161,50 @@ function uploadDirectToCloudinary(
     form.append('public_id', signature.publicId);
     form.append('overwrite', 'false');
     form.append('type', signature.deliveryType);
+
     const xhr = new XMLHttpRequest();
     xhr.open('POST', signature.uploadUrl);
+    xhr.setRequestHeader('X-Unique-Upload-Id', uploadId);
+    xhr.setRequestHeader('Content-Range', 'bytes ' + start + '-' + end + '/' + blob.size);
     xhr.upload.onprogress = (event) => {
-      onProgress(event.lengthComputable && event.total > 0
-        ? Math.min(100, Math.round(event.loaded / event.total * 100))
-        : null);
+      if (!event.lengthComputable || event.total <= 0) {
+        onProgress(null);
+        return;
+      }
+      const completed = start + Math.min(end - start + 1, Math.max(0, Math.round(event.loaded / event.total * (end - start + 1))));
+      onProgress(Math.min(99, Math.floor(completed / blob.size * 100)));
     };
-    xhr.onerror = () => reject(new Error('The direct Cloudinary upload connection failed.'));
+    xhr.onerror = () => reject(new Error('The direct Cloudinary upload connection failed. Check the network and retry.'));
     xhr.onabort = () => reject(new Error('The Cloudinary upload was cancelled.'));
     xhr.onload = () => {
       let data: any = {};
       try { data = xhr.responseText ? JSON.parse(xhr.responseText) : {}; } catch { data = {}; }
       if (xhr.status < 200 || xhr.status >= 300) {
-        reject(new Error(data?.error?.message || 'Cloudinary rejected the video upload with HTTP ' + xhr.status + '.'));
+        reject(new Error(data?.error?.message || 'Cloudinary rejected an upload chunk with HTTP ' + xhr.status + '.'));
         return;
       }
-      if (typeof data.asset_id !== 'string' || typeof data.public_id !== 'string') {
-        reject(new Error('Cloudinary did not return the asset identity needed for server verification.'));
-        return;
-      }
-      onProgress(100);
-      resolve({ assetId: data.asset_id, publicId: data.public_id });
+      resolve(data);
     };
     xhr.send(form);
   });
+
+  return (async () => {
+    let finalResult: any = null;
+    for (let start = 0; start < blob.size; start += chunkSize) {
+      const end = Math.min(start + chunkSize, blob.size) - 1;
+      finalResult = await sendChunk(start, end);
+      if (end < blob.size - 1 && finalResult?.done === true) {
+        throw new Error('Cloudinary completed the video before all selected bytes were sent.');
+      }
+    }
+    if (finalResult?.done !== true ||
+        typeof finalResult?.asset_id !== 'string' ||
+        typeof finalResult?.public_id !== 'string') {
+      throw new Error('Cloudinary did not return a complete final asset record after the last video chunk.');
+    }
+    onProgress(100);
+    return { assetId: finalResult.asset_id, publicId: finalResult.public_id };
+  })();
 }
 
 function normalizeVoiceSettings(value: unknown): Partial<VoiceSettings> | null {
