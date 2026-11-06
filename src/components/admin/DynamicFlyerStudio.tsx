@@ -36,6 +36,8 @@ import {
   Home,
   Library,
   User,
+  Save,
+  History,
 } from 'lucide-react';
 import { useMarketingSnapshot } from '../../hooks/useMarketingSnapshot';
 import { toMarketingCourseMap } from '../../services/marketingSnapshot';
@@ -48,6 +50,12 @@ import {
   synthesizeFlyerWithAI,
 } from '../../services/demoReelService';
 import { generateQrMatrix } from '../../utils/qrCodeSvg';
+import {
+  getMarketingAssetVersion,
+  listMarketingAssetVersions,
+  MarketingAssetVersion,
+  saveMarketingAssetVersion,
+} from '../../services/marketingAssetHistory';
 
 const THEME_PALETTES = {
   emerald_gold: {
@@ -366,6 +374,11 @@ export default function DynamicFlyerStudio() {
   const [isExportingPng, setIsExportingPng] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [exportFormat, setExportFormat] = useState<FlyerExportFormat>('vertical');
+  const [isSavingVersion, setIsSavingVersion] = useState(false);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [restoringVersionId, setRestoringVersionId] = useState<string | null>(null);
+  const [assetHistory, setAssetHistory] = useState<MarketingAssetVersion[]>([]);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [activeCaptionTab, setActiveCaptionTab] = useState<'whatsapp' | 'twitter' | 'linkedin' | 'tiktok'>('whatsapp');
   const [copiedCaption, setCopiedCaption] = useState<string | null>(null);
 
@@ -462,6 +475,43 @@ export default function DynamicFlyerStudio() {
   const qrMatrix = qrResult.matrix;
 
   const palette = THEME_PALETTES[flyerConfig?.themeId || 'emerald_gold'] || THEME_PALETTES.emerald_gold;
+  const currentAssetKey = useMemo(() => {
+    const target = targetScope === 'course'
+      ? selectedCourseId
+      : targetScope === 'faculty'
+        ? selectedFaculty
+        : targetScope === 'department'
+          ? selectedDepartment
+          : 'all';
+    const slug = String(target || 'unselected')
+      .normalize('NFKC')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 100) || 'unselected';
+    return `flyer:${targetScope}:${slug}`;
+  }, [targetScope, selectedCourseId, selectedFaculty, selectedDepartment]);
+
+  useEffect(() => {
+    let active = true;
+    setIsLoadingHistory(true);
+    setHistoryError(null);
+    listMarketingAssetVersions(currentAssetKey)
+      .then((versions) => {
+        if (active) setAssetHistory(versions);
+      })
+      .catch((error: any) => {
+        if (active) {
+          setAssetHistory([]);
+          setHistoryError(error?.message || 'Saved marketing versions could not be loaded.');
+        }
+      })
+      .finally(() => {
+        if (active) setIsLoadingHistory(false);
+      });
+    return () => { active = false; };
+  }, [currentAssetKey]);
 
   if (snapshotLoading || !snapshot || !flyerConfig) {
     return (
@@ -483,6 +533,58 @@ export default function DynamicFlyerStudio() {
       </div>
     );
   }
+
+  const handleSaveAssetVersion = async () => {
+    if (!flyerConfig || isSavingVersion) return;
+    setIsSavingVersion(true);
+    setHistoryError(null);
+    try {
+      const version = await saveMarketingAssetVersion({
+        assetKey: currentAssetKey,
+        assetName: `UniAce flyer — ${flyerConfig.headlineLine2 || targetScope}`.slice(0, 160),
+        snapshot: {
+          targetScope,
+          selectedFaculty,
+          selectedDepartment,
+          selectedCourseId,
+          copyReviewRequired,
+          config: flyerConfig,
+        },
+      });
+      setAssetHistory((previous) => [version, ...previous.filter((item) => item.id !== version.id)].slice(0, 25));
+      toast.success(`Saved design version v${version.version} to Neon history.`);
+    } catch (error: any) {
+      setHistoryError(error?.message || 'The marketing design version could not be saved.');
+      toast.error(error?.message || 'The marketing design version could not be saved.');
+    } finally {
+      setIsSavingVersion(false);
+    }
+  };
+
+  const handleRestoreAssetVersion = async (id: string) => {
+    if (restoringVersionId) return;
+    setRestoringVersionId(id);
+    try {
+      const version = await getMarketingAssetVersion(id);
+      const saved = version.snapshot;
+      if (!saved || saved.targetScope !== targetScope || !saved.config ||
+          typeof saved.config.headlineLine1 !== 'string' ||
+          typeof saved.config.headlineLine2 !== 'string' ||
+          !Array.isArray(saved.config.capabilities)) {
+        throw new Error('This saved version does not match the current campaign target or flyer data contract.');
+      }
+      setSelectedFaculty(saved.selectedFaculty || selectedFaculty);
+      setSelectedDepartment(saved.selectedDepartment || selectedDepartment);
+      setSelectedCourseId(saved.selectedCourseId || selectedCourseId);
+      setFlyerConfig(saved.config);
+      setCopyReviewRequired(saved.copyReviewRequired === true);
+      toast.success(`Restored design version v${version.version}. It remains a draft until any required copy review is complete.`);
+    } catch (error: any) {
+      toast.error(error?.message || 'The selected design version could not be restored.');
+    } finally {
+      setRestoringVersionId(null);
+    }
+  };
 
   const handleToggleCapability = (id: string) => {
     setFlyerConfig((prev) => {
@@ -539,14 +641,37 @@ export default function DynamicFlyerStudio() {
     const reader = new FileReader();
     reader.onerror = () => toast.error('The selected photo could not be read.');
     reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setFlyerConfig((prev) => ({
+      if (typeof reader.result !== 'string') return;
+      const image = new Image();
+      image.onerror = () => toast.error('The selected photo could not be decoded.');
+      image.onload = () => {
+        const maxDimension = 1200;
+        const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        const context = canvas.getContext('2d');
+        if (!context) {
+          toast.error('Image compression is unavailable in this browser.');
+          return;
+        }
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        let compressed = canvas.toDataURL('image/webp', 0.82);
+        if (!compressed.startsWith('data:image/webp;')) {
+          compressed = canvas.toDataURL('image/jpeg', 0.82);
+        }
+        if (compressed.length > 600000) {
+          toast.error('This portrait is still too large after compression. Choose a smaller image.');
+          return;
+        }
+        setFlyerConfig((prev) => prev ? ({
           ...prev,
           studentPortraitMode: 'custom_photo',
-          customPhotoDataUrl: reader.result as string,
-        }));
-        toast.success('Custom campus student portrait applied!');
-      }
+          customPhotoDataUrl: compressed,
+        }) : prev);
+        toast.success('Custom portrait compressed and applied.');
+      };
+      image.src = reader.result;
     };
     reader.readAsDataURL(file);
   };
@@ -1118,6 +1243,15 @@ export default function DynamicFlyerStudio() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
+            <button
+              type="button"
+              onClick={handleSaveAssetVersion}
+              disabled={isSavingVersion}
+              className="inline-flex items-center gap-2 rounded-xl border border-indigo-300 bg-indigo-50 px-3 py-2.5 text-xs font-black text-indigo-800 hover:bg-indigo-100 disabled:opacity-50 dark:border-indigo-800 dark:bg-indigo-950/30 dark:text-indigo-200"
+            >
+              <Save size={15} />
+              {isSavingVersion ? 'Saving version…' : 'Save version'}
+            </button>
             <label className="flex items-center gap-2 text-[11px] font-bold text-slate-600 dark:text-slate-300">
               PNG format
               <select
@@ -1155,6 +1289,57 @@ export default function DynamicFlyerStudio() {
         <p className="px-1 text-[11px] text-slate-500 dark:text-slate-400">
           Social PNG exports are composed at exact 1080 × 1080, 1080 × 1920 or 1920 × 1080 dimensions. The A4 PDF remains a separate portrait print layout.
         </p>
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2 text-sm font-black text-slate-900 dark:text-white">
+                <History size={17} className="text-indigo-500" />
+                Saved design versions
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                Immutable snapshots for this campaign target, stored in Neon PostgreSQL. Restoring a version does not publish or export it.
+              </p>
+            </div>
+            <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
+              {isLoadingHistory ? 'Loading history…' : `${assetHistory.length} saved version(s)`}
+            </span>
+          </div>
+          {historyError && (
+            <p role="alert" className="mt-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-[11px] text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+              {historyError}
+            </p>
+          )}
+          {!isLoadingHistory && !historyError && assetHistory.length === 0 && (
+            <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+              No saved versions exist for this target yet. Save the current design to create version 1.
+            </p>
+          )}
+          {assetHistory.length > 0 && (
+            <div className="mt-3 divide-y divide-slate-100 dark:divide-slate-700">
+              {assetHistory.map((version) => (
+                <div key={version.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+                  <div className="min-w-0">
+                    <div className="text-xs font-black text-slate-800 dark:text-slate-100">
+                      v{version.version} · {version.assetName}
+                    </div>
+                    <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">
+                      {version.createdAt ? new Date(version.createdAt).toLocaleString() : 'Timestamp not reported'}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleRestoreAssetVersion(version.id)}
+                    disabled={Boolean(restoringVersionId)}
+                    className="rounded-lg border border-slate-300 px-3 py-2 text-[11px] font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700"
+                  >
+                    {restoringVersionId === version.id ? 'Restoring…' : 'Restore'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* POSTER CANVAS WRAPPER */}
         {!flyerConfig.campaignReady && (
           <div className="rounded-2xl border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700 p-4">

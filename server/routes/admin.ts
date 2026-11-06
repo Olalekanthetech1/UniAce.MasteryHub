@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { GeminiDirectProvider, MistralProvider, GroqProvider, CohereProvider, HuggingFaceProvider, OpenRouterFreeProvider, NvidiaProvider } from '../providers';
 import { splitAndInspectChatPayload, inspectAndScrubUntrustedText } from '../promptShield';
 import { buildAdminDemoTutorMessages, AdminDemoTutorRequestSchema } from '../services/adminDemoTutor';
+import { ensureMarketingStudioSchema } from '../services/marketingStudioSchema';
 import { MailService } from '../mailService';
 
 import { GoogleGenAI } from '@google/genai';
@@ -2611,6 +2612,190 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
       return res.status(503).json({ error: 'Isolated AI Tutor preview is unavailable. No student chat or Spark operation was executed.' });
     }
   });
+
+  const AdminMarketingAssetSnapshotSchema = z.object({
+    targetScope: z.enum(['full_ecosystem', 'faculty', 'department', 'course', 'exam_readiness']),
+    selectedFaculty: z.string().trim().max(160).optional(),
+    selectedDepartment: z.string().trim().max(160).optional(),
+    selectedCourseId: z.string().trim().max(120).optional(),
+    copyReviewRequired: z.boolean(),
+    config: z.record(z.string(), z.unknown())
+  }).strict();
+
+  const AdminMarketingAssetSaveSchema = z.object({
+    assetKey: z.string().trim().min(3).max(180).regex(/^[a-z0-9:_-]+$/i),
+    assetName: z.string().trim().min(1).max(160),
+    snapshot: AdminMarketingAssetSnapshotSchema
+  }).strict();
+
+  /** List immutable versions for one exact marketing design key. */
+  app.get('/api/admin/marketing/assets', verifyAuth, async (req: any, res: any) => {
+    try {
+      const isAdmin = await checkIsAdmin(req.user?.uid, req.user?.email);
+      if (!isAdmin) return res.status(403).json({ error: 'Administrator privileges are required.' });
+      const assetKey = typeof req.query?.assetKey === 'string' ? req.query.assetKey.trim() : '';
+      if (!/^[a-z0-9:_-]{3,180}$/i.test(assetKey)) {
+        return res.status(400).json({ error: 'A valid assetKey is required.' });
+      }
+      await ensureMarketingStudioSchema();
+      const pool = getPostgresPool();
+      if (!pool) return res.status(503).json({ error: 'Marketing asset history is unavailable.' });
+      const result = await pool.query(
+        `SELECT id, asset_key, asset_name, target_scope, version, created_by, created_at
+         FROM admin_marketing_asset_versions
+         WHERE asset_key = $1
+         ORDER BY version DESC, created_at DESC
+         LIMIT 25`,
+        [assetKey]
+      );
+      return res.json({
+        versions: result.rows.map((row: any) => ({
+          id: row.id,
+          assetKey: row.asset_key,
+          assetName: row.asset_name,
+          targetScope: row.target_scope,
+          version: Number(row.version),
+          createdAt: row.created_at ? new Date(row.created_at).toISOString() : null
+        }))
+      });
+    } catch (error: any) {
+      console.error('[MarketingAssetHistory] Version listing failed:', error?.message || error);
+      return res.status(503).json({ error: 'Marketing asset history could not be loaded from Neon PostgreSQL.' });
+    }
+  });
+
+  /** Save each submitted design as a new immutable version; no prior version is overwritten. */
+  app.post('/api/admin/marketing/assets', verifyAuth, async (req: any, res: any) => {
+    const parsed = AdminMarketingAssetSaveSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'The marketing asset version request did not match the required schema.' });
+    }
+
+    try {
+      const isAdmin = await checkIsAdmin(req.user?.uid, req.user?.email);
+      if (!isAdmin) return res.status(403).json({ error: 'Administrator privileges are required.' });
+
+      const { assetKey, assetName, snapshot } = parsed.data;
+      const config = snapshot.config;
+      const requiredTextFields = [
+        'brandName', 'headlineLine1', 'headlineLine2', 'leadBoldParagraph',
+        'subParagraph', 'ctaText', 'websiteDisplayUrl', 'qrTargetUrl'
+      ];
+      for (const field of requiredTextFields) {
+        if (typeof config[field] !== 'string' || !(config[field] as string).trim() || (config[field] as string).length > 2000) {
+          return res.status(400).json({ error: `The saved flyer is missing a valid ${field} value.` });
+        }
+      }
+
+      try {
+        const destination = new URL(String(config.qrTargetUrl));
+        if (!['http:', 'https:'].includes(destination.protocol) || !destination.hostname) {
+          return res.status(400).json({ error: 'The saved flyer QR destination must be a valid HTTP(S) URL.' });
+        }
+      } catch {
+        return res.status(400).json({ error: 'The saved flyer QR destination is invalid.' });
+      }
+
+      if (config.customPhotoDataUrl !== undefined) {
+        const photo = config.customPhotoDataUrl;
+        if (typeof photo !== 'string' ||
+            photo.length > 600000 ||
+            !/^data:image\/(?:webp|jpeg|png);base64,[a-z0-9+/=]+$/i.test(photo)) {
+          return res.status(400).json({ error: 'The compressed custom photo is invalid or exceeds the 600 KB history limit.' });
+        }
+      }
+
+      const serializedSnapshot = JSON.stringify(snapshot);
+      if (Buffer.byteLength(serializedSnapshot, 'utf8') > 900000) {
+        return res.status(413).json({ error: 'The marketing design snapshot is too large to store as a version.' });
+      }
+
+      await ensureMarketingStudioSchema();
+      const pool = getPostgresPool();
+      if (!pool) return res.status(503).json({ error: 'Marketing asset history is unavailable.' });
+      const client = await pool.connect();
+      const id = crypto.randomUUID();
+      let version = 0;
+      let createdAt: string | null = null;
+      try {
+        await client.query('BEGIN');
+        await client.query(
+          'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+          [assetKey]
+        );
+        const versionResult = await client.query(
+          `SELECT COALESCE(MAX(version), 0) + 1 AS next_version
+           FROM admin_marketing_asset_versions
+           WHERE asset_key = $1`,
+          [assetKey]
+        );
+        version = Number(versionResult.rows[0]?.next_version);
+        if (!Number.isSafeInteger(version) || version < 1) {
+          throw new Error('The next marketing asset version could not be determined.');
+        }
+        const saved = await client.query(
+          `INSERT INTO admin_marketing_asset_versions
+            (id, asset_key, asset_name, target_scope, version, snapshot, created_by, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, NOW())
+           RETURNING created_at`,
+          [id, assetKey, assetName, snapshot.targetScope, version, serializedSnapshot, req.user.uid]
+        );
+        createdAt = saved.rows[0]?.created_at
+          ? new Date(saved.rows[0].created_at).toISOString()
+          : new Date().toISOString();
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+
+      return res.status(201).json({
+        version: { id, assetKey, assetName, targetScope: snapshot.targetScope, version, createdAt }
+      });
+    } catch (error: any) {
+      console.error('[MarketingAssetHistory] Version save failed:', error?.message || error);
+      return res.status(503).json({ error: 'The marketing design version could not be persisted to Neon PostgreSQL.' });
+    }
+  });
+
+  /** Fetch one immutable snapshot for an administrator-approved restore action. */
+  app.get('/api/admin/marketing/assets/:id', verifyAuth, async (req: any, res: any) => {
+    try {
+      const isAdmin = await checkIsAdmin(req.user?.uid, req.user?.email);
+      if (!isAdmin) return res.status(403).json({ error: 'Administrator privileges are required.' });
+      const id = typeof req.params?.id === 'string' ? req.params.id.trim() : '';
+      if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'A valid asset version ID is required.' });
+      await ensureMarketingStudioSchema();
+      const pool = getPostgresPool();
+      if (!pool) return res.status(503).json({ error: 'Marketing asset history is unavailable.' });
+      const result = await pool.query(
+        `SELECT id, asset_key, asset_name, target_scope, version, snapshot, created_at
+         FROM admin_marketing_asset_versions
+         WHERE id = $1
+         LIMIT 1`,
+        [id]
+      );
+      const row = result.rows[0];
+      if (!row) return res.status(404).json({ error: 'Marketing asset version not found.' });
+      return res.json({
+        version: {
+          id: row.id,
+          assetKey: row.asset_key,
+          assetName: row.asset_name,
+          targetScope: row.target_scope,
+          version: Number(row.version),
+          createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+          snapshot: row.snapshot
+        }
+      });
+    } catch (error: any) {
+      console.error('[MarketingAssetHistory] Version retrieval failed:', error?.message || error);
+      return res.status(503).json({ error: 'The selected marketing asset version could not be retrieved.' });
+    }
+  });
+
   // Admin Support Overview, Ticket Status, and Broadcast (Neon PostgreSQL)
   app.get('/api/admin/support/overview', verifyAuth, async (req: any, res: any) => {
     try {
