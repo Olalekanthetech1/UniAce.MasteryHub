@@ -261,6 +261,7 @@ export default function DemoNarrationStudio({
   const [outputPreviewUrl, setOutputPreviewUrl] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isDownloadingSubtitles, setIsDownloadingSubtitles] = useState(false);
+  const [isDeletingAssets, setIsDeletingAssets] = useState(false);
   const audioPreviewRef = useRef<string | null>(null);
   const cancelledPollingRef = useRef(false);
 
@@ -686,6 +687,29 @@ export default function DemoNarrationStudio({
     }
   };
 
+  const handleDeleteStoredMedia = async () => {
+    if (!job) return;
+    const confirmed = window.confirm('Permanently delete this Demo Studio job and its source video, narration audio, rendered MP4 and SRT from Cloudinary? This cannot be undone.');
+    if (!confirmed) return;
+    setIsDeletingAssets(true);
+    try {
+      const response = await authFetch('/api/admin/demo-narration/jobs/' + encodeURIComponent(job.jobId) + '/assets', { method: 'DELETE' });
+      await readJsonResponse<{ deleted: boolean }>(response);
+      if (audioPreviewRef.current) URL.revokeObjectURL(audioPreviewRef.current);
+      audioPreviewRef.current = null;
+      setAudioPreviewUrl(null);
+      if (outputPreviewUrl) URL.revokeObjectURL(outputPreviewUrl);
+      setOutputPreviewUrl(null);
+      setJob(null);
+      toast.success('The Demo Studio media assets were deleted from Cloudinary.');
+    } catch (error: any) {
+      setOperationError(error?.message || 'Cloudinary media cleanup could not be confirmed.');
+      toast.error(error?.message || 'Media cleanup failed.');
+    } finally {
+      setIsDeletingAssets(false);
+    }
+  };
+
   const handleReset = async () => {
     if (job) await handleCancelJob();
     setOperationError(null);
@@ -1078,9 +1102,13 @@ export default function DemoNarrationStudio({
                   Download separate SRT subtitles
                 </button>
               )}
+              <button type="button" onClick={() => void handleDeleteStoredMedia()} disabled={isDeletingAssets} className="flex w-full items-center justify-center gap-2 rounded-xl border border-rose-300 px-4 py-2.5 text-xs font-bold text-rose-700 dark:border-rose-900 dark:text-rose-300 disabled:opacity-50">
+                {isDeletingAssets ? <Loader2 size={14} className="animate-spin" /> : <XCircle size={14} />}
+                Permanently delete all stored Cloudinary media
+              </button>
               <button type="button" onClick={() => void handleDownload()} disabled={isDownloading} className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-xs font-black text-white hover:bg-emerald-500 disabled:opacity-50">
                 {isDownloading ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
-                Download verified MP4 (deletes temporary server files)
+                Download verified MP4
               </button>
             </div>
           )}
@@ -1108,7 +1136,7 @@ export default function DemoNarrationStudio({
                 <RefreshCw size={14} /> Start another narration
               </button>
             )}
-            <span className="text-[10px] text-slate-500">Temporary server files expire at {new Date(job.expiresAt).toLocaleTimeString()} if not downloaded.</span>
+            <span className="text-[10px] text-slate-500">Cloudinary media remains stored until explicitly deleted.</span>
           </div>
         </div>
       )}
@@ -1116,7 +1144,7 @@ export default function DemoNarrationStudio({
       <div className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-[11px] leading-5 text-emerald-900 dark:border-emerald-900/60 dark:bg-emerald-950/20 dark:text-emerald-200">
         <ShieldCheck size={15} className="mt-0.5 shrink-0" />
         <span>
-          Privacy: the source video and generated audio are uploaded only after you start narration. They are kept in temporary server storage, never saved in the course database, and deleted after a successful download or expiry. The approved narration text is sent to ElevenLabs; the video itself is not sent to ElevenLabs.
+          Privacy: source video, narration audio, final MP4 and SRT are stored as authenticated Cloudinary assets for Marketing & Demo Studio only. Previews and downloads pass through authenticated UniAce endpoints. The approved narration text is sent to ElevenLabs; the video itself is not sent to ElevenLabs. Use the delete action to remove stored media.
         </span>
       </div>
     </section>
