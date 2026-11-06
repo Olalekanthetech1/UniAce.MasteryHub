@@ -2524,7 +2524,7 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
       const cleanMessage = String(hygiene.cleanQuestion || '').trim();
       if (!cleanMessage) return res.status(400).json({ error: 'A non-empty preview prompt is required.' });
       const courseContext = parsed.data.courseContext
-        ? inspectAndScrubUntrustedText(parsed.data.courseContext, 'admin_demo_course_context').sanitizedText.trim()
+        ? inspectAndScrubUntrustedText(parsed.data.courseContext, 'course_context').sanitizedText.trim()
         : '';
       const messages = buildAdminDemoTutorMessages({ message: cleanMessage, courseContext: courseContext || undefined });
 
@@ -2536,7 +2536,7 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
         [logId, '[Marketing Demo AI] Isolated preview started', JSON.stringify({ outcome: 'started', promptPersisted: false, responsePersisted: false }), req.user.uid]
       );
 
-      const routing = await getSystemSettingsDoc('routing', true);
+      const routing = await getSystemConfigDoc('routing', true);
       if (!routing || typeof routing !== 'object') throw new Error('Live AI routing configuration is unavailable.');
       const primary = String(routing.global_provider || routing.chat || '').trim().toLowerCase();
       if (!primary || !marketingDemoProviders[primary]) throw new Error('The live chat provider is not explicitly configured for the isolated preview.');
