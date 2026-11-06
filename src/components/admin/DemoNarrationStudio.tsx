@@ -98,6 +98,14 @@ interface NarrationJob {
   outputBytes: number | null;
   outputWidth: number | null;
   outputHeight: number | null;
+  mediaStorage?: {
+    provider: 'Cloudinary';
+    sourceStored: boolean;
+    narrationStored: boolean;
+    videoStored: boolean;
+    subtitlesStored: boolean;
+    delivery: 'authenticated' | string;
+  };
   expiresAt: string;
 }
 
@@ -369,6 +377,8 @@ export default function DemoNarrationStudio({
           setProviderError('ElevenLabs returned no voices available to this API key. No sample voice has been substituted.');
         } else if (modelResult.models.length === 0) {
           setProviderError('ElevenLabs returned no text-to-speech models available to this API key.');
+        } else if (!status.cloudinaryConfigured) {
+          setProviderError('ElevenLabs is available, but Cloudinary is not configured. Open Admin Dashboard → Settings → Cloudinary and verify the Cloudinary credentials before uploading or rendering Demo Studio media.');
         }
       } catch (error: any) {
         if (active) setProviderError(error?.message || 'Live ElevenLabs configuration could not be loaded.');
@@ -641,8 +651,14 @@ export default function DemoNarrationStudio({
     setAudioPreviewUrl(null);
     if (outputPreviewUrl) URL.revokeObjectURL(outputPreviewUrl);
     setOutputPreviewUrl(null);
-    setJob(null);
-    toast('The narration job was cancelled. Stored Cloudinary assets remain available until explicitly deleted or cleaned up.');
+    setJob((previous) => previous ? {
+      ...previous,
+      status: 'cancelled',
+      stage: 'cancelled',
+      progressPercent: null,
+      statusMessage: 'Processing was cancelled. Any source or generated Cloudinary assets remain stored until you explicitly delete them.'
+    } : null);
+    toast('Processing cancelled. Stored Cloudinary assets were retained; delete them from this job card when no longer needed.');
   };
 
   const handleDownload = async () => {
@@ -712,7 +728,10 @@ export default function DemoNarrationStudio({
   };
 
   const handleReset = async () => {
-    if (job) await handleCancelJob();
+    if (hasStoredJobMedia) {
+      setOperationError('This job still has media stored in Cloudinary. Use “Permanently delete stored media” first so the asset references are not lost.');
+      return;
+    }
     setOperationError(null);
     setJob(null);
     setScriptApproved(false);
@@ -724,6 +743,14 @@ export default function DemoNarrationStudio({
     : 'Character usage not returned by the account API';
   const fileTooLarge = Boolean(videoBlob && maxUploadBytes > 0 && videoBlob.size > maxUploadBytes);
   const cannotRender = Boolean(providerStatus && (!providerStatus.ffmpegAvailable || !providerStatus.ffprobeAvailable));
+  const hasStoredJobMedia = Boolean(
+    job?.mediaStorage && (
+      job.mediaStorage.sourceStored ||
+      job.mediaStorage.narrationStored ||
+      job.mediaStorage.videoStored ||
+      job.mediaStorage.subtitlesStored
+    )
+  );
 
   return (
     <section className="mt-7 rounded-3xl border border-indigo-200 bg-indigo-50/60 p-5 dark:border-indigo-900/60 dark:bg-indigo-950/20 sm:p-6 space-y-5">
@@ -1119,6 +1146,17 @@ export default function DemoNarrationStudio({
               <div className="mb-1 flex items-center gap-2 font-black"><XCircle size={15} /> Production failed</div>
               {job.error || 'The server did not provide an error detail.'}
             </div>
+          )}
+          {job.status === 'cancelled' && (
+            <div className="rounded-lg bg-slate-50 p-3 text-xs text-slate-700 dark:bg-slate-950 dark:text-slate-300">
+              Processing was cancelled. Cloudinary assets are retained until you explicitly delete them.
+            </div>
+          )}
+          {['failed', 'cancelled'].includes(job.status) && hasStoredJobMedia && (
+            <button type="button" onClick={() => void handleDeleteStoredMedia()} disabled={isDeletingAssets} className="flex w-full items-center justify-center gap-2 rounded-xl border border-rose-300 px-4 py-2.5 text-xs font-bold text-rose-700 dark:border-rose-900 dark:text-rose-300 disabled:opacity-50">
+              {isDeletingAssets ? <Loader2 size={14} className="animate-spin" /> : <XCircle size={14} />}
+              Permanently delete stored Cloudinary media
+            </button>
           )}
 
           {['generating_audio', 'rendering'].includes(job.status) && (
