@@ -13,6 +13,12 @@ import {
   sanitizeDemoVideoFileName,
   type ElevenLabsAlignment
 } from '../services/demoNarration.js';
+import {
+  clearDemoNarrationApiKey,
+  getDemoNarrationApiKey,
+  getDemoNarrationCredentialStatus,
+  saveDemoNarrationApiKey
+} from '../services/demoNarrationCredentials.js';
 
 const configuredUploadBytes = Number(process.env.DEMO_NARRATION_MAX_UPLOAD_BYTES);
 const MAX_UPLOAD_BYTES = Number.isSafeInteger(configuredUploadBytes) && configuredUploadBytes > 0
@@ -120,12 +126,15 @@ const CreateJobSchema = z.object({
 const PreviewSchema = z.object({
   text: z.string().trim().min(2).max(2500),
   modelId: z.string().trim().min(1).max(120),
-  voiceSettings: VoiceSettingsSchema
+  voiceSettings: VoiceSettingsSchema.optional()
 }).strict();
 
-function getApiKey(): string | null {
-  const key = process.env.ELEVENLABS_API_KEY?.trim();
-  return key || null;
+const CredentialUpdateSchema = z.object({
+  apiKey: z.string().trim().min(1).max(4096)
+}).strict();
+
+async function getApiKey(): Promise<string | null> {
+  return getDemoNarrationApiKey();
 }
 
 function safeProviderMessage(body: string): string {
@@ -157,15 +166,23 @@ function ownerMatches(ownerId: string, req: express.Request): boolean {
   return Boolean((req as any).user?.uid && (req as any).user.uid === ownerId);
 }
 
-function requireApiKey(res: express.Response): string | null {
-  const apiKey = getApiKey();
-  if (!apiKey) {
+async function requireApiKey(res: express.Response): Promise<string | null> {
+  try {
+    const apiKey = await getApiKey();
+    if (!apiKey) {
+      res.status(503).json({
+        error: 'ElevenLabs is not configured. Save and verify a key in Admin Dashboard → Settings, or configure ELEVENLABS_API_KEY in the Render service environment.'
+      });
+      return null;
+    }
+    return apiKey;
+  } catch (error: any) {
     res.status(503).json({
-      error: 'ElevenLabs is not configured on the server. Add ELEVENLABS_API_KEY to the UniAce Render service environment before using AI narration.'
+      error: 'The ElevenLabs credential could not be read from the secure server store.',
+      detail: typeof error?.message === 'string' ? error.message.slice(0, 300) : 'Credential storage is unavailable.'
     });
     return null;
   }
-  return apiKey;
 }
 
 function sendProviderError(res: express.Response, error: any): void {
@@ -375,8 +392,8 @@ async function probeAudioDuration(filePath: string): Promise<number> {
 }
 
 async function createNarrationAudio(job: NarrationJob, input: z.infer<typeof CreateJobSchema>): Promise<void> {
-  const apiKey = getApiKey();
-  if (!apiKey) throw new Error('ELEVENLABS_API_KEY is missing from the server environment.');
+  const apiKey = await getApiKey();
+  if (!apiKey) throw new Error('No ElevenLabs API key is configured in Admin Dashboard or the Render environment.');
   const metadata = await probeVideo(job.sourcePath);
   job.durationSeconds = metadata.duration;
   job.stage = 'generating_audio';
@@ -606,15 +623,108 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
   }, 60000);
   cleanupTimer.unref?.();
 
+  app.get('/api/admin/demo-narration/credentials', async (_req, res) => {
+    try {
+      const credential = await getDemoNarrationCredentialStatus();
+      res.set('Cache-Control', 'private, no-store');
+      return res.json(credential);
+    } catch (error: any) {
+      return res.status(503).json({
+        error: 'The secure ElevenLabs credential store is unavailable.',
+        storageAvailable: false,
+        detail: typeof error?.message === 'string' ? error.message.slice(0, 300) : 'Neon system configuration could not be read.'
+      });
+    }
+  });
+
+  app.put('/api/admin/demo-narration/credentials', async (req, res) => {
+    const parsed = CredentialUpdateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'A non-empty ElevenLabs API key is required.' });
+    }
+
+    try {
+      const current = await getDemoNarrationCredentialStatus();
+      if (!current.storageAvailable) {
+        return res.status(503).json({ error: 'Neon credential storage is unavailable. The key was not saved.' });
+      }
+      if (!current.encryptionReady) {
+        return res.status(503).json({
+          error: 'Server-side credential encryption is not configured. Set ACADEMIC_RESEARCH_ENCRYPTION_KEY on the UniAce Render service before saving provider credentials.'
+        });
+      }
+
+      const validation = await fetch('https://api.elevenlabs.io/v1/user/subscription', {
+        headers: { 'xi-api-key': parsed.data.apiKey, Accept: 'application/json' },
+        signal: AbortSignal.timeout(20000)
+      });
+      if (!validation.ok) {
+        const status = validation.status === 401 || validation.status === 403 ? 400 :
+          validation.status === 429 ? 429 : 502;
+        return res.status(status).json({
+          error: validation.status === 401 || validation.status === 403
+            ? 'ElevenLabs rejected this API key. Check that the key is valid and has account access.'
+            : validation.status === 429
+              ? 'ElevenLabs rate-limited the verification request. Try again shortly.'
+              : 'ElevenLabs could not verify this key right now. No credential was saved.'
+        });
+      }
+
+      const account: any = await validation.json();
+      const credential = await saveDemoNarrationApiKey(parsed.data.apiKey);
+      return res.json({
+        success: true,
+        credential,
+        account: {
+          tier: typeof account?.tier === 'string' ? account.tier : null,
+          status: typeof account?.status === 'string' ? account.status : null,
+          characterCount: typeof account?.character_count === 'number' ? account.character_count : null,
+          characterLimit: typeof account?.character_limit === 'number' ? account.character_limit : null
+        }
+      });
+    } catch (error: any) {
+      console.error('[DemoNarration] Secure API key save failed:', error?.message || error);
+      return res.status(503).json({
+        error: 'The ElevenLabs key could not be verified and stored securely.',
+        detail: typeof error?.message === 'string' ? error.message.slice(0, 300) : 'Secure credential storage failed.'
+      });
+    }
+  });
+
+  app.delete('/api/admin/demo-narration/credentials', async (_req, res) => {
+    try {
+      const credential = await clearDemoNarrationApiKey();
+      res.set('Cache-Control', 'private, no-store');
+      return res.json({ success: true, credential });
+    } catch (error: any) {
+      return res.status(503).json({
+        error: 'The Admin Dashboard-stored ElevenLabs key could not be cleared.',
+        detail: typeof error?.message === 'string' ? error.message.slice(0, 300) : 'Secure credential storage failed.'
+      });
+    }
+  });
+
   app.get('/api/admin/demo-narration/status', async (_req, res) => {
-    const configured = Boolean(getApiKey());
     const ffmpegAvailable = await runCommand(process.env.FFMPEG_PATH || 'ffmpeg', ['-version'], 10000)
       .then(() => true).catch(() => false);
     const ffprobeAvailable = await runCommand(process.env.FFPROBE_PATH || 'ffprobe', ['-version'], 10000)
       .then(() => true).catch(() => false);
+    let credential: Awaited<ReturnType<typeof getDemoNarrationCredentialStatus>> | null = null;
+    let credentialError: string | null = null;
+    try {
+      credential = await getDemoNarrationCredentialStatus();
+    } catch (error: any) {
+      credentialError = typeof error?.message === 'string' ? error.message.slice(0, 300) : 'Credential storage is unavailable.';
+    }
     res.set('Cache-Control', 'private, no-store');
     res.json({
-      configured,
+      configured: credential?.configured === true,
+      credentialSource: credential?.source || null,
+      credentialKeyHint: credential?.keyHint || null,
+      credentialStorageAvailable: credential?.storageAvailable === true,
+      credentialEncryptionReady: credential?.encryptionReady === true,
+      credentialDecryptable: credential?.decryptable === true,
+      credentialError,
       provider: 'ElevenLabs',
       ffmpegAvailable,
       ffprobeAvailable,
@@ -625,7 +735,7 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
   });
 
   app.get('/api/admin/demo-narration/voices', async (req, res) => {
-    const apiKey = requireApiKey(res);
+    const apiKey = await requireApiKey(res);
     if (!apiKey) return;
     const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 100) : '';
     const pageToken = typeof req.query.next_page_token === 'string' ? req.query.next_page_token.slice(0, 500) : '';
@@ -658,7 +768,7 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
   });
 
   app.get('/api/admin/demo-narration/models', async (_req, res) => {
-    const apiKey = requireApiKey(res);
+    const apiKey = await requireApiKey(res);
     if (!apiKey) return;
     try {
       const models = await providerJson('https://api.elevenlabs.io/v1/models', apiKey);
@@ -695,7 +805,7 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
   });
 
   app.get('/api/admin/demo-narration/account', async (_req, res) => {
-    const apiKey = requireApiKey(res);
+    const apiKey = await requireApiKey(res);
     if (!apiKey) return;
     try {
       const account = await providerJson('https://api.elevenlabs.io/v1/user/subscription', apiKey);
@@ -728,7 +838,7 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
   });
 
   app.post('/api/admin/demo-narration/voices/:voiceId/preview', async (req, res) => {
-    const apiKey = requireApiKey(res);
+    const apiKey = await requireApiKey(res);
     if (!apiKey) return;
     const parsed = PreviewSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: 'Preview text, model and supported voice settings are required.' });
@@ -867,7 +977,7 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
   });
 
   app.post('/api/admin/demo-narration/jobs', async (req, res) => {
-    const apiKey = requireApiKey(res);
+    const apiKey = await requireApiKey(res);
     if (!apiKey) return;
     const parsed = CreateJobSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -966,7 +1076,7 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
   });
 
   app.get('/api/admin/demo-narration/voices/:voiceId/settings', async (req, res) => {
-    const apiKey = requireApiKey(res);
+    const apiKey = await requireApiKey(res);
     if (!apiKey) return;
     try {
       const settings = await providerJson(
