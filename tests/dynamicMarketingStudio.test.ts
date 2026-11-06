@@ -119,11 +119,11 @@ test('sanitizeCssColorString removes CSS Color 4 functions and gradient interpol
   assert.match(
     convertedGradient,
     /^linear-gradient\(to bottom right,\s*rgba?\(/,
-    \`Expected a sanitized linear-gradient, got: \${convertedGradient}\`
+    'Expected a sanitized linear-gradient, got: ' + convertedGradient
   );
 
   const nestedMix = 'color-mix(in oklab, oklch(0.7 0.15 160) 40%, transparent)';
   const convertedMix = sanitizeCssColorString(nestedMix);
   assert.doesNotMatch(convertedMix, /color-mix|oklab|oklch|\bcolor\(/i);
-  assert.match(convertedMix, /^rgba?\(/, \`Expected rgb/rgba output, got: \${convertedMix}\`);
+  assert.match(convertedMix, /^rgba?\(/, 'Expected rgb/rgba output, got: ' + convertedMix);
 });
