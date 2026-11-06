@@ -578,11 +578,11 @@ export default function DemoNarrationStudio({
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = (videoFileName || 'uniace-demo').replace(/\\.[^.]+$/, '') + '-narration.srt';
+      link.download = (videoFileName || 'uniace-demo').replace(/\.[^.]+$/, '') + '-narration.srt';
       document.body.appendChild(link);
       link.click();
       link.remove();
-      URL.revokeObjectURL(url);
+      window.setTimeout(() => URL.revokeObjectURL(url), 30000);
     } catch (error: any) {
       setOperationError(error?.message || 'The subtitle file could not be downloaded.');
     } finally {
@@ -955,16 +955,16 @@ export default function DemoNarrationStudio({
               <div className="flex items-center gap-2 text-xs font-bold text-emerald-700 dark:text-emerald-400">
                 <CheckCircle2 size={16} /> Output verified{job.outputWidth && job.outputHeight ? ' · ' + job.outputWidth + ' × ' + job.outputHeight : ''}{job.outputBytes ? ' · ' + (job.outputBytes / (1024 * 1024)).toFixed(2) + ' MB' : ''}
               </div>
-              <button type="button" onClick={() => void handleDownload()} disabled={isDownloading} className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-xs font-black text-white hover:bg-emerald-500 disabled:opacity-50">
-                {isDownloading ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
-                Download verified MP4
-              </button>
               {subtitles && (
                 <button type="button" onClick={() => void handleDownloadSubtitles()} disabled={isDownloadingSubtitles} className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-300 px-4 py-2.5 text-xs font-bold text-slate-700 dark:border-slate-700 dark:text-slate-200">
                   {isDownloadingSubtitles ? <Loader2 size={14} className="animate-spin" /> : <Subtitles size={14} />}
                   Download separate SRT subtitles
                 </button>
               )}
+              <button type="button" onClick={() => void handleDownload()} disabled={isDownloading} className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-xs font-black text-white hover:bg-emerald-500 disabled:opacity-50">
+                {isDownloading ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+                Download verified MP4 (deletes temporary server files)
+              </button>
             </div>
           )}
 
