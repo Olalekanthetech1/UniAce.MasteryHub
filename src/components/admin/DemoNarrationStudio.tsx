@@ -27,10 +27,10 @@ interface DemoNarrationStudioProps {
 }
 
 interface VoiceSettings {
-  stability: number;
-  similarity_boost: number;
-  style: number;
-  use_speaker_boost: boolean;
+  stability?: number;
+  similarity_boost?: number;
+  style?: number;
+  use_speaker_boost?: boolean;
   speed?: number;
 }
 
@@ -41,7 +41,7 @@ interface VoiceOption {
   description: string | null;
   labels: Record<string, string>;
   previewUrl: string | null;
-  settings: VoiceSettings | null;
+  settings: Partial<VoiceSettings> | null;
   isOwner: boolean;
 }
 
@@ -50,6 +50,10 @@ interface ModelOption {
   name: string;
   description: string | null;
   maximumTextLength: number | null;
+  canUseStyle: boolean | null;
+  canUseSpeakerBoost: boolean | null;
+  requiresAlphaAccess: boolean | null;
+  tokenCostFactor: number | null;
   languages: Array<{ languageId: string | null; name: string | null }>;
 }
 
@@ -154,6 +158,18 @@ function uploadVideoWithProgress(
     };
     xhr.send(blob);
   });
+}
+
+function normalizeVoiceSettings(value: unknown): Partial<VoiceSettings> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const normalized: Partial<VoiceSettings> = {};
+  if (typeof raw.stability === 'number' && Number.isFinite(raw.stability) && raw.stability >= 0 && raw.stability <= 1) normalized.stability = raw.stability;
+  if (typeof raw.similarity_boost === 'number' && Number.isFinite(raw.similarity_boost) && raw.similarity_boost >= 0 && raw.similarity_boost <= 1) normalized.similarity_boost = raw.similarity_boost;
+  if (typeof raw.style === 'number' && Number.isFinite(raw.style) && raw.style >= 0 && raw.style <= 1) normalized.style = raw.style;
+  if (typeof raw.use_speaker_boost === 'boolean') normalized.use_speaker_boost = raw.use_speaker_boost;
+  if (typeof raw.speed === 'number' && Number.isFinite(raw.speed) && raw.speed >= 0.7 && raw.speed <= 1.2) normalized.speed = raw.speed;
+  return Object.keys(normalized).length > 0 ? normalized : null;
 }
 
 const inputClass = 'w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-indigo-500 dark:border-slate-700 dark:bg-slate-950 dark:text-white';
