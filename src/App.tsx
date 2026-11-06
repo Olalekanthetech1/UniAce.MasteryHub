@@ -26,6 +26,112 @@ import { safeFetchJson } from './utils/safeFetch';
 
 
 
+const queryClient = new QueryClient();
+
+type LazyModule<T extends ComponentType<any>> = Promise<{ default: T }>;
+type PreloadableComponent<T extends ComponentType<any>> = LazyExoticComponent<T> & {
+  preload: () => LazyModule<T>;
+};
+
+function lazyWithPreload<T extends ComponentType<any>>(
+  loader: () => LazyModule<T>
+): PreloadableComponent<T> {
+  let promise: LazyModule<T> | undefined;
+  const load = () => {
+    if (!promise) {
+      promise = loader().catch((error) => {
+        promise = undefined;
+        throw error;
+      });
+    }
+    return promise;
+  };
+
+  return Object.assign(lazy(load), { preload: load });
+}
+
+// Keep the initial student shell small. Screens with heavier charts, editors,
+// simulations, and administrative tools are fetched only when first needed.
+const Dashboard = lazyWithPreload(() => import('./components/Dashboard'));
+const ModuleTopics = lazyWithPreload(() => import('./components/ModuleTopics'));
+const CourseSyllabus = lazyWithPreload(() => import('./components/CourseSyllabus'));
+const ContentArea = lazyWithPreload(() => import('./components/ContentArea'));
+const ChatBot = lazyWithPreload(() => import('./components/ChatBot'));
+const AdminLogin = lazyWithPreload(() => import('./components/AdminLogin'));
+const FirebaseSetup = lazyWithPreload(() => import('./components/FirebaseSetup'));
+const LandingPage = lazyWithPreload(() => import('./components/LandingPage'));
+const Calculator = lazyWithPreload(() => import('./components/Calculator'));
+const QuizHub = lazyWithPreload(() => import('./components/QuizHub'));
+const FlashcardHub = lazyWithPreload(() => import('./components/FlashcardHub'));
+const SkillPracticeHub = lazyWithPreload(() => import('./components/SkillPracticeHub'));
+const MasteryCenter = lazyWithPreload(() => import('./components/MasteryCenter'));
+const FormulaReference = lazyWithPreload(() => import('./components/FormulaReference'));
+const Notebook = lazyWithPreload(() => import('./components/Notebook'));
+const PricingPage = lazyWithPreload(() => import('./components/PricingPage'));
+const UserProfile = lazyWithPreload(() => import('./components/UserProfile'));
+const HelpSupport = lazyWithPreload(() => import('./components/HelpSupport'));
+const AdminSupport = lazyWithPreload(() => import('./components/AdminSupport'));
+const AdminDashboard = lazyWithPreload(() => import('./components/AdminDashboard'));
+const TutorDashboard = lazyWithPreload(() => import('./components/TutorDashboard'));
+const Arena = lazyWithPreload(() => import('./components/Arena'));
+const ConceptMap = lazyWithPreload(() => import('./components/ConceptMap'));
+const StudyPlan = lazyWithPreload(() => import('./components/StudyPlan'));
+const VoiceTutor = lazyWithPreload(() => import('./components/VoiceTutor'));
+const DemoDirectorHUD = lazyWithPreload(() => import('./components/DemoDirectorHUD'));
+const DemoReelPreviewModal = lazyWithPreload(() => import('./components/DemoReelPreviewModal'));
+const AdaptiveRecalibratorModal = lazyWithPreload(() =>
+  import('./components/AdaptiveRecalibratorModal').then(({ AdaptiveRecalibratorModal }) => ({
+    default: AdaptiveRecalibratorModal
+  }))
+);
+
+function preloadView(view: View): void {
+  let load: (() => Promise<unknown>) | undefined;
+  switch (view) {
+    case 'dashboard': load = Dashboard.preload; break;
+    case 'study': load = ContentArea.preload; break;
+    case 'past-questions': load = SkillPracticeHub.preload; break;
+    case 'quizzes': load = QuizHub.preload; break;
+    case 'module-topics': load = ModuleTopics.preload; break;
+    case 'course-syllabus': load = CourseSyllabus.preload; break;
+    case 'mastery': load = MasteryCenter.preload; break;
+    case 'formulas': load = FormulaReference.preload; break;
+    case 'ai-tutor': load = ChatBot.preload; break;
+    case 'notebook': load = Notebook.preload; break;
+    case 'profile': load = UserProfile.preload; break;
+    case 'help-support': load = HelpSupport.preload; break;
+    case 'admin-support': load = AdminSupport.preload; break;
+    case 'admin-dashboard': load = AdminDashboard.preload; break;
+    case 'tutor-dashboard': load = TutorDashboard.preload; break;
+    case 'pricing': load = PricingPage.preload; break;
+    case 'flashcards': load = FlashcardHub.preload; break;
+    case 'arena': load = Arena.preload; break;
+    case 'concept-map': load = ConceptMap.preload; break;
+    case 'study-plan': load = StudyPlan.preload; break;
+    default: break;
+  }
+
+  if (load) void load().catch(() => undefined);
+}
+
+function LoadingFallback({ fullScreen = false }: { fullScreen?: boolean }) {
+  return (
+    <div
+      className={`${fullScreen ? 'h-screen' : 'min-h-[40vh]'} w-full flex items-center justify-center bg-slate-50 dark:bg-zinc-950`}
+      role="status"
+      aria-live="polite"
+    >
+      <div className="flex items-center gap-3 text-sm text-slate-500 dark:text-zinc-400">
+        <span
+          className="h-6 w-6 animate-spin rounded-full border-2 border-slate-200 border-t-emerald-500 dark:border-zinc-700 dark:border-t-emerald-400"
+          aria-hidden="true"
+        />
+        <span>Loading UniAce...</span>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   console.log('App.tsx: Rendering...');
   return (
