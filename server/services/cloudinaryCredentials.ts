@@ -62,7 +62,7 @@ export function normalizeCloudinaryFolderPrefix(value: string): string {
 export function normalizeCloudinaryConfig(input: unknown): CloudinaryMediaConfig {
   const parsed = CloudinaryConfigSchema.safeParse(input);
   if (!parsed.success) {
-    throw new Error('Cloudinary Cloud name, API key, API secret and a valid folder path are required.');
+    throw new Error('Cloudinary configuration requires a Cloud name, API key, API secret and a valid folder path.');
   }
 
   const cloudName = parsed.data.cloudName.trim().toLowerCase();
