@@ -31,7 +31,7 @@ interface VoiceSettings {
   similarity_boost: number;
   style: number;
   use_speaker_boost: boolean;
-  speed: number;
+  speed?: number;
 }
 
 interface VoiceOption {
@@ -192,7 +192,9 @@ export default function DemoNarrationStudio({
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [job, setJob] = useState<NarrationJob | null>(null);
   const [audioPreviewUrl, setAudioPreviewUrl] = useState<string | null>(null);
+  const [outputPreviewUrl, setOutputPreviewUrl] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [isDownloadingSubtitles, setIsDownloadingSubtitles] = useState(false);
   const audioPreviewRef = useRef<string | null>(null);
   const cancelledPollingRef = useRef(false);
 
@@ -217,7 +219,6 @@ export default function DemoNarrationStudio({
     providerStatus?.ffmpegAvailable &&
     providerStatus?.ffprobeAvailable &&
     selectedVoice &&
-    voiceSettings &&
     selectedModel &&
     script.trim().length >= 5 &&
     scriptApproved &&
@@ -304,20 +305,41 @@ export default function DemoNarrationStudio({
       typeof settings.stability === 'number' &&
       typeof settings.similarity_boost === 'number' &&
       typeof settings.style === 'number' &&
-      typeof settings.speed === 'number' &&
       typeof settings.use_speaker_boost === 'boolean'
     ) {
       setVoiceSettings({
         stability: settings.stability,
         similarity_boost: settings.similarity_boost,
         style: settings.style,
-        speed: settings.speed,
+        ...(typeof settings.speed === 'number' ? { speed: settings.speed } : {}),
         use_speaker_boost: settings.use_speaker_boost
       });
-    } else {
-      setVoiceSettings(null);
+      return;
     }
-  }, [selectedVoice]);
+
+    let active = true;
+    setVoiceSettings(null);
+    void authFetch('/api/admin/demo-narration/voices/' + encodeURIComponent(selectedVoice.voiceId) + '/settings')
+      .then((response) => readJsonResponse<{ settings: Partial<VoiceSettings> }>(response))
+      .then((data) => {
+        const live = data.settings;
+        if (!active || typeof live?.stability !== 'number' ||
+            typeof live?.similarity_boost !== 'number' ||
+            typeof live?.style !== 'number' ||
+            typeof live?.use_speaker_boost !== 'boolean') return;
+        setVoiceSettings({
+          stability: live.stability,
+          similarity_boost: live.similarity_boost,
+          style: live.style,
+          use_speaker_boost: live.use_speaker_boost,
+          ...(typeof live.speed === 'number' ? { speed: live.speed } : {})
+        });
+      })
+      .catch(() => {
+        // Leave settings unavailable; TTS uses the provider's voice defaults.
+      });
+    return () => { active = false; };
+  }, [selectedVoice, authFetch]);
 
   useEffect(() => {
     if (!job || !['generating_audio', 'rendering'].includes(job.status)) return;
@@ -382,10 +404,36 @@ export default function DemoNarrationStudio({
   }, [authFetch, job?.jobId, job?.status]);
 
   useEffect(() => {
+    if (!job || job.status !== 'completed') {
+      if (outputPreviewUrl) URL.revokeObjectURL(outputPreviewUrl);
+      setOutputPreviewUrl(null);
+      return;
+    }
+    let active = true;
+    void authFetch('/api/admin/demo-narration/jobs/' + encodeURIComponent(job.jobId) + '/video-preview')
+      .then(async (response) => {
+        if (!response.ok) return readJsonResponse<any>(response);
+        const blob = await response.blob();
+        if (!blob.size) throw new Error('The verified MP4 preview returned an empty file.');
+        const url = URL.createObjectURL(blob);
+        if (!active) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        setOutputPreviewUrl(url);
+      })
+      .catch((error: any) => {
+        if (active) setOperationError(error?.message || 'The final MP4 preview could not be loaded.');
+      });
+    return () => { active = false; };
+  }, [authFetch, job?.jobId, job?.status]);
+
+  useEffect(() => {
     return () => {
       if (audioPreviewRef.current) URL.revokeObjectURL(audioPreviewRef.current);
+      if (outputPreviewUrl) URL.revokeObjectURL(outputPreviewUrl);
     };
-  }, []);
+  }, [outputPreviewUrl]);
 
   const handleSearchVoices = async () => {
     setProviderError(null);
@@ -439,7 +487,7 @@ export default function DemoNarrationStudio({
           voiceId: selectedVoice.voiceId,
           modelId: selectedModel.modelId,
           script: script.trim(),
-          voiceSettings,
+          ...(voiceSettings ? { voiceSettings } : {}),
           originalAudioMode,
           originalAudioVolume,
           narrationVolume,
@@ -488,6 +536,8 @@ export default function DemoNarrationStudio({
     if (audioPreviewRef.current) URL.revokeObjectURL(audioPreviewRef.current);
     audioPreviewRef.current = null;
     setAudioPreviewUrl(null);
+    if (outputPreviewUrl) URL.revokeObjectURL(outputPreviewUrl);
+    setOutputPreviewUrl(null);
     setJob(null);
     toast('Temporary narration job cancelled and server files removed.');
   };
@@ -510,6 +560,28 @@ export default function DemoNarrationStudio({
       toast.error(error?.message || 'The final video could not be downloaded.');
     } finally {
       setIsDownloading(false);
+    }
+  };
+
+  const handleDownloadSubtitles = async () => {
+    if (!job || job.status !== 'completed') return;
+    setIsDownloadingSubtitles(true);
+    try {
+      const response = await authFetch('/api/admin/demo-narration/jobs/' + encodeURIComponent(job.jobId) + '/subtitles');
+      const blob = await response.blob();
+      if (!response.ok || blob.size === 0) throw new Error('A generated subtitle file is not available for this job.');
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = (videoFileName || 'uniace-demo').replace(/\\.[^.]+$/, '') + '-narration.srt';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (error: any) {
+      setOperationError(error?.message || 'The subtitle file could not be downloaded.');
+    } finally {
+      setIsDownloadingSubtitles(false);
     }
   };
 
@@ -735,7 +807,7 @@ export default function DemoNarrationStudio({
                 </label>
               </div>
             ) : (
-              <p className="text-xs text-slate-500">Select a voice whose live settings were returned by ElevenLabs. No default voice settings will be invented.</p>
+              <p className="text-xs text-slate-500">ElevenLabs did not return editable settings for this voice. UniAce will omit them and use the voice's configured provider defaults.</p>
             )}
           </div>
         </div>
@@ -857,6 +929,13 @@ export default function DemoNarrationStudio({
             </div>
           )}
 
+          {job.status === 'completed' && outputPreviewUrl && (
+            <div className="space-y-2 rounded-xl bg-slate-50 p-3 dark:bg-slate-950">
+              <div className="text-xs font-black text-slate-800 dark:text-slate-100">Final rendered video preview</div>
+              <video controls playsInline preload="metadata" src={outputPreviewUrl} className="max-h-[420px] w-full rounded-lg bg-black" />
+            </div>
+          )}
+
           {job.status === 'narration_ready' && (
             <button type="button" onClick={() => void handleStartRender()} className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-xs font-black text-white hover:bg-emerald-500">
               <Clapperboard size={15} /> Render final video with this narration
@@ -872,6 +951,12 @@ export default function DemoNarrationStudio({
                 {isDownloading ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
                 Download verified MP4
               </button>
+              {subtitles && (
+                <button type="button" onClick={() => void handleDownloadSubtitles()} disabled={isDownloadingSubtitles} className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-300 px-4 py-2.5 text-xs font-bold text-slate-700 dark:border-slate-700 dark:text-slate-200">
+                  {isDownloadingSubtitles ? <Loader2 size={14} className="animate-spin" /> : <Subtitles size={14} />}
+                  Download separate SRT subtitles
+                </button>
+              )}
             </div>
           )}
 
