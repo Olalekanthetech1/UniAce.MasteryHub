@@ -138,17 +138,14 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
   const cancelDemoReel = useCallback(() => {
     if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
     if (stepTimeoutRef.current) clearTimeout(stepTimeoutRef.current);
+    discardRecordingRef.current = true;
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state !== 'inactive') {
-      discardRecordingRef.current = true;
       try {
         recorder.stop();
       } catch (e) {
-        discardRecordingRef.current = false;
         console.warn('Error stopping media recorder on cancel:', e);
       }
-    } else {
-      discardRecordingRef.current = false;
     }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
