@@ -757,11 +757,8 @@ async function getOwnedJob(req: express.Request, res: express.Response): Promise
     res.status(404).json({ error: 'Narration job not found or no longer available.' });
     return null;
   }
-  if (job.expiresAt < Date.now() && job.status !== 'rendering' && job.status !== 'generating_audio' && job.status !== 'completed') {
-    void cleanupJob(job);
-    res.status(410).json({ error: 'This temporary narration processing session has expired.' });
-    return null;
-  }
+  // Job metadata and its Cloudinary asset references are durable. The processing TTL
+  // only controls local temporary files, not whether administrators can inspect/delete assets.
   return job;
 }
 
@@ -1126,7 +1123,11 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
     }
     uploads.delete(upload.id);
     try {
-      if (upload.cloudinaryAsset) await deleteCloudinaryAsset(upload.cloudinaryAsset);
+      if (upload.cloudinaryAsset) {
+        await deleteCloudinaryAsset(upload.cloudinaryAsset);
+      } else {
+        await deleteCloudinaryAssetByPublicId(upload.cloudinaryPublicId, 'video');
+      }
       await removeFolder(upload.folder);
       return res.json({ deleted: true });
     } catch (error: any) {
