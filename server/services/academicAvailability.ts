@@ -311,3 +311,30 @@ export async function updateCourseStudentVisibility(
     client.release();
   }
 }
+
+
+export interface AcademicAvailabilityAuditRecord {
+  id: string;
+  entity_type: 'academic_level' | 'course';
+  entity_id: string;
+  previous_state: string | null;
+  next_state: string;
+  actor_uid: string;
+  created_at: string;
+}
+
+export async function listRecentAcademicAvailabilityAudit(limitInput: unknown = 15): Promise<AcademicAvailabilityAuditRecord[]> {
+  await ensureAcademicAvailabilitySchema();
+  const pool = getPostgresPool();
+  if (!pool) throw new Error('Academic availability is unavailable: PostgreSQL is not connected.');
+  const parsedLimit = Number(limitInput);
+  const limit = Number.isInteger(parsedLimit) ? Math.max(1, Math.min(50, parsedLimit)) : 15;
+  const result = await pool.query<AcademicAvailabilityAuditRecord>(
+    `SELECT id, entity_type, entity_id, previous_state, next_state, actor_uid, created_at
+     FROM academic_availability_audit
+     ORDER BY created_at DESC
+     LIMIT $1`,
+    [limit]
+  );
+  return result.rows;
+}
