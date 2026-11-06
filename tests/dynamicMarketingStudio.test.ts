@@ -106,24 +106,24 @@ test('buildDynamicDemoScenarios creates a live course spotlight scenario and res
   assert.ok(sprintViews.includes('flashcards'));
 });
 
-test(test('sanitizeCssColorString removes CSS Color 4 functions and gradient interpolation syntax', () => {
+test('sanitizeCssColorString removes CSS Color 4 functions and gradient interpolation syntax', () => {
   const shadow = '0px 25px 50px -12px oklab(0% 0 0 / 0.25)';
   const convertedShadow = sanitizeCssColorString(shadow);
-  assert.doesNotMatch(convertedShadow, /oklab|oklch|color-mix|\\bcolor\\(/i);
-  assert.match(convertedShadow, /^0px 25px 50px -12px rgba?\\(/);
+  assert.doesNotMatch(convertedShadow, /oklab|oklch|color-mix|\bcolor\(/i);
+  assert.match(convertedShadow, /^0px 25px 50px -12px rgba?\(/);
 
   const gradient =
     'linear-gradient(to bottom right in oklab, oklch(0.696 0.17 162.48) 0%, oklab(0.999994 0.000045 0.00002 / 0.15) 100%)';
   const convertedGradient = sanitizeCssColorString(gradient);
-  assert.doesNotMatch(convertedGradient, /oklab|oklch|color-mix|\\bcolor\\(/i);
+  assert.doesNotMatch(convertedGradient, /oklab|oklch|color-mix|\bcolor\(/i);
   assert.match(
     convertedGradient,
-    /^linear-gradient\\(to bottom right,\\s*rgba?\\(/,
-    `Expected a sanitized linear-gradient, got: ${convertedGradient}`
+    /^linear-gradient\(to bottom right,\s*rgba?\(/,
+    \`Expected a sanitized linear-gradient, got: \${convertedGradient}\`
   );
 
   const nestedMix = 'color-mix(in oklab, oklch(0.7 0.15 160) 40%, transparent)';
   const convertedMix = sanitizeCssColorString(nestedMix);
-  assert.doesNotMatch(convertedMix, /color-mix|oklab|oklch|\\bcolor\\(/i);
-  assert.match(convertedMix, /^rgba?\\(/, `Expected rgb/rgba output, got: ${convertedMix}`);
+  assert.doesNotMatch(convertedMix, /color-mix|oklab|oklch|\bcolor\(/i);
+  assert.match(convertedMix, /^rgba?\(/, \`Expected rgb/rgba output, got: \${convertedMix}\`);
 });
