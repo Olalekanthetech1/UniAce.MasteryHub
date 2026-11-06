@@ -2,7 +2,6 @@ import crypto from 'crypto';
 import fs from 'fs';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
-import { v2 as cloudinary } from 'cloudinary';
 import {
   getCloudinaryMediaConfig,
   type CloudinaryMediaConfig
@@ -80,13 +79,6 @@ export async function createCloudinaryVideoUploadSignature(input: {
 async function configureCloudinary(): Promise<CloudinaryMediaConfig> {
   const config = await getCloudinaryMediaConfig();
   if (!config) throw new Error('Cloudinary is not configured. Verify Cloudinary credentials in Admin Dashboard → Settings.');
-  cloudinary.config({
-    cloud_name: config.cloudName,
-    api_key: config.apiKey,
-    api_secret: config.apiSecret,
-    secure: true,
-    hide_sensitive: true
-  });
   return config;
 }
 
@@ -173,32 +165,68 @@ export async function uploadCloudinaryLocalAsset(input: {
   const stat = await fs.promises.stat(input.filePath);
   if (!stat.isFile() || stat.size <= 0) throw new Error('The local media file is missing or empty; Cloudinary upload was not attempted.');
 
-  const options = {
-    resource_type: input.resourceType,
-    type: 'authenticated',
+  const timestamp = Math.floor(Date.now() / 1000);
+  const signedParams = {
     folder: input.folder,
-    public_id: input.publicId,
     overwrite: false,
-    unique_filename: false,
-    timeout: 15 * 60 * 1000
+    public_id: input.publicId,
+    timestamp,
+    type: 'authenticated'
   };
-  const uploaded: any = input.resourceType === 'video'
-    ? await new Promise((resolve, reject) => {
-        cloudinary.uploader.upload_large(input.filePath, {
-          ...options,
-          chunk_size: 20 * 1024 * 1024
-        }, (error: any, result: any) => error ? reject(error) : resolve(result));
-      })
-    : await cloudinary.uploader.upload(input.filePath, options);
-
-  const normalized = normalizeAsset(uploaded, {
-    assetId: requireAssetString(uploaded?.asset_id, 'asset ID'),
+  const signature = signUploadParams(signedParams, config.apiSecret);
+  const uploadId = crypto.randomUUID();
+  const chunkSize = 20 * 1024 * 1024;
+  const handle = await fs.promises.open(input.filePath, 'r');
+  let finalResponse: any = null;
+  try {
+    for (let start = 0; start < stat.size; start += chunkSize) {
+      const length = Math.min(chunkSize, stat.size - start);
+      const buffer = Buffer.allocUnsafe(length);
+      const read = await handle.read(buffer, 0, length, start);
+      if (read.bytesRead !== length) throw new Error('The local media file changed during Cloudinary upload.');
+      const end = start + length - 1;
+      const form = new FormData();
+      form.append('file', new Blob([buffer], { type: input.resourceType === 'raw' ? 'application/octet-stream' : 'video/mp4' }), path.basename(input.filePath));
+      form.append('api_key', config.apiKey);
+      form.append('timestamp', String(timestamp));
+      form.append('signature', signature);
+      form.append('folder', input.folder);
+      form.append('public_id', input.publicId);
+      form.append('overwrite', 'false');
+      form.append('type', 'authenticated');
+      const endpoint = 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(config.cloudName) + '/' + input.resourceType + '/upload';
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'X-Unique-Upload-Id': uploadId,
+          'Content-Range': 'bytes ' + start + '-' + end + '/' + stat.size
+        },
+        body: form,
+        signal: AbortSignal.timeout(15 * 60 * 1000)
+      });
+      const rawText = await response.text();
+      let payload: any = {};
+      try { payload = rawText ? JSON.parse(rawText) : {}; } catch { payload = {}; }
+      if (!response.ok) {
+        throw new Error('Cloudinary chunk upload failed (HTTP ' + response.status + '): ' + String(payload?.error?.message || 'provider rejected the chunk').slice(0, 220));
+      }
+      if (end === stat.size - 1) {
+        if (payload.done === false) throw new Error('Cloudinary did not confirm completion of the final media chunk.');
+        finalResponse = payload;
+      }
+    }
+  } finally {
+    await handle.close();
+  }
+  if (!finalResponse) throw new Error('Cloudinary did not return a completed upload response.');
+  const normalized = normalizeAsset(finalResponse, {
+    assetId: requireAssetString(finalResponse?.asset_id, 'asset ID'),
     publicId: input.publicId,
     resourceType: input.resourceType,
     deliveryType: 'authenticated',
     expectedBytes: stat.size
   });
-  if (uploaded?.secure_url && !String(uploaded.secure_url).startsWith('https://res.cloudinary.com/' + config.cloudName + '/')) {
+  if (finalResponse?.secure_url && !String(finalResponse.secure_url).startsWith('https://res.cloudinary.com/' + config.cloudName + '/')) {
     throw new Error('Cloudinary returned an unexpected delivery host. The asset was not accepted.');
   }
   return normalized;
@@ -248,12 +276,25 @@ export async function downloadCloudinaryAuthenticatedAsset(asset: CloudinaryAsse
 
 export async function deleteCloudinaryAsset(asset: CloudinaryAsset): Promise<void> {
   await configureCloudinary();
-  const result: any = await cloudinary.uploader.destroy(asset.publicId, {
-    resource_type: asset.resourceType,
-    type: asset.deliveryType,
-    invalidate: true
-  });
-  if (result?.result !== 'ok' && result?.result !== 'not found') {
+  const config = await configureCloudinary();
+  const timestamp = Math.floor(Date.now() / 1000);
+  const params = {
+    invalidate: true,
+    public_id: asset.publicId,
+    timestamp,
+    type: asset.deliveryType
+  };
+  const form = new FormData();
+  form.append('public_id', asset.publicId);
+  form.append('timestamp', String(timestamp));
+  form.append('type', asset.deliveryType);
+  form.append('invalidate', 'true');
+  form.append('api_key', config.apiKey);
+  form.append('signature', signUploadParams(params, config.apiSecret));
+  const endpoint = 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(config.cloudName) + '/' + asset.resourceType + '/destroy';
+  const response = await fetch(endpoint, { method: 'POST', body: form, signal: AbortSignal.timeout(20000) });
+  const result: any = await response.json().catch(() => ({}));
+  if (!response.ok || (result?.result !== 'ok' && result?.result !== 'not found')) {
     throw new Error('Cloudinary did not confirm deletion of asset ' + asset.publicId + '.');
   }
 }
