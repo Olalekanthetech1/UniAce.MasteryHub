@@ -57,6 +57,8 @@ export interface Course {
   deleted?: boolean;
   deletedAt?: string;
   status?: string;
+  studentVisibility?: 'live' | 'coming_soon' | 'hidden';
+  levelAvailability?: 'live' | 'coming_soon' | 'hidden';
   faculty?: string;
   syllabusStatus?: 'pending' | 'generating' | 'ready' | 'failed';
   syllabusStatusTimestamp?: string;
