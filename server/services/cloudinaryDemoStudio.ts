@@ -278,17 +278,15 @@ export async function deleteCloudinaryAsset(asset: CloudinaryAsset): Promise<voi
   const params = {
     invalidate: true,
     public_id: asset.publicId,
-    timestamp,
-    type: asset.deliveryType
+    timestamp
   };
   const form = new FormData();
   form.append('public_id', asset.publicId);
   form.append('timestamp', String(timestamp));
-  form.append('type', asset.deliveryType);
   form.append('invalidate', 'true');
   form.append('api_key', config.apiKey);
   form.append('signature', signUploadParams(params, config.apiSecret));
-  const endpoint = 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(config.cloudName) + '/' + asset.resourceType + '/destroy';
+  const endpoint = 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(config.cloudName) + '/' + asset.resourceType + '/' + asset.deliveryType + '/destroy';
   const response = await fetch(endpoint, { method: 'POST', body: form, signal: AbortSignal.timeout(20000) });
   const result: any = await response.json().catch(() => ({}));
   if (!response.ok || (result?.result !== 'ok' && result?.result !== 'not found')) {
@@ -310,17 +308,15 @@ export async function deleteCloudinaryAssetByPublicId(
   const params = {
     invalidate: true,
     public_id: publicId,
-    timestamp,
-    type: 'authenticated'
+    timestamp
   };
   const form = new FormData();
   form.append('public_id', publicId);
   form.append('timestamp', String(timestamp));
-  form.append('type', 'authenticated');
   form.append('invalidate', 'true');
   form.append('api_key', config.apiKey);
   form.append('signature', signUploadParams(params, config.apiSecret));
-  const endpoint = 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(config.cloudName) + '/' + resourceType + '/destroy';
+  const endpoint = 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(config.cloudName) + '/' + resourceType + '/authenticated/destroy';
   const response = await fetch(endpoint, {
     method: 'POST',
     body: form,
