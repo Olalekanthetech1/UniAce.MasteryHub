@@ -184,7 +184,10 @@ export async function uploadCloudinaryLocalAsset(input: {
       if (read.bytesRead !== length) throw new Error('The local media file changed during Cloudinary upload.');
       const end = start + length - 1;
       const form = new FormData();
-      form.append('file', new Blob([buffer], { type: input.resourceType === 'raw' ? 'application/octet-stream' : 'video/mp4' }), path.basename(input.filePath));
+      const mediaMimeType = input.resourceType === 'raw'
+        ? 'application/octet-stream'
+        : path.extname(input.filePath).toLowerCase() === '.mp3' ? 'audio/mpeg' : 'video/mp4';
+      form.append('file', new Blob([buffer], { type: mediaMimeType }), path.basename(input.filePath));
       form.append('api_key', config.apiKey);
       form.append('timestamp', String(timestamp));
       form.append('signature', signature);
@@ -270,7 +273,6 @@ export async function downloadCloudinaryAuthenticatedAsset(asset: CloudinaryAsse
 }
 
 export async function deleteCloudinaryAsset(asset: CloudinaryAsset): Promise<void> {
-  await configureCloudinary();
   const config = await configureCloudinary();
   const timestamp = Math.floor(Date.now() / 1000);
   const params = {
@@ -294,6 +296,41 @@ export async function deleteCloudinaryAsset(asset: CloudinaryAsset): Promise<voi
   }
 }
 
+
+
+export async function deleteCloudinaryAssetByPublicId(
+  publicId: string,
+  resourceType: 'video' | 'raw'
+): Promise<void> {
+  if (!publicId || publicId.length > 255 || /[?#\\\\]/.test(publicId)) {
+    throw new Error('The Cloudinary public ID is invalid.');
+  }
+  const config = await configureCloudinary();
+  const timestamp = Math.floor(Date.now() / 1000);
+  const params = {
+    invalidate: true,
+    public_id: publicId,
+    timestamp,
+    type: 'authenticated'
+  };
+  const form = new FormData();
+  form.append('public_id', publicId);
+  form.append('timestamp', String(timestamp));
+  form.append('type', 'authenticated');
+  form.append('invalidate', 'true');
+  form.append('api_key', config.apiKey);
+  form.append('signature', signUploadParams(params, config.apiSecret));
+  const endpoint = 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(config.cloudName) + '/' + resourceType + '/destroy';
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    body: form,
+    signal: AbortSignal.timeout(20000)
+  });
+  const result: any = await response.json().catch(() => ({}));
+  if (!response.ok || (result?.result !== 'ok' && result?.result !== 'not found')) {
+    throw new Error('Cloudinary did not confirm deletion of asset ' + publicId + '.');
+  }
+}
 
 export function cloudinaryFolderForAsset(config: CloudinaryMediaConfig): string {
   return config.folderPrefix;
