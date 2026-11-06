@@ -1,67 +1,30 @@
-import { useState, useEffect, useTransition } from 'react';
+import { lazy, Suspense, useEffect, useState, useTransition } from 'react';
+import type { ComponentType, LazyExoticComponent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import toast from 'react-hot-toast';
 import Sidebar from './components/Sidebar';
 import BottomNav from './components/BottomNav';
-import ContentArea from './components/ContentArea';
-import ChatBot from './components/ChatBot';
-import Dashboard from './components/Dashboard';
-import ModuleTopics from './components/ModuleTopics';
-import CourseSyllabus from './components/CourseSyllabus';
 import CourseHub from './components/CourseHub';
-import AdminLogin from './components/AdminLogin';
-import FirebaseSetup from './components/FirebaseSetup';
-import LandingPage from './components/LandingPage';
-import PushNotificationPrompt from './components/PushNotificationPrompt';
-import GlobalNotification from './components/GlobalNotification';
-import GlobalErrorInterceptor from './components/GlobalErrorInterceptor';
-import PaywallManager from './components/PaywallManager';
-import PWAInstallPrompt from './components/PWAInstallPrompt';
-import Calculator from './components/Calculator';
-import ErrorBoundary from './components/ErrorBoundary';
-import StudyNotificationScheduler from './components/StudyNotificationScheduler';
-
-// Direct imports for instant, zero-latency navigation across all tabs
-import QuizHub from './components/QuizHub';
-import FlashcardHub from './components/FlashcardHub';
-import SkillPracticeHub from './components/SkillPracticeHub';
-import MasteryCenter from './components/MasteryCenter';
-import FormulaReference from './components/FormulaReference';
-import Notebook from './components/Notebook';
-import PricingPage from './components/PricingPage';
-import UserProfile from './components/UserProfile';
-import HelpSupport from './components/HelpSupport';
-import AdminSupport from './components/AdminSupport';
-import AdminDashboard from './components/AdminDashboard';
-import TutorDashboard from './components/TutorDashboard';
-import Arena from './components/Arena';
-import ConceptMap from './components/ConceptMap';
-import StudyPlan from './components/StudyPlan';
-import VoiceTutor from './components/VoiceTutor';
-import ComingSoon from './components/ComingSoon';
-import { useFeatureSwitches } from './hooks/useFeatureSwitches';
-
 import AcademicProfileModal from './components/AcademicProfileModal';
-import WhatsAppPromoModal from './components/WhatsAppPromoModal';
-import DemoDirectorHUD from './components/DemoDirectorHUD';
-import DemoReelPreviewModal from './components/DemoReelPreviewModal';
+import PaywallManager from './components/PaywallManager';
+import ComingSoon from './components/ComingSoon';
+import ErrorBoundary from './components/ErrorBoundary';
+import GlobalErrorInterceptor from './components/GlobalErrorInterceptor';
+import { useFeatureSwitches } from './hooks/useFeatureSwitches';
 import { useDemoReel } from './context/DemoReelContext';
 import { CalculatorProvider, useCalculator } from './context/CalculatorContext';
 import { useUserProgress } from './hooks/useUserProgress';
 import { useSelfHealing } from './hooks/useSelfHealing';
-import { AdaptiveRecalibratorModal } from './components/AdaptiveRecalibratorModal';
 import { useAuth } from './context/AuthContext';
 import { useCourses } from './context/CourseContext';
 import { Menu, Mic, Video } from 'lucide-react';
 import { Toaster } from 'react-hot-toast';
 import { View, ChatMessage, CourseId, Department, Semester } from './types';
-import { generateModuleContent, generateCourseSkeleton } from './services/aiCourseGenerator';
-
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { InstitutionProvider } from './context/InstitutionContext';
 import { safeFetchJson } from './utils/safeFetch';
 
-const queryClient = new QueryClient();
+
 
 export default function App() {
   console.log('App.tsx: Rendering...');
@@ -102,6 +65,9 @@ function AppContent() {
   }, []);
 
   const navigateTo = (path: string, view: View = 'hub') => {
+    preloadView(view);
+    if (path === '/admin/dashboard') void AdminDashboard.preload().catch(() => undefined);
+    if (path === '/admin/login') void AdminLogin.preload().catch(() => undefined);
     if (typeof window !== 'undefined') {
       window.history.pushState({}, '', path);
       setCurrentPath(path);
@@ -237,6 +203,7 @@ function AppContent() {
   const activeSubTopicContent = activeModule?.subTopics?.find(s => s.id === activeSubTopicId)?.content;
 
   const handleCourseSelect = (id: CourseId) => {
+    preloadView('course-syllabus');
     setActiveLessonContent(null);
     startTransition(() => {
       setActiveCourseId(id);
@@ -257,6 +224,7 @@ function AppContent() {
   };
 
   const handleModuleSelect = (id: string) => {
+    preloadView('module-topics');
     setActiveLessonContent(null);
     startTransition(() => {
       setActiveModuleId(id);
@@ -274,6 +242,7 @@ function AppContent() {
   };
 
   const handleSubTopicSelect = (subTopicId: string) => {
+    preloadView('study');
     // Reset lesson content state immediately before transition render to prevent stale content flicker
     setActiveLessonContent(null);
     window.scrollTo({ top: 0, behavior: 'instant' });
@@ -291,6 +260,7 @@ function AppContent() {
   };
 
   const handleTakeQuiz = (subTopicId: string) => {
+    preloadView('study');
     setActiveLessonContent(null);
     window.scrollTo({ top: 0, behavior: 'instant' });
     document.documentElement.scrollTop = 0;
@@ -307,6 +277,7 @@ function AppContent() {
   };
 
   const handleViewSelect = (view: View) => {
+    preloadView(view);
     setActiveView(view);
     if (currentPath !== '/') {
       window.history.pushState({}, '', '/');
@@ -380,7 +351,11 @@ function AppContent() {
   }, [user]);
 
   if (!isConfigured) {
-    return <FirebaseSetup />;
+    return (
+      <Suspense fallback={<LoadingFallback fullScreen />}>
+        <FirebaseSetup />
+      </Suspense>
+    );
   }
 
   if (loading && !profile && !user) {
@@ -394,14 +369,20 @@ function AppContent() {
   if (!user) {
     if (currentPath === '/admin/login' || currentPath === '/admin/dashboard') {
       return (
-        <AdminLogin 
-          requireGoogleLogin={true} 
-          onBackToApp={() => navigateTo('/', 'hub')} 
-          onSuccess={() => navigateTo('/admin/dashboard')} 
-        />
+        <Suspense fallback={<LoadingFallback fullScreen />}>
+          <AdminLogin 
+            requireGoogleLogin={true} 
+            onBackToApp={() => navigateTo('/', 'hub')} 
+            onSuccess={() => navigateTo('/admin/dashboard')} 
+          />
+        </Suspense>
       );
     }
-    return <LandingPage />;
+    return (
+      <Suspense fallback={<LoadingFallback fullScreen />}>
+        <LandingPage />
+      </Suspense>
+    );
   }
 
   if (currentPath === '/admin/login') {
@@ -419,10 +400,12 @@ function AppContent() {
     }
     
     return (
-      <AdminLogin 
-        onBackToApp={() => navigateTo('/', 'hub')} 
-        onSuccess={() => navigateTo('/admin/dashboard')} 
-      />
+      <Suspense fallback={<LoadingFallback fullScreen />}>
+        <AdminLogin 
+          onBackToApp={() => navigateTo('/', 'hub')} 
+          onSuccess={() => navigateTo('/admin/dashboard')} 
+        />
+      </Suspense>
     );
   }
 
@@ -441,7 +424,11 @@ function AppContent() {
       return null;
     }
 
-    return <AdminDashboard onBackToApp={() => navigateTo('/', 'hub')} />;
+    return (
+      <Suspense fallback={<LoadingFallback fullScreen />}>
+        <AdminDashboard onBackToApp={() => navigateTo('/', 'hub')} />
+      </Suspense>
+    );
   }
 
   const needsAcademicProfile = user && profile && !profile.onboarding_completed && (!profile.department || !profile.academic_level || !profile.semester);
@@ -456,6 +443,7 @@ function AppContent() {
       <Sidebar 
         activeModuleId={activeModuleId} 
         onModuleSelect={(id) => {
+          preloadView('study');
           startTransition(() => {
             setActiveModuleId(id);
             setActiveView('study');
@@ -481,7 +469,9 @@ function AppContent() {
 
       <AnimatePresence>
         {isCalculatorOpen && (
-          <Calculator isOpen={isCalculatorOpen} onClose={() => setIsCalculatorOpen(false)} />
+          <Suspense fallback={null}>
+            <Calculator isOpen={isCalculatorOpen} onClose={() => setIsCalculatorOpen(false)} />
+          </Suspense>
         )}
       </AnimatePresence>
 
@@ -524,10 +514,11 @@ function AppContent() {
         )}
 
         {/* View Switcher */}
+        <Suspense fallback={<LoadingFallback />}>
         {activeView === 'hub' && (
           <CourseHub 
             onSelectCourse={handleCourseSelect} 
-            onProfileClick={() => setActiveView('profile')}
+            onProfileClick={() => { preloadView('profile'); setActiveView('profile'); }}
             onViewSelect={handleViewSelect}
             enrolledCourses={progress.enrolledCourses || []}
             progress={progress}
@@ -598,10 +589,10 @@ function AppContent() {
           <ModuleTopics 
             courseId={activeCourseId}
             module={activeModule}
-            onBack={() => setActiveView('course-syllabus')}
+            onBack={() => { preloadView('course-syllabus'); setActiveView('course-syllabus'); }}
             onSubTopicSelect={handleSubTopicSelect}
             onTakeQuiz={handleTakeQuiz}
-            onOpenChat={() => setActiveView('ai-tutor')}
+            onOpenChat={() => { preloadView('ai-tutor'); setActiveView('ai-tutor'); }}
             progress={progress}
           />
         )}
@@ -613,7 +604,7 @@ function AppContent() {
             module={activeModule}
             activeSubTopicId={activeSubTopicId}
             onSubTopicSelect={handleSubTopicSelect}
-            onBackToSyllabus={() => setActiveView('module-topics')}
+            onBackToSyllabus={() => { preloadView('module-topics'); setActiveView('module-topics'); }}
             isSidebarOpen={isSidebarOpen}
             toggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
             onQuizComplete={(topicId, score) => {
@@ -787,10 +778,13 @@ function AppContent() {
           })()
         )}
 
+        </Suspense>
+
         {/* Consolidated Single Instance of ChatBot (Full page in 'ai-tutor' view, otherwise bottom-corner overlay) */}
       </div>
 
-      <ChatBot 
+      <Suspense fallback={null}>
+        <ChatBot 
         isFullPage={activeView === 'ai-tutor'} 
         onToggleFullPage={() => handleViewSelect(activeView === 'ai-tutor' ? 'dashboard' : 'ai-tutor')} 
         messages={chatMessages}
@@ -810,7 +804,8 @@ function AppContent() {
           setActiveCourseId(cId);
           if (content) setActiveLessonContent(content);
         }}
-      />
+        />
+      </Suspense>
 
       {/* Bottom Navigation (Mobile) */}
       <BottomNav activeView={activeView} onViewSelect={handleViewSelect} />
@@ -826,7 +821,8 @@ function AppContent() {
 
       {/* Voice Tutor */}
       {isVoiceTutorOpen && (
-        <VoiceTutor 
+        <Suspense fallback={null}>
+          <VoiceTutor 
           isOpen={isVoiceTutorOpen} 
           onClose={() => setIsVoiceTutorOpen(false)} 
           pdfContent={activePdfText || undefined}
@@ -844,11 +840,13 @@ Your teaching strategy:
    - Include 2-3 "Self-Check Questions" at the end of the content.
 
 CRITICAL: Do NOT discuss university administration or specific regulatory agencies unless the student's current topic is specifically about them. Focus 100% on academic mastery.`}
-        />
+          />
+        </Suspense>
       )}
 
       {recalibrationTopicId && recalibrationScore !== null && (
-        <AdaptiveRecalibratorModal
+        <Suspense fallback={null}>
+          <AdaptiveRecalibratorModal
           topicId={recalibrationTopicId}
           score={recalibrationScore}
           isOpen={isRecalibrationOpen}
@@ -857,17 +855,21 @@ CRITICAL: Do NOT discuss university administration or specific regulatory agenci
           syllabus={syllabus}
           onViewStudyPlan={() => {
             setIsRecalibrationOpen(false);
+            preloadView('study-plan');
             setActiveView('study-plan');
           }}
-        />
+          />
+        </Suspense>
       )}
 
       {/* Global Admin Alert */}
       <GlobalNotification />
 
       {/* Floating Demo Director HUD and Export Modal */}
-      <DemoDirectorHUD />
-      <DemoReelPreviewModal />
+      <Suspense fallback={null}>
+        <DemoDirectorHUD />
+        <DemoReelPreviewModal />
+      </Suspense>
 
       {/* Toaster for notifications */}
       <Toaster position="top-center" />
