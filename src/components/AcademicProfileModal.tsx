@@ -6,20 +6,52 @@ import { Department, Level, Semester } from '../types';
 import { useInstitution } from '../context/InstitutionContext';
 import { LogService } from '../services/logService';
 import { safeFetchJson } from '../utils/safeFetch';
+import { CourseService, type AcademicLevelOption } from '../services/courseService';
 
-const LEVELS: Level[] = ['100', '200', '300', '400', '500'];
 const SEMESTERS: Semester[] = ['1st Semester', '2nd Semester'];
 
 export default function AcademicProfileModal({ onClose }: { onClose?: () => void }) {
   const { departments: DEPARTMENTS } = useInstitution();
-  const { profile, updateProfileData } = useAuth();
+  const { user, profile, updateProfileData } = useAuth();
   const [department, setDepartment] = useState<Department | ''>((profile?.department as Department) || '');
   const [level, setLevel] = useState<Level | ''>((profile?.academic_level as Level) || '');
   const [semester, setSemester] = useState<Semester | ''>((profile?.semester as Semester) || '');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [academicLevels, setAcademicLevels] = useState<AcademicLevelOption[]>([]);
+  const [levelsLoading, setLevelsLoading] = useState(true);
+  const [levelsError, setLevelsError] = useState<string | null>(null);
   
   const [step, setStep] = useState<1 | 2>(1);
   const [whatsappLink, setWhatsappLink] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    const loadAcademicLevels = async () => {
+      setLevelsLoading(true);
+      setLevelsError(null);
+      try {
+        const result = await CourseService.getAcademicLevels();
+        if (!active) return;
+        setAcademicLevels(result);
+        const currentKey = String(profile?.academic_level || '')
+          .normalize('NFKC')
+          .trim()
+          .toLowerCase()
+          .replace(/^level\\s*/, '')
+          .replace(/\\s*(?:level|lvl|l)$/, '')
+          .replace(/[^a-z0-9_-]/g, '');
+        const currentOption = result.find(option => option.level_key === currentKey);
+        setLevel(currentOption?.level_key || '');
+      } catch (error: any) {
+        if (!active) return;
+        setLevelsError(error?.message || 'Academic levels could not be verified. Please retry.');
+      } finally {
+        if (active) setLevelsLoading(false);
+      }
+    };
+    void loadAcademicLevels();
+    return () => { active = false; };
+  }, [user?.uid, profile?.academic_level]);
 
   useEffect(() => {
     const fetchLink = async () => {
@@ -37,7 +69,8 @@ export default function AcademicProfileModal({ onClose }: { onClose?: () => void
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!department || !level || !semester) return;
+    const selectedLevel = academicLevels.find(option => option.level_key === level);
+    if (!department || !level || !semester || selectedLevel?.availability !== 'live') return;
 
     setIsSubmitting(true);
     try {
@@ -147,12 +180,27 @@ export default function AcademicProfileModal({ onClose }: { onClose?: () => void
                         required
                         className="w-full bg-slate-50 dark:bg-zinc-800/50 border border-slate-200 dark:border-zinc-700 rounded-xl px-4 py-3 text-slate-900 dark:text-white focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none transition-all appearance-none"
                       >
-                        <option value="" disabled>Select Level</option>
-                        {LEVELS.map(l => (
-                          <option key={l} value={l}>{l}</option>
+                        <option value="" disabled>{levelsLoading ? 'Loading levels…' : 'Select Level'}</option>
+                        {academicLevels.map(option => (
+                          <option
+                            key={option.level_key}
+                            value={option.level_key}
+                            disabled={option.availability !== 'live'}
+                          >
+                            {option.label}{option.availability === 'coming_soon' ? ' — Coming Soon' : ''}
+                          </option>
                         ))}
                       </select>
                     </div>
+                    {levelsError ? (
+                      <p className="col-span-2 text-xs text-red-600 dark:text-red-400">
+                        {levelsError}
+                      </p>
+                    ) : (
+                      <p className="col-span-2 text-xs text-slate-500 dark:text-zinc-400">
+                        Coming Soon levels are visible here but cannot be selected until an administrator makes them Live.
+                      </p>
+                    )}
 
                     <div className="space-y-1.5">
                       <label className="text-sm font-medium text-slate-700 dark:text-zinc-300 flex items-center gap-2">
@@ -175,7 +223,7 @@ export default function AcademicProfileModal({ onClose }: { onClose?: () => void
 
                   <button
                     type="submit"
-                    disabled={isSubmitting || !department || !level || !semester}
+                    disabled={isSubmitting || levelsLoading || !!levelsError || !department || !level || !semester || academicLevels.find(option => option.level_key === level)?.availability !== 'live'}
                     className="w-full mt-8 bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-medium py-3.5 rounded-xl hover:bg-slate-800 dark:hover:bg-slate-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                   >
                     {isSubmitting ? (
