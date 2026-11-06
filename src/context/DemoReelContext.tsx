@@ -19,6 +19,11 @@ interface DemoReelContextType {
   recordedBlob: Blob | null;
   recordedVideoUrl: string | null;
   recordedDuration: number;
+  recordingSource: 'browser' | 'imported' | null;
+  recordedFileName: string | null;
+  recordedVideoDimensions: { width: number; height: number } | null;
+  isImportingVideo: boolean;
+  importVideoFile: (file: File) => Promise<boolean>;
   isModalOpen: boolean;
   selectedScenarioId: string;
   screenCaptureSupported: boolean;
@@ -46,6 +51,10 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
   const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
   const [recordedDuration, setRecordedDuration] = useState(0);
+  const [recordingSource, setRecordingSource] = useState<'browser' | 'imported' | null>(null);
+  const [recordedFileName, setRecordedFileName] = useState<string | null>(null);
+  const [recordedVideoDimensions, setRecordedVideoDimensions] = useState<{ width: number; height: number } | null>(null);
+  const [isImportingVideo, setIsImportingVideo] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedScenarioId, setSelectedScenarioId] = useState('');
 
@@ -61,6 +70,88 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
   const screenCaptureSupported = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getDisplayMedia;
 
   const currentStep = currentScenario && currentScenario.steps[currentStepIndex] ? currentScenario.steps[currentStepIndex] : null;
+
+  const importVideoFile = useCallback(async (file: File): Promise<boolean> => {
+    if (isRecording) {
+      toast.error('Stop the current browser recording before importing another video.');
+      return false;
+    }
+    if (!file || file.size <= 0) {
+      toast.error('Choose a non-empty video file.');
+      return false;
+    }
+
+    const lowerName = file.name.toLowerCase();
+    const hasVideoMime = file.type.toLowerCase().startsWith('video/');
+    const hasSupportedExtension = /\.(mp4|m4v|webm|mov|ogv|3gp|3g2)$/i.test(lowerName);
+    if (!hasVideoMime && !hasSupportedExtension) {
+      toast.error('Choose a supported video file, such as MP4, WebM or MOV.');
+      return false;
+    }
+
+    const objectUrl = URL.createObjectURL(file);
+    setIsImportingVideo(true);
+
+    try {
+      const metadata = await new Promise<{ duration: number; width: number; height: number }>((resolve, reject) => {
+        const probe = document.createElement('video');
+        let settled = false;
+
+        const finish = (callback: () => void) => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timeoutId);
+          probe.onloadedmetadata = null;
+          probe.onerror = null;
+          probe.removeAttribute('src');
+          probe.load();
+          callback();
+        };
+
+        const timeoutId = window.setTimeout(() => {
+          finish(() => reject(new Error('Video validation timed out. Try a shorter or re-exported video.')));
+        }, 15000);
+
+        probe.preload = 'metadata';
+        probe.muted = true;
+        probe.onloadedmetadata = () => {
+          const duration = probe.duration;
+          const width = probe.videoWidth;
+          const height = probe.videoHeight;
+          if (!Number.isFinite(duration) || duration <= 0 || width <= 0 || height <= 0) {
+            finish(() => reject(new Error('The selected file does not contain readable video metadata.')));
+            return;
+          }
+          finish(() => resolve({ duration, width, height }));
+        };
+        probe.onerror = () => {
+          finish(() => reject(new Error('Your browser cannot decode this video. Try exporting it as MP4 (H.264).')));
+        };
+        probe.src = objectUrl;
+        probe.load();
+      });
+
+      setRecordedBlob(file);
+      setRecordedFileName(file.name || 'uniace-imported-video');
+      setRecordingSource('imported');
+      setRecordedDuration(Math.max(1, Math.round(metadata.duration)));
+      setRecordedVideoDimensions({ width: metadata.width, height: metadata.height });
+      setCurrentScenario(null);
+      setSelectedScenarioId('');
+      setActiveTutorPreview(null);
+      setRecordedVideoUrl(objectUrl);
+      setIsModalOpen(true);
+      toast.success('Video imported locally. Review it before exporting.');
+      return true;
+    } catch (error: any) {
+      URL.revokeObjectURL(objectUrl);
+      console.error('Unable to import Demo Studio video:', error);
+      toast.error(error?.message || 'The selected video could not be imported.');
+      return false;
+    } finally {
+      setIsImportingVideo(false);
+    }
+  }, [isRecording]);
 
   // Clean up timer and media streams on unmount
   useEffect(() => {
@@ -226,6 +317,11 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
 
     chunksRef.current = [];
     setRecordedBlob(null);
+    setRecordedDuration(0);
+    setRecordedFileName(null);
+    setRecordingSource(null);
+    setRecordedVideoDimensions(null);
+    setIsModalOpen(false);
     if (recordedVideoUrl) {
       URL.revokeObjectURL(recordedVideoUrl);
       setRecordedVideoUrl(null);
@@ -294,6 +390,9 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
         }
 
         setRecordedBlob(fullBlob);
+        setRecordedFileName(null);
+        setRecordingSource('browser');
+        setRecordedVideoDimensions(null);
         const url = URL.createObjectURL(fullBlob);
         setRecordedVideoUrl(url);
         setIsModalOpen(true);
@@ -350,10 +449,11 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
       toast.error('No recorded video available to download.');
       return;
     }
-    const extension = recordedBlob.type.toLowerCase().includes('mp4') ? 'mp4' : 'webm';
+    const mimeType = recordedBlob.type.toLowerCase();
+    const extension = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('quicktime') ? 'mov' : 'webm';
     const scenarioName = currentScenario?.id || 'recording';
     const defaultName = `uniace-${scenarioName}-reel-${new Date().toISOString().slice(0, 10)}.${extension}`;
-    const finalName = filename || defaultName;
+    const finalName = filename || (recordingSource === 'imported' && recordedFileName ? recordedFileName : defaultName);
     const downloadUrl = recordedVideoUrl || URL.createObjectURL(recordedBlob);
     
     const a = document.createElement('a');
@@ -363,7 +463,7 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
     a.click();
     document.body.removeChild(a);
     toast.success(`📥 Downloaded ${finalName}!`);
-  }, [recordedBlob, recordedVideoUrl, currentScenario]);
+  }, [recordedBlob, recordedVideoUrl, currentScenario, recordingSource, recordedFileName]);
 
   const openPreviewModal = useCallback(() => setIsModalOpen(true), []);
   const closePreviewModal = useCallback(() => setIsModalOpen(false), []);
@@ -380,6 +480,11 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
         recordedBlob,
         recordedVideoUrl,
         recordedDuration,
+        recordingSource,
+        recordedFileName,
+        recordedVideoDimensions,
+        isImportingVideo,
+        importVideoFile,
         isModalOpen,
         selectedScenarioId,
         screenCaptureSupported,

@@ -112,6 +112,8 @@ import {
 } from './server/courseGenerationResearch.js';
 import { setupRagRoutes } from './server/routes/rag.js';
 import { setupStudentRoutes, invalidateBootstrapCache } from './server/routes/student.js';
+import { setupDemoNarrationRoutes } from './server/routes/demoNarration.js';
+import { setupCloudinaryMediaRoutes } from './server/routes/cloudinaryMedia.js';
 import { arenaRealtime } from './server/arenaRealtime.js';
 import { getPostgresPool } from './server/postgresPool.js';
 import { LogRepository } from './server/repositories/logRepository.js';
@@ -2800,6 +2802,8 @@ async function verifyAdmin(req: express.Request, res: express.Response, next: ex
 
 // Enforce verifyAdmin universally on all /api/admin routes
 app.use('/api/admin', verifyAdmin);
+setupDemoNarrationRoutes(app);
+setupCloudinaryMediaRoutes(app);
 
 // Mount modular Admin and RAG routes
 setupAdminRoutes(app, verifyAuth, getAdminApp, isAdminEmail, syncAllProvidersFromSettings);
