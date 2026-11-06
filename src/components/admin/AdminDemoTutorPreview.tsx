@@ -1,13 +1,24 @@
 import React, { useState } from 'react';
-import { AlertCircle, Loader2, ShieldCheck, Sparkles } from 'lucide-react';
+import { AlertCircle, Film, Loader2, ShieldCheck, Sparkles } from 'lucide-react';
 import { requestAdminDemoTutor, AdminDemoTutorResult } from '../../services/adminDemoTutorService';
 
-export default function AdminDemoTutorPreview() {
+interface AdminDemoTutorPreviewProps {
+  onUseInRecording?: (preview: {
+    prompt: string;
+    courseContext?: string;
+    response: string;
+    providerUsed?: string | null;
+    latencyMs?: number;
+  }) => void;
+}
+
+export default function AdminDemoTutorPreview({ onUseInRecording }: AdminDemoTutorPreviewProps) {
   const [message, setMessage] = useState('');
   const [courseContext, setCourseContext] = useState('');
   const [result, setResult] = useState<AdminDemoTutorResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [lastRequest, setLastRequest] = useState<{ prompt: string; courseContext?: string } | null>(null);
 
   const handleRun = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -16,7 +27,11 @@ export default function AdminDemoTutorPreview() {
     setError(null);
     setResult(null);
     try {
-      setResult(await requestAdminDemoTutor(message.trim(), courseContext.trim() || undefined));
+      const cleanPrompt = message.trim();
+      const cleanCourseContext = courseContext.trim() || undefined;
+      const preview = await requestAdminDemoTutor(cleanPrompt, cleanCourseContext);
+      setResult(preview);
+      setLastRequest({ prompt: cleanPrompt, courseContext: cleanCourseContext });
     } catch (err: any) {
       setError(err?.message || 'The isolated AI Tutor preview could not be completed.');
     } finally {
@@ -71,6 +86,22 @@ export default function AdminDemoTutorPreview() {
             {result.meta.totalTokens !== null ? `Provider-reported tokens: ${result.meta.totalTokens}` : 'Provider token usage was not reported.'} · Admin demo telemetry saved · No student Sparks charged
           </div>
         </div>
+      )}
+
+      {result && lastRequest && onUseInRecording && (
+        <button
+          type="button"
+          onClick={() => onUseInRecording({
+            ...lastRequest,
+            response: result.response,
+            providerUsed: result.meta.providerUsed,
+            latencyMs: result.meta.latencyMs,
+          })}
+          className="inline-flex items-center gap-2 rounded-xl border border-indigo-300 bg-indigo-50 px-4 py-3 text-xs font-black text-indigo-800 hover:bg-indigo-100 dark:border-indigo-800 dark:bg-indigo-950/30 dark:text-indigo-200"
+        >
+          <Film size={15} />
+          Add this response to a recording scenario
+        </button>
       )}
     </section>
   );

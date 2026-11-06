@@ -1,6 +1,12 @@
 import React, { createContext, useContext, useState, useRef, useEffect, useCallback, ReactNode } from 'react';
 import { View } from '../types';
-import { DemoScenario, DemoStep, isDemoScenarioIsolated } from '../services/demoReelService';
+import {
+  DemoScenario,
+  DemoStep,
+  IsolatedDemoTutorPreview,
+  isDemoScenarioIsolated,
+  isValidIsolatedDemoTutorPreview,
+} from '../services/demoReelService';
 import toast from 'react-hot-toast';
 
 interface DemoReelContextType {
@@ -34,6 +40,7 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [currentScenario, setCurrentScenario] = useState<DemoScenario | null>(null);
+  const [activeTutorPreview, setActiveTutorPreview] = useState<IsolatedDemoTutorPreview | null>(null);
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
@@ -80,11 +87,18 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
     const step = scenario.steps[stepIdx];
     setCurrentStepIndex(stepIdx);
 
-    // 1. Programmatically navigate to target view
-    if (navigateFnRef.current) {
-      navigateFnRef.current(step.view);
-    } else if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('navigate', { detail: step.view }));
+    const isolatedTutorStep = step.view === 'ai-tutor' &&
+      isValidIsolatedDemoTutorPreview(step.isolatedTutorPreview);
+    setActiveTutorPreview(isolatedTutorStep ? step.isolatedTutorPreview! : null);
+
+    // Render this segment through the admin-only overlay. Do not navigate into
+    // the student tutor view or trigger its profile/history reads.
+    if (!isolatedTutorStep) {
+      if (navigateFnRef.current) {
+        navigateFnRef.current(step.view);
+      } else if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('navigate', { detail: step.view }));
+      }
     }
 
     // 3. Schedule next step
@@ -154,6 +168,7 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
     setIsRecording(false);
     setIsPaused(false);
     setCurrentScenario(null);
+    setActiveTutorPreview(null);
     setCurrentStepIndex(0);
     setElapsedSeconds(0);
     toast('Demo reel cancelled', { icon: '🛑' });
@@ -206,6 +221,7 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
     discardRecordingRef.current = false;
     setSelectedScenarioId(scenario.id);
     setCurrentScenario(scenario);
+    setActiveTutorPreview(null);
     if (navigateCallback) navigateFnRef.current = navigateCallback;
 
     chunksRef.current = [];
@@ -257,6 +273,7 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
 
       recorder.onstop = () => {
         mediaRecorderRef.current = null;
+        setActiveTutorPreview(null);
 
         if (discardRecordingRef.current) {
           discardRecordingRef.current = false;
@@ -379,6 +396,43 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
       }}
     >
       {children}
+      {activeTutorPreview && (
+        <div
+          aria-live="polite"
+          className="fixed inset-0 z-[10000] pointer-events-none flex items-center justify-center bg-slate-950/85 p-4 sm:p-8"
+        >
+          <article className="w-full max-w-5xl max-h-[88vh] overflow-hidden rounded-[2rem] border border-emerald-300/40 bg-white text-slate-900 shadow-2xl">
+            <header className="flex flex-wrap items-center justify-between gap-3 bg-slate-950 px-6 py-4 text-white sm:px-8">
+              <div>
+                <div className="text-[11px] font-black uppercase tracking-[0.2em] text-emerald-300">UniAce Mastery Hub</div>
+                <div className="mt-1 text-xl font-black sm:text-2xl">AI Academic Tutor</div>
+                <div className="mt-1 text-xs text-slate-300">Administrator-approved isolated demonstration response</div>
+              </div>
+              <div className="rounded-full border border-emerald-300/40 bg-emerald-400/10 px-3 py-1.5 text-[11px] font-bold text-emerald-200">
+                {activeTutorPreview.providerUsed || 'Provider not reported'}
+                {typeof activeTutorPreview.latencyMs === 'number' ? ` · ${Math.round(activeTutorPreview.latencyMs)} ms` : ''}
+              </div>
+            </header>
+            <div className="space-y-5 p-6 sm:p-8">
+              {activeTutorPreview.courseContext && (
+                <div className="text-xs font-bold uppercase tracking-wider text-emerald-700">
+                  {activeTutorPreview.courseContext}
+                </div>
+              )}
+              <div className="rounded-2xl border border-indigo-100 bg-indigo-50 px-5 py-4">
+                <div className="text-[10px] font-black uppercase tracking-wider text-indigo-700">Question</div>
+                <p className="mt-2 text-base font-semibold leading-7 text-slate-900 sm:text-lg">{activeTutorPreview.prompt}</p>
+              </div>
+              <div className="max-h-[52vh] overflow-hidden whitespace-pre-wrap text-sm leading-7 text-slate-800 sm:text-base sm:leading-8">
+                {activeTutorPreview.response}
+              </div>
+            </div>
+            <footer className="border-t border-slate-200 bg-slate-50 px-6 py-3 text-center text-[10px] font-semibold text-slate-500 sm:px-8">
+              Isolated admin preview · No student chat request · No student Sparks charged
+            </footer>
+          </article>
+        </div>
+      )}
     </DemoReelContext.Provider>
   );
 }
