@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { lazy, Suspense } from 'react';
 import {
   resolveBlockAcademicLabel,
   type AcademicContentBlock,
@@ -8,7 +8,7 @@ import {
 import type { StudentInstructionalContent } from '../shared/courseSchemas';
 import { serializeStructuredDiagramToMermaid } from '../services/mermaidRepairService';
 import MarkdownRenderer from './MarkdownRenderer';
-import MermaidViewer from './renderers/MermaidViewer';
+const MermaidViewer = lazy(() => import('./renderers/MermaidViewer'));
 import ParameterizedSimulation from './renderers/ParameterizedSimulation';
 import { KnowledgeCheckCard } from './MasteryLessonPanel';
 
@@ -239,7 +239,9 @@ function renderBlock(
           <section key={block.id} className="rounded-xl border border-emerald-200 dark:border-emerald-900/70 p-4 sm:p-5 space-y-3">
             <BlockHeading title={block.title} label={label} />
             <MarkdownRenderer content={block.description} />
-            <MermaidViewer chart={serializeStructuredDiagramToMermaid(block.diagram)} />
+            <Suspense fallback={<div className="p-4 text-xs text-slate-400">Loading engineering diagram...</div>}>
+              <MermaidViewer chart={serializeStructuredDiagramToMermaid(block.diagram)} />
+            </Suspense>
           </section>
         );
       } catch {
