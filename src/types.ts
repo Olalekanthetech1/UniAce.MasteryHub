@@ -31,6 +31,7 @@ export interface CourseOffering {
 }
 
 export interface Course {
+  // Student-facing availability is independent of publication status.
   id: CourseId;
   title: string;
   description: string;
