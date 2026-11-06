@@ -49,6 +49,7 @@ test('normalizes persisted academic period labels without defaulting missing val
 test('department-scope access requires an exact registered department target', () => {
   assert.deepEqual(evaluateStudentCourseAccess(publishedCourse, profile, institution), {
     allowed: true,
+    visible: true,
     reason: 'allowed'
   });
 
