@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { GraduationCap, Loader2, Plus, RefreshCw } from 'lucide-react';
+import { GraduationCap, Loader2, Plus, RefreshCw, History, BookOpenCheck } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useCourses } from '../../context/CourseContext';
 import {
   CourseService,
   type AcademicLevelOption,
+  type AcademicAvailabilityAuditEntry,
   type StudentAvailability
 } from '../../services/courseService';
 
@@ -13,38 +15,68 @@ const STATE_LABELS: Record<StudentAvailability, string> = {
   hidden: 'Hidden'
 };
 
+function normalizeLevelKey(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.normalize('NFKC').trim().toLowerCase()
+    .replace(/^level\s*/, '')
+    .replace(/\s*(?:level|lvl|l)$/, '')
+    .replace(/[^a-z0-9_-]/g, '');
+}
+
+function formatDate(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'Date unavailable' : date.toLocaleString();
+}
+
 export default function AcademicAvailabilityManager() {
+  const { courses } = useCourses();
   const [levels, setLevels] = useState<AcademicLevelOption[]>([]);
+  const [auditEntries, setAuditEntries] = useState<AcademicAvailabilityAuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [auditLoading, setAuditLoading] = useState(true);
   const [updatingKey, setUpdatingKey] = useState<string | null>(null);
   const [newKey, setNewKey] = useState('');
   const [newLabel, setNewLabel] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [auditError, setAuditError] = useState<string | null>(null);
 
-  const loadLevels = useCallback(async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
+    setAuditLoading(true);
     setError(null);
-    try {
-      const result = await CourseService.getAdminAcademicLevels();
-      setLevels(result);
-    } catch (err: any) {
-      setError(err?.message || 'Academic level settings could not be loaded.');
-    } finally {
-      setLoading(false);
+    setAuditError(null);
+
+    const [levelsResult, auditResult] = await Promise.allSettled([
+      CourseService.getAdminAcademicLevels(),
+      CourseService.getAcademicAvailabilityAudit(15)
+    ]);
+
+    if (levelsResult.status === 'fulfilled') {
+      setLevels(levelsResult.value);
+    } else {
+      setError((levelsResult.reason as Error)?.message || 'Academic level settings could not be loaded.');
     }
+    if (auditResult.status === 'fulfilled') {
+      setAuditEntries(auditResult.value);
+    } else {
+      setAuditError((auditResult.reason as Error)?.message || 'Availability history could not be loaded.');
+    }
+
+    setLoading(false);
+    setAuditLoading(false);
   }, []);
 
   useEffect(() => {
-    void loadLevels();
-  }, [loadLevels]);
+    void loadData();
+  }, [loadData]);
 
   const updateAvailability = async (levelKey: string, availability: StudentAvailability) => {
     setUpdatingKey(levelKey);
     try {
       await CourseService.updateAcademicLevel(levelKey, { availability });
       toast.success(`${levelKey} Level availability updated to ${STATE_LABELS[availability]}.`);
-      await loadLevels();
+      await loadData();
     } catch (err: any) {
       toast.error(err?.message || 'Academic level update failed.');
     } finally {
@@ -66,7 +98,7 @@ export default function AcademicAvailabilityManager() {
       setNewKey('');
       setNewLabel('');
       toast.success('Academic level added as Hidden. Make it Live only when its curriculum is ready.');
-      await loadLevels();
+      await loadData();
     } catch (err: any) {
       toast.error(err?.message || 'Academic level could not be added.');
     } finally {
@@ -88,11 +120,11 @@ export default function AcademicAvailabilityManager() {
         </div>
         <button
           type="button"
-          onClick={() => void loadLevels()}
-          disabled={loading}
+          onClick={() => void loadData()}
+          disabled={loading || auditLoading}
           className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
         >
-          <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+          <RefreshCw size={15} className={loading || auditLoading ? 'animate-spin' : ''} />
           Refresh
         </button>
       </div>
@@ -109,28 +141,58 @@ export default function AcademicAvailabilityManager() {
         </div>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {levels.map(level => (
-            <div key={level.level_key} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 p-4 dark:border-slate-700">
-              <div className="min-w-0">
-                <p className="truncate font-semibold text-slate-900 dark:text-white">{level.label}</p>
-                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Key: {level.level_key}</p>
+          {levels.map(level => {
+            const key = normalizeLevelKey(level.level_key);
+            const levelCourses = Object.values(courses).filter(course => normalizeLevelKey(course.level) === key);
+            const liveCount = levelCourses.filter(course =>
+              course.studentVisibility === 'live' && course.levelAvailability === 'live'
+            ).length;
+            const lockedCount = levelCourses.length - liveCount;
+
+            return (
+              <div key={level.level_key} className="rounded-2xl border border-slate-200 p-4 dark:border-slate-700">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate font-semibold text-slate-900 dark:text-white">{level.label}</p>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Key: {level.level_key}</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {updatingKey === level.level_key && <Loader2 size={15} className="animate-spin text-indigo-500" />}
+                    <select
+                      aria-label={`Availability for ${level.label}`}
+                      value={level.availability}
+                      disabled={updatingKey !== null}
+                      onChange={event => void updateAvailability(level.level_key, event.target.value as StudentAvailability)}
+                      className="min-h-11 max-w-[145px] rounded-xl border border-slate-200 bg-slate-50 px-2 text-sm font-semibold text-slate-700 outline-none focus:border-indigo-500 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200"
+                    >
+                      {Object.entries(STATE_LABELS).map(([value, label]) => (
+                        <option key={value} value={value}>{label}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="mt-3 grid grid-cols-3 gap-2 border-t border-slate-100 pt-3 dark:border-slate-700">
+                  <div>
+                    <p className="text-lg font-bold tabular-nums text-slate-900 dark:text-white">{levelCourses.length}</p>
+                    <p className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Published</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold tabular-nums text-emerald-600 dark:text-emerald-400">{liveCount}</p>
+                    <p className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Student live</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold tabular-nums text-amber-600 dark:text-amber-400">{lockedCount}</p>
+                    <p className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Locked/hidden</p>
+                  </div>
+                </div>
+                {level.availability === 'live' && liveCount === 0 && (
+                  <p className="mt-3 rounded-lg bg-amber-50 px-2.5 py-2 text-xs text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">
+                    This level is Live, but no published courses are currently available to students.
+                  </p>
+                )}
               </div>
-              <div className="flex shrink-0 items-center gap-2">
-                {updatingKey === level.level_key && <Loader2 size={15} className="animate-spin text-indigo-500" />}
-                <select
-                  aria-label={`Availability for ${level.label}`}
-                  value={level.availability}
-                  disabled={updatingKey !== null}
-                  onChange={event => void updateAvailability(level.level_key, event.target.value as StudentAvailability)}
-                  className="min-h-11 max-w-[145px] rounded-xl border border-slate-200 bg-slate-50 px-2 text-sm font-semibold text-slate-700 outline-none focus:border-indigo-500 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200"
-                >
-                  {Object.entries(STATE_LABELS).map(([value, label]) => (
-                    <option key={value} value={value}>{label}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          ))}
+            );
+          })}
           {levels.length === 0 && (
             <p className="col-span-full py-4 text-sm text-slate-500 dark:text-slate-400">
               No academic levels are configured. Add a level below.
@@ -165,6 +227,38 @@ export default function AcademicAvailabilityManager() {
           Add Level
         </button>
       </form>
+
+      <div className="mt-6 border-t border-slate-100 pt-5 dark:border-slate-700">
+        <h3 className="mb-3 flex items-center gap-2 text-base font-bold text-slate-900 dark:text-white">
+          <BookOpenCheck size={18} className="text-indigo-500" />
+          Recent availability changes
+        </h3>
+        {auditLoading ? (
+          <div className="flex items-center gap-2 py-3 text-sm text-slate-500 dark:text-slate-400">
+            <Loader2 size={16} className="animate-spin" /> Loading history…
+          </div>
+        ) : auditError ? (
+          <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">{auditError}</p>
+        ) : auditEntries.length === 0 ? (
+          <p className="py-3 text-sm text-slate-500 dark:text-slate-400">No availability changes have been recorded yet.</p>
+        ) : (
+          <div className="space-y-2">
+            {auditEntries.map(entry => (
+              <div key={entry.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 px-3 py-2.5 dark:border-slate-700">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold text-slate-800 dark:text-slate-200">
+                    {entry.entity_type === 'academic_level' ? 'Level' : 'Course'}: {entry.entity_id}
+                  </p>
+                  <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                    {entry.previous_state || 'Initial state'} → {entry.next_state} · Admin {entry.actor_uid.slice(0, 8)}
+                  </p>
+                </div>
+                <time className="text-xs text-slate-500 dark:text-slate-400">{formatDate(entry.created_at)}</time>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </section>
   );
 }
