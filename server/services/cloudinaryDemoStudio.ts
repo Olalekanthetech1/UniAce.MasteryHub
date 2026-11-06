@@ -233,20 +233,18 @@ export async function uploadCloudinaryLocalAsset(input: {
 }
 
 export async function getCloudinaryAuthenticatedDeliveryUrl(asset: CloudinaryAsset): Promise<string> {
-  await configureCloudinary();
-  const privateDownloadUrl = (cloudinary.utils as any).private_download_url;
-  if (typeof privateDownloadUrl !== 'function') {
-    throw new Error('The Cloudinary SDK does not expose its signed private-download URL helper.');
-  }
-  const url = privateDownloadUrl.call(cloudinary.utils, asset.publicId, asset.format, {
-    resource_type: asset.resourceType,
-    type: asset.deliveryType,
-    expires_at: Math.floor(Date.now() / 1000) + 5 * 60
-  });
-  if (typeof url !== 'string' || !url.startsWith('https://api.cloudinary.com/')) {
-    throw new Error('Cloudinary did not generate a verifiable protected download URL.');
-  }
-  return url;
+  const config = await configureCloudinary();
+  const encodedPublicId = asset.publicId.split('/').map(encodeURIComponent).join('/');
+  const hasRawExtension = asset.resourceType === 'raw' &&
+    asset.publicId.toLowerCase().endsWith('.' + asset.format.toLowerCase());
+  const suffix = hasRawExtension ? '' : '.' + encodeURIComponent(asset.format);
+  const signedPath = 'v' + asset.version + '/' + encodedPublicId + suffix;
+  const signature = crypto.createHash('sha1')
+    .update(signedPath + config.apiSecret)
+    .digest('base64url')
+    .slice(0, 8);
+  return 'https://res.cloudinary.com/' + encodeURIComponent(config.cloudName) + '/' +
+    asset.resourceType + '/authenticated/s--' + signature + '--/' + signedPath;
 }
 
 export async function fetchCloudinaryAuthenticatedAsset(asset: CloudinaryAsset): Promise<Response> {
