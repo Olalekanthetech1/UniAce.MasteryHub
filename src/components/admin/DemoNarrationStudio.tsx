@@ -293,8 +293,9 @@ export default function DemoNarrationStudio({
   }, [authFetch]);
 
   useEffect(() => {
-    if (!scenario) return;
-    setScript(scenario.steps.map((step) => step.title + '. ' + step.subtitle).join('\n\n'));
+    setScript(scenario
+      ? scenario.steps.map((step) => step.title + '. ' + step.subtitle).join('\n\n')
+      : '');
     setScriptApproved(false);
   }, [scenario?.id]);
 
