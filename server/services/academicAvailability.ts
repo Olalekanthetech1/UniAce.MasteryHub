@@ -34,80 +34,97 @@ export async function ensureAcademicAvailabilitySchema(): Promise<void> {
     migrationPromise = (async () => {
       const pool = getPostgresPool();
       if (!pool) throw new Error('Academic availability is unavailable: PostgreSQL is not connected.');
+      const client = await pool.connect();
 
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS academic_level_availability (
-          level_key TEXT PRIMARY KEY,
-          label TEXT NOT NULL,
-          availability TEXT NOT NULL DEFAULT 'hidden'
-            CHECK (availability IN ('live', 'coming_soon', 'hidden')),
-          sort_order INTEGER NOT NULL DEFAULT 0,
-          updated_by TEXT,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-      `);
-
-      await pool.query('ALTER TABLE courses ADD COLUMN IF NOT EXISTS student_visibility TEXT');
-      // Preserve the existing student experience on first rollout: already-published
-      // courses remain visible. Draft and in-review courses stay hidden by default.
-      await pool.query(`
-        UPDATE courses
-        SET student_visibility = CASE WHEN status = 'published' THEN 'live' ELSE 'hidden' END
-        WHERE student_visibility IS NULL
-      `);
-      await pool.query("UPDATE courses SET student_visibility = 'hidden' WHERE student_visibility NOT IN ('live', 'coming_soon', 'hidden')");
-      await pool.query("ALTER TABLE courses ALTER COLUMN student_visibility SET DEFAULT 'hidden'");
-      await pool.query("ALTER TABLE courses ALTER COLUMN student_visibility SET NOT NULL");
-
-      await pool.query(`
-        DO $$
-        BEGIN
-          IF NOT EXISTS (
-            SELECT 1 FROM pg_constraint
-            WHERE conname = 'courses_student_visibility_check'
-          ) THEN
-            ALTER TABLE courses
-              ADD CONSTRAINT courses_student_visibility_check
-              CHECK (student_visibility IN ('live', 'coming_soon', 'hidden'));
-          END IF;
-        END $$
-      `);
-
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS academic_availability_audit (
-          id TEXT PRIMARY KEY,
-          entity_type TEXT NOT NULL CHECK (entity_type IN ('academic_level', 'course')),
-          entity_id TEXT NOT NULL,
-          previous_state TEXT,
-          next_state TEXT NOT NULL,
-          actor_uid TEXT NOT NULL,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-      `);
-      await pool.query(`
-        CREATE INDEX IF NOT EXISTS idx_academic_availability_audit_entity
-        ON academic_availability_audit (entity_type, entity_id, created_at DESC)
-      `);
-      await pool.query(`
-        CREATE INDEX IF NOT EXISTS idx_courses_student_visibility
-        ON courses (student_visibility)
-      `);
-
-      const defaults: Array<[string, string, AvailabilityState, number]> = [
-        ['100', '100 Level', 'live', 100],
-        ['200', '200 Level', 'coming_soon', 200],
-        ['300', '300 Level', 'coming_soon', 300],
-        ['400', '400 Level', 'coming_soon', 400],
-        ['500', '500 Level', 'coming_soon', 500]
-      ];
-      for (const [key, label, availability, sortOrder] of defaults) {
-        await pool.query(
-          `INSERT INTO academic_level_availability (level_key, label, availability, sort_order)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (level_key) DO NOTHING`,
-          [key, label, availability, sortOrder]
+      try {
+        await client.query('BEGIN');
+        // Serialize this additive migration across all application instances.
+        await client.query(
+          'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+          ['academic-availability-schema-v1']
         );
+
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS academic_level_availability (
+            level_key TEXT PRIMARY KEY,
+            label TEXT NOT NULL,
+            availability TEXT NOT NULL DEFAULT 'hidden'
+              CHECK (availability IN ('live', 'coming_soon', 'hidden')),
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            updated_by TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `);
+
+        await client.query('ALTER TABLE courses ADD COLUMN IF NOT EXISTS student_visibility TEXT');
+        // Preserve the existing student experience on first rollout: already-published
+        // courses remain visible. Draft and in-review courses stay hidden by default.
+        await client.query(`
+          UPDATE courses
+          SET student_visibility = CASE WHEN status = 'published' THEN 'live' ELSE 'hidden' END
+          WHERE student_visibility IS NULL
+        `);
+        await client.query("UPDATE courses SET student_visibility = 'hidden' WHERE student_visibility NOT IN ('live', 'coming_soon', 'hidden')");
+        await client.query("ALTER TABLE courses ALTER COLUMN student_visibility SET DEFAULT 'hidden'");
+        await client.query("ALTER TABLE courses ALTER COLUMN student_visibility SET NOT NULL");
+
+        await client.query(`
+          DO $$
+          BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_constraint
+              WHERE conname = 'courses_student_visibility_check'
+            ) THEN
+              ALTER TABLE courses
+                ADD CONSTRAINT courses_student_visibility_check
+                CHECK (student_visibility IN ('live', 'coming_soon', 'hidden'));
+            END IF;
+          END $$
+        `);
+
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS academic_availability_audit (
+            id TEXT PRIMARY KEY,
+            entity_type TEXT NOT NULL CHECK (entity_type IN ('academic_level', 'course')),
+            entity_id TEXT NOT NULL,
+            previous_state TEXT,
+            next_state TEXT NOT NULL,
+            actor_uid TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `);
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_academic_availability_audit_entity
+          ON academic_availability_audit (entity_type, entity_id, created_at DESC)
+        `);
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_courses_student_visibility
+          ON courses (student_visibility)
+        `);
+
+        const defaults: Array<[string, string, AvailabilityState, number]> = [
+          ['100', '100 Level', 'live', 100],
+          ['200', '200 Level', 'coming_soon', 200],
+          ['300', '300 Level', 'coming_soon', 300],
+          ['400', '400 Level', 'coming_soon', 400],
+          ['500', '500 Level', 'coming_soon', 500]
+        ];
+        for (const [key, label, availability, sortOrder] of defaults) {
+          await client.query(
+            `INSERT INTO academic_level_availability (level_key, label, availability, sort_order)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (level_key) DO NOTHING`,
+            [key, label, availability, sortOrder]
+          );
+        }
+
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
       }
     })().catch((error: any) => {
       migrationPromise = null;
@@ -116,7 +133,6 @@ export async function ensureAcademicAvailabilitySchema(): Promise<void> {
   }
   await migrationPromise;
 }
-
 export async function listAcademicLevelAvailability(): Promise<AcademicLevelAvailability[]> {
   await ensureAcademicAvailabilitySchema();
   const pool = getPostgresPool();
