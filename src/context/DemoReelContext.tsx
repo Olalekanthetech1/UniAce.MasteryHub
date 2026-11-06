@@ -49,6 +49,7 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
   const stepTimeoutRef = useRef<any>(null);
   const navigateFnRef = useRef<((view: View) => void) | null>(null);
   const startTimeRef = useRef<number>(0);
+  const discardRecordingRef = useRef(false);
 
   const screenCaptureSupported = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getDisplayMedia;
 
@@ -137,12 +138,17 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
   const cancelDemoReel = useCallback(() => {
     if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
     if (stepTimeoutRef.current) clearTimeout(stepTimeoutRef.current);
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      discardRecordingRef.current = true;
       try {
-        mediaRecorderRef.current.stop();
+        recorder.stop();
       } catch (e) {
+        discardRecordingRef.current = false;
         console.warn('Error stopping media recorder on cancel:', e);
       }
+    } else {
+      discardRecordingRef.current = false;
     }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
@@ -159,21 +165,29 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
   const stopAndSaveReel = useCallback(async () => {
     if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
     if (stepTimeoutRef.current) clearTimeout(stepTimeoutRef.current);
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === 'inactive') {
+      setIsRecording(false);
+      setIsPaused(false);
+      return;
+    }
+
     const duration = Math.max(1, Math.round((Date.now() - startTimeRef.current) / 1000));
     setRecordedDuration(duration);
+    setIsRecording(false);
+    setIsPaused(false);
 
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
+    try {
+      recorder.stop();
+    } catch (error) {
+      toast.error('The browser could not finalize this recording.');
+      console.error('Failed to stop demo recorder:', error);
     }
 
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
     }
-
-    setIsRecording(false);
-    setIsPaused(false);
-    toast.success('🎬 Demo Reel recorded successfully! Ready to export & download.');
   }, []);
 
   const startDemoReel = useCallback(async (
@@ -192,6 +206,7 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
       toast.error('This AI-generated demo script requires administrator review before recording.');
       return false;
     }
+    discardRecordingRef.current = false;
     setSelectedScenarioId(scenario.id);
     setCurrentScenario(scenario);
     if (navigateCallback) navigateFnRef.current = navigateCallback;
@@ -222,16 +237,6 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
 
       streamRef.current = stream;
 
-      // Detect if user stops screen sharing via browser native floating button
-      const videoTrack = stream.getVideoTracks()[0];
-      if (videoTrack) {
-        videoTrack.onended = () => {
-          if (isRecording) {
-            stopAndSaveReel();
-          }
-        };
-      }
-
       // Pick best supported MIME type
       const mimeTypes = [
         'video/webm;codecs=vp9,opus',
@@ -254,12 +259,41 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
       };
 
       recorder.onstop = () => {
-        const fullBlob = new Blob(chunksRef.current, { type: selectedMime });
+        mediaRecorderRef.current = null;
+
+        if (discardRecordingRef.current) {
+          discardRecordingRef.current = false;
+          chunksRef.current = [];
+          setRecordedBlob(null);
+          setRecordedDuration(0);
+          setIsModalOpen(false);
+          return;
+        }
+
+        const fullBlob = new Blob(chunksRef.current, { type: recorder.mimeType || selectedMime });
+        chunksRef.current = [];
+        if (fullBlob.size <= 0) {
+          setRecordedBlob(null);
+          setIsModalOpen(false);
+          toast.error('The browser stopped recording but produced no video data. Nothing was saved.');
+          return;
+        }
+
         setRecordedBlob(fullBlob);
         const url = URL.createObjectURL(fullBlob);
         setRecordedVideoUrl(url);
         setIsModalOpen(true);
+        toast.success('Demo recording is ready. Review the video before exporting.');
       };
+
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.onended = () => {
+          if (recorder.state !== 'inactive') {
+            void stopAndSaveReel();
+          }
+        };
+      }
 
       mediaRecorderRef.current = recorder;
       recorder.start(1000); // chunk every 1 second
@@ -281,6 +315,11 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
       toast.success(`🎬 Recording started: ${scenario.name}`);
       return true;
     } catch (err: any) {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      mediaRecorderRef.current = null;
       console.error('Failed to initialize demo reel recording:', err);
       if (err.name === 'NotAllowedError') {
         toast.error('Screen capture permission was denied.');

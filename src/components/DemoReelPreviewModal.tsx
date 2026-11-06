@@ -168,7 +168,7 @@ export default function DemoReelPreviewModal() {
                   className="w-full py-4 px-6 rounded-2xl font-black text-sm bg-gradient-to-r from-rose-600 to-indigo-600 hover:from-rose-500 hover:to-indigo-500 text-white shadow-xl shadow-indigo-500/25 transition-all active:scale-95 flex items-center justify-center gap-3"
                 >
                   <Download size={20} />
-                  <span>Download Demo Reel (.webm)</span>
+                  <span>Download Demo Reel ({recordedBlob?.type?.toLowerCase().includes('mp4') ? '.mp4' : '.webm'})</span>
                 </button>
               </div>
 
