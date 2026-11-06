@@ -956,11 +956,27 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
       // must fail with 503 if PostgreSQL cannot serve a fresh read; stale cache data
       // must never be relabelled as current marketing evidence.
       const catalog = await courseRepository.getFullCatalogWithSyllabus(true);
-      const liveCourses = (catalog.courses || []).filter((course: any) =>
-        course?.status === 'published' &&
-        course?.student_visibility === 'live' &&
-        course?.level_availability === 'live'
-      );
+      const liveCourses = (catalog.courses || []).filter((course: any) => {
+        if (
+          course?.status !== 'published' ||
+          course?.student_visibility !== 'live' ||
+          course?.level_availability !== 'live' ||
+          typeof course?.level !== 'string' || !course.level.trim() ||
+          typeof course?.semester !== 'string' || !course.semester.trim()
+        ) return false;
+
+        const scope = typeof course.scope === 'string' ? course.scope.trim().toUpperCase() : '';
+        if (scope === 'GLOBAL') return true;
+        if (scope === 'FACULTY') {
+          return (Array.isArray(course.faculties) && course.faculties.some((value: unknown) => typeof value === 'string' && value.trim())) ||
+            (typeof course.faculty === 'string' && course.faculty.trim().length > 0);
+        }
+        if (scope === 'DEPARTMENT') {
+          return (Array.isArray(course.departments) && course.departments.some((value: unknown) => typeof value === 'string' && value.trim())) ||
+            (typeof course.department === 'string' && course.department.trim().length > 0);
+        }
+        return false;
+      });
       const courseIds = liveCourses
         .map((course: any) => String(course.id || '').trim())
         .filter(Boolean);

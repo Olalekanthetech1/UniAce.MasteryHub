@@ -130,6 +130,29 @@ test('marketing scope includes only published, visible, live-level offerings mat
   assert.deepEqual(scoped.map((item) => item.id).sort(), ['ENG202', 'GST101', 'MEE201']);
 });
 
+test('marketing catalog rejects published courses without a resolvable audience scope', () => {
+  const invalidFacultyTarget = course({
+    scope: 'FACULTY',
+    faculty: '',
+    faculties: []
+  });
+  const invalidSemester = course({
+    semester: ''
+  });
+  const ctx = {
+    ...sampleContext,
+    targetScope: 'full_ecosystem' as const,
+    courses: {
+      MEE201: invalidFacultyTarget,
+      MEE202: invalidSemester
+    }
+  };
+
+  assert.deepEqual(getCoursesForMarketingScope(ctx), []);
+  const hub = resolveDynamicCapabilities(ctx).find((item) => item.id === 'course_hub');
+  assert.equal(hub?.enabled, false);
+});
+
 test('course targeting does not silently substitute an unrelated course', () => {
   const ctx = {
     ...sampleContext,
@@ -228,8 +251,11 @@ test('course flyer export is blocked when the course audience scope is incomplet
   });
 
   assert.equal(flyer.campaignReady, false);
-  assert.ok(flyer.blockingReasons.some((reason) => reason.includes('valid scope, target audience, level or semester')));
-  assert.match(flyer.leadBoldParagraph, /audience is not fully verified/);
+  assert.deepEqual(getCoursesForMarketingScope({
+    ...sampleContext,
+    courses: { MEE201: invalid }
+  }), []);
+  assert.ok(flyer.blockingReasons.some((reason) => reason.includes('Select a course')));
 });
 
 test('faculty course flyer copy retains the persisted faculty target', () => {

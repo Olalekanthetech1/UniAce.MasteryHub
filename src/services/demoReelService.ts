@@ -186,12 +186,29 @@ function courseTargetsFaculty(course: MarketingCourse, faculty: string, ctx: Pla
   return false;
 }
 
+function hasVerifiedCourseAudience(course: MarketingCourse): boolean {
+  if (!course.level.trim() || !course.semester.trim()) return false;
+  const scope = String(course.scope || '').toUpperCase();
+
+  if (scope === 'GLOBAL') return true;
+  if (scope === 'FACULTY') {
+    return course.faculties.some((value) => typeof value === 'string' && value.trim().length > 0) ||
+      Boolean(course.faculty.trim());
+  }
+  if (scope === 'DEPARTMENT') {
+    return course.departments.some((value) => typeof value === 'string' && value.trim().length > 0) ||
+      Boolean(course.department.trim());
+  }
+  return false;
+}
+
 export function getCoursesForMarketingScope(ctx: PlatformMarketingContext): MarketingCourse[] {
   const courses = Object.values(ctx.courses || {}).filter((course) =>
     course &&
     course.status === 'published' &&
     course.studentVisibility === 'live' &&
-    course.levelAvailability === 'live'
+    course.levelAvailability === 'live' &&
+    hasVerifiedCourseAudience(course)
   );
 
   if (ctx.targetScope === 'course') {
@@ -266,11 +283,7 @@ const CAPABILITY_REGISTRY: Omit<DynamicCapabilityItem, 'phoneDescription' | 'gri
 ];
 
 export function resolveDynamicCapabilities(ctx: PlatformMarketingContext): DynamicCapabilityItem[] {
-  const liveCourses = Object.values(ctx.courses || {}).filter((course) =>
-    course?.status === 'published' &&
-    course?.studentVisibility === 'live' &&
-    course?.levelAvailability === 'live'
-  );
+  const liveCourses = getCoursesForMarketingScope(ctx);
   const totalModules = liveCourses.reduce((sum, course) => sum + (course.syllabus?.length || 0), 0);
   const formulaInventoryVerified = ctx.formulaCountsVerified === true &&
     liveCourses.every((course) => typeof course.formulaCount === 'number');
@@ -377,12 +390,8 @@ export function resolveDynamicCapabilities(ctx: PlatformMarketingContext): Dynam
 
 export function buildDynamicFlyerConfig(ctx: PlatformMarketingContext): DynamicFlyerConfig {
   const { url, displayHost } = getCleanHost(ctx.liveOrigin);
-  const liveCourses = Object.values(ctx.courses || {}).filter((course) =>
-    course?.status === 'published' &&
-    course?.studentVisibility === 'live' &&
-    course?.levelAvailability === 'live'
-  );
-  const scopedCourses = getCoursesForMarketingScope(ctx);
+  const liveCourses = getCoursesForMarketingScope(ctx);
+  const scopedCourses = liveCourses;
   const selectedCourse = getSelectedCourse(ctx);
   const capabilities = resolveDynamicCapabilities(ctx);
   const blockingReasons: string[] = [];
