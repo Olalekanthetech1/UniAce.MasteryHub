@@ -51,7 +51,7 @@ export function normalizeCloudinaryFolderPrefix(value: string): string {
   if (
     !normalized ||
     normalized.length > 180 ||
-    normalized.split('/').some((segment) => !segment || segment === '.' || segment === '..') ||
+    normalized.split('/').some((segment) => !segment || segment === '.' || segment === '..' || /^v\\d/i.test(segment)) ||
     !/^[A-Za-z0-9 _/-]+$/.test(normalized)
   ) {
     throw new Error('Enter a valid Cloudinary folder path using letters, numbers, spaces, hyphens, underscores and forward slashes.');
