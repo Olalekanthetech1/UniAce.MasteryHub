@@ -56,7 +56,58 @@ export default defineConfig(({mode}) => {
           clientsClaim: true,
           skipWaiting: true,
           navigateFallbackDenylist: [/^\/api/],
+          // Keep the initial app shell available offline, but do not download
+          // rarely used screens and heavyweight feature engines on every install.
+          // They are cached after their first successful use by the runtime rule below.
+          globIgnores: [
+            '**/assets/SkillPracticeHub-*.js',
+            '**/assets/FlashcardHub-*.js',
+            '**/assets/MasteryCenter-*.js',
+            '**/assets/FormulaReference-*.js',
+            '**/assets/Notebook-*.js',
+            '**/assets/PricingPage-*.js',
+            '**/assets/HelpSupport-*.js',
+            '**/assets/AdminSupport-*.js',
+            '**/assets/AdminDashboard-*.js',
+            '**/assets/TutorDashboard-*.js',
+            '**/assets/Arena-*.js',
+            '**/assets/ConceptMap-*.js',
+            '**/assets/StudyPlan-*.js',
+            '**/assets/VoiceTutor-*.js',
+            '**/assets/AdaptiveRecalibratorModal-*.js',
+            '**/assets/DemoDirectorHUD-*.js',
+            '**/assets/DemoReelPreviewModal-*.js',
+            '**/assets/AdminLogin-*.js',
+            '**/assets/Calculator-*.js',
+            '**/assets/vendor-mermaid-*.js',
+            '**/assets/vendor-mathjs-*.js',
+            '**/assets/vendor-pdfgen-*.js',
+            '**/assets/vendor-xlsx-*.js',
+            '**/assets/vendor-recharts-*.js',
+            '**/assets/vendor-d3-*.js',
+            '**/assets/pdfWorker-*.js',
+            '**/assets/pdf.worker.min-*.mjs'
+          ],
           runtimeCaching: [
+            {
+              // Generated Vite chunks have content-hashed names. Cache them only
+              // after they are requested, rather than precaching unused features.
+              urlPattern: ({ url }) =>
+                url.origin === self.location.origin &&
+                url.pathname.startsWith('/assets/') &&
+                /\\.(?:js|mjs)$/i.test(url.pathname),
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'uniace-feature-chunks-v1',
+                expiration: {
+                  maxEntries: 100,
+                  maxAgeSeconds: 60 * 60 * 24 * 30
+                },
+                cacheableResponse: {
+                  statuses: [200]
+                }
+              }
+            },
             {
               urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
               handler: 'CacheFirst',
