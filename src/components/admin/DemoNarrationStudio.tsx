@@ -745,6 +745,12 @@ export default function DemoNarrationStudio({
               ))}
             </select>
             {selectedModel?.description && <p className="mt-1 text-[11px] leading-4 text-slate-500">{selectedModel.description}</p>}
+            {selectedModel?.requiresAlphaAccess === true && (
+              <p className="mt-1 text-[11px] font-semibold text-amber-700 dark:text-amber-300">ElevenLabs marks this model as requiring alpha access. The provider will validate whether your account can use it.</p>
+            )}
+            {selectedModel?.tokenCostFactor !== null && selectedModel?.tokenCostFactor !== undefined && (
+              <p className="mt-1 text-[10px] text-slate-500">Provider-reported model cost factor: {selectedModel.tokenCostFactor}</p>
+            )}
             {selectedModel?.maximumTextLength && (
               <p className="mt-1 text-[10px] font-semibold text-slate-500">
                 {scriptLength.toLocaleString()} / {selectedModel.maximumTextLength.toLocaleString()} characters
@@ -796,29 +802,38 @@ export default function DemoNarrationStudio({
             </div>
             {voiceSettings ? (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <label className="text-[11px] text-slate-600 dark:text-slate-300">
-                  Stability: {voiceSettings.stability.toFixed(2)}
-                  <input type="range" min="0" max="1" step="0.05" value={voiceSettings.stability} onChange={(e) => setVoiceSettings({ ...voiceSettings, stability: Number(e.target.value) })} className="mt-1 block w-full" />
-                </label>
-                <label className="text-[11px] text-slate-600 dark:text-slate-300">
-                  Similarity: {voiceSettings.similarity_boost.toFixed(2)}
-                  <input type="range" min="0" max="1" step="0.05" value={voiceSettings.similarity_boost} onChange={(e) => setVoiceSettings({ ...voiceSettings, similarity_boost: Number(e.target.value) })} className="mt-1 block w-full" />
-                </label>
-                <label className="text-[11px] text-slate-600 dark:text-slate-300">
-                  Style: {voiceSettings.style.toFixed(2)}
-                  <input type="range" min="0" max="1" step="0.05" value={voiceSettings.style} onChange={(e) => setVoiceSettings({ ...voiceSettings, style: Number(e.target.value) })} className="mt-1 block w-full" />
-                </label>
+                {typeof voiceSettings.stability === 'number' && (
+                  <label className="text-[11px] text-slate-600 dark:text-slate-300">
+                    Stability: {voiceSettings.stability.toFixed(2)}
+                    <input type="range" min="0" max="1" step="0.05" value={voiceSettings.stability} onChange={(e) => setVoiceSettings({ ...voiceSettings, stability: Number(e.target.value) })} className="mt-1 block w-full" />
+                  </label>
+                )}
+                {typeof voiceSettings.similarity_boost === 'number' && (
+                  <label className="text-[11px] text-slate-600 dark:text-slate-300">
+                    Similarity: {voiceSettings.similarity_boost.toFixed(2)}
+                    <input type="range" min="0" max="1" step="0.05" value={voiceSettings.similarity_boost} onChange={(e) => setVoiceSettings({ ...voiceSettings, similarity_boost: Number(e.target.value) })} className="mt-1 block w-full" />
+                  </label>
+                )}
+                {selectedModel?.canUseStyle === true && typeof voiceSettings.style === 'number' && (
+                  <label className="text-[11px] text-slate-600 dark:text-slate-300">
+                    Style: {voiceSettings.style.toFixed(2)}
+                    <input type="range" min="0" max="1" step="0.05" value={voiceSettings.style} onChange={(e) => setVoiceSettings({ ...voiceSettings, style: Number(e.target.value) })} className="mt-1 block w-full" />
+                  </label>
+                )}
                 {typeof voiceSettings.speed === 'number' && (
                   <label className="text-[11px] text-slate-600 dark:text-slate-300">
                     Speed: {voiceSettings.speed.toFixed(2)}
                     <input type="range" min="0.7" max="1.2" step="0.05" value={voiceSettings.speed} onChange={(e) => setVoiceSettings({ ...voiceSettings, speed: Number(e.target.value) })} className="mt-1 block w-full" />
                   </label>
                 )}
-                <label className="flex items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300 sm:col-span-2">
-                  <input type="checkbox" checked={voiceSettings.use_speaker_boost} onChange={(e) => setVoiceSettings({ ...voiceSettings, use_speaker_boost: e.target.checked })} />
-                  Use speaker boost
-                </label>
+                {selectedModel?.canUseSpeakerBoost === true && typeof voiceSettings.use_speaker_boost === 'boolean' && (
+                  <label className="flex items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300 sm:col-span-2">
+                    <input type="checkbox" checked={voiceSettings.use_speaker_boost} onChange={(e) => setVoiceSettings({ ...voiceSettings, use_speaker_boost: e.target.checked })} />
+                    Use speaker boost
+                  </label>
+                )}
               </div>
+              <p className="mt-2 text-[10px] text-slate-500">Style and speaker-boost controls are shown only when the selected live model reports support for them. Settings that the model does not support are omitted from the TTS request.</p>
             ) : voiceSettingsLoading ? (
               <p className="flex items-center gap-2 text-xs text-slate-500"><Loader2 size={13} className="animate-spin" /> Loading the selected voice's current settings from ElevenLabs…</p>
             ) : voiceSettingsError ? (
