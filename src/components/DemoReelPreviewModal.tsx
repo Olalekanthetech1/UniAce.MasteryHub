@@ -11,6 +11,9 @@ export default function DemoReelPreviewModal() {
     recordedVideoUrl,
     recordedBlob,
     recordedDuration,
+    recordingSource,
+    recordedFileName,
+    recordedVideoDimensions,
     currentScenario,
     downloadReel,
     startDemoReel,
@@ -29,7 +32,7 @@ export default function DemoReelPreviewModal() {
   const fileSizeMB = recordedBlob ? (recordedBlob.size / (1024 * 1024)).toFixed(2) : null;
   const recordingFormat = recordedBlob?.type?.trim() || null;
   const captions = currentScenario?.captions || null;
-  const activeCaption = captions?.[activeTab]?.trim() || '';
+  const activeCaption = recordingSource === 'imported' ? '' : captions?.[activeTab]?.trim() || '';
 
   const handleCopyCaption = async (platform: 'twitter' | 'linkedin' | 'tiktok' | 'whatsapp') => {
     const textToCopy = captions?.[platform]?.trim();
@@ -112,11 +115,11 @@ export default function DemoReelPreviewModal() {
                 <h2 className="text-xl font-black text-slate-900 dark:text-white flex items-center gap-2">
                   🎬 Demo Recording Preview
                   <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200 font-bold uppercase tracking-wider">
-                    Browser capture
+                    {recordingSource === 'imported' ? 'Imported local video' : 'Browser capture'}
                   </span>
                 </h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  {currentScenario?.name || 'Scenario metadata unavailable'}
+                  {recordingSource === 'imported' ? recordedFileName || 'Imported video' : currentScenario?.name || 'Scenario metadata unavailable'}
                 </p>
               </div>
             </div>
@@ -147,7 +150,7 @@ export default function DemoReelPreviewModal() {
                 </div>
 
                 {/* Video Info Bar */}
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                   <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-200/60 dark:border-slate-700/60 text-center">
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Duration</span>
                     <span className="text-sm font-black text-slate-800 dark:text-slate-200 font-mono">
@@ -166,6 +169,12 @@ export default function DemoReelPreviewModal() {
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Format</span>
                     <span className="text-sm font-black text-emerald-600 dark:text-emerald-400 font-mono">
                       {recordingFormat || 'Unavailable'}
+                    </span>
+                  </div>
+                  <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-200/60 dark:border-slate-700/60 text-center">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Dimensions</span>
+                    <span className="text-sm font-black text-slate-800 dark:text-slate-200 font-mono">
+                      {recordedVideoDimensions ? `${recordedVideoDimensions.width} × ${recordedVideoDimensions.height}` : 'Unavailable'}
                     </span>
                   </div>
                 </div>
@@ -253,7 +262,7 @@ export default function DemoReelPreviewModal() {
 
                   {/* Caption Content */}
                   <div className="relative bg-white dark:bg-slate-900 rounded-2xl p-4 border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300 font-sans leading-relaxed whitespace-pre-wrap min-h-[160px] max-h-[220px] overflow-y-auto">
-                    {activeCaption || 'No reviewed caption is available for this recording.'}
+                    {recordingSource === 'imported' ? 'This is an imported video. Scenario captions are not attached automatically; review and write captions for this footage separately.' : activeCaption || 'No reviewed caption is available for this recording.'}
                   </div>
 
                   {/* Copy Button */}
@@ -295,7 +304,7 @@ export default function DemoReelPreviewModal() {
 
           {/* Footer */}
           <div className="p-4 sm:px-8 bg-slate-50 dark:bg-slate-800/60 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs text-slate-500">
-            <span>Recorded in this browser using MediaRecorder</span>
+            <span>{recordingSource === 'imported' ? 'Imported locally in this browser · Not uploaded to UniAce' : 'Recorded in this browser using MediaRecorder'}</span>
             <button
               onClick={closePreviewModal}
               className="px-5 py-2 rounded-xl bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-bold transition-colors"
