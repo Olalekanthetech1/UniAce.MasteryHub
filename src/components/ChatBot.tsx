@@ -22,6 +22,7 @@ import { ensureMathDelimiters } from '../shared/mathText';
 
 interface ChatBotProps {
   isFullPage?: boolean;
+  initiallyOpen?: boolean;
   onToggleFullPage?: () => void;
   messages: ChatMessage[];
   setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
@@ -42,6 +43,7 @@ interface ChatBotProps {
 
 export default function ChatBot({ 
   isFullPage = false, 
+  initiallyOpen = false, 
   onToggleFullPage,
   messages,
   setMessages,
@@ -79,7 +81,7 @@ export default function ChatBot({
   }, [initialCourseId, initialModule, initialSubTopic, initialSubTopicContent]);
 
   // UI state
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(initiallyOpen);
   const [input, setInput] = useState(() => localStorage.getItem('chat_input_backup') || "");
   const [isLoading, setIsLoading] = useState(false);
   const [isAiThinking, setIsAiThinking] = useState(false);
