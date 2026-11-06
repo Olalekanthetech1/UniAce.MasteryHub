@@ -30,7 +30,8 @@ export default function DemoReelPreviewModal() {
   if (!isModalOpen || !recordedVideoUrl) return null;
 
   const fileSizeMB = recordedBlob ? (recordedBlob.size / (1024 * 1024)).toFixed(2) : null;
-  const recordingFormat = recordedBlob?.type?.trim() || null;
+  const fileExtension = recordedFileName?.match(/\.([a-z0-9]+)$/i)?.[1];
+  const recordingFormat = recordedBlob?.type?.trim() || (fileExtension ? fileExtension.toUpperCase() : null);
   const captions = currentScenario?.captions || null;
   const activeCaption = recordingSource === 'imported' ? '' : captions?.[activeTab]?.trim() || '';
 
