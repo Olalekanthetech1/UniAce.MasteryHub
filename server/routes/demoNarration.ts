@@ -455,12 +455,12 @@ async function restorePersistedJob(jobId: string): Promise<NarrationJob | null> 
     downloadTicketExpiresAt: 0,
     cleanupStarted: false
   };
-  if (job.status === 'generating_audio' || job.status === 'rendering' || job.status === 'narration_ready') {
+  if (job.status === 'generating_audio' || job.status === 'rendering') {
     job.status = 'failed';
     job.stage = 'interrupted';
     job.progressPercent = null;
-    job.error = 'This processing session was interrupted by a server restart. The Cloudinary source asset remains stored; start a new narration job to process it again.';
-    job.statusMessage = 'Processing did not survive the server restart. Cloudinary media metadata was recovered.';
+    job.error = 'This active processing stage was interrupted by a server restart. Verified Cloudinary source and generated media remain stored; delete them when no longer needed.';
+    job.statusMessage = 'Processing was interrupted. Verified Cloudinary asset references were recovered.';
     await persistJob(job);
   }
   return job;
@@ -606,6 +606,14 @@ async function createNarrationAudio(job: NarrationJob, input: z.infer<typeof Cre
     publicId: job.id + '-narration-audio',
     resourceType: 'video'
   });
+  if (job.subtitlePath) {
+    job.subtitleAsset = await uploadCloudinaryLocalAsset({
+      filePath: job.subtitlePath,
+      folder: job.cloudinaryFolder,
+      publicId: job.id + '-narration-subtitles.srt',
+      resourceType: 'raw'
+    });
+  }
   job.characterCost = response.headers.get('character-cost');
   job.requestId = response.headers.get('request-id');
   job.abortController = null;
@@ -624,6 +632,20 @@ async function renderVideo(job: NarrationJob): Promise<void> {
   job.statusMessage = 'Preparing server-side video rendering.';
   job.progressPercent = 0;
 
+  await fs.promises.mkdir(job.folder, { recursive: true, mode: 0o700 });
+  if (!job.sourceAsset || !job.audioAsset) {
+    throw new Error('The verified Cloudinary source video and narration audio are required before rendering.');
+  }
+  if (!(await fs.promises.stat(job.sourcePath).catch(() => null))) {
+    await downloadCloudinaryAuthenticatedAsset(job.sourceAsset, job.sourcePath);
+  }
+  if (!(await fs.promises.stat(job.audioPath).catch(() => null))) {
+    await downloadCloudinaryAuthenticatedAsset(job.audioAsset, job.audioPath);
+  }
+  if (job.subtitlePath && !(await fs.promises.stat(job.subtitlePath).catch(() => null))) {
+    if (!job.subtitleAsset) throw new Error('The timed subtitle file is not available in local storage or Cloudinary.');
+    await downloadCloudinaryAuthenticatedAsset(job.subtitleAsset, job.subtitlePath);
+  }
   const metadata = await probeVideo(job.sourcePath);
   if (!metadata.width || !metadata.height) {
     throw new Error('The source video dimensions could not be verified. Rendering stopped without guessing an output size.');
@@ -722,14 +744,6 @@ async function renderVideo(job: NarrationJob): Promise<void> {
     publicId: job.id + '-narrated-video',
     resourceType: 'video'
   });
-  if (job.subtitlePath) {
-    job.subtitleAsset = await uploadCloudinaryLocalAsset({
-      filePath: job.subtitlePath,
-      folder: job.cloudinaryFolder,
-      publicId: job.id + '-narration-subtitles.srt',
-      resourceType: 'raw'
-    });
-  }
   job.status = 'completed';
   job.stage = 'completed';
   job.progressPercent = 100;
@@ -1156,10 +1170,6 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
       });
       if (!asset.duration || !asset.width || !asset.height) {
         throw new Error('Cloudinary did not return verified video duration and dimensions.');
-      }
-      const extension = getUploadExtension(upload.originalName).slice(1);
-      if (asset.format.toLowerCase() !== extension && !(extension === 'm4v' && asset.format.toLowerCase() === 'mp4')) {
-        throw new Error('Cloudinary video format did not match the selected source file extension.');
       }
       upload.cloudinaryAsset = asset;
       upload.receivedBytes = asset.bytes;
