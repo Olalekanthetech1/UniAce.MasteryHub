@@ -81,12 +81,6 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
       return false;
     }
 
-    const maxBytes = 250 * 1024 * 1024;
-    if (file.size > maxBytes) {
-      toast.error('This video exceeds the 250 MB import limit. Choose a smaller recording.');
-      return false;
-    }
-
     const lowerName = file.name.toLowerCase();
     const hasVideoMime = file.type.toLowerCase().startsWith('video/');
     const hasSupportedExtension = /\.(mp4|m4v|webm|mov|ogv|3gp|3g2)$/i.test(lowerName);
