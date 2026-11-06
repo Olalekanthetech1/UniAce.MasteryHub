@@ -33,7 +33,9 @@ const publishedCourse: CourseAccessRecord = {
   faculties: [],
   departments: ['Electrical Engineering'],
   level: '200',
-  semester: 'second'
+  semester: 'second',
+  student_visibility: 'live',
+  level_availability: 'live'
 };
 
 test('normalizes persisted academic period labels without defaulting missing values', () => {
@@ -95,6 +97,44 @@ test('a client/profile faculty value cannot override the authoritative departmen
     ).allowed,
     false
   );
+});
+
+test('coming-soon courses remain discoverable but never grant direct access', () => {
+  const courseComingSoon = evaluateStudentCourseAccess(
+    { ...publishedCourse, student_visibility: 'coming_soon' },
+    profile,
+    institution
+  );
+  assert.equal(courseComingSoon.visible, true);
+  assert.equal(courseComingSoon.allowed, false);
+  assert.equal(courseComingSoon.reason, 'course_coming_soon');
+
+  const levelComingSoon = evaluateStudentCourseAccess(
+    { ...publishedCourse, level_availability: 'coming_soon' },
+    profile,
+    institution
+  );
+  assert.equal(levelComingSoon.visible, true);
+  assert.equal(levelComingSoon.allowed, false);
+  assert.equal(levelComingSoon.reason, 'level_coming_soon');
+});
+
+test('hidden or missing availability fails closed for catalogue and direct access', () => {
+  const hiddenCourse = evaluateStudentCourseAccess(
+    { ...publishedCourse, student_visibility: 'hidden' },
+    profile,
+    institution
+  );
+  assert.equal(hiddenCourse.visible, false);
+  assert.equal(hiddenCourse.allowed, false);
+
+  const unconfiguredLevel = evaluateStudentCourseAccess(
+    { ...publishedCourse, level_availability: null },
+    profile,
+    institution
+  );
+  assert.equal(unconfiguredLevel.visible, false);
+  assert.equal(unconfiguredLevel.allowed, false);
 });
 
 test('global courses cross department boundaries but still require matching level and semester', () => {
