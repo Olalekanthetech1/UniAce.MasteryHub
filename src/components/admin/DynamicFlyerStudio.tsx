@@ -124,12 +124,12 @@ export default function DynamicFlyerStudio() {
   const featureSwitches = snapshot?.featureSwitches.status === 'configured'
     ? snapshot.featureSwitches.values
     : null;
-  const supportConfig = snapshot?.support.status === 'configured'
+  const supportConfig = useMemo(() => snapshot?.support.status === 'configured'
     ? {
         whatsappSupport: snapshot.support.whatsappSupport || undefined,
         contactEmail: snapshot.support.contactEmail || undefined
       }
-    : null;
+    : null, [snapshot]);
   const [targetScope, setTargetScope] = useState<MarketingTargetScope>('full_ecosystem');
   const [selectedFaculty, setSelectedFaculty] = useState<string>('');
   const [selectedDepartment, setSelectedDepartment] = useState<string>('');
@@ -263,7 +263,7 @@ export default function DynamicFlyerStudio() {
       if (!prev) return prev;
       const target = prev.capabilities.find((c) => c.id === id);
       if (!target) return prev;
-      if (!target.enabled && target.availability !== 'data_available' && target.availability !== 'switch_enabled') {
+      if (!target.enabled && target.availability !== 'data_available') {
         toast.error('This capability is implemented in the app, but its live operation has not been verified for marketing.');
         return prev;
       }
@@ -412,6 +412,10 @@ export default function DynamicFlyerStudio() {
   };
 
   const handleCopyCaption = (tab: 'whatsapp' | 'twitter' | 'linkedin' | 'tiktok') => {
+    if (qrResult.error) {
+      toast.error(qrResult.error);
+      return;
+    }
     if (copyReviewRequired) {
       toast.error('Review and approve the AI-generated campaign copy before copying it.');
       return;
@@ -590,7 +594,7 @@ export default function DynamicFlyerStudio() {
                     <span className="block text-xs font-bold truncate">{cap.title}</span>
                     <span className="block text-[9px] font-semibold text-slate-400">
                       {cap.availability === 'implemented' ? 'Implemented view · runtime health not probed' :
-                        cap.availability === 'switch_enabled' ? 'Feature switch enabled' :
+                        cap.availability === 'switch_enabled' ? 'Feature switch enabled · runtime not probed' :
                         cap.availability === 'switch_disabled' ? 'Disabled by feature switch' :
                         cap.availability === 'data_available' ? 'Live supporting data verified' :
                         'Supporting data or configuration not verified'}
@@ -661,7 +665,7 @@ export default function DynamicFlyerStudio() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-[11px] font-bold text-slate-500 uppercase flex items-center gap-1">
-                <Globe size={12} /> Display Website & QR URL
+                <Globe size={12} /> Campaign Destination URL (admin override)
               </label>
               <input
                 type="text"
@@ -678,10 +682,19 @@ export default function DynamicFlyerStudio() {
                   } catch {
                     fullUrl = '';
                   }
+                  const oldUrl = flyerConfig.qrTargetUrl;
+                  const updateCaptionUrl = (caption: string) =>
+                    oldUrl ? caption.replaceAll(oldUrl, fullUrl) : caption;
                   setFlyerConfig({
                     ...flyerConfig,
                     websiteDisplayUrl: val,
                     qrTargetUrl: fullUrl,
+                    captions: {
+                      whatsapp: updateCaptionUrl(flyerConfig.captions.whatsapp),
+                      twitter: updateCaptionUrl(flyerConfig.captions.twitter),
+                      linkedin: updateCaptionUrl(flyerConfig.captions.linkedin),
+                      tiktok: updateCaptionUrl(flyerConfig.captions.tiktok)
+                    }
                   });
                 }}
                 className="w-full mt-1 px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono text-slate-900 dark:text-white"
@@ -697,9 +710,11 @@ export default function DynamicFlyerStudio() {
               <input
                 type="text"
                 value={flyerConfig.supportContact}
-                onChange={(e) => setFlyerConfig({ ...flyerConfig, supportContact: e.target.value })}
+                readOnly
+                aria-readonly="true"
                 className="w-full mt-1 px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono text-slate-900 dark:text-white"
               />
+              <p className="mt-1 text-[10px] text-slate-500">Read-only: loaded from the saved Admin Support configuration. Update the official contact there.</p>
             </div>
           </div>
 

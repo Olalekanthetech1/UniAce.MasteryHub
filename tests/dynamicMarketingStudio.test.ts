@@ -147,7 +147,8 @@ test('unprobed interfaces are not advertised as verified capabilities', () => {
   const byId = Object.fromEntries(capabilities.map((item) => [item.id, item]));
 
   assert.equal(byId.course_hub.enabled, true);
-  assert.equal(byId.battle_arena.enabled, true);
+  assert.equal(byId.battle_arena.enabled, false);
+  assert.equal(byId.battle_arena.availability, 'switch_enabled');
   assert.equal(byId.ai_tutor.enabled, false);
   assert.equal(byId.chat_with_notes.enabled, false);
   assert.equal(byId.question_generator.enabled, false);

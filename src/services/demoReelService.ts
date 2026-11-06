@@ -306,16 +306,24 @@ export function resolveDynamicCapabilities(ctx: PlatformMarketingContext): Dynam
           : 'Formula inventory is not verified or has no live records.';
         gridDescription = enabled ? 'Browse course formulas' : 'Formula inventory not verified';
         break;
-      case 'battle_arena':
-        enabled = ctx.featureSwitches?.arena === true;
-        availability = enabled
+      case 'battle_arena': {
+        const switchEnabled = ctx.featureSwitches?.arena === true;
+        // The switch proves that the feature is configured on; it does not prove
+        // that the Arena can complete a student-facing session successfully.
+        enabled = false;
+        availability = switchEnabled
           ? 'switch_enabled'
           : ctx.featureSwitches && typeof ctx.featureSwitches.arena === 'boolean'
             ? 'switch_disabled'
             : 'data_unavailable';
-        phoneDescription = 'Take part in academic challenges.';
-        gridDescription = 'Academic challenges';
+        phoneDescription = switchEnabled
+          ? 'Enabled in configuration; live operation is not verified.'
+          : 'Academic Arena is disabled or its configuration is unavailable.';
+        gridDescription = switchEnabled
+          ? 'Runtime operation not verified'
+          : 'Not enabled for students';
         break;
+      }
       case 'course_hub':
         enabled = liveCourses.length > 0;
         availability = enabled ? 'data_available' : 'data_unavailable';

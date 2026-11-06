@@ -47,12 +47,12 @@ export default function DemoStudioTab() {
   const featureSwitches = snapshot?.featureSwitches.status === 'configured'
     ? snapshot.featureSwitches.values
     : null;
-  const supportConfig = snapshot?.support.status === 'configured'
+  const supportConfig = useMemo(() => snapshot?.support.status === 'configured'
     ? {
         whatsappSupport: snapshot.support.whatsappSupport || undefined,
         contactEmail: snapshot.support.contactEmail || undefined
       }
-    : null;
+    : null, [snapshot]);
 
   const [studioMode, setStudioMode] = useState<'flyer' | 'video'>('flyer');
 
@@ -116,10 +116,9 @@ export default function DemoStudioTab() {
 
   const activeScenario =
     dynamicScenarios[activeScenarioPreview] ||
-    dynamicScenarios.live_course_spotlight ||
     dynamicScenarios.full_ecosystem;
 
-  if (!activeScenario) {
+  if (!snapshotLoading && snapshot && !activeScenario) {
     return (
       <div className="rounded-3xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-8 space-y-4">
         <h3 className="text-base font-black text-slate-900 dark:text-white">No demonstration sequence is currently verified</h3>
@@ -326,7 +325,7 @@ export default function DemoStudioTab() {
                     const nextScope = e.target.value as MarketingTargetScope;
                     setReelScope(nextScope);
                     if (nextScope === 'course' || nextScope === 'department') {
-                      setActiveScenarioPreview('live_course_spotlight');
+                      setActiveScenarioPreview('full_ecosystem');
                     }
                   }}
                   className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-900 dark:text-white"

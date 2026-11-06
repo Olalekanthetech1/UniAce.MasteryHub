@@ -952,6 +952,9 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
     }
 
     try {
+      // forceRefresh=true bypasses the process-local catalog cache. This snapshot
+      // must fail with 503 if PostgreSQL cannot serve a fresh read; stale cache data
+      // must never be relabelled as current marketing evidence.
       const catalog = await courseRepository.getFullCatalogWithSyllabus(true);
       const liveCourses = (catalog.courses || []).filter((course: any) =>
         course?.status === 'published' &&

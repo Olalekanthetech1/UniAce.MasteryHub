@@ -108,7 +108,7 @@ export function toMarketingCourseMap(snapshot: MarketingSnapshot): Record<string
   ]));
 }
 
-export const MARKETING_VIEWS = [
+export const MARKETING_VIEWS: readonly View[] = [
   'hub',
   'dashboard',
   'course-syllabus',
@@ -121,7 +121,7 @@ export const MARKETING_VIEWS = [
   'study-plan',
   'notebook',
   'arena'
-] satisfies View[];
+];
 
 export function isMarketingSnapshot(value: unknown): value is MarketingSnapshot {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
