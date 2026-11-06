@@ -315,12 +315,13 @@ async function removeFolder(folder: string): Promise<void> {
 }
 
 async function cleanupJob(job: NarrationJob): Promise<void> {
-  if (job.cleanupStarted) return;
-  job.cleanupStarted = true;
   job.abortController?.abort();
   if (job.child && !job.child.killed) job.child.kill('SIGTERM');
   jobs.delete(job.id);
-  await removeFolder(job.folder);
+  if (!job.cleanupStarted) {
+    job.cleanupStarted = true;
+    await removeFolder(job.folder);
+  }
 }
 
 async function createNarrationAudio(job: NarrationJob, input: z.infer<typeof CreateJobSchema>): Promise<void> {
@@ -409,7 +410,7 @@ async function renderVideo(job: NarrationJob): Promise<void> {
       '-filter_complex',
       '[0:a:0]volume=' + originalVolume + '[original];' +
       '[1:a:0]volume=' + narrationVolume + '[narration];' +
-      '[original][narration]amix=inputs=2:duration=first:dropout_transition=2[mixed]'
+      '[original][narration]amix=inputs=2:duration=longest:dropout_transition=2[mixed]'
     );
     audioMap = ['-map', '[mixed]'];
   } else {
@@ -532,13 +533,18 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
   }, 60000);
   cleanupTimer.unref?.();
 
-  app.get('/api/admin/demo-narration/status', (_req, res) => {
+  app.get('/api/admin/demo-narration/status', async (_req, res) => {
     const configured = Boolean(getApiKey());
+    const ffmpegAvailable = await runCommand(process.env.FFMPEG_PATH || 'ffmpeg', ['-version'], 10000)
+      .then(() => true).catch(() => false);
+    const ffprobeAvailable = await runCommand(process.env.FFPROBE_PATH || 'ffprobe', ['-version'], 10000)
+      .then(() => true).catch(() => false);
     res.set('Cache-Control', 'private, no-store');
     res.json({
       configured,
       provider: 'ElevenLabs',
-      renderingBinaryConfigured: Boolean(process.env.FFMPEG_PATH || process.env.PATH),
+      ffmpegAvailable,
+      ffprobeAvailable,
       maxUploadBytes: MAX_UPLOAD_BYTES,
       maxDurationSeconds: Number(process.env.DEMO_NARRATION_MAX_DURATION_SECONDS) || DEFAULT_MAX_DURATION_SECONDS
     });
@@ -561,7 +567,8 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
         category: voice.category || null,
         description: voice.description || null,
         labels: voice.labels && typeof voice.labels === 'object' ? voice.labels : {},
-        previewUrlAvailable: Boolean(voice.preview_url),
+        previewUrl: typeof voice.preview_url === 'string' ? voice.preview_url : null,
+        settings: voice.settings && typeof voice.settings === 'object' ? voice.settings : null,
         isOwner: voice.is_owner === true
       })).filter((voice: any) => typeof voice.voiceId === 'string' && typeof voice.name === 'string') : [];
       res.set('Cache-Control', 'private, no-store');
@@ -716,6 +723,16 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
     }
   });
 
+  app.delete('/api/admin/demo-narration/uploads/:uploadId', async (req, res) => {
+    const upload = uploads.get(req.params.uploadId);
+    if (!upload || !ownerMatches(upload.ownerId, req)) {
+      return res.status(404).json({ error: 'Temporary upload session not found or expired.' });
+    }
+    uploads.delete(upload.id);
+    await removeFolder(upload.folder);
+    return res.json({ deleted: true });
+  });
+
   app.put('/api/admin/demo-narration/uploads/:uploadId', async (req, res) => {
     const upload = uploads.get(req.params.uploadId);
     if (!upload || !ownerMatches(upload.ownerId, req)) {
@@ -780,6 +797,12 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
       if (!selectedModel) {
         return res.status(400).json({ error: 'The selected model is not currently available for text-to-speech on this ElevenLabs account.' });
       }
+      const maximumTextLength = Number(selectedModel.maximum_text_length_per_request);
+      if (Number.isFinite(maximumTextLength) && parsed.data.script.length > maximumTextLength) {
+        return res.status(413).json({
+          error: 'The approved narration exceeds this live model limit of ' + maximumTextLength + ' characters. Select a model with a higher verified limit or shorten the script.'
+        });
+      }
 
       const jobId = crypto.randomUUID();
       const safeBaseName = sanitizeDemoVideoFileName(upload.originalName);
@@ -831,7 +854,9 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
           job.error = error?.message || 'Narration generation failed.';
           job.statusMessage = 'Narration generation failed. Temporary media will be removed.';
           job.progressPercent = null;
-          await cleanupJob(job);
+          job.expiresAt = Date.now() + JOB_TTL_MS;
+          job.cleanupStarted = true;
+          await removeFolder(job.folder);
         });
       });
       return res.status(202).json(makeJobSnapshot(job));
@@ -882,7 +907,9 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
         job.error = error?.message || 'Video rendering failed.';
         job.statusMessage = 'Video rendering failed. Temporary media will be removed.';
         job.progressPercent = null;
-        await cleanupJob(job);
+        job.expiresAt = Date.now() + JOB_TTL_MS;
+        job.cleanupStarted = true;
+        await removeFolder(job.folder);
       });
     });
     return res.status(202).json(makeJobSnapshot(job));
