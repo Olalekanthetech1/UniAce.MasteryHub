@@ -143,7 +143,7 @@ export async function verifyCloudinaryVideoUpload(input: {
   if (!config) throw new Error('Cloudinary is not configured.');
 
   const url = 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(config.cloudName) +
-    '/resources/video/upload/' + input.publicId.split('/').map(encodeURIComponent).join('/');
+    '/resources/video/authenticated/' + input.publicId.split('/').map(encodeURIComponent).join('/');
   const response = await fetch(url, {
     headers: {
       Authorization: 'Basic ' + Buffer.from(config.apiKey + ':' + config.apiSecret).toString('base64'),
@@ -173,16 +173,23 @@ export async function uploadCloudinaryLocalAsset(input: {
   const stat = await fs.promises.stat(input.filePath);
   if (!stat.isFile() || stat.size <= 0) throw new Error('The local media file is missing or empty; Cloudinary upload was not attempted.');
 
-  const uploaded: any = await cloudinary.uploader.upload_large(input.filePath, {
+  const options = {
     resource_type: input.resourceType,
     type: 'authenticated',
     folder: input.folder,
     public_id: input.publicId,
     overwrite: false,
     unique_filename: false,
-    chunk_size: 20 * 1024 * 1024,
     timeout: 15 * 60 * 1000
-  });
+  };
+  const uploaded: any = input.resourceType === 'video'
+    ? await new Promise((resolve, reject) => {
+        cloudinary.uploader.upload_large(input.filePath, {
+          ...options,
+          chunk_size: 20 * 1024 * 1024
+        }, (error: any, result: any) => error ? reject(error) : resolve(result));
+      })
+    : await cloudinary.uploader.upload(input.filePath, options);
 
   const normalized = normalizeAsset(uploaded, {
     assetId: requireAssetString(uploaded?.asset_id, 'asset ID'),
@@ -198,16 +205,20 @@ export async function uploadCloudinaryLocalAsset(input: {
 }
 
 export async function getCloudinaryAuthenticatedDeliveryUrl(asset: CloudinaryAsset): Promise<string> {
-  const config = await getCloudinaryMediaConfig();
-  if (!config) throw new Error('Cloudinary is not configured.');
-  const encodedPublicId = asset.publicId.split('/').map(encodeURIComponent).join('/');
-  const versionedPath = 'v' + asset.version + '/' + encodedPublicId + '.' + encodeURIComponent(asset.format);
-  const signature = crypto.createHash('sha1')
-    .update(versionedPath + config.apiSecret)
-    .digest('base64url')
-    .slice(0, 8);
-  return 'https://res.cloudinary.com/' + encodeURIComponent(config.cloudName) + '/' +
-    asset.resourceType + '/authenticated/s--' + signature + '--/' + versionedPath;
+  await configureCloudinary();
+  const privateDownloadUrl = (cloudinary.utils as any).private_download_url;
+  if (typeof privateDownloadUrl !== 'function') {
+    throw new Error('The Cloudinary SDK does not expose its signed private-download URL helper.');
+  }
+  const url = privateDownloadUrl.call(cloudinary.utils, asset.publicId, asset.format, {
+    resource_type: asset.resourceType,
+    type: asset.deliveryType,
+    expires_at: Math.floor(Date.now() / 1000) + 5 * 60
+  });
+  if (typeof url !== 'string' || !url.startsWith('https://api.cloudinary.com/')) {
+    throw new Error('Cloudinary did not generate a verifiable protected download URL.');
+  }
+  return url;
 }
 
 export async function fetchCloudinaryAuthenticatedAsset(asset: CloudinaryAsset): Promise<Response> {
