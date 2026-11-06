@@ -59,6 +59,7 @@ interface ProviderStatus {
   ffmpegAvailable: boolean;
   ffprobeAvailable: boolean;
   maxUploadBytes: number;
+  maxScriptCharacters: number;
   maxDurationSeconds: number;
 }
 
@@ -179,7 +180,7 @@ export default function DemoNarrationStudio({
     ? scenario.steps.map((step) => step.title + '. ' + step.subtitle).join('\n\n')
     : '');
   const [scriptApproved, setScriptApproved] = useState(false);
-  const [originalAudioMode, setOriginalAudioMode] = useState<'mix' | 'narration_only'>('mix');
+  const [originalAudioMode, setOriginalAudioMode] = useState<'mix' | 'duck' | 'narration_only'>('duck');
   const [originalAudioVolume, setOriginalAudioVolume] = useState(0.16);
   const [narrationVolume, setNarrationVolume] = useState(1);
   const [subtitles, setSubtitles] = useState(true);
@@ -207,8 +208,11 @@ export default function DemoNarrationStudio({
     [models, selectedModelId]
   );
   const scriptLength = script.length;
-  const scriptWithinModelLimit = !selectedModel?.maximumTextLength ||
-    scriptLength <= selectedModel.maximumTextLength;
+  const scriptWithinModelLimit = Boolean(
+    providerStatus &&
+    scriptLength <= providerStatus.maxScriptCharacters &&
+    (!selectedModel?.maximumTextLength || scriptLength <= selectedModel.maximumTextLength)
+  );
   const maxUploadBytes = providerStatus?.maxUploadBytes ?? 0;
   const videoSizeMb = videoBlob ? videoBlob.size / (1024 * 1024) : null;
   const canStart = Boolean(
@@ -763,7 +767,7 @@ export default function DemoNarrationStudio({
               value={script}
               onChange={(event) => { setScript(event.target.value); setScriptApproved(false); }}
               rows={9}
-              maxLength={20000}
+              maxLength={providerStatus?.maxScriptCharacters}
               placeholder="Write what the narrator should explain about the actual video. This field stays blank for imported recordings until you provide verified narration text."
               className={inputClass + ' resize-y leading-6'}
               disabled={Boolean(job && ['generating_audio', 'rendering'].includes(job.status))}
@@ -823,10 +827,11 @@ export default function DemoNarrationStudio({
           <div>
             <label className={labelClass} htmlFor="demo-original-audio">Original video audio</label>
             <select id="demo-original-audio" className={inputClass} value={originalAudioMode} onChange={(e) => setOriginalAudioMode(e.target.value as 'mix' | 'narration_only')}>
-              <option value="mix">Keep original audio under narration</option>
+              <option value="duck">Automatically lower original audio while narration speaks</option>
+              <option value="mix">Mix narration and original audio at a steady level</option>
               <option value="narration_only">Replace original audio with narration</option>
             </select>
-            {originalAudioMode === 'mix' && (
+            {(originalAudioMode === 'mix' || originalAudioMode === 'duck') && (
               <label className="mt-3 block text-xs text-slate-600 dark:text-slate-300">
                 Original audio level: {Math.round(originalAudioVolume * 100)}%
                 <input type="range" min="0" max="1" step="0.05" value={originalAudioVolume} onChange={(e) => setOriginalAudioVolume(Number(e.target.value))} className="mt-1 block w-full" />
