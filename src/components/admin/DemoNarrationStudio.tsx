@@ -69,6 +69,7 @@ interface ProviderStatus {
   ffmpegAvailable: boolean;
   ffprobeAvailable: boolean;
   maxUploadBytes: number;
+  cloudinaryConfigured: boolean;
   maxScriptCharacters: number;
   maxDurationSeconds: number;
 }
@@ -166,6 +167,56 @@ function uploadVideoWithProgress(
   });
 }
 
+function uploadDirectToCloudinary(
+  signature: {
+    uploadUrl: string;
+    apiKey: string;
+    timestamp: number;
+    signature: string;
+    folder: string;
+    publicId: string;
+    deliveryType: string;
+  },
+  blob: Blob,
+  onProgress: (percentage: number | null) => void
+): Promise<{ assetId: string; publicId: string }> {
+  return new Promise((resolve, reject) => {
+    const form = new FormData();
+    form.append('file', blob);
+    form.append('api_key', signature.apiKey);
+    form.append('timestamp', String(signature.timestamp));
+    form.append('signature', signature.signature);
+    form.append('folder', signature.folder);
+    form.append('public_id', signature.publicId);
+    form.append('overwrite', 'false');
+    form.append('type', signature.deliveryType);
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', signature.uploadUrl);
+    xhr.upload.onprogress = (event) => {
+      onProgress(event.lengthComputable && event.total > 0
+        ? Math.min(100, Math.round(event.loaded / event.total * 100))
+        : null);
+    };
+    xhr.onerror = () => reject(new Error('The direct Cloudinary upload connection failed.'));
+    xhr.onabort = () => reject(new Error('The Cloudinary upload was cancelled.'));
+    xhr.onload = () => {
+      let data: any = {};
+      try { data = xhr.responseText ? JSON.parse(xhr.responseText) : {}; } catch { data = {}; }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(data?.error?.message || 'Cloudinary rejected the video upload with HTTP ' + xhr.status + '.'));
+        return;
+      }
+      if (typeof data.asset_id !== 'string' || typeof data.public_id !== 'string') {
+        reject(new Error('Cloudinary did not return the asset identity needed for server verification.'));
+        return;
+      }
+      onProgress(100);
+      resolve({ assetId: data.asset_id, publicId: data.public_id });
+    };
+    xhr.send(form);
+  });
+}
+
 function normalizeVoiceSettings(value: unknown): Partial<VoiceSettings> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const raw = value as Record<string, unknown>;
@@ -244,6 +295,7 @@ export default function DemoNarrationStudio({
     videoBlob &&
     videoBlob.size > 0 &&
     providerStatus?.configured &&
+    providerStatus?.cloudinaryConfigured &&
     providerStatus?.ffmpegAvailable &&
     providerStatus?.ffprobeAvailable &&
     selectedVoice &&
@@ -514,16 +566,27 @@ export default function DemoNarrationStudio({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fileName, mimeType, size: videoBlob.size })
       });
-      const allocation = await readJsonResponse<{ uploadId: string }>(allocationResponse);
+      const allocation = await readJsonResponse<{
+        uploadId: string;
+        uploadSignature: {
+          uploadUrl: string;
+          apiKey: string;
+          timestamp: number;
+          signature: string;
+          folder: string;
+          publicId: string;
+          deliveryType: string;
+        };
+      }>(allocationResponse);
       uploadId = allocation.uploadId;
       setUploadProgress(0);
-      const token = await user!.getIdToken();
-      await uploadVideoWithProgress(
-        '/api/admin/demo-narration/uploads/' + encodeURIComponent(uploadId),
-        token,
-        videoBlob,
-        setUploadProgress
-      );
+      const uploaded = await uploadDirectToCloudinary(allocation.uploadSignature, videoBlob, setUploadProgress);
+      const verificationResponse = await authFetch('/api/admin/demo-narration/uploads/' + encodeURIComponent(uploadId) + '/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(uploaded)
+      });
+      await readJsonResponse<{ verified: boolean }>(verificationResponse);
 
       const jobResponse = await authFetch('/api/admin/demo-narration/jobs', {
         method: 'POST',
@@ -585,7 +648,7 @@ export default function DemoNarrationStudio({
     if (outputPreviewUrl) URL.revokeObjectURL(outputPreviewUrl);
     setOutputPreviewUrl(null);
     setJob(null);
-    toast('Temporary narration job cancelled and server files removed.');
+    toast('The narration job was cancelled. Stored Cloudinary assets remain available until explicitly deleted or cleaned up.');
   };
 
   const handleDownload = async () => {
@@ -600,7 +663,7 @@ export default function DemoNarrationStudio({
       document.body.appendChild(link);
       link.click();
       link.remove();
-      toast.success('The verified MP4 download has been requested. The temporary server files are deleted after the transfer finishes.');
+      toast.success('The protected Cloudinary MP4 download has been requested.');
     } catch (error: any) {
       setOperationError(error?.message || 'The temporary download link could not be created.');
       toast.error(error?.message || 'The final video could not be downloaded.');
