@@ -813,6 +813,7 @@ export default function DemoNarrationStudio({
               <SlidersHorizontal size={14} /> Voice settings returned by the selected voice
             </div>
             {voiceSettings ? (
+              <>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {typeof voiceSettings.stability === 'number' && (
                   <label className="text-[11px] text-slate-600 dark:text-slate-300">
@@ -846,6 +847,7 @@ export default function DemoNarrationStudio({
                 )}
               </div>
               <p className="mt-2 text-[10px] text-slate-500">Style and speaker-boost controls are shown only when the selected live model reports support for them. Settings that the model does not support are omitted from the TTS request.</p>
+              </>
             ) : voiceSettingsLoading ? (
               <p className="flex items-center gap-2 text-xs text-slate-500"><Loader2 size={13} className="animate-spin" /> Loading the selected voice's current settings from ElevenLabs…</p>
             ) : voiceSettingsError ? (
@@ -864,7 +866,7 @@ export default function DemoNarrationStudio({
         <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <label className={labelClass} htmlFor="demo-original-audio">Original video audio</label>
-            <select id="demo-original-audio" className={inputClass} value={originalAudioMode} onChange={(e) => setOriginalAudioMode(e.target.value as 'mix' | 'narration_only')}>
+            <select id="demo-original-audio" className={inputClass} value={originalAudioMode} onChange={(e) => setOriginalAudioMode(e.target.value as 'mix' | 'duck' | 'narration_only')}>
               <option value="duck">Automatically lower original audio while narration speaks</option>
               <option value="mix">Mix narration and original audio at a steady level</option>
               <option value="narration_only">Replace original audio with narration</option>
