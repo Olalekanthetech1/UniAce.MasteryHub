@@ -135,37 +135,6 @@ function inferMimeType(blob: Blob, fileName: string): string {
   return types[extension || ''] || 'application/octet-stream';
 }
 
-function uploadVideoWithProgress(
-  url: string,
-  token: string,
-  blob: Blob,
-  onProgress: (percentage: number | null) => void
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('PUT', url);
-    xhr.setRequestHeader('Authorization', 'Bearer ' + token);
-    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-    xhr.upload.onprogress = (event) => {
-      onProgress(event.lengthComputable && event.total > 0
-        ? Math.min(100, Math.round(event.loaded / event.total * 100))
-        : null);
-    };
-    xhr.onerror = () => reject(new Error('The video upload connection failed.'));
-    xhr.onabort = () => reject(new Error('The video upload was cancelled.'));
-    xhr.onload = () => {
-      let data: any = {};
-      try { data = xhr.responseText ? JSON.parse(xhr.responseText) : {}; } catch { data = {}; }
-      if (xhr.status < 200 || xhr.status >= 300) {
-        reject(new Error(data?.error || 'The video upload failed with HTTP ' + xhr.status + '.'));
-        return;
-      }
-      onProgress(100);
-      resolve();
-    };
-    xhr.send(blob);
-  });
-}
 
 function uploadDirectToCloudinary(
   signature: {
@@ -369,7 +338,9 @@ export default function DemoNarrationStudio({
         setNextVoicePage(voiceResult.hasMore ? voiceResult.nextPageToken : null);
         setModels(modelResult.models);
         setAccount(accountResult);
-        if (!status.ffmpegAvailable || !status.ffprobeAvailable) {
+        if (!status.cloudinaryConfigured) {
+          setProviderError('Cloudinary is not configured. Open Admin Dashboard → Settings → Cloudinary, save and verify the credentials before uploading a Demo Studio recording.');
+        } else if (!status.ffmpegAvailable || !status.ffprobeAvailable) {
           setProviderError('The ElevenLabs account is reachable, but server rendering is unavailable because FFmpeg or FFprobe was not detected in this Render runtime.');
         } else if (voiceResult.voices.length === 0) {
           setProviderError('ElevenLabs returned no voices available to this API key. No sample voice has been substituted.');
