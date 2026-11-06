@@ -397,7 +397,8 @@ async function persistJob(job: NarrationJob): Promise<void> {
     sourceAsset: job.sourceAsset,
     audioAsset: job.audioAsset,
     outputAsset: job.outputAsset,
-    subtitleAsset: job.subtitleAsset
+    subtitleAsset: job.subtitleAsset,
+    expiresAt: job.expiresAt
   }, false);
 }
 
@@ -446,7 +447,7 @@ async function restorePersistedJob(jobId: string): Promise<NarrationJob | null> 
     outputWidth: typeof raw.outputWidth === 'number' ? raw.outputWidth : null,
     outputHeight: typeof raw.outputHeight === 'number' ? raw.outputHeight : null,
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString(),
-    expiresAt: Date.now() + JOB_TTL_MS,
+    expiresAt: typeof raw.expiresAt === 'number' ? raw.expiresAt : Date.now() + JOB_TTL_MS,
     abortController: null,
     child: null,
     downloadTicketHash: null,
@@ -1274,8 +1275,33 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
     }
   });
 
-  app.get('/api/admin/demo-narration/jobs/:jobId', (req, res) => {
-    const job = getOwnedJob(req, res);
+  app.delete('/api/admin/demo-narration/jobs/:jobId/assets', async (req, res) => {
+    const job = await getOwnedJob(req, res);
+    if (!job) return;
+    const assets = [job.sourceAsset, job.audioAsset, job.outputAsset, job.subtitleAsset].filter(Boolean) as CloudinaryAsset[];
+    const failures: string[] = [];
+    for (const asset of assets) {
+      try {
+        await deleteCloudinaryAsset(asset);
+        if (job.sourceAsset?.assetId === asset.assetId) job.sourceAsset = null;
+        if (job.audioAsset?.assetId === asset.assetId) job.audioAsset = null;
+        if (job.outputAsset?.assetId === asset.assetId) job.outputAsset = null;
+        if (job.subtitleAsset?.assetId === asset.assetId) job.subtitleAsset = null;
+      } catch (error: any) {
+        failures.push(asset.publicId + ': ' + String(error?.message || 'delete failed').slice(0, 160));
+      }
+    }
+    if (failures.length) {
+      await persistJob(job).catch(() => undefined);
+      return res.status(502).json({ error: 'Some Demo Studio media assets could not be removed from Cloudinary.', failures });
+    }
+    await setSystemSettingsDoc(JOB_STORAGE_PREFIX + job.id, { schemaVersion: 1, deleted: true, jobId: job.id }, false);
+    await cleanupJob(job);
+    return res.json({ deleted: true, deletedAssets: assets.length, jobId: job.id });
+  });
+
+  app.get('/api/admin/demo-narration/jobs/:jobId', async (req, res) => {
+    const job = await getOwnedJob(req, res);
     if (!job) return;
     res.set('Cache-Control', 'private, no-store');
     return res.json(makeJobSnapshot(job));
@@ -1297,7 +1323,7 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
   });
 
   app.get('/api/admin/demo-narration/jobs/:jobId/audio', async (req, res) => {
-    const job = getOwnedJob(req, res);
+    const job = await getOwnedJob(req, res);
     if (!job) return;
     if (!['narration_ready', 'rendering', 'completed'].includes(job.status)) {
       return res.status(409).json({ error: 'Narration audio is not ready yet.' });
@@ -1313,7 +1339,7 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
   });
 
   app.get('/api/admin/demo-narration/jobs/:jobId/video-preview', async (req, res) => {
-    const job = getOwnedJob(req, res);
+    const job = await getOwnedJob(req, res);
     if (!job) return;
     if (job.status !== 'completed' || !job.outputBytes) {
       return res.status(409).json({ error: 'The final video has not passed verification and is not available to preview.' });
@@ -1331,7 +1357,7 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
   });
 
   app.get('/api/admin/demo-narration/jobs/:jobId/subtitles', async (req, res) => {
-    const job = getOwnedJob(req, res);
+    const job = await getOwnedJob(req, res);
     if (!job) return;
     if (!job.subtitlePath) {
       return res.status(404).json({ error: 'This narration job has no generated subtitle file.' });
@@ -1347,8 +1373,8 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
     return res.download(job.subtitlePath, job.safeBaseName + '-narration.srt');
   });
 
-  app.post('/api/admin/demo-narration/jobs/:jobId/render', (req, res) => {
-    const job = getOwnedJob(req, res);
+  app.post('/api/admin/demo-narration/jobs/:jobId/render', async (req, res) => {
+    const job = await getOwnedJob(req, res);
     if (!job) return;
     if (job.status !== 'narration_ready') {
       return res.status(409).json({ error: 'The narration must finish successfully before video rendering can start.' });
@@ -1375,7 +1401,7 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
   });
 
   app.delete('/api/admin/demo-narration/jobs/:jobId', async (req, res) => {
-    const job = getOwnedJob(req, res);
+    const job = await getOwnedJob(req, res);
     if (!job) return;
     job.status = 'cancelled';
     job.stage = 'cancelled';
@@ -1384,8 +1410,8 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
     return res.json({ cancelled: true, jobId: job.id });
   });
 
-  app.post('/api/admin/demo-narration/jobs/:jobId/download-ticket', (req, res) => {
-    const job = getOwnedJob(req, res);
+  app.post('/api/admin/demo-narration/jobs/:jobId/download-ticket', async (req, res) => {
+    const job = await getOwnedJob(req, res);
     if (!job) return;
     if (job.status !== 'completed' || !job.outputBytes) {
       return res.status(409).json({ error: 'The final video has not passed verification and is not available to download.' });
