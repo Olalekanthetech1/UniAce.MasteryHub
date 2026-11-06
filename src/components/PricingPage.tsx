@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'motion/react';
 // @ts-ignore
 import PaystackPop from '@paystack/inline-js';
 import { PricingService, PricingPlan } from '../services/pricingConfig';
+import { getStoredCampaignIdForCheckout } from '../services/marketingCampaignTracking';
 
 export default function PricingPage() {
   const { user, profile } = useAuth();
@@ -78,7 +79,8 @@ export default function PricingPage() {
         metadata: { 
           userId: user.uid, 
           planType: plan.id,
-          referredBy: profile?.referredBy || null
+          referredBy: profile?.referredBy || null,
+          campaignId: getStoredCampaignIdForCheckout()
         },
         onSuccess: async (transaction: any) => {
           try {

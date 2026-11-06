@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useDemoReel } from '../../context/DemoReelContext';
 import {
   DemoScenario,
+  DemoStep,
   MarketingTargetScope,
   PlatformMarketingContext,
   buildDynamicDemoScenarios,
@@ -10,6 +11,7 @@ import {
 import { useMarketingSnapshot } from '../../hooks/useMarketingSnapshot';
 import { toMarketingCourseMap } from '../../services/marketingSnapshot';
 import DynamicFlyerStudio from './DynamicFlyerStudio';
+import AdminDemoTutorPreview from './AdminDemoTutorPreview';
 import {
   Video,
   Play,
@@ -150,6 +152,48 @@ export default function DemoStudioTab() {
     }
   };
 
+  const handleUseTutorPreviewInRecording = (preview: {
+    prompt: string;
+    courseContext?: string;
+    response: string;
+    providerUsed?: string | null;
+    latencyMs?: number;
+  }) => {
+    if (!activeScenario) {
+      toast.error('Select a verified demo scenario before adding the tutor segment.');
+      return;
+    }
+
+    const tutorStep: DemoStep = {
+      id: 'isolated-admin-tutor-preview',
+      view: 'ai-tutor',
+      durationMs: 14000,
+      title: 'Isolated AI Tutor response',
+      subtitle: 'A real administrator-approved provider response',
+      badge: 'Isolated admin preview',
+      isolatedTutorPreview: preview,
+    };
+    const steps = [
+      ...activeScenario.steps.filter((step) => step.id !== tutorStep.id),
+      tutorStep,
+    ];
+    const scenarioWithTutor: DemoScenario = {
+      ...activeScenario,
+      id: `${activeScenario.id}-isolated-tutor`,
+      name: `${activeScenario.name} + AI Tutor`,
+      tagline: 'Includes a real response generated through the isolated administrator preview path.',
+      steps,
+      totalDurationSec: Math.ceil(steps.reduce((total, step) => total + step.durationMs, 0) / 1000),
+    };
+
+    setCustomAiScenarios((previous) => ({
+      ...previous,
+      [scenarioWithTutor.id]: scenarioWithTutor,
+    }));
+    setActiveScenarioPreview(scenarioWithTutor.id);
+    toast.success('Isolated AI Tutor response added to the recording scenario.');
+  };
+
   const handleSynthesizeAiReel = async () => {
     setIsSynthesizingReel(true);
     try {
@@ -259,6 +303,7 @@ export default function DemoStudioTab() {
       {/* MODE 2: DYNAMIC VIDEO REEL STUDIO */}
       {studioMode === 'video' && (
         <div className="space-y-8">
+          <AdminDemoTutorPreview onUseInRecording={handleUseTutorPreviewInRecording} />
           {/* Screen Capture Support Warning if in unsupported browser */}
           {!screenCaptureSupported && (
             <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-3">

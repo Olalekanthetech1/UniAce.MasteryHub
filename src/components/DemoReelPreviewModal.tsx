@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useDemoReel } from '../context/DemoReelContext';
-import { Download, X, Copy, Check, Video, Share2, Sparkles, Play, Repeat, Clock, FileVideo, Globe, Send, MessageCircle } from 'lucide-react';
+import { Download, X, Copy, Check, Video, Share2, Sparkles, Play, Repeat, Clock, FileVideo, Globe, Send, MessageCircle, Camera } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 export default function DemoReelPreviewModal() {
@@ -21,6 +21,7 @@ export default function DemoReelPreviewModal() {
   const [copiedTab, setCopiedTab] = useState<string | null>(null);
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1);
   const [isLooping, setIsLooping] = useState<boolean>(true);
+  const [isCapturingFrame, setIsCapturingFrame] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   if (!isModalOpen || !recordedVideoUrl) return null;
@@ -50,6 +51,45 @@ export default function DemoReelPreviewModal() {
     setPlaybackSpeed(speed);
     if (videoRef.current) {
       videoRef.current.playbackRate = speed;
+    }
+  };
+
+  const handleCaptureCurrentFrame = () => {
+    const video = videoRef.current;
+    if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
+        video.videoWidth < 1 || video.videoHeight < 1) {
+      toast.error('The recording frame is not ready yet. Play the video and try again.');
+      return;
+    }
+
+    setIsCapturingFrame(true);
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const context = canvas.getContext('2d');
+      if (!context) throw new Error('Canvas capture is unavailable in this browser.');
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          setIsCapturingFrame(false);
+          toast.error('The current video frame could not be encoded as PNG.');
+          return;
+        }
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `uniace-demo-frame-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        setIsCapturingFrame(false);
+        toast.success('Current demo frame exported as a PNG screenshot.');
+      }, 'image/png');
+    } catch (error: any) {
+      setIsCapturingFrame(false);
+      toast.error(error?.message || 'The current frame could not be captured.');
     }
   };
 
@@ -169,6 +209,15 @@ export default function DemoReelPreviewModal() {
                 >
                   <Download size={20} />
                   <span>Download Demo Reel ({recordedBlob?.type?.toLowerCase().includes('mp4') ? '.mp4' : '.webm'})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCaptureCurrentFrame}
+                  disabled={isCapturingFrame}
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-5 py-3 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 flex items-center justify-center gap-2"
+                >
+                  <Camera size={16} />
+                  {isCapturingFrame ? 'Capturing PNG frame…' : 'Capture current video frame (PNG)'}
                 </button>
               </div>
 

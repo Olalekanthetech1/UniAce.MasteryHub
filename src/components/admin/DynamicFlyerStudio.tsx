@@ -36,6 +36,9 @@ import {
   Home,
   Library,
   User,
+  Save,
+  History,
+  BarChart3,
 } from 'lucide-react';
 import { useMarketingSnapshot } from '../../hooks/useMarketingSnapshot';
 import { toMarketingCourseMap } from '../../services/marketingSnapshot';
@@ -48,6 +51,16 @@ import {
   synthesizeFlyerWithAI,
 } from '../../services/demoReelService';
 import { generateQrMatrix } from '../../utils/qrCodeSvg';
+import {
+  getMarketingCampaignAnalytics,
+  MarketingCampaignAnalytics,
+} from '../../services/marketingCampaignTracking';
+import {
+  getMarketingAssetVersion,
+  listMarketingAssetVersions,
+  MarketingAssetVersion,
+  saveMarketingAssetVersion,
+} from '../../services/marketingAssetHistory';
 
 const THEME_PALETTES = {
   emerald_gold: {
@@ -84,6 +97,254 @@ const THEME_PALETTES = {
     scriptColor: '#0f766e',
   },
 };
+
+
+type FlyerExportFormat = 'square' | 'vertical' | 'landscape';
+
+const FLYER_EXPORT_SIZES: Record<FlyerExportFormat, { width: number; height: number; label: string }> = {
+  square: { width: 1080, height: 1080, label: '1:1 Square · 1080 × 1080' },
+  vertical: { width: 1080, height: 1920, label: '9:16 Vertical · 1080 × 1920' },
+  landscape: { width: 1920, height: 1080, label: '16:9 Landscape · 1920 × 1080' },
+};
+
+function buildFlyerCampaignId(
+  scope: MarketingTargetScope,
+  courseId: string,
+  faculty: string,
+  department: string
+): string {
+  const target = scope === 'course'
+    ? courseId
+    : scope === 'faculty'
+      ? faculty
+      : scope === 'department'
+        ? department
+        : 'all';
+  const slug = String(target || 'unselected')
+    .normalize('NFKC')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 100) || 'unselected';
+  return `flyer:${scope}:${slug}`;
+}
+
+function drawWrappedCanvasText(
+  ctx: CanvasRenderingContext2D,
+  value: string,
+  x: number,
+  y: number,
+  maxWidth: number,
+  lineHeight: number,
+  maxLines: number
+): number {
+  const words = String(value || '').trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return y;
+  const lines: string[] = [];
+  let line = '';
+
+  for (const word of words) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (line && ctx.measureText(candidate).width > maxWidth) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = candidate;
+    }
+  }
+  if (line) lines.push(line);
+
+  const visible = lines.slice(0, maxLines);
+  if (lines.length > maxLines && visible.length > 0) {
+    let last = visible[visible.length - 1];
+    while (last.length > 0 && ctx.measureText(`${last}…`).width > maxWidth) {
+      last = last.slice(0, -1);
+    }
+    visible[visible.length - 1] = `${last.trimEnd()}…`;
+  }
+
+  visible.forEach((text, index) => ctx.fillText(text, x, y + index * lineHeight, maxWidth));
+  return y + visible.length * lineHeight;
+}
+
+function drawCanvasQr(
+  ctx: CanvasRenderingContext2D,
+  matrix: boolean[][],
+  x: number,
+  y: number,
+  size: number
+): void {
+  if (!matrix.length || matrix.some((row) => row.length !== matrix.length)) {
+    throw new Error('A verified QR matrix is required for this export.');
+  }
+  const quietZone = 4;
+  const moduleCount = matrix.length + quietZone * 2;
+  const moduleSize = size / moduleCount;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(x, y, size, size);
+  ctx.fillStyle = '#061b12';
+  matrix.forEach((row, rowIndex) => {
+    row.forEach((dark, columnIndex) => {
+      if (dark) {
+        ctx.fillRect(
+          x + (columnIndex + quietZone) * moduleSize,
+          y + (rowIndex + quietZone) * moduleSize,
+          Math.ceil(moduleSize),
+          Math.ceil(moduleSize)
+        );
+      }
+    });
+  });
+}
+
+function composeFlyerExport(
+  source: HTMLCanvasElement,
+  format: FlyerExportFormat,
+  config: DynamicFlyerConfig,
+  qrMatrix: boolean[][],
+  palette: {
+    topBg: string;
+    accentText: string;
+    darkHeadline: string;
+    footerStripBg: string;
+    ctaBg: string;
+    ctaText: string;
+  }
+): HTMLCanvasElement {
+  const size = FLYER_EXPORT_SIZES[format];
+  const canvas = document.createElement('canvas');
+  canvas.width = size.width;
+  canvas.height = size.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas rendering is unavailable in this browser.');
+
+  ctx.fillStyle = palette.topBg;
+  ctx.fillRect(0, 0, size.width, size.height);
+  ctx.textBaseline = 'top';
+
+  if (format === 'vertical') {
+    ctx.fillStyle = palette.footerStripBg;
+    ctx.fillRect(0, 0, size.width, 156);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '900 44px Arial, sans-serif';
+    ctx.fillText('UniAce Mastery Hub', 58, 38, 960);
+    ctx.fillStyle = '#d1fae5';
+    ctx.font = '600 20px Arial, sans-serif';
+    ctx.fillText(config.brandSubline.filter(Boolean).join('  •  '), 60, 98, 960);
+
+    const marginX = 54;
+    const top = 176;
+    const bottom = 1748;
+    const scale = Math.min((size.width - marginX * 2) / source.width, (bottom - top) / source.height);
+    const drawWidth = source.width * scale;
+    const drawHeight = source.height * scale;
+    ctx.drawImage(source, (size.width - drawWidth) / 2, top + (bottom - top - drawHeight) / 2, drawWidth, drawHeight);
+
+    ctx.fillStyle = palette.footerStripBg;
+    ctx.fillRect(0, 1770, size.width, 150);
+    ctx.fillStyle = palette.ctaBg;
+    ctx.fillRect(54, 1800, 310, 64);
+    ctx.fillStyle = palette.ctaText;
+    ctx.font = '900 25px Arial, sans-serif';
+    ctx.fillText(config.ctaText, 76, 1818, 270);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '700 23px Arial, sans-serif';
+    ctx.fillText(config.websiteDisplayUrl, 396, 1817, 625);
+    return canvas;
+  }
+
+  if (format === 'square') {
+    const margin = 34;
+    const drawHeight = 1012;
+    const scale = drawHeight / source.height;
+    const drawWidth = source.width * scale;
+    ctx.drawImage(source, margin, (size.height - drawHeight) / 2, drawWidth, drawHeight);
+
+    const rightX = margin + drawWidth + 28;
+    const rightWidth = size.width - rightX - margin;
+    ctx.fillStyle = palette.footerStripBg;
+    ctx.fillRect(rightX - 12, 28, rightWidth + 22, 1024);
+
+    ctx.fillStyle = '#d1fae5';
+    ctx.font = '800 17px Arial, sans-serif';
+    ctx.fillText('UNIACE MASTERY HUB', rightX + 8, 66, rightWidth - 16);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '900 29px Arial, sans-serif';
+    let y = drawWrappedCanvasText(ctx, config.headlineLine1, rightX + 8, 126, rightWidth - 18, 36, 3);
+    ctx.fillStyle = '#6ee7b7';
+    y = drawWrappedCanvasText(ctx, config.headlineLine2, rightX + 8, y + 4, rightWidth - 18, 36, 4);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '700 16px Arial, sans-serif';
+    y = drawWrappedCanvasText(ctx, config.leadBoldParagraph, rightX + 8, y + 18, rightWidth - 18, 23, 5);
+
+    const qrSize = Math.min(224, rightWidth - 22);
+    const qrX = rightX + (rightWidth - qrSize) / 2;
+    drawCanvasQr(ctx, qrMatrix, qrX, 706, qrSize);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '800 14px Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('SCAN TO EXPLORE', rightX + rightWidth / 2, 948, rightWidth - 12);
+    ctx.font = '600 13px Arial, sans-serif';
+    ctx.fillText(config.websiteDisplayUrl, rightX + rightWidth / 2, 975, rightWidth - 12);
+    ctx.textAlign = 'left';
+    return canvas;
+  }
+
+  // Landscape: preserve the designed portrait artwork and use the wide canvas
+  // for legible campaign messaging, a large QR code and the verified contact.
+  const margin = 34;
+  const drawHeight = 1012;
+  const scale = drawHeight / source.height;
+  const drawWidth = source.width * scale;
+  ctx.drawImage(source, margin, (size.height - drawHeight) / 2, drawWidth, drawHeight);
+
+  const contentX = margin + drawWidth + 54;
+  const qrSize = 274;
+  const qrX = size.width - margin - qrSize;
+  const contentWidth = qrX - contentX - 42;
+
+  ctx.fillStyle = palette.footerStripBg;
+  ctx.fillRect(contentX - 28, 34, size.width - contentX + 28, size.height - 68);
+  ctx.fillStyle = '#a7f3d0';
+  ctx.font = '900 20px Arial, sans-serif';
+  ctx.fillText('UNIACE MASTERY HUB', contentX, 86, contentWidth);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '900 64px Arial, sans-serif';
+  let y = drawWrappedCanvasText(ctx, config.headlineLine1, contentX, 160, contentWidth, 74, 3);
+  ctx.fillStyle = '#6ee7b7';
+  y = drawWrappedCanvasText(ctx, config.headlineLine2, contentX, y + 4, contentWidth, 74, 3);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '800 27px Arial, sans-serif';
+  y = drawWrappedCanvasText(ctx, config.leadBoldParagraph, contentX, y + 28, contentWidth, 38, 4);
+  ctx.fillStyle = '#d1d5db';
+  ctx.font = '500 21px Arial, sans-serif';
+  y = drawWrappedCanvasText(ctx, config.subParagraph, contentX, y + 20, contentWidth, 30, 4);
+
+  ctx.fillStyle = palette.ctaBg;
+  ctx.fillRect(contentX, 870, Math.min(360, contentWidth), 74);
+  ctx.fillStyle = palette.ctaText;
+  ctx.font = '900 28px Arial, sans-serif';
+  ctx.fillText(config.ctaText, contentX + 22, 892, Math.min(320, contentWidth - 30));
+
+  drawCanvasQr(ctx, qrMatrix, qrX, 650, qrSize);
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'center';
+  ctx.font = '900 16px Arial, sans-serif';
+  ctx.fillText('SCAN TO EXPLORE', qrX + qrSize / 2, 940, qrSize);
+  ctx.font = '600 14px Arial, sans-serif';
+  ctx.fillText(config.websiteDisplayUrl, qrX + qrSize / 2, 970, qrSize);
+  ctx.textAlign = 'left';
+
+  if (config.supportContact) {
+    ctx.fillStyle = '#d1fae5';
+    ctx.font = '600 16px Arial, sans-serif';
+    ctx.fillText(config.supportContact, contentX, 974, Math.max(0, contentWidth));
+  }
+  return canvas;
+}
+
+
 
 function renderCapabilityIcon(iconKey: DynamicCapabilityItem['iconKey'], size = 18) {
   switch (iconKey) {
@@ -140,6 +401,15 @@ export default function DynamicFlyerStudio() {
   const [copyReviewRequired, setCopyReviewRequired] = useState(false);
   const [isExportingPng, setIsExportingPng] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [exportFormat, setExportFormat] = useState<FlyerExportFormat>('vertical');
+  const [isSavingVersion, setIsSavingVersion] = useState(false);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [restoringVersionId, setRestoringVersionId] = useState<string | null>(null);
+  const [assetHistory, setAssetHistory] = useState<MarketingAssetVersion[]>([]);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [campaignAnalytics, setCampaignAnalytics] = useState<MarketingCampaignAnalytics | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [analyticsError, setAnalyticsError] = useState<string | null>(null);
   const [activeCaptionTab, setActiveCaptionTab] = useState<'whatsapp' | 'twitter' | 'linkedin' | 'tiktok'>('whatsapp');
   const [copiedCaption, setCopiedCaption] = useState<string | null>(null);
 
@@ -216,6 +486,13 @@ export default function DynamicFlyerStudio() {
     [flyerConfig?.capabilities]
   );
 
+  const currentAssetKey = buildFlyerCampaignId(
+    targetScope,
+    selectedCourseId,
+    selectedFaculty,
+    selectedDepartment
+  );
+
   const qrResult = useMemo(() => {
     if (!flyerConfig?.qrTargetUrl?.trim()) {
       return { matrix: [] as boolean[][], error: 'Enter a valid HTTP(S) destination for the QR code.' };
@@ -225,6 +502,9 @@ export default function DynamicFlyerStudio() {
       if (!['http:', 'https:'].includes(destination.protocol) || !destination.hostname) {
         throw new Error('QR destination must use HTTP or HTTPS.');
       }
+      destination.searchParams.set('utm_campaign', currentAssetKey);
+      destination.searchParams.set('utm_source', 'uniace_flyer');
+      destination.searchParams.set('utm_medium', 'qr');
       return { matrix: generateQrMatrix(destination.toString()), error: null as string | null };
     } catch (error: any) {
       return {
@@ -232,10 +512,50 @@ export default function DynamicFlyerStudio() {
         error: error?.message || 'QR destination could not be encoded.'
       };
     }
-  }, [flyerConfig?.qrTargetUrl]);
+  }, [flyerConfig?.qrTargetUrl, currentAssetKey]);
   const qrMatrix = qrResult.matrix;
 
   const palette = THEME_PALETTES[flyerConfig?.themeId || 'emerald_gold'] || THEME_PALETTES.emerald_gold;
+
+  useEffect(() => {
+    let active = true;
+    setIsLoadingHistory(true);
+    setHistoryError(null);
+    listMarketingAssetVersions(currentAssetKey)
+      .then((versions) => {
+        if (active) setAssetHistory(versions);
+      })
+      .catch((error: any) => {
+        if (active) {
+          setAssetHistory([]);
+          setHistoryError(error?.message || 'Saved marketing versions could not be loaded.');
+        }
+      })
+      .finally(() => {
+        if (active) setIsLoadingHistory(false);
+      });
+    return () => { active = false; };
+  }, [currentAssetKey]);
+
+  useEffect(() => {
+    let active = true;
+    setAnalyticsLoading(true);
+    setAnalyticsError(null);
+    getMarketingCampaignAnalytics(currentAssetKey)
+      .then((metrics) => {
+        if (active) setCampaignAnalytics(metrics);
+      })
+      .catch((error: any) => {
+        if (active) {
+          setCampaignAnalytics(null);
+          setAnalyticsError(error?.message || 'Campaign metrics could not be verified.');
+        }
+      })
+      .finally(() => {
+        if (active) setAnalyticsLoading(false);
+      });
+    return () => { active = false; };
+  }, [currentAssetKey]);
 
   if (snapshotLoading || !snapshot || !flyerConfig) {
     return (
@@ -257,6 +577,58 @@ export default function DynamicFlyerStudio() {
       </div>
     );
   }
+
+  const handleSaveAssetVersion = async () => {
+    if (!flyerConfig || isSavingVersion) return;
+    setIsSavingVersion(true);
+    setHistoryError(null);
+    try {
+      const version = await saveMarketingAssetVersion({
+        assetKey: currentAssetKey,
+        assetName: `UniAce flyer — ${flyerConfig.headlineLine2 || targetScope}`.slice(0, 160),
+        snapshot: {
+          targetScope,
+          selectedFaculty,
+          selectedDepartment,
+          selectedCourseId,
+          copyReviewRequired,
+          config: flyerConfig,
+        },
+      });
+      setAssetHistory((previous) => [version, ...previous.filter((item) => item.id !== version.id)].slice(0, 25));
+      toast.success(`Saved design version v${version.version} to Neon history.`);
+    } catch (error: any) {
+      setHistoryError(error?.message || 'The marketing design version could not be saved.');
+      toast.error(error?.message || 'The marketing design version could not be saved.');
+    } finally {
+      setIsSavingVersion(false);
+    }
+  };
+
+  const handleRestoreAssetVersion = async (id: string) => {
+    if (restoringVersionId) return;
+    setRestoringVersionId(id);
+    try {
+      const version = await getMarketingAssetVersion(id);
+      const saved = version.snapshot;
+      if (!saved || saved.targetScope !== targetScope || !saved.config ||
+          typeof saved.config.headlineLine1 !== 'string' ||
+          typeof saved.config.headlineLine2 !== 'string' ||
+          !Array.isArray(saved.config.capabilities)) {
+        throw new Error('This saved version does not match the current campaign target or flyer data contract.');
+      }
+      setSelectedFaculty(saved.selectedFaculty || selectedFaculty);
+      setSelectedDepartment(saved.selectedDepartment || selectedDepartment);
+      setSelectedCourseId(saved.selectedCourseId || selectedCourseId);
+      setFlyerConfig(saved.config);
+      setCopyReviewRequired(saved.copyReviewRequired === true);
+      toast.success(`Restored design version v${version.version}. It remains a draft until any required copy review is complete.`);
+    } catch (error: any) {
+      toast.error(error?.message || 'The selected design version could not be restored.');
+    } finally {
+      setRestoringVersionId(null);
+    }
+  };
 
   const handleToggleCapability = (id: string) => {
     setFlyerConfig((prev) => {
@@ -302,20 +674,48 @@ export default function DynamicFlyerStudio() {
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!file.type.startsWith('image/')) {
-      toast.error('Please select a valid image file (PNG, JPG, WebP).');
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      toast.error('Please select a PNG, JPG or WebP image.');
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      toast.error('Please use an image smaller than 8 MB to keep flyer rendering reliable.');
       return;
     }
     const reader = new FileReader();
+    reader.onerror = () => toast.error('The selected photo could not be read.');
     reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setFlyerConfig((prev) => ({
+      if (typeof reader.result !== 'string') return;
+      const image = new Image();
+      image.onerror = () => toast.error('The selected photo could not be decoded.');
+      image.onload = () => {
+        const maxDimension = 1200;
+        const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        const context = canvas.getContext('2d');
+        if (!context) {
+          toast.error('Image compression is unavailable in this browser.');
+          return;
+        }
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        let compressed = canvas.toDataURL('image/webp', 0.82);
+        if (!compressed.startsWith('data:image/webp;')) {
+          compressed = canvas.toDataURL('image/jpeg', 0.82);
+        }
+        if (compressed.length > 600000) {
+          toast.error('This portrait is still too large after compression. Choose a smaller image.');
+          return;
+        }
+        setFlyerConfig((prev) => prev ? ({
           ...prev,
           studentPortraitMode: 'custom_photo',
-          customPhotoDataUrl: reader.result as string,
-        }));
-        toast.success('Custom campus student portrait applied!');
-      }
+          customPhotoDataUrl: compressed,
+        }) : prev);
+        toast.success('Custom portrait compressed and applied.');
+      };
+      image.src = reader.result;
     };
     reader.readAsDataURL(file);
   };
@@ -329,20 +729,21 @@ export default function DynamicFlyerStudio() {
       toast.error('Review and approve the AI-generated copy before exporting.');
       return;
     }
-    if (qrResult.error) {
-      toast.error(qrResult.error);
+    if (qrResult.error || qrMatrix.length === 0) {
+      toast.error(qrResult.error || 'A verified QR matrix is required for export.');
       return;
     }
     if (!posterRef.current) return;
     setIsExportingPng(true);
     try {
-      const canvas = await renderElementToCanvasSafe(posterRef.current, {
+      const source = await renderElementToCanvasSafe(posterRef.current, {
         scale: 2.5,
         useCORS: true,
         allowTaint: true,
         logging: false,
         backgroundColor: palette.topBg,
       });
+      const canvas = composeFlyerExport(source, exportFormat, flyerConfig, qrMatrix, palette);
       const dataUrl = canvas.toDataURL('image/png', 1.0);
       const link = document.createElement('a');
       const scopeSlug =
@@ -350,16 +751,18 @@ export default function DynamicFlyerStudio() {
           ? selectedCourseId
           : targetScope === 'department' && selectedDepartment
             ? selectedDepartment.toLowerCase().replace(/\s+/g, '-')
-            : targetScope;
-      link.download = `uniace-flyer-${scopeSlug}-${new Date().toISOString().slice(0, 10)}.png`;
+            : targetScope === 'faculty' && selectedFaculty
+              ? selectedFaculty.toLowerCase().replace(/\s+/g, '-')
+              : targetScope;
+      link.download = `uniace-flyer-${scopeSlug}-${exportFormat}-${new Date().toISOString().slice(0, 10)}.png`;
       link.href = dataUrl;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      toast.success('📥 High-resolution PNG flyer exported!');
+      toast.success(`PNG exported at ${FLYER_EXPORT_SIZES[exportFormat].width} × ${FLYER_EXPORT_SIZES[exportFormat].height}px.`);
     } catch (err: any) {
       console.error('Flyer PNG export failed:', err);
-      toast.error('Could not export PNG flyer. Please try again.');
+      toast.error(err?.message || 'Could not export PNG flyer. Please try again.');
     } finally {
       setIsExportingPng(false);
     }
@@ -382,7 +785,7 @@ export default function DynamicFlyerStudio() {
     setIsExportingPdf(true);
     try {
       const canvas = await renderElementToCanvasSafe(posterRef.current, {
-        scale: 2.5,
+        scale: 3.25,
         useCORS: true,
         allowTaint: true,
         logging: false,
@@ -396,13 +799,26 @@ export default function DynamicFlyerStudio() {
       });
       const pdfWidth = pdf.internal.pageSize.getWidth();
       const pdfHeight = pdf.internal.pageSize.getHeight();
-      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight, undefined, 'FAST');
+      const imageRatio = canvas.width / canvas.height;
+      const pageRatio = pdfWidth / pdfHeight;
+      const drawWidth = imageRatio > pageRatio ? pdfWidth : pdfHeight * imageRatio;
+      const drawHeight = imageRatio > pageRatio ? pdfWidth / imageRatio : pdfHeight;
+      pdf.addImage(
+        imgData,
+        'PNG',
+        (pdfWidth - drawWidth) / 2,
+        (pdfHeight - drawHeight) / 2,
+        drawWidth,
+        drawHeight,
+        undefined,
+        'FAST'
+      );
       const scopeSlug =
         targetScope === 'course' && selectedCourseId
           ? selectedCourseId
           : targetScope;
       pdf.save(`uniace-poster-${scopeSlug}-${new Date().toISOString().slice(0, 10)}.pdf`);
-      toast.success('📄 Print-ready A4 PDF poster exported!');
+      toast.success('A4 PDF exported with preserved artwork proportions at approximately 300 DPI.');
     } catch (err: any) {
       console.error('Flyer PDF export failed:', err);
       toast.error('Could not export PDF poster. Please try again.');
@@ -873,12 +1289,33 @@ export default function DynamicFlyerStudio() {
           <div className="flex flex-wrap items-center gap-2.5">
             <button
               type="button"
+              onClick={handleSaveAssetVersion}
+              disabled={isSavingVersion}
+              className="inline-flex items-center gap-2 rounded-xl border border-indigo-300 bg-indigo-50 px-3 py-2.5 text-xs font-black text-indigo-800 hover:bg-indigo-100 disabled:opacity-50 dark:border-indigo-800 dark:bg-indigo-950/30 dark:text-indigo-200"
+            >
+              <Save size={15} />
+              {isSavingVersion ? 'Saving version…' : 'Save version'}
+            </button>
+            <label className="flex items-center gap-2 text-[11px] font-bold text-slate-600 dark:text-slate-300">
+              PNG format
+              <select
+                value={exportFormat}
+                onChange={(event) => setExportFormat(event.target.value as FlyerExportFormat)}
+                className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-2.5 py-2 text-xs font-semibold text-slate-800 dark:text-white"
+              >
+                {Object.entries(FLYER_EXPORT_SIZES).map(([value, option]) => (
+                  <option key={value} value={value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
               onClick={handleExportPng}
               disabled={isExportingPng || isExportingPdf || !flyerConfig.campaignReady || copyReviewRequired || Boolean(qrResult.error)}
               className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs shadow-md shadow-emerald-600/20 flex items-center gap-2 transition-all active:scale-95 disabled:opacity-50"
             >
               <Download size={15} />
-              <span>{isExportingPng ? 'Rendering PNG...' : 'Download HD PNG'}</span>
+              <span>{isExportingPng ? 'Rendering PNG...' : `Download ${exportFormat === 'square' ? 'Square' : exportFormat === 'vertical' ? 'Vertical' : 'Landscape'} PNG`}</span>
             </button>
 
             <button
@@ -888,9 +1325,126 @@ export default function DynamicFlyerStudio() {
               className="px-4 py-2.5 rounded-xl bg-slate-900 dark:bg-white hover:bg-slate-800 text-white dark:text-slate-900 font-black text-xs shadow-md flex items-center gap-2 transition-all active:scale-95 disabled:opacity-50"
             >
               <FileText size={15} />
-              <span>{isExportingPdf ? 'Building PDF...' : 'Download Print PDF (A4)'}</span>
+              <span>{isExportingPdf ? 'Building PDF...' : 'Download Print PDF (A4 · 300 DPI)'}</span>
             </button>
           </div>
+        </div>
+
+        <p className="px-1 text-[11px] text-slate-500 dark:text-slate-400">
+          Social PNG exports are composed at exact 1080 × 1080, 1080 × 1920 or 1920 × 1080 dimensions. The A4 PDF remains a separate portrait print layout.
+        </p>
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2 text-sm font-black text-slate-900 dark:text-white">
+                <BarChart3 size={17} className="text-emerald-600" />
+                Recorded campaign performance
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                Metrics are read from persisted campaign events for <code>{currentAssetKey}</code>; no estimated or preview activity is included.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setAnalyticsLoading(true);
+                setAnalyticsError(null);
+                getMarketingCampaignAnalytics(currentAssetKey)
+                  .then(setCampaignAnalytics)
+                  .catch((error: any) => {
+                    setCampaignAnalytics(null);
+                    setAnalyticsError(error?.message || 'Campaign metrics could not be verified.');
+                  })
+                  .finally(() => setAnalyticsLoading(false));
+              }}
+              disabled={analyticsLoading}
+              className="rounded-lg border border-slate-300 px-3 py-2 text-[11px] font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700"
+            >
+              {analyticsLoading ? 'Refreshing…' : 'Refresh metrics'}
+            </button>
+          </div>
+          {analyticsError && (
+            <p role="alert" className="mt-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-[11px] text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+              {analyticsError}
+            </p>
+          )}
+          {!analyticsError && analyticsLoading && !campaignAnalytics && (
+            <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">Loading recorded campaign events…</p>
+          )}
+          {campaignAnalytics && (
+            <>
+              <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-5">
+                {[
+                  ['QR-attributed landings', campaignAnalytics.metrics.qrLandings],
+                  ['Landing visits', campaignAnalytics.metrics.landingVisits],
+                  ['Completed registrations', campaignAnalytics.metrics.registrations],
+                  ['Paid conversions', campaignAnalytics.metrics.paidConversions],
+                  ['Unique sessions', campaignAnalytics.metrics.uniqueVisitors],
+                ].map(([label, value]) => (
+                  <div key={String(label)} className="rounded-xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900">
+                    <div className="text-xl font-black tabular-nums text-slate-900 dark:text-white">
+                      {Number(value).toLocaleString()}
+                    </div>
+                    <div className="mt-1 text-[10px] font-semibold leading-4 text-slate-500 dark:text-slate-400">{label}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 text-[10px] leading-4 text-slate-500 dark:text-slate-400">
+                QR-attributed landings count opens of the QR-tagged URL that reach an instrumented UniAce page; they do not measure physical camera scans. Unique sessions are browser sessions, not verified people. {campaignAnalytics.metrics.lastEventAt ? `Last recorded event: ${new Date(campaignAnalytics.metrics.lastEventAt).toLocaleString()}.` : 'No campaign events have been recorded yet.'}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2 text-sm font-black text-slate-900 dark:text-white">
+                <History size={17} className="text-indigo-500" />
+                Saved design versions
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                Immutable snapshots for this campaign target, stored in Neon PostgreSQL. Restoring a version does not publish or export it.
+              </p>
+            </div>
+            <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
+              {isLoadingHistory ? 'Loading history…' : `${assetHistory.length} saved version(s)`}
+            </span>
+          </div>
+          {historyError && (
+            <p role="alert" className="mt-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-[11px] text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+              {historyError}
+            </p>
+          )}
+          {!isLoadingHistory && !historyError && assetHistory.length === 0 && (
+            <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+              No saved versions exist for this target yet. Save the current design to create version 1.
+            </p>
+          )}
+          {assetHistory.length > 0 && (
+            <div className="mt-3 divide-y divide-slate-100 dark:divide-slate-700">
+              {assetHistory.map((version) => (
+                <div key={version.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+                  <div className="min-w-0">
+                    <div className="text-xs font-black text-slate-800 dark:text-slate-100">
+                      v{version.version} · {version.assetName}
+                    </div>
+                    <div className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">
+                      {version.createdAt ? new Date(version.createdAt).toLocaleString() : 'Timestamp not reported'}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleRestoreAssetVersion(version.id)}
+                    disabled={Boolean(restoringVersionId)}
+                    className="rounded-lg border border-slate-300 px-3 py-2 text-[11px] font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700"
+                  >
+                    {restoringVersionId === version.id ? 'Restoring…' : 'Restore'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* POSTER CANVAS WRAPPER */}

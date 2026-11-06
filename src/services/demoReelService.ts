@@ -4,6 +4,14 @@ import { callAI } from './ai';
 import { jsonrepair } from 'jsonrepair';
 import { MarketingCourse, MARKETING_VIEWS } from './marketingSnapshot';
 
+export interface IsolatedDemoTutorPreview {
+  prompt: string;
+  courseContext?: string;
+  response: string;
+  providerUsed?: string | null;
+  latencyMs?: number;
+}
+
 export interface DemoStep {
   id: string;
   view: View;
@@ -13,6 +21,7 @@ export interface DemoStep {
   badge: string;
   highlightSelector?: string;
   courseId?: string;
+  isolatedTutorPreview?: IsolatedDemoTutorPreview;
 }
 
 export interface DemoScenario {
@@ -33,16 +42,33 @@ export interface DemoScenario {
   requiresReview?: boolean;
 }
 
+export function isValidIsolatedDemoTutorPreview(value: unknown): value is IsolatedDemoTutorPreview {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const preview = value as Record<string, unknown>;
+  const allowedKeys = new Set(['prompt', 'courseContext', 'response', 'providerUsed', 'latencyMs']);
+  if (Object.keys(preview).some((key) => !allowedKeys.has(key))) return false;
+
+  return typeof preview.prompt === 'string' &&
+    preview.prompt.trim().length > 0 &&
+    preview.prompt.length <= 6000 &&
+    typeof preview.response === 'string' &&
+    preview.response.trim().length > 0 &&
+    (preview.courseContext === undefined ||
+      (typeof preview.courseContext === 'string' && preview.courseContext.length <= 1200)) &&
+    (preview.providerUsed === undefined || preview.providerUsed === null || typeof preview.providerUsed === 'string') &&
+    (preview.latencyMs === undefined || (typeof preview.latencyMs === 'number' && Number.isFinite(preview.latencyMs) && preview.latencyMs >= 0));
+}
+
 export function isDemoScenarioIsolated(scenario: DemoScenario): boolean {
   if (!scenario || !Array.isArray(scenario.steps) || scenario.steps.length === 0) {
     return false;
   }
 
-  return scenario.steps.every((step) =>
-    Boolean(step) &&
-    step.view !== 'ai-tutor' &&
-    !Object.prototype.hasOwnProperty.call(step, 'demoPrompt')
-  );
+  return scenario.steps.every((step) => {
+    if (!step || Object.prototype.hasOwnProperty.call(step, 'demoPrompt')) return false;
+    if (step.view === 'ai-tutor') return isValidIsolatedDemoTutorPreview(step.isolatedTutorPreview);
+    return !step.isolatedTutorPreview;
+  });
 }
 
 export type MarketingTargetScope =

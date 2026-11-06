@@ -1,6 +1,12 @@
 import express from 'express';
 import admin from 'firebase-admin';
 import crypto from 'crypto';
+import rateLimit from 'express-rate-limit';
+import { z } from 'zod';
+import { GeminiDirectProvider, MistralProvider, GroqProvider, CohereProvider, HuggingFaceProvider, OpenRouterFreeProvider, NvidiaProvider } from '../providers';
+import { splitAndInspectChatPayload, inspectAndScrubUntrustedText } from '../promptShield';
+import { buildAdminDemoTutorMessages, AdminDemoTutorRequestSchema } from '../services/adminDemoTutor';
+import { ensureMarketingStudioSchema } from '../services/marketingStudioSchema';
 import { MailService } from '../mailService';
 
 import { GoogleGenAI } from '@google/genai';
@@ -2484,6 +2490,437 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
       return res.json({ success: true, rate });
     } catch (err: any) {
       return res.status(500).json({ error: err.message || 'Failed to save commission rate' });
+    }
+  });
+
+  const marketingDemoTutorLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 12,
+    message: { error: 'Admin demo AI preview limit reached. Please try again later.' },
+    standardHeaders: true,
+    legacyHeaders: false
+  });
+  const marketingDemoProviders: Record<string, any> = {
+    gemini_direct: new GeminiDirectProvider(process.env.GEMINI_API_KEY || ''),
+    mistral_direct: new MistralProvider(process.env.MISTRAL_API_KEY || ''),
+    groq: new GroqProvider(process.env.GROQ_API_KEY || ''),
+    cohere: new CohereProvider(process.env.COHERE_API_KEY || ''),
+    huggingface: new HuggingFaceProvider(process.env.HUGGINGFACE_API_KEY || ''),
+    openrouter_free: new OpenRouterFreeProvider(process.env.OPENROUTER_API_KEY || ''),
+    nvidia: new NvidiaProvider(process.env.NVIDIA_API_KEY || '')
+  };
+
+  /** Admin-only stateless AI preview. This intentionally does not use the student chat/Sparks pipeline. */
+  app.post('/api/admin/marketing/demo-tutor', verifyAuth, marketingDemoTutorLimiter, async (req: any, res: any) => {
+    const parsed = AdminDemoTutorRequestSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Only a prompt and optional course context are accepted.' });
+    try {
+      const isAdmin = await checkIsAdmin(req.user?.uid, req.user?.email);
+      if (!isAdmin) return res.status(403).json({ error: 'Administrator privileges are required.' });
+      const pool = getPostgresPool();
+      if (!pool) return res.status(503).json({ error: 'Separate admin usage logging is unavailable. No provider call was started.' });
+
+      const hygiene = splitAndInspectChatPayload(parsed.data.message, null);
+      if (hygiene.questionScan?.isPureAttack) return res.status(400).json({ error: 'The preview prompt was rejected by the security filter. No provider call was made.' });
+      const cleanMessage = String(hygiene.cleanQuestion || '').trim();
+      if (!cleanMessage) return res.status(400).json({ error: 'A non-empty preview prompt is required.' });
+      const courseContext = parsed.data.courseContext
+        ? inspectAndScrubUntrustedText(parsed.data.courseContext, 'course_context').sanitizedText.trim()
+        : '';
+      const messages = buildAdminDemoTutorMessages({ message: cleanMessage, courseContext: courseContext || undefined });
+
+      // Only authenticated admin activity is attributed. Prompts and answers are never stored.
+      const logId = crypto.randomUUID();
+      await pool.query(
+        `INSERT INTO system_logs (log_id, level, category, message, details, user_id, created_at)
+         VALUES ($1, 'info', 'admin', $2, $3::jsonb, $4, NOW())`,
+        [logId, '[Marketing Demo AI] Isolated preview started', JSON.stringify({ outcome: 'started', promptPersisted: false, responsePersisted: false }), req.user.uid]
+      );
+
+      const routing = await getSystemConfigDoc('routing', true);
+      if (!routing || typeof routing !== 'object') throw new Error('Live AI routing configuration is unavailable.');
+      const primary = String(routing.global_provider || routing.chat || '').trim().toLowerCase();
+      if (!primary || !marketingDemoProviders[primary]) throw new Error('The live chat provider is not explicitly configured for the isolated preview.');
+      const providerNames = [primary];
+      const fallbackMap = routing.fallbacksByTask;
+      const configuredFallbacks = fallbackMap?.chat;
+      if (routing.autoFallback !== false && configuredFallbacks !== undefined) {
+        if (!Array.isArray(configuredFallbacks)) throw new Error('The live chat fallback configuration is invalid.');
+        for (const value of configuredFallbacks) {
+          if (typeof value !== 'string' || !marketingDemoProviders[value.trim().toLowerCase()]) {
+            throw new Error('A configured chat fallback provider is invalid or unsupported.');
+          }
+          const name = value.trim().toLowerCase();
+          if (!providerNames.includes(name)) providerNames.push(name);
+        }
+      }
+
+      const controller = new AbortController();
+      const abortOnClose = () => { if (!res.writableEnded && !controller.signal.aborted) controller.abort(); };
+      res.on('close', abortOnClose);
+      const startedAt = Date.now();
+      let providerUsed: string | null = null;
+      let upstreamModel: string | null = null;
+      let promptTokens: number | null = null;
+      let completionTokens: number | null = null;
+      let totalTokens: number | null = null;
+      let responseText = '';
+      let lastError: any = null;
+      try {
+        for (const name of providerNames) {
+          if (controller.signal.aborted) throw new Error('Preview request was aborted.');
+          const provider = marketingDemoProviders[name];
+          providerUsed = name;
+          try {
+            // Direct provider call: no student Spark pre-auth/settlement, profile analysis, student history or chat_analytics.
+            const generated = await provider.generate(messages, { complexity: 'standard', signal: controller.signal });
+            const answer = typeof generated?.text === 'string' ? generated.text.trim() : '';
+            if (!answer) throw new Error('Configured provider returned no preview content.');
+            responseText = answer;
+            upstreamModel = typeof generated.upstreamModel === 'string' ? generated.upstreamModel : null;
+            const usage = generated.usage || {};
+            promptTokens = Number.isSafeInteger(usage.promptTokens) && usage.promptTokens > 0 ? usage.promptTokens : null;
+            completionTokens = Number.isSafeInteger(usage.completionTokens) && usage.completionTokens > 0 ? usage.completionTokens : null;
+            totalTokens = Number.isSafeInteger(usage.totalTokens) && usage.totalTokens > 0 ? usage.totalTokens : null;
+            lastError = null;
+            break;
+          } catch (error: any) {
+            if (controller.signal.aborted) throw error;
+            lastError = error;
+          }
+        }
+        if (!responseText) throw lastError || new Error('All explicitly configured preview providers failed.');
+        const latencyMs = Date.now() - startedAt;
+        await pool.query(
+          `UPDATE system_logs SET level = 'info', message = $1, details = $2::jsonb WHERE log_id = $3 AND user_id = $4 AND category = 'admin'`,
+          ['[Marketing Demo AI] Isolated preview succeeded', JSON.stringify({ outcome: 'success', providerUsed, upstreamModel, promptTokens, completionTokens, totalTokens, latencyMs, studentSparksCharged: false, studentProfileRead: false, studentHistoryRead: false, studentHistoryWritten: false, studentChatAnalyticsWritten: false, providerAccountUsage: true, promptPersisted: false, responsePersisted: false }), logId, req.user.uid]
+        );
+        return res.json({ response: responseText, meta: { providerUsed, upstreamModel, promptTokens, completionTokens, totalTokens, latencyMs, telemetryScope: 'admin_demo_ai_usage', studentSparksCharged: false, studentProfileRead: false, studentHistoryRead: false, studentHistoryWritten: false, studentChatAnalyticsWritten: false, providerAccountUsage: true } });
+      } catch (error: any) {
+        const latencyMs = Date.now() - startedAt;
+        await pool.query(
+          `UPDATE system_logs SET level = 'warning', message = $1, details = $2::jsonb WHERE log_id = $3 AND user_id = $4 AND category = 'admin'`,
+          ['[Marketing Demo AI] Isolated preview failed', JSON.stringify({ outcome: 'failed', providerUsed, failureCode: controller.signal.aborted ? 'ABORTED' : 'PROVIDER_OR_ROUTING_ERROR', latencyMs, promptPersisted: false, responsePersisted: false }), logId, req.user.uid]
+        ).catch((logError: any) => console.error('[AdminDemoTutor] Failed to finalize usage log:', logError?.message || logError));
+        if (controller.signal.aborted || res.destroyed) return;
+        return res.status(503).json({ error: 'The isolated AI Tutor preview could not be completed by an explicitly configured live provider.' });
+      } finally {
+        res.off('close', abortOnClose);
+      }
+    } catch (error: any) {
+      console.error('[AdminDemoTutor] Isolated preview request failed:', error?.message || error);
+      return res.status(503).json({ error: 'Isolated AI Tutor preview is unavailable. No student chat or Spark operation was executed.' });
+    }
+  });
+
+  const AdminMarketingAssetSnapshotSchema = z.object({
+    targetScope: z.enum(['full_ecosystem', 'faculty', 'department', 'course', 'exam_readiness']),
+    selectedFaculty: z.string().trim().max(160).optional(),
+    selectedDepartment: z.string().trim().max(160).optional(),
+    selectedCourseId: z.string().trim().max(120).optional(),
+    copyReviewRequired: z.boolean(),
+    config: z.record(z.string(), z.unknown())
+  }).strict();
+
+  const AdminMarketingAssetSaveSchema = z.object({
+    assetKey: z.string().trim().min(3).max(180).regex(/^[a-z0-9:_-]+$/i),
+    assetName: z.string().trim().min(1).max(160),
+    snapshot: AdminMarketingAssetSnapshotSchema
+  }).strict();
+
+  /** List immutable versions for one exact marketing design key. */
+  app.get('/api/admin/marketing/assets', verifyAuth, async (req: any, res: any) => {
+    try {
+      const isAdmin = await checkIsAdmin(req.user?.uid, req.user?.email);
+      if (!isAdmin) return res.status(403).json({ error: 'Administrator privileges are required.' });
+      const assetKey = typeof req.query?.assetKey === 'string' ? req.query.assetKey.trim() : '';
+      if (!/^[a-z0-9:_-]{3,180}$/i.test(assetKey)) {
+        return res.status(400).json({ error: 'A valid assetKey is required.' });
+      }
+      await ensureMarketingStudioSchema();
+      const pool = getPostgresPool();
+      if (!pool) return res.status(503).json({ error: 'Marketing asset history is unavailable.' });
+      const result = await pool.query(
+        `SELECT id, asset_key, asset_name, target_scope, version, created_by, created_at
+         FROM admin_marketing_asset_versions
+         WHERE asset_key = $1
+         ORDER BY version DESC, created_at DESC
+         LIMIT 25`,
+        [assetKey]
+      );
+      return res.json({
+        versions: result.rows.map((row: any) => ({
+          id: row.id,
+          assetKey: row.asset_key,
+          assetName: row.asset_name,
+          targetScope: row.target_scope,
+          version: Number(row.version),
+          createdAt: row.created_at ? new Date(row.created_at).toISOString() : null
+        }))
+      });
+    } catch (error: any) {
+      console.error('[MarketingAssetHistory] Version listing failed:', error?.message || error);
+      return res.status(503).json({ error: 'Marketing asset history could not be loaded from Neon PostgreSQL.' });
+    }
+  });
+
+  /** Save each submitted design as a new immutable version; no prior version is overwritten. */
+  app.post('/api/admin/marketing/assets', verifyAuth, async (req: any, res: any) => {
+    const parsed = AdminMarketingAssetSaveSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'The marketing asset version request did not match the required schema.' });
+    }
+
+    try {
+      const isAdmin = await checkIsAdmin(req.user?.uid, req.user?.email);
+      if (!isAdmin) return res.status(403).json({ error: 'Administrator privileges are required.' });
+
+      const { assetKey, assetName, snapshot } = parsed.data;
+      const config = snapshot.config;
+      const requiredTextFields = [
+        'brandName', 'headlineLine1', 'headlineLine2', 'leadBoldParagraph',
+        'subParagraph', 'ctaText', 'websiteDisplayUrl', 'qrTargetUrl'
+      ];
+      for (const field of requiredTextFields) {
+        if (typeof config[field] !== 'string' || !(config[field] as string).trim() || (config[field] as string).length > 2000) {
+          return res.status(400).json({ error: `The saved flyer is missing a valid ${field} value.` });
+        }
+      }
+
+      try {
+        const destination = new URL(String(config.qrTargetUrl));
+        if (!['http:', 'https:'].includes(destination.protocol) || !destination.hostname) {
+          return res.status(400).json({ error: 'The saved flyer QR destination must be a valid HTTP(S) URL.' });
+        }
+      } catch {
+        return res.status(400).json({ error: 'The saved flyer QR destination is invalid.' });
+      }
+
+      if (config.customPhotoDataUrl !== undefined) {
+        const photo = config.customPhotoDataUrl;
+        if (typeof photo !== 'string' ||
+            photo.length > 600000 ||
+            !/^data:image\/(?:webp|jpeg|png);base64,[a-z0-9+/=]+$/i.test(photo)) {
+          return res.status(400).json({ error: 'The compressed custom photo is invalid or exceeds the 600 KB history limit.' });
+        }
+      }
+
+      const serializedSnapshot = JSON.stringify(snapshot);
+      if (Buffer.byteLength(serializedSnapshot, 'utf8') > 900000) {
+        return res.status(413).json({ error: 'The marketing design snapshot is too large to store as a version.' });
+      }
+
+      await ensureMarketingStudioSchema();
+      const pool = getPostgresPool();
+      if (!pool) return res.status(503).json({ error: 'Marketing asset history is unavailable.' });
+      const client = await pool.connect();
+      const id = crypto.randomUUID();
+      let version = 0;
+      let createdAt: string | null = null;
+      try {
+        await client.query('BEGIN');
+        await client.query(
+          'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+          [assetKey]
+        );
+        const versionResult = await client.query(
+          `SELECT COALESCE(MAX(version), 0) + 1 AS next_version
+           FROM admin_marketing_asset_versions
+           WHERE asset_key = $1`,
+          [assetKey]
+        );
+        version = Number(versionResult.rows[0]?.next_version);
+        if (!Number.isSafeInteger(version) || version < 1) {
+          throw new Error('The next marketing asset version could not be determined.');
+        }
+        const saved = await client.query(
+          `INSERT INTO admin_marketing_asset_versions
+            (id, asset_key, asset_name, target_scope, version, snapshot, created_by, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, NOW())
+           RETURNING created_at`,
+          [id, assetKey, assetName, snapshot.targetScope, version, serializedSnapshot, req.user.uid]
+        );
+        createdAt = saved.rows[0]?.created_at
+          ? new Date(saved.rows[0].created_at).toISOString()
+          : new Date().toISOString();
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+
+      return res.status(201).json({
+        version: { id, assetKey, assetName, targetScope: snapshot.targetScope, version, createdAt }
+      });
+    } catch (error: any) {
+      console.error('[MarketingAssetHistory] Version save failed:', error?.message || error);
+      return res.status(503).json({ error: 'The marketing design version could not be persisted to Neon PostgreSQL.' });
+    }
+  });
+
+  /** Fetch one immutable snapshot for an administrator-approved restore action. */
+  app.get('/api/admin/marketing/assets/:id', verifyAuth, async (req: any, res: any) => {
+    try {
+      const isAdmin = await checkIsAdmin(req.user?.uid, req.user?.email);
+      if (!isAdmin) return res.status(403).json({ error: 'Administrator privileges are required.' });
+      const id = typeof req.params?.id === 'string' ? req.params.id.trim() : '';
+      if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(400).json({ error: 'A valid asset version ID is required.' });
+      await ensureMarketingStudioSchema();
+      const pool = getPostgresPool();
+      if (!pool) return res.status(503).json({ error: 'Marketing asset history is unavailable.' });
+      const result = await pool.query(
+        `SELECT id, asset_key, asset_name, target_scope, version, snapshot, created_at
+         FROM admin_marketing_asset_versions
+         WHERE id = $1
+         LIMIT 1`,
+        [id]
+      );
+      const row = result.rows[0];
+      if (!row) return res.status(404).json({ error: 'Marketing asset version not found.' });
+      return res.json({
+        version: {
+          id: row.id,
+          assetKey: row.asset_key,
+          assetName: row.asset_name,
+          targetScope: row.target_scope,
+          version: Number(row.version),
+          createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+          snapshot: row.snapshot
+        }
+      });
+    } catch (error: any) {
+      console.error('[MarketingAssetHistory] Version retrieval failed:', error?.message || error);
+      return res.status(503).json({ error: 'The selected marketing asset version could not be retrieved.' });
+    }
+  });
+
+
+  const publicMarketingEventLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 80,
+    message: { error: 'Marketing event rate limit reached.' },
+    standardHeaders: true,
+    legacyHeaders: false
+  });
+
+  const MarketingCampaignIdSchema = z.string().trim().min(3).max(180).regex(/^[a-z0-9:_-]+$/i);
+  const insertMarketingCampaignEvent = async (
+    campaignId: string,
+    eventType: 'qr_landing' | 'landing_visit' | 'registration_completed' | 'paid_conversion',
+    visitorId: string | null,
+    dedupeMaterial: string
+  ): Promise<boolean> => {
+    await ensureMarketingStudioSchema();
+    const pool = getPostgresPool();
+    if (!pool) throw new Error('Marketing campaign event storage is unavailable.');
+    const eventId = crypto.randomUUID();
+    const dedupeKey = crypto.createHash('sha256').update(dedupeMaterial).digest('hex');
+    const result = await pool.query(
+      `INSERT INTO marketing_campaign_events
+        (event_id, campaign_id, event_type, visitor_id, dedupe_key, occurred_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())
+       ON CONFLICT (dedupe_key) DO NOTHING
+       RETURNING event_id`,
+      [eventId, campaignId, eventType, visitorId, dedupeKey]
+    );
+    return result.rowCount === 1;
+  };
+
+  /** Public, minimal event ingestion. It accepts only browser-observed campaign landings. */
+  app.post('/api/marketing/campaign-events', publicMarketingEventLimiter, async (req: any, res: any) => {
+    const schema = z.object({
+      campaignId: MarketingCampaignIdSchema,
+      eventType: z.enum(['qr_landing', 'landing_visit']),
+      visitorId: z.string().trim().min(16).max(80).regex(/^[a-z0-9_-]+$/i)
+    }).strict();
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'The campaign landing event did not match the required schema.' });
+    try {
+      const { campaignId, eventType, visitorId } = parsed.data;
+      const utcDay = new Date().toISOString().slice(0, 10);
+      const recorded = await insertMarketingCampaignEvent(
+        campaignId,
+        eventType,
+        visitorId,
+        `landing|${campaignId}|${eventType}|${visitorId}|${utcDay}`
+      );
+      return res.status(202).json({ accepted: true, recorded });
+    } catch (error: any) {
+      console.error('[MarketingCampaignAnalytics] Landing event persistence failed:', error?.message || error);
+      return res.status(503).json({ error: 'The marketing event could not be persisted.' });
+    }
+  });
+
+  /** Signup events are accepted only for a Firebase account created in the last 30 minutes. */
+  app.post('/api/marketing/campaign-events/registration', verifyAuth, async (req: any, res: any) => {
+    const schema = z.object({
+      campaignId: MarketingCampaignIdSchema,
+      visitorId: z.string().trim().min(16).max(80).regex(/^[a-z0-9_-]+$/i)
+    }).strict();
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'A valid campaign attribution is required.' });
+    try {
+      const firebaseApp = getAdminApp();
+      if (!firebaseApp) return res.status(503).json({ error: 'Firebase account verification is unavailable.' });
+      const account = await admin.auth(firebaseApp).getUser(req.user.uid);
+      const createdAtMs = Date.parse(account.metadata.creationTime);
+      const ageMs = Date.now() - createdAtMs;
+      if (!Number.isFinite(createdAtMs) || ageMs < -60000 || ageMs > 30 * 60 * 1000) {
+        return res.status(403).json({ error: 'Registration conversion can only be recorded for a newly created account.' });
+      }
+      const { campaignId, visitorId } = parsed.data;
+      const recorded = await insertMarketingCampaignEvent(
+        campaignId,
+        'registration_completed',
+        visitorId,
+        `registration|${campaignId}|${req.user.uid}`
+      );
+      return res.status(202).json({ accepted: true, recorded });
+    } catch (error: any) {
+      console.error('[MarketingCampaignAnalytics] Registration event persistence failed:', error?.message || error);
+      return res.status(503).json({ error: 'The registration event could not be verified or persisted.' });
+    }
+  });
+
+  /** Aggregated event counts are visible only to administrators. */
+  app.get('/api/admin/marketing/analytics', verifyAuth, async (req: any, res: any) => {
+    try {
+      const isAdmin = await checkIsAdmin(req.user?.uid, req.user?.email);
+      if (!isAdmin) return res.status(403).json({ error: 'Administrator privileges are required.' });
+      const campaignId = typeof req.query?.campaignId === 'string' ? req.query.campaignId.trim() : '';
+      if (!MarketingCampaignIdSchema.safeParse(campaignId).success) {
+        return res.status(400).json({ error: 'A valid campaignId is required.' });
+      }
+      await ensureMarketingStudioSchema();
+      const pool = getPostgresPool();
+      if (!pool) return res.status(503).json({ error: 'Campaign analytics are unavailable.' });
+      const result = await pool.query(
+        `SELECT
+           COUNT(*) FILTER (WHERE event_type = 'qr_landing')::int AS qr_landings,
+           COUNT(*) FILTER (WHERE event_type = 'landing_visit')::int AS landing_visits,
+           COUNT(*) FILTER (WHERE event_type = 'registration_completed')::int AS registrations,
+           COUNT(*) FILTER (WHERE event_type = 'paid_conversion')::int AS paid_conversions,
+           COUNT(DISTINCT visitor_id)::int AS unique_visitors,
+           MAX(occurred_at) AS last_event_at
+         FROM marketing_campaign_events
+         WHERE campaign_id = $1`,
+        [campaignId]
+      );
+      const row = result.rows[0] || {};
+      const metrics = {
+        qrLandings: Number(row.qr_landings || 0),
+        landingVisits: Number(row.landing_visits || 0),
+        registrations: Number(row.registrations || 0),
+        paidConversions: Number(row.paid_conversions || 0),
+        uniqueVisitors: Number(row.unique_visitors || 0),
+        lastEventAt: row.last_event_at ? new Date(row.last_event_at).toISOString() : null
+      };
+      return res.json({ campaignId, metrics, source: 'recorded_marketing_campaign_events' });
+    } catch (error: any) {
+      console.error('[MarketingCampaignAnalytics] Analytics query failed:', error?.message || error);
+      return res.status(503).json({ error: 'Campaign analytics could not be loaded from Neon PostgreSQL.' });
     }
   });
 
