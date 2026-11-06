@@ -25,6 +25,7 @@ test('normalizes Cloudinary cloud names and preserves configured folder hierarch
 test('rejects unsafe or ambiguous Cloudinary folder paths', () => {
   assert.throws(() => normalizeCloudinaryFolderPrefix('../private'), /valid Cloudinary folder path/i);
   assert.throws(() => normalizeCloudinaryFolderPrefix('media//videos'), /valid Cloudinary folder path/i);
+  assert.throws(() => normalizeCloudinaryFolderPrefix('v123/assets'), /valid Cloudinary folder path/i);
   assert.throws(() => normalizeCloudinaryFolderPrefix(''), /valid Cloudinary folder path/i);
 });
 
