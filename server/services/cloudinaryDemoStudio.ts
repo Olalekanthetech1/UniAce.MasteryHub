@@ -60,8 +60,7 @@ export async function createCloudinaryVideoUploadSignature(input: {
     folder: input.folder,
     overwrite: false,
     public_id: input.publicId,
-    timestamp,
-    type: 'authenticated'
+    timestamp
   };
   return {
     timestamp,
@@ -72,7 +71,7 @@ export async function createCloudinaryVideoUploadSignature(input: {
     publicId: input.publicId,
     resourceType: 'video',
     deliveryType: 'authenticated',
-    uploadUrl: 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(config.cloudName) + '/video/upload'
+    uploadUrl: 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(config.cloudName) + '/video/authenticated/upload'
   };
 }
 
@@ -170,8 +169,7 @@ export async function uploadCloudinaryLocalAsset(input: {
     folder: input.folder,
     overwrite: false,
     public_id: input.publicId,
-    timestamp,
-    type: 'authenticated'
+    timestamp
   };
   const signature = signUploadParams(signedParams, config.apiSecret);
   const uploadId = crypto.randomUUID();
@@ -193,8 +191,7 @@ export async function uploadCloudinaryLocalAsset(input: {
       form.append('folder', input.folder);
       form.append('public_id', input.publicId);
       form.append('overwrite', 'false');
-      form.append('type', 'authenticated');
-      const endpoint = 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(config.cloudName) + '/' + input.resourceType + '/upload';
+      const endpoint = 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(config.cloudName) + '/' + input.resourceType + '/authenticated/upload';
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
@@ -221,7 +218,7 @@ export async function uploadCloudinaryLocalAsset(input: {
   if (!finalResponse) throw new Error('Cloudinary did not return a completed upload response.');
   const normalized = normalizeAsset(finalResponse, {
     assetId: requireAssetString(finalResponse?.asset_id, 'asset ID'),
-    publicId: input.publicId,
+    publicId: input.folder.replace(/\\/+$/, '') + '/' + input.publicId,
     resourceType: input.resourceType,
     deliveryType: 'authenticated',
     expectedBytes: stat.size
@@ -297,24 +294,6 @@ export async function deleteCloudinaryAsset(asset: CloudinaryAsset): Promise<voi
   }
 }
 
-
-export async function deleteCloudinaryAssetByPublicId(
-  publicId: string,
-  resourceType: 'video' | 'raw'
-): Promise<void> {
-  if (!publicId || publicId.length > 255 || /[?#\\\\]/.test(publicId)) {
-    throw new Error('The Cloudinary public ID is invalid.');
-  }
-  await configureCloudinary();
-  const result: any = await cloudinary.uploader.destroy(publicId, {
-    resource_type: resourceType,
-    type: 'authenticated',
-    invalidate: true
-  });
-  if (result?.result !== 'ok' && result?.result !== 'not found') {
-    throw new Error('Cloudinary did not confirm deletion of asset ' + publicId + '.');
-  }
-}
 
 export function cloudinaryFolderForAsset(config: CloudinaryMediaConfig): string {
   return config.folderPrefix;
