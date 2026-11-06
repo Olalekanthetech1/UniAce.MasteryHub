@@ -7,9 +7,8 @@ import {
   buildDynamicDemoScenarios,
   synthesizeCustomDemoScenarioWithAI,
 } from '../../services/demoReelService';
-import { useCourses } from '../../context/CourseContext';
-import { useInstitution } from '../../context/InstitutionContext';
-import { useFeatureSwitches } from '../../hooks/useFeatureSwitches';
+import { useMarketingSnapshot } from '../../hooks/useMarketingSnapshot';
+import { toMarketingCourseMap } from '../../services/marketingSnapshot';
 import DynamicFlyerStudio from './DynamicFlyerStudio';
 import {
   Video,
@@ -40,9 +39,20 @@ export default function DemoStudioTab() {
     screenCaptureSupported,
   } = useDemoReel();
 
-  const { courses } = useCourses();
-  const { faculties, departments, departmentToFaculty } = useInstitution();
-  const { switches: featureSwitches } = useFeatureSwitches();
+  const { snapshot, loading: snapshotLoading, error: snapshotError, refresh: refreshSnapshot } = useMarketingSnapshot();
+  const courses = useMemo(() => snapshot ? toMarketingCourseMap(snapshot) : {}, [snapshot]);
+  const faculties = snapshot?.institution.faculties || [];
+  const departments = snapshot?.institution.departments || [];
+  const departmentToFaculty = snapshot?.institution.departmentToFaculty || {};
+  const featureSwitches = snapshot?.featureSwitches.status === 'configured'
+    ? snapshot.featureSwitches.values
+    : null;
+  const supportConfig = useMemo(() => snapshot?.support.status === 'configured'
+    ? {
+        whatsappSupport: snapshot.support.whatsappSupport || undefined,
+        contactEmail: snapshot.support.contactEmail || undefined
+      }
+    : null, [snapshot]);
 
   const [studioMode, setStudioMode] = useState<'flyer' | 'video'>('flyer');
 
@@ -73,7 +83,9 @@ export default function DemoStudioTab() {
       departments,
       departmentToFaculty,
       featureSwitches,
-      liveOrigin: typeof window !== 'undefined' ? window.location.origin : 'https://uniace.app',
+      supportConfig,
+      liveOrigin: typeof window !== 'undefined' ? window.location.origin : undefined,
+      formulaCountsVerified: snapshot?.totals.formulasVerified === true,
       targetScope: reelScope,
       selectedFaculty,
       selectedDepartment,
@@ -85,6 +97,8 @@ export default function DemoStudioTab() {
       departments,
       departmentToFaculty,
       featureSwitches,
+      supportConfig,
+      snapshot,
       reelScope,
       selectedFaculty,
       selectedDepartment,
@@ -102,10 +116,27 @@ export default function DemoStudioTab() {
 
   const activeScenario =
     dynamicScenarios[activeScenarioPreview] ||
-    dynamicScenarios.live_course_spotlight ||
     dynamicScenarios.full_ecosystem;
 
+  if (!snapshotLoading && snapshot && !activeScenario) {
+    return (
+      <div className="rounded-3xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-8 space-y-4">
+        <h3 className="text-base font-black text-slate-900 dark:text-white">No demonstration sequence is currently verified</h3>
+        <p className="text-sm text-slate-600 dark:text-slate-300">
+          The marketing snapshot contains no live student-visible course offering or capability eligible for a recording. Do not record a generic scenario as proof of a live feature.
+        </p>
+        <button type="button" onClick={() => void refreshSnapshot()} className="px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">
+          Refresh marketing evidence
+        </button>
+      </div>
+    );
+  }
+
   const handleLaunchRecording = async (scenario: DemoScenario) => {
+    if (scenario.requiresReview) {
+      toast.error('Review and approve the AI-generated storyboard and captions before recording.');
+      return;
+    }
     setIsStarting(true);
     try {
       setSelectedScenarioId(scenario.id);
@@ -139,6 +170,27 @@ export default function DemoStudioTab() {
     }
   };
 
+  if (snapshotLoading || !snapshot) {
+    return (
+      <div className="rounded-3xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-8 space-y-4">
+        <div className="flex items-center gap-3">
+          <RefreshCw size={20} className={snapshotError ? 'text-amber-600' : 'text-emerald-600 animate-spin'} />
+          <h3 className="text-base font-black text-slate-900 dark:text-white">
+            {snapshotError ? 'Demo evidence unavailable' : 'Verifying live demonstration data'}
+          </h3>
+        </div>
+        <p className="text-sm text-slate-600 dark:text-slate-300">
+          {snapshotError || 'Loading student-visible course offerings, academic scope and feature-switch settings.'}
+        </p>
+        {snapshotError && (
+          <button type="button" onClick={() => void refreshSnapshot()} className="px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">
+            Retry verification
+          </button>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-8 animate-fade-in">
       {/* Unified Studio Header Card + Mode Switcher */}
@@ -152,12 +204,12 @@ export default function DemoStudioTab() {
             <div className="flex flex-wrap items-center gap-3 text-xs font-semibold text-emerald-300">
               <span>Live Platform Introspection</span>
               <span aria-hidden="true">·</span>
-              <span>{courseList.length} Accredited Courses</span>
+              <span>{courseList.length} live course offerings</span>
               <span aria-hidden="true">·</span>
               <span>{departments.length} Departments</span>
               <span aria-hidden="true">·</span>
               <span className="inline-flex items-center gap-1 text-amber-300">
-                <ShieldCheck size={14} /> Zero-Hardcoding Verified
+                <ShieldCheck size={14} /> Visibility-filtered marketing data
               </span>
             </div>
 
@@ -166,7 +218,7 @@ export default function DemoStudioTab() {
             </h2>
 
             <p className="text-slate-300 text-sm sm:text-base leading-relaxed">
-              Dynamically synthesize high-resolution promotional campus flyers, scannable QR posters, and automated 60fps screen-recorded demonstration reels directly from live UniAce courses, departments, feature switches, and multi-provider AI.
+              Create promotional assets from verified UniAce course and configuration data, and draft campaign copy or product-demo storyboards with AI for administrator review.
             </p>
           </div>
 
@@ -230,7 +282,7 @@ export default function DemoStudioTab() {
                   Dynamic Reel Targeting & Live AI Script Synthesizer
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                  Target any live course, department, or faculty. The reel engine adapts its steps, simulated LaTeX queries, and social captions at runtime.
+                  Target any live course, department, or faculty. The reel engine adapts its steps and captions to current course visibility, campaign scope and enabled application views.
                 </p>
               </div>
 
@@ -273,13 +325,13 @@ export default function DemoStudioTab() {
                     const nextScope = e.target.value as MarketingTargetScope;
                     setReelScope(nextScope);
                     if (nextScope === 'course' || nextScope === 'department') {
-                      setActiveScenarioPreview('live_course_spotlight');
+                      setActiveScenarioPreview('full_ecosystem');
                     }
                   }}
                   className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-900 dark:text-white"
                 >
                   <option value="full_ecosystem">Full University Ecosystem</option>
-                  <option value="course">Specific Accredited Course</option>
+                  <option value="course">Specific live course offering</option>
                   <option value="department">Specific Department</option>
                   <option value="faculty">Specific Faculty</option>
                   <option value="exam_readiness">Semester Exam Readiness</option>
@@ -365,10 +417,10 @@ export default function DemoStudioTab() {
               <div>
                 <h3 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
                   <Layers className="text-indigo-500" size={22} />
-                  Dynamic Demo Reel Scenarios
+                  Evidence-backed Demo Reel Scenarios
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                  All scenarios adapt to your live course catalog, active feature switches, and deployment domain.
+                  Scenarios are assembled from published student-visible course records, configured feature switches and the current deployment domain.
                 </p>
               </div>
               <span className="text-xs font-bold text-slate-400">
@@ -445,6 +497,36 @@ export default function DemoStudioTab() {
                       </div>
                     </div>
 
+                    {scenario.requiresReview && (
+                      <details className="mt-4 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/20 p-3">
+                        <summary className="cursor-pointer text-xs font-bold text-amber-900 dark:text-amber-200">
+                          Review AI-generated captions and storyboard
+                        </summary>
+                        <div className="mt-3 space-y-3 text-xs text-slate-700 dark:text-slate-200">
+                          {Object.entries(scenario.captions).map(([channel, caption]) => (
+                            <div key={channel}>
+                              <div className="font-bold uppercase text-[10px] text-slate-500 mb-1">{channel}</div>
+                              <p className="whitespace-pre-wrap">{caption}</p>
+                            </div>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setCustomAiScenarios((prev) => ({
+                                ...prev,
+                                [scenario.id]: { ...scenario, requiresReview: false }
+                              }));
+                              toast.success('Storyboard marked as reviewed. Check the live product before publishing the recording.');
+                            }}
+                            className="px-3 py-2 rounded-lg bg-amber-700 text-white font-bold"
+                          >
+                            Approve storyboard for recording
+                          </button>
+                        </div>
+                      </details>
+                    )}
+
                     {/* Launch Action */}
                     <div className="mt-6 pt-4 border-t border-slate-100 dark:border-slate-700/60 flex items-center justify-between gap-3">
                       <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400">
@@ -457,11 +539,11 @@ export default function DemoStudioTab() {
                           e.stopPropagation();
                           handleLaunchRecording(scenario);
                         }}
-                        disabled={isRecording}
+                        disabled={isRecording || scenario.requiresReview}
                         className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-md transition-all active:scale-95 flex items-center gap-1.5 disabled:opacity-50"
                       >
                         <Play size={13} fill="currentColor" />
-                        <span>Record Reel</span>
+                        <span>{scenario.requiresReview ? 'Review first' : 'Record Reel'}</span>
                       </button>
                     </div>
                   </div>
@@ -470,17 +552,17 @@ export default function DemoStudioTab() {
             </div>
           </div>
 
-          {/* Zero-Fallback Technical Details Deck */}
+          {/* Marketing Evidence & Recording Details Deck */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="bg-white dark:bg-slate-800 rounded-3xl p-6 border border-slate-200 dark:border-slate-700 space-y-3">
               <div className="p-3 w-fit rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400">
                 <ShieldCheck size={24} />
               </div>
               <h4 className="font-bold text-slate-900 dark:text-white text-base">
-                100% Live Dynamic Data
+                Live-source Marketing Inputs
               </h4>
               <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                Both the Flyer Studio and Video Reel Engine introspect real accredited courses, active feature switches, and live KaTeX/Mermaid rendering with zero hardcoded placeholders.
+                Flyer and reel inputs are sourced from published course records, student-visibility settings and configured feature switches. Targeted courses retain their audience scope.
               </p>
             </div>
 
@@ -489,10 +571,10 @@ export default function DemoStudioTab() {
                 <Zap size={24} />
               </div>
               <h4 className="font-bold text-slate-900 dark:text-white text-base">
-                Multi-Provider AI Synthesis
+                AI Script Drafting
               </h4>
               <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                AI campaign copy, custom reel scripts, and live tutoring derivations route through the multi-provider circuit breaker queue in real time.
+                AI-generated campaign copy and storyboards remain drafts until an administrator reviews their factual claims and captions.
               </p>
             </div>
 
@@ -501,10 +583,10 @@ export default function DemoStudioTab() {
                 <Share2 size={24} />
               </div>
               <h4 className="font-bold text-slate-900 dark:text-white text-base">
-                Instant Multi-Format Export
+                Campaign Asset Export
               </h4>
               <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                Export high-DPI PNG flyers, print-ready A4 PDF posters, scannable vector QR codes, and 60fps WebM reels paired with WhatsApp, 𝕏, LinkedIn, and TikTok captions.
+                Export the flyer as PNG or A4 PDF, generate its QR code, and record browser-based WebM demonstrations. Actual video capture quality depends on the browser and device.
               </p>
             </div>
           </div>

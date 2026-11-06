@@ -37,10 +37,8 @@ import {
   Library,
   User,
 } from 'lucide-react';
-import { useCourses } from '../../context/CourseContext';
-import { useInstitution } from '../../context/InstitutionContext';
-import { useFeatureSwitches } from '../../hooks/useFeatureSwitches';
-import { SupportConfig, SupportService } from '../../services/supportConfig';
+import { useMarketingSnapshot } from '../../hooks/useMarketingSnapshot';
+import { toMarketingCourseMap } from '../../services/marketingSnapshot';
 import {
   DynamicCapabilityItem,
   DynamicFlyerConfig,
@@ -118,11 +116,20 @@ function renderCapabilityIcon(iconKey: DynamicCapabilityItem['iconKey'], size = 
 }
 
 export default function DynamicFlyerStudio() {
-  const { courses } = useCourses();
-  const { faculties, departments, departmentToFaculty } = useInstitution();
-  const { switches: featureSwitches } = useFeatureSwitches();
-
-  const [supportConfig, setSupportConfig] = useState<SupportConfig | null>(null);
+  const { snapshot, loading: snapshotLoading, error: snapshotError, refresh: refreshSnapshot } = useMarketingSnapshot();
+  const courses = useMemo(() => snapshot ? toMarketingCourseMap(snapshot) : {}, [snapshot]);
+  const faculties = snapshot?.institution.faculties || [];
+  const departments = snapshot?.institution.departments || [];
+  const departmentToFaculty = snapshot?.institution.departmentToFaculty || {};
+  const featureSwitches = snapshot?.featureSwitches.status === 'configured'
+    ? snapshot.featureSwitches.values
+    : null;
+  const supportConfig = useMemo(() => snapshot?.support.status === 'configured'
+    ? {
+        whatsappSupport: snapshot.support.whatsappSupport || undefined,
+        contactEmail: snapshot.support.contactEmail || undefined
+      }
+    : null, [snapshot]);
   const [targetScope, setTargetScope] = useState<MarketingTargetScope>('full_ecosystem');
   const [selectedFaculty, setSelectedFaculty] = useState<string>('');
   const [selectedDepartment, setSelectedDepartment] = useState<string>('');
@@ -130,6 +137,7 @@ export default function DynamicFlyerStudio() {
   const [customCampaignAngle, setCustomCampaignAngle] = useState<string>('');
 
   const [isSynthesizingAI, setIsSynthesizingAI] = useState(false);
+  const [copyReviewRequired, setCopyReviewRequired] = useState(false);
   const [isExportingPng, setIsExportingPng] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [activeCaptionTab, setActiveCaptionTab] = useState<'whatsapp' | 'twitter' | 'linkedin' | 'tiktok'>('whatsapp');
@@ -137,13 +145,6 @@ export default function DynamicFlyerStudio() {
 
   const posterRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    const unsub = SupportService.subscribeSupportConfig((cfg) => {
-      setSupportConfig(cfg);
-    });
-    return () => unsub();
-  }, []);
 
   const courseList = useMemo(() => Object.values(courses || {}), [courses]);
 
@@ -168,7 +169,8 @@ export default function DynamicFlyerStudio() {
       departmentToFaculty,
       featureSwitches,
       supportConfig,
-      liveOrigin: typeof window !== 'undefined' ? window.location.origin : 'https://uniace.app',
+      liveOrigin: typeof window !== 'undefined' ? window.location.origin : undefined,
+      formulaCountsVerified: snapshot?.totals.formulasVerified === true,
       targetScope,
       selectedFaculty,
       selectedDepartment,
@@ -181,6 +183,7 @@ export default function DynamicFlyerStudio() {
       departmentToFaculty,
       featureSwitches,
       supportConfig,
+      snapshot,
       targetScope,
       selectedFaculty,
       selectedDepartment,
@@ -188,46 +191,85 @@ export default function DynamicFlyerStudio() {
     ]
   );
 
-  const [flyerConfig, setFlyerConfig] = useState<DynamicFlyerConfig>(() =>
-    buildDynamicFlyerConfig(marketingContext)
-  );
+  const [flyerConfig, setFlyerConfig] = useState<DynamicFlyerConfig | null>(null);
 
-  // Dynamically re-resolve flyer configuration when scope, target course/dept/faculty, or live switches change
   useEffect(() => {
+    if (!snapshot) {
+      setFlyerConfig(null);
+      return;
+    }
     setFlyerConfig((prev) => {
       const next = buildDynamicFlyerConfig(marketingContext);
-      return {
-        ...next,
-        themeId: prev.themeId,
-        studentPortraitMode: prev.studentPortraitMode,
-        customPhotoDataUrl: prev.customPhotoDataUrl,
-      };
+      return prev
+        ? {
+            ...next,
+            themeId: prev.themeId,
+            studentPortraitMode: prev.studentPortraitMode,
+            customPhotoDataUrl: prev.customPhotoDataUrl,
+          }
+        : next;
     });
-  }, [marketingContext]);
+  }, [marketingContext, snapshot]);
 
   const enabledCapabilities = useMemo(
-    () => flyerConfig.capabilities.filter((c) => c.enabled).slice(0, 8),
-    [flyerConfig.capabilities]
+    () => (flyerConfig?.capabilities || []).filter((c) => c.enabled).slice(0, 8),
+    [flyerConfig?.capabilities]
   );
 
-  const qrMatrix = useMemo(
-    () => generateQrMatrix(flyerConfig.qrTargetUrl || 'https://uniace.app'),
-    [flyerConfig.qrTargetUrl]
-  );
+  const qrResult = useMemo(() => {
+    if (!flyerConfig?.qrTargetUrl?.trim()) {
+      return { matrix: [] as boolean[][], error: 'Enter a valid HTTP(S) destination for the QR code.' };
+    }
+    try {
+      const destination = new URL(flyerConfig.qrTargetUrl);
+      if (!['http:', 'https:'].includes(destination.protocol) || !destination.hostname) {
+        throw new Error('QR destination must use HTTP or HTTPS.');
+      }
+      return { matrix: generateQrMatrix(destination.toString()), error: null as string | null };
+    } catch (error: any) {
+      return {
+        matrix: [] as boolean[][],
+        error: error?.message || 'QR destination could not be encoded.'
+      };
+    }
+  }, [flyerConfig?.qrTargetUrl]);
+  const qrMatrix = qrResult.matrix;
 
-  const palette = THEME_PALETTES[flyerConfig.themeId] || THEME_PALETTES.emerald_gold;
+  const palette = THEME_PALETTES[flyerConfig?.themeId || 'emerald_gold'] || THEME_PALETTES.emerald_gold;
+
+  if (snapshotLoading || !snapshot || !flyerConfig) {
+    return (
+      <div className="rounded-3xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-8 space-y-4">
+        <div className="flex items-center gap-3">
+          <RefreshCw size={20} className={snapshotError ? 'text-amber-600' : 'text-emerald-600 animate-spin'} />
+          <h3 className="text-base font-black text-slate-900 dark:text-white">
+            {snapshotError ? 'Marketing evidence unavailable' : 'Verifying live marketing data'}
+          </h3>
+        </div>
+        <p className="text-sm text-slate-600 dark:text-slate-300">
+          {snapshotError || 'Loading published course visibility, academic-level availability, feature switches and approved contact settings.'}
+        </p>
+        {snapshotError && (
+          <button type="button" onClick={() => void refreshSnapshot()} className="px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">
+            Retry verification
+          </button>
+        )}
+      </div>
+    );
+  }
 
   const handleToggleCapability = (id: string) => {
     setFlyerConfig((prev) => {
+      if (!prev) return prev;
       const target = prev.capabilities.find((c) => c.id === id);
       if (!target) return prev;
+      if (!target.enabled && target.availability !== 'data_available') {
+        toast.error('This capability is implemented in the app, but its live operation has not been verified for marketing.');
+        return prev;
+      }
       const currentEnabledCount = prev.capabilities.filter((c) => c.enabled).length;
       if (!target.enabled && currentEnabledCount >= 8) {
         toast.error('Maximum 8 capabilities can be displayed on the poster at once. Disable one first.');
-        return prev;
-      }
-      if (target.enabled && currentEnabledCount <= 4) {
-        toast.error('At least 4 capabilities should remain active on the flyer.');
         return prev;
       }
       return {
@@ -248,7 +290,8 @@ export default function DynamicFlyerStudio() {
         customCampaignAngle
       );
       setFlyerConfig(updated);
-      toast.success('✨ Flyer copy & feature highlights dynamically synthesized from live platform state!');
+      setCopyReviewRequired(true);
+      toast.success('AI marketing draft created. Review every claim before exporting.');
     } catch (err: any) {
       toast.error(err?.message || 'Failed to synthesize campaign copy with AI.');
     } finally {
@@ -278,6 +321,18 @@ export default function DynamicFlyerStudio() {
   };
 
   const handleExportPng = async () => {
+    if (!flyerConfig.campaignReady) {
+      toast.error(flyerConfig.blockingReasons.join(' '));
+      return;
+    }
+    if (copyReviewRequired) {
+      toast.error('Review and approve the AI-generated copy before exporting.');
+      return;
+    }
+    if (qrResult.error) {
+      toast.error(qrResult.error);
+      return;
+    }
     if (!posterRef.current) return;
     setIsExportingPng(true);
     try {
@@ -311,6 +366,18 @@ export default function DynamicFlyerStudio() {
   };
 
   const handleExportPdf = async () => {
+    if (!flyerConfig.campaignReady) {
+      toast.error(flyerConfig.blockingReasons.join(' '));
+      return;
+    }
+    if (copyReviewRequired) {
+      toast.error('Review and approve the AI-generated copy before exporting.');
+      return;
+    }
+    if (qrResult.error) {
+      toast.error(qrResult.error);
+      return;
+    }
     if (!posterRef.current) return;
     setIsExportingPdf(true);
     try {
@@ -345,6 +412,14 @@ export default function DynamicFlyerStudio() {
   };
 
   const handleCopyCaption = (tab: 'whatsapp' | 'twitter' | 'linkedin' | 'tiktok') => {
+    if (qrResult.error) {
+      toast.error(qrResult.error);
+      return;
+    }
+    if (copyReviewRequired) {
+      toast.error('Review and approve the AI-generated campaign copy before copying it.');
+      return;
+    }
     navigator.clipboard.writeText(flyerConfig.captions[tab]);
     setCopiedCaption(tab);
     toast.success(`Copied ${tab.toUpperCase()} campaign caption!`);
@@ -434,7 +509,7 @@ export default function DynamicFlyerStudio() {
           {targetScope === 'course' && (
             <div className="space-y-1.5">
               <label className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                Select Live Accredited Course ({courseList.length} in catalog)
+                Select live course offering ({courseList.length} in catalog)
               </label>
               <select
                 value={selectedCourseId}
@@ -491,7 +566,7 @@ export default function DynamicFlyerStudio() {
                 2. Active Platform Features ({enabledCapabilities.length}/8)
               </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Synced with live Feature Switches. Toggle which capabilities appear on the phone & bottom grid.
+                Only capabilities supported by the application are listed. Switch-gated and data-dependent items remain unavailable until verified.
               </p>
             </div>
           </div>
@@ -515,7 +590,16 @@ export default function DynamicFlyerStudio() {
                   >
                     {renderCapabilityIcon(cap.iconKey, 13)}
                   </span>
-                  <span className="text-xs font-bold truncate">{cap.title}</span>
+                  <span className="min-w-0">
+                    <span className="block text-xs font-bold truncate">{cap.title}</span>
+                    <span className="block text-[9px] font-semibold text-slate-400">
+                      {cap.availability === 'implemented' ? 'Implemented view · runtime health not probed' :
+                        cap.availability === 'switch_enabled' ? 'Feature switch enabled · runtime not probed' :
+                        cap.availability === 'switch_disabled' ? 'Disabled by feature switch' :
+                        cap.availability === 'data_available' ? 'Live supporting data verified' :
+                        'Supporting data or configuration not verified'}
+                    </span>
+                  </span>
                 </div>
                 <span
                   className={`w-4 h-4 rounded flex items-center justify-center text-[10px] font-bold shrink-0 ${
@@ -581,22 +665,46 @@ export default function DynamicFlyerStudio() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-[11px] font-bold text-slate-500 uppercase flex items-center gap-1">
-                <Globe size={12} /> Display Website & QR URL
+                <Globe size={12} /> Campaign Destination URL (admin override)
               </label>
               <input
                 type="text"
                 value={flyerConfig.websiteDisplayUrl}
                 onChange={(e) => {
                   const val = e.target.value;
-                  const fullUrl = val.startsWith('http') ? val : `https://${val}`;
+                  const candidate = val.trim();
+                  let fullUrl = '';
+                  try {
+                    const parsed = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate) ? candidate : `https://${candidate}`);
+                    if (['http:', 'https:'].includes(parsed.protocol) && parsed.hostname) {
+                      fullUrl = parsed.toString();
+                    }
+                  } catch {
+                    fullUrl = '';
+                  }
+                  const oldUrl = flyerConfig.qrTargetUrl;
+                  const updateCaptionUrl = (caption: string) =>
+                    oldUrl ? caption.replaceAll(oldUrl, fullUrl) : caption;
                   setFlyerConfig({
                     ...flyerConfig,
                     websiteDisplayUrl: val,
                     qrTargetUrl: fullUrl,
+                    captions: {
+                      whatsapp: updateCaptionUrl(flyerConfig.captions.whatsapp),
+                      twitter: updateCaptionUrl(flyerConfig.captions.twitter),
+                      linkedin: updateCaptionUrl(flyerConfig.captions.linkedin),
+                      tiktok: updateCaptionUrl(flyerConfig.captions.tiktok)
+                    }
                   });
                 }}
                 className="w-full mt-1 px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono text-slate-900 dark:text-white"
               />
+              <p className="mt-1 text-[10px] text-slate-500">
+                Defaults to this deployed app origin. A manually entered destination is an administrator override; verify that it resolves to the official UniAce destination before sharing.
+              </p>
+              {qrResult.error && (
+                <p className="mt-1 text-[10px] font-semibold text-rose-600 dark:text-rose-400">{qrResult.error}</p>
+              )}
             </div>
             <div>
               <label className="text-[11px] font-bold text-slate-500 uppercase flex items-center gap-1">
@@ -605,9 +713,11 @@ export default function DynamicFlyerStudio() {
               <input
                 type="text"
                 value={flyerConfig.supportContact}
-                onChange={(e) => setFlyerConfig({ ...flyerConfig, supportContact: e.target.value })}
+                readOnly
+                aria-readonly="true"
                 className="w-full mt-1 px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono text-slate-900 dark:text-white"
               />
+              <p className="mt-1 text-[10px] text-slate-500">Read-only: loaded from the saved Admin Support configuration. Update the official contact there.</p>
             </div>
           </div>
 
@@ -714,6 +824,21 @@ export default function DynamicFlyerStudio() {
             className="w-full p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-700 dark:text-slate-200 leading-relaxed"
           />
 
+          {copyReviewRequired && (
+            <div className="rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700 p-3 space-y-2">
+              <p className="text-xs font-semibold text-amber-900 dark:text-amber-200">
+                AI-generated copy is a draft. Verify every product, course, availability and pricing statement before approval.
+              </p>
+              <button
+                type="button"
+                onClick={() => setCopyReviewRequired(false)}
+                className="px-3 py-2 rounded-lg bg-amber-700 text-white text-xs font-bold"
+              >
+                I have reviewed this campaign copy
+              </button>
+            </div>
+          )}
+
           <button
             type="button"
             onClick={() => handleCopyCaption(activeCaptionTab)}
@@ -749,7 +874,7 @@ export default function DynamicFlyerStudio() {
             <button
               type="button"
               onClick={handleExportPng}
-              disabled={isExportingPng || isExportingPdf}
+              disabled={isExportingPng || isExportingPdf || !flyerConfig.campaignReady || copyReviewRequired || Boolean(qrResult.error)}
               className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs shadow-md shadow-emerald-600/20 flex items-center gap-2 transition-all active:scale-95 disabled:opacity-50"
             >
               <Download size={15} />
@@ -759,7 +884,7 @@ export default function DynamicFlyerStudio() {
             <button
               type="button"
               onClick={handleExportPdf}
-              disabled={isExportingPng || isExportingPdf}
+              disabled={isExportingPng || isExportingPdf || !flyerConfig.campaignReady || copyReviewRequired || Boolean(qrResult.error)}
               className="px-4 py-2.5 rounded-xl bg-slate-900 dark:bg-white hover:bg-slate-800 text-white dark:text-slate-900 font-black text-xs shadow-md flex items-center gap-2 transition-all active:scale-95 disabled:opacity-50"
             >
               <FileText size={15} />
@@ -767,6 +892,16 @@ export default function DynamicFlyerStudio() {
             </button>
           </div>
         </div>
+
+        {/* POSTER CANVAS WRAPPER */}
+        {!flyerConfig.campaignReady && (
+          <div className="rounded-2xl border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700 p-4">
+            <p className="text-xs font-bold text-amber-900 dark:text-amber-200">Campaign export is blocked until the target data is verified.</p>
+            <ul className="mt-2 list-disc pl-5 text-xs text-amber-800 dark:text-amber-300">
+              {flyerConfig.blockingReasons.map((reason) => <li key={reason}>{reason}</li>)}
+            </ul>
+          </div>
+        )}
 
         {/* POSTER CANVAS WRAPPER */}
         <div className="w-full overflow-x-auto pb-4 flex justify-center">
@@ -1260,46 +1395,52 @@ export default function DynamicFlyerStudio() {
                   <div className="flex items-center gap-4 shrink-0">
                     {/* Scannable QR Code Box */}
                     <div className="bg-white p-1.5 rounded-xl shadow-lg w-[68px] h-[68px] flex items-center justify-center">
-                      <svg
-                        viewBox={`0 0 ${qrMatrix.length} ${qrMatrix.length}`}
-                        className="w-full h-full"
-                        shapeRendering="crispEdges"
-                      >
-                        <rect width={qrMatrix.length} height={qrMatrix.length} fill="#ffffff" />
-                        {qrMatrix.map((row, rIdx) =>
-                          row.map((isDark, cIdx) =>
-                            isDark ? (
-                              <rect
-                                key={`${rIdx}-${cIdx}`}
-                                x={cIdx}
-                                y={rIdx}
-                                width={1}
-                                height={1}
-                                fill="#0f172a"
-                              />
-                            ) : null
-                          )
-                        )}
-                      </svg>
+                      {qrMatrix.length > 0 ? (
+                        <svg
+                          viewBox={`0 0 ${qrMatrix.length} ${qrMatrix.length}`}
+                          className="w-full h-full"
+                          shapeRendering="crispEdges"
+                        >
+                          <rect width={qrMatrix.length} height={qrMatrix.length} fill="#ffffff" />
+                          {qrMatrix.map((row, rIdx) =>
+                            row.map((isDark, cIdx) =>
+                              isDark ? (
+                                <rect
+                                  key={`${rIdx}-${cIdx}`}
+                                  x={cIdx}
+                                  y={rIdx}
+                                  width={1}
+                                  height={1}
+                                  fill="#0f172a"
+                                />
+                              ) : null
+                            )
+                          )}
+                        </svg>
+                      ) : (
+                        <span className="text-[8px] text-center font-bold text-rose-600">QR unavailable</span>
+                      )}
                     </div>
 
-                    {/* Support Details */}
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-10 h-10 rounded-full bg-white/10 border border-white/25 flex items-center justify-center text-white">
-                        <Headphones size={20} />
+                    {/* Support details appear only when an administrator has configured a real contact. */}
+                    {flyerConfig.supportContact && (
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-10 h-10 rounded-full bg-white/10 border border-white/25 flex items-center justify-center text-white">
+                          <Headphones size={20} />
+                        </div>
+                        <div>
+                          <div className="text-[11px] text-emerald-200 font-semibold leading-tight">
+                            {flyerConfig.supportLabel}
+                          </div>
+                          <div className="text-[16px] font-black text-white leading-tight tracking-tight">
+                            {flyerConfig.supportContact}
+                          </div>
+                          <div className="text-[10.5px] text-emerald-200/80 font-medium leading-tight">
+                            {flyerConfig.supportSublabel}
+                          </div>
+                        </div>
                       </div>
-                      <div>
-                        <div className="text-[11px] text-emerald-200 font-semibold leading-tight">
-                          {flyerConfig.supportLabel}
-                        </div>
-                        <div className="text-[16px] font-black text-white leading-tight tracking-tight">
-                          {flyerConfig.supportContact}
-                        </div>
-                        <div className="text-[10.5px] text-emerald-200/80 font-medium leading-tight">
-                          {flyerConfig.supportSublabel}
-                        </div>
-                      </div>
-                    </div>
+                    )}
                   </div>
                 </div>
               </div>

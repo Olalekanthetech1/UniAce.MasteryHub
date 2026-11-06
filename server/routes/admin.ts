@@ -17,6 +17,7 @@ import { runProgressDeltaCatchUp, runProgressParityAudit } from '../services/pro
 import { runSparksParityAudit } from '../services/sparksParityService';
 import { clearBootstrapCache } from './student';
 import { catalogCache } from '../cache/catalogCache';
+import { courseRepository } from '../repositories/courseRepository.js';
 import { ensureCourseLearningSchema } from '../services/courseLearningSchema';
 import { ensureCourseReviewSchema } from '../services/courseReviewSchema';
 import { ensureCourseAssessmentSchema } from '../services/courseAssessmentSchema';
@@ -937,6 +938,222 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
     } catch (error: any) {
       console.error('[Admin] Parity Audit Error:', error);
       res.status(500).json({ error: error.message || 'Parity audit execution failed' });
+    }
+  });
+
+
+  // Evidence-backed marketing snapshot. Only published courses explicitly marked
+  // student-visible and whose academic level is live are returned. Course scope is
+  // retained so a campaign cannot imply universal access to a targeted offering.
+  app.get('/api/admin/marketing/snapshot', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    if (!(await checkIsAdmin(user?.uid, user?.email))) {
+      return res.status(403).json({ error: 'Admin privileges required' });
+    }
+
+    try {
+      // forceRefresh=true bypasses the process-local catalog cache. This snapshot
+      // must fail with 503 if PostgreSQL cannot serve a fresh read; stale cache data
+      // must never be relabelled as current marketing evidence.
+      const catalog = await courseRepository.getFullCatalogWithSyllabus(true);
+      const liveCourses = (catalog.courses || []).filter((course: any) => {
+        if (
+          course?.status !== 'published' ||
+          course?.student_visibility !== 'live' ||
+          course?.level_availability !== 'live' ||
+          typeof course?.level !== 'string' || !course.level.trim() ||
+          typeof course?.semester !== 'string' || !course.semester.trim()
+        ) return false;
+
+        const scope = typeof course.scope === 'string' ? course.scope.trim().toUpperCase() : '';
+        if (scope === 'GLOBAL') return true;
+        if (scope === 'FACULTY') {
+          return (Array.isArray(course.faculties) && course.faculties.some((value: unknown) => typeof value === 'string' && value.trim())) ||
+            (typeof course.faculty === 'string' && course.faculty.trim().length > 0);
+        }
+        if (scope === 'DEPARTMENT') {
+          return (Array.isArray(course.departments) && course.departments.some((value: unknown) => typeof value === 'string' && value.trim())) ||
+            (typeof course.department === 'string' && course.department.trim().length > 0);
+        }
+        return false;
+      });
+      const courseIds = liveCourses
+        .map((course: any) => String(course.id || '').trim())
+        .filter(Boolean);
+
+      let formulaCounts: Record<string, number> = {};
+      let formulaCountsVerified = false;
+      if (courseIds.length > 0) {
+        try {
+          const formulaResult = await queryPostgres<{ course_id: string; count: string | number }>(
+            `SELECT course_id, COUNT(*)::int AS count
+             FROM course_formulas
+             WHERE course_id = ANY($1::text[])
+             GROUP BY course_id`,
+            [courseIds]
+          );
+          formulaCounts = Object.fromEntries(
+            formulaResult.rows.map(row => [row.course_id, Number(row.count)])
+          );
+          formulaCountsVerified = true;
+        } catch (formulaError: any) {
+          // A missing/unavailable formula source is unknown, not a zero count.
+          console.warn('[MarketingSnapshot] Formula inventory could not be verified:', formulaError?.message || formulaError);
+        }
+      } else {
+        // An empty live catalog is a verified empty result from the authoritative catalog.
+        formulaCountsVerified = true;
+      }
+
+      const readOptionalConfig = async (key: string) => {
+        try {
+          const value = await getSystemConfigDoc(key, true);
+          return { configured: value !== null, available: true, value };
+        } catch (error: any) {
+          return { configured: false, available: false, value: null, error: error?.message || String(error) };
+        }
+      };
+
+      const [institutionResult, switchesResult, supportResult, pricingResult] = await Promise.all([
+        readOptionalConfig('institution'),
+        readOptionalConfig('feature_switches'),
+        readOptionalConfig('support'),
+        readOptionalConfig('pricing')
+      ]);
+
+      const institutionValue = institutionResult.value;
+      const institutionValid = Boolean(
+        institutionResult.available &&
+        institutionValue &&
+        Array.isArray(institutionValue.departments) &&
+        Array.isArray(institutionValue.faculties) &&
+        institutionValue.departmentToFaculty &&
+        typeof institutionValue.departmentToFaculty === 'object' &&
+        !Array.isArray(institutionValue.departmentToFaculty)
+      );
+
+      const rawSwitches = switchesResult.value;
+      const featureSwitches = rawSwitches && typeof rawSwitches === 'object' && !Array.isArray(rawSwitches)
+        ? Object.fromEntries(
+            Object.entries(rawSwitches).filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean')
+          )
+        : null;
+
+      const rawSupport = supportResult.value;
+      const support = rawSupport && typeof rawSupport === 'object'
+        ? {
+            whatsappSupport: typeof rawSupport.whatsappSupport === 'string' && rawSupport.whatsappSupport.trim()
+              ? rawSupport.whatsappSupport.trim()
+              : null,
+            contactEmail: typeof rawSupport.contactEmail === 'string' && rawSupport.contactEmail.trim()
+              ? rawSupport.contactEmail.trim()
+              : null
+          }
+        : null;
+
+      const rawPricing = pricingResult.value;
+      const pricingPlans = Array.isArray(rawPricing?.plans)
+        ? rawPricing.plans
+            .filter((plan: any) =>
+              plan &&
+              plan.enabled !== false &&
+              typeof plan.id === 'string' &&
+              typeof plan.name === 'string' &&
+              Number.isFinite(Number(plan.price)) &&
+              Number(plan.price) >= 0 &&
+              typeof plan.duration === 'string'
+            )
+            .map((plan: any) => ({
+              id: plan.id,
+              name: plan.name,
+              price: Number(plan.price),
+              duration: plan.duration,
+              features: Array.isArray(plan.features)
+                ? plan.features.filter((feature: unknown) => typeof feature === 'string')
+                : []
+            }))
+        : null;
+
+      const courses = liveCourses.map((course: any) => {
+        const modules = Array.isArray(course.syllabus) ? course.syllabus.map((module: any) => ({
+          id: String(module.id || ''),
+          title: String(module.title || ''),
+          lessons: Array.isArray(module.subTopics)
+            ? module.subTopics.map((lesson: any) => ({
+                id: String(lesson.id || ''),
+                title: String(lesson.title || '')
+              }))
+            : []
+        })) : [];
+        return {
+          id: String(course.id),
+          title: String(course.title),
+          description: typeof course.description === 'string' ? course.description : '',
+          department: typeof course.department === 'string' ? course.department : '',
+          faculty: typeof course.faculty === 'string' ? course.faculty : '',
+          faculties: Array.isArray(course.faculties) ? course.faculties : [],
+          departments: Array.isArray(course.departments) ? course.departments : [],
+          level: typeof course.level === 'string' ? course.level : '',
+          semester: typeof course.semester === 'string' ? course.semester : '',
+          scope: typeof course.scope === 'string' ? course.scope : '',
+          status: 'published',
+          studentVisibility: 'live',
+          levelAvailability: 'live',
+          modules,
+          moduleCount: modules.length,
+          lessonCount: modules.reduce((sum: number, module: any) => sum + module.lessons.length, 0),
+          formulaCount: formulaCountsVerified ? (formulaCounts[String(course.id)] ?? 0) : null
+        };
+      });
+
+      const totalModules = courses.reduce((sum: number, course: any) => sum + course.moduleCount, 0);
+      const totalLessons = courses.reduce((sum: number, course: any) => sum + course.lessonCount, 0);
+      const totalFormulas = formulaCountsVerified
+        ? courses.reduce((sum: number, course: any) => sum + (course.formulaCount ?? 0), 0)
+        : null;
+
+      res.set('Cache-Control', 'private, no-store');
+      res.set('Vary', 'Authorization');
+      return res.json({
+        success: true,
+        snapshot: {
+          generatedAt: new Date().toISOString(),
+          catalogUpdatedAt: catalog.maxUpdatedAt,
+          source: 'authoritative-postgres-catalog',
+          courses,
+          totals: {
+            livePublishedCourses: courses.length,
+            modules: totalModules,
+            lessons: totalLessons,
+            formulas: totalFormulas,
+            formulasVerified: formulaCountsVerified
+          },
+          institution: {
+            status: institutionValid ? 'configured' : (institutionResult.available ? 'unconfigured' : 'unavailable'),
+            departments: institutionValid ? institutionValue.departments : [],
+            faculties: institutionValid ? institutionValue.faculties : [],
+            departmentToFaculty: institutionValid ? institutionValue.departmentToFaculty : {}
+          },
+          featureSwitches: {
+            status: switchesResult.available ? (featureSwitches ? 'configured' : 'unconfigured') : 'unavailable',
+            values: featureSwitches
+          },
+          support: {
+            status: supportResult.available ? (support ? 'configured' : 'unconfigured') : 'unavailable',
+            whatsappSupport: support?.whatsappSupport ?? null,
+            contactEmail: support?.contactEmail ?? null
+          },
+          pricing: {
+            status: pricingResult.available ? (pricingPlans ? 'configured' : 'unconfigured') : 'unavailable',
+            plans: pricingPlans
+          }
+        }
+      });
+    } catch (error: any) {
+      console.error('[Admin] Marketing snapshot failed:', error);
+      return res.status(503).json({
+        error: 'Marketing data could not be verified from the authoritative catalog. No fallback marketing snapshot is available.'
+      });
     }
   });
 

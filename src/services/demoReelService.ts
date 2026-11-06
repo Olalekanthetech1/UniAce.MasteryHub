@@ -1,7 +1,8 @@
-import { Course, View } from '../types';
+import { View } from '../types';
 import { SupportConfig } from './supportConfig';
 import { callAI } from './ai';
 import { jsonrepair } from 'jsonrepair';
+import { MarketingCourse, MARKETING_VIEWS } from './marketingSnapshot';
 
 export interface DemoStep {
   id: string;
@@ -10,7 +11,6 @@ export interface DemoStep {
   title: string;
   subtitle: string;
   badge: string;
-  simulatedQuery?: string;
   highlightSelector?: string;
   courseId?: string;
 }
@@ -30,6 +30,19 @@ export interface DemoScenario {
     whatsapp: string;
   };
   isDynamicAI?: boolean;
+  requiresReview?: boolean;
+}
+
+export function isDemoScenarioIsolated(scenario: DemoScenario): boolean {
+  if (!scenario || !Array.isArray(scenario.steps) || scenario.steps.length === 0) {
+    return false;
+  }
+
+  return scenario.steps.every((step) =>
+    Boolean(step) &&
+    step.view !== 'ai-tutor' &&
+    !Object.prototype.hasOwnProperty.call(step, 'demoPrompt')
+  );
 }
 
 export type MarketingTargetScope =
@@ -40,17 +53,18 @@ export type MarketingTargetScope =
   | 'exam_readiness';
 
 export interface PlatformMarketingContext {
-  courses: Record<string, Course>;
+  courses: Record<string, MarketingCourse>;
   faculties: string[];
   departments: string[];
   departmentToFaculty?: Record<string, string>;
-  featureSwitches: Record<string, boolean>;
-  supportConfig?: SupportConfig | null;
+  featureSwitches: Record<string, boolean> | null;
+  supportConfig?: Pick<SupportConfig, 'whatsappSupport' | 'contactEmail'> | null;
   liveOrigin?: string;
   targetScope: MarketingTargetScope;
   selectedFaculty?: string;
   selectedDepartment?: string;
   selectedCourseId?: string;
+  formulaCountsVerified?: boolean;
 }
 
 export interface DynamicCapabilityItem {
@@ -75,6 +89,7 @@ export interface DynamicCapabilityItem {
   phoneDescription: string;
   gridDescription: string;
   enabled: boolean;
+  availability: 'implemented' | 'switch_enabled' | 'switch_disabled' | 'data_available' | 'data_unavailable';
   featureSwitchKey?: string;
 }
 
@@ -106,305 +121,398 @@ export interface DynamicFlyerConfig {
     linkedin: string;
     tiktok: string;
   };
+  campaignReady: boolean;
+  blockingReasons: string[];
 }
+
+const normalize = (value: unknown): string =>
+  typeof value === 'string'
+    ? value.normalize('NFKC').trim().toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim()
+    : '';
 
 function getCleanHost(origin?: string): { url: string; displayHost: string } {
-  const rawOrigin =
-    origin ||
-    (typeof window !== 'undefined' && window.location?.origin
-      ? window.location.origin
-      : 'https://uniace.app');
-  const displayHost = rawOrigin.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
-  return { url: rawOrigin, displayHost };
+  if (typeof origin !== 'string' || !origin.trim()) {
+    throw new Error('The live UniAce deployment origin could not be verified. Marketing export is unavailable.');
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    throw new Error('The live UniAce deployment origin is invalid. Marketing export is unavailable.');
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.host) {
+    throw new Error('The live UniAce deployment origin must be an HTTP(S) URL.');
+  }
+  return { url: parsed.origin, displayHost: parsed.host };
 }
 
-/**
- * Resolves live capabilities dynamically from active feature switches, loaded courses,
- * faculties, departments, and target campaign scope.
- */
+function courseTargetsDepartment(course: MarketingCourse, department: string, ctx: PlatformMarketingContext): boolean {
+  const requestedDepartment = normalize(department);
+  if (!requestedDepartment) return false;
+  const scope = String(course.scope || '').toUpperCase();
+  if (scope === 'GLOBAL') return true;
+
+  if (scope === 'DEPARTMENT') {
+    const targets = course.departments.length > 0
+      ? course.departments
+      : (course.department ? [course.department] : []);
+    return targets.some((target) => normalize(target) === requestedDepartment);
+  }
+
+  if (scope === 'FACULTY') {
+    const requestedFaculty = Object.entries(ctx.departmentToFaculty || {})
+      .find(([name]) => normalize(name) === requestedDepartment)?.[1];
+    if (!requestedFaculty) return false;
+    const targets = course.faculties.length > 0
+      ? course.faculties
+      : (course.faculty ? [course.faculty] : []);
+    return targets.some((target) => normalize(target) === normalize(requestedFaculty));
+  }
+  return false;
+}
+
+function courseTargetsFaculty(course: MarketingCourse, faculty: string, ctx: PlatformMarketingContext): boolean {
+  const requestedFaculty = normalize(faculty);
+  if (!requestedFaculty) return false;
+  const scope = String(course.scope || '').toUpperCase();
+  if (scope === 'GLOBAL') return true;
+
+  if (scope === 'FACULTY') {
+    const targets = course.faculties.length > 0
+      ? course.faculties
+      : (course.faculty ? [course.faculty] : []);
+    return targets.some((target) => normalize(target) === requestedFaculty);
+  }
+
+  if (scope === 'DEPARTMENT') {
+    const targets = course.departments.length > 0
+      ? course.departments
+      : (course.department ? [course.department] : []);
+    return targets.some((department) => {
+      const mappedFaculty = Object.entries(ctx.departmentToFaculty || {})
+        .find(([name]) => normalize(name) === normalize(department))?.[1];
+      return Boolean(mappedFaculty && normalize(mappedFaculty) === requestedFaculty);
+    });
+  }
+  return false;
+}
+
+function hasVerifiedCourseAudience(course: MarketingCourse): boolean {
+  if (!course.level.trim() || !course.semester.trim()) return false;
+  const scope = String(course.scope || '').toUpperCase();
+
+  if (scope === 'GLOBAL') return true;
+  if (scope === 'FACULTY') {
+    return course.faculties.some((value) => typeof value === 'string' && value.trim().length > 0) ||
+      Boolean(course.faculty.trim());
+  }
+  if (scope === 'DEPARTMENT') {
+    return course.departments.some((value) => typeof value === 'string' && value.trim().length > 0) ||
+      Boolean(course.department.trim());
+  }
+  return false;
+}
+
+export function getCoursesForMarketingScope(ctx: PlatformMarketingContext): MarketingCourse[] {
+  const courses = Object.values(ctx.courses || {}).filter((course) =>
+    course &&
+    course.status === 'published' &&
+    course.studentVisibility === 'live' &&
+    course.levelAvailability === 'live' &&
+    hasVerifiedCourseAudience(course)
+  );
+
+  if (ctx.targetScope === 'course') {
+    return ctx.selectedCourseId
+      ? courses.filter((course) => course.id === ctx.selectedCourseId)
+      : [];
+  }
+  if (ctx.targetScope === 'department') {
+    return courses.filter((course) => courseTargetsDepartment(course, ctx.selectedDepartment || '', ctx));
+  }
+  if (ctx.targetScope === 'faculty') {
+    return courses.filter((course) => courseTargetsFaculty(course, ctx.selectedFaculty || '', ctx));
+  }
+  return courses;
+}
+
+function getSelectedCourse(ctx: PlatformMarketingContext): MarketingCourse | undefined {
+  const eligible = getCoursesForMarketingScope(ctx);
+  if (ctx.targetScope === 'course') return eligible[0];
+  if (ctx.selectedCourseId) {
+    const selected = eligible.find((course) => course.id === ctx.selectedCourseId);
+    if (selected) return selected;
+  }
+  return eligible[0];
+}
+
+function getCourseAudienceLabel(course: MarketingCourse): string | null {
+  const scope = String(course.scope || '').toUpperCase();
+  const level = course.level.trim();
+  const semester = course.semester.trim();
+  if (!level || !semester) return null;
+
+  if (scope === 'GLOBAL') {
+    return `students across the institution at ${level}, ${semester}`;
+  }
+
+  if (scope === 'FACULTY') {
+    const targets = course.faculties.length > 0
+      ? course.faculties
+      : (course.faculty ? [course.faculty] : []);
+    const names = Array.from(new Set(targets.map((value) => value.trim()).filter(Boolean)));
+    return names.length > 0
+      ? `students in ${names.join(', ')} at ${level}, ${semester}`
+      : null;
+  }
+
+  if (scope === 'DEPARTMENT') {
+    const targets = course.departments.length > 0
+      ? course.departments
+      : (course.department ? [course.department] : []);
+    const names = Array.from(new Set(targets.map((value) => value.trim()).filter(Boolean)));
+    return names.length > 0
+      ? `students in ${names.join(', ')} at ${level}, ${semester}`
+      : null;
+  }
+
+  return null;
+}
+
+const CAPABILITY_REGISTRY: Omit<DynamicCapabilityItem, 'phoneDescription' | 'gridDescription' | 'enabled' | 'availability'>[] = [
+  { id: 'ai_tutor', view: 'ai-tutor', iconKey: 'ai-tutor', accentHex: '#10b981', badgeBgHex: '#059669', title: 'AI Academic Tutor' },
+  { id: 'chat_with_notes', view: 'ai-tutor', iconKey: 'notes-chat', accentHex: '#14b8a6', badgeBgHex: '#0d9488', title: 'Chat With Study Materials' },
+  { id: 'question_generator', view: 'quizzes', iconKey: 'quiz-gen', accentHex: '#3b82f6', badgeBgHex: '#16a34a', title: 'Practice Questions' },
+  { id: 'theory_questions', view: 'past-questions', iconKey: 'theory-eval', accentHex: '#f97316', badgeBgHex: '#2563eb', title: 'Past Questions' },
+  { id: 'flashcards', view: 'flashcards', iconKey: 'flashcards', accentHex: '#6366f1', badgeBgHex: '#7c3aed', title: 'Study Flashcards' },
+  { id: 'exam_mode', view: 'quizzes', iconKey: 'exam-mode', accentHex: '#059669', badgeBgHex: '#a16207', title: 'Quiz Practice' },
+  { id: 'my_notes', view: 'notebook', iconKey: 'notebook', accentHex: '#2563eb', badgeBgHex: '#d97706', title: 'Study Notebook' },
+  { id: 'study_planner', view: 'study-plan', iconKey: 'study-planner', accentHex: '#16a34a', badgeBgHex: '#0284c7', title: 'Study Planner' },
+  { id: 'formula_diagram_hub', view: 'formulas', iconKey: 'formulas', accentHex: '#8b5cf6', badgeBgHex: '#4f46e5', title: 'Course Formulas' },
+  { id: 'battle_arena', view: 'arena', iconKey: 'arena', accentHex: '#e11d48', badgeBgHex: '#be123c', title: 'Academic Arena', featureSwitchKey: 'arena' },
+  { id: 'course_hub', view: 'hub', iconKey: 'course-hub', accentHex: '#0d9488', badgeBgHex: '#0f766e', title: 'Course Hub' }
+];
+
 export function resolveDynamicCapabilities(ctx: PlatformMarketingContext): DynamicCapabilityItem[] {
-  const courseList = Object.values(ctx.courses || {});
-  const totalCourses = courseList.length;
-  const totalModules = courseList.reduce((acc, c) => acc + (c.syllabus?.length || 0), 0);
-  const totalFormulas = courseList.reduce((acc, c) => acc + (c.formulas?.length || 0), 0);
+  const liveCourses = getCoursesForMarketingScope(ctx);
+  const totalModules = liveCourses.reduce((sum, course) => sum + (course.syllabus?.length || 0), 0);
+  const formulaInventoryVerified = ctx.formulaCountsVerified === true &&
+    liveCourses.every((course) => typeof course.formulaCount === 'number');
+  const totalFormulas = formulaInventoryVerified
+    ? liveCourses.reduce((sum, course) => sum + (course.formulaCount || 0), 0)
+    : null;
+  const selectedCourse = getSelectedCourse(ctx);
+  const scopeLabel = ctx.targetScope === 'course' && selectedCourse
+    ? selectedCourse.id
+    : ctx.targetScope === 'department' && ctx.selectedDepartment
+      ? ctx.selectedDepartment
+      : ctx.targetScope === 'faculty' && ctx.selectedFaculty
+        ? ctx.selectedFaculty
+        : 'your course';
 
-  const selectedCourse =
-    ctx.selectedCourseId && ctx.courses[ctx.selectedCourseId]
-      ? ctx.courses[ctx.selectedCourseId]
-      : courseList[0];
+  return CAPABILITY_REGISTRY.map((definition): DynamicCapabilityItem => {
+    // A route/component existing is not proof that its dependent runtime works.
+    // Only capabilities with explicit live evidence are eligible for marketing.
+    let enabled = false;
+    let availability: DynamicCapabilityItem['availability'] = 'implemented';
+    let phoneDescription = '';
+    let gridDescription = '';
 
-  const scopeLabel =
-    ctx.targetScope === 'course' && selectedCourse
-      ? `${selectedCourse.id || selectedCourse.title}`
-      : ctx.targetScope === 'department' && ctx.selectedDepartment
-        ? `${ctx.selectedDepartment}`
-        : ctx.targetScope === 'faculty' && ctx.selectedFaculty
-          ? `${ctx.selectedFaculty}`
-          : 'university';
-
-  const arenaEnabled = ctx.featureSwitches?.arena !== false;
-
-  const allCapabilities: DynamicCapabilityItem[] = [
-    {
-      id: 'ai_tutor',
-      view: 'ai-tutor',
-      iconKey: 'ai-tutor',
-      accentHex: '#10b981',
-      badgeBgHex: '#059669',
-      title: 'AI Tutor',
-      phoneDescription:
-        ctx.targetScope === 'course' && selectedCourse
-          ? `Step-by-step explanations for ${selectedCourse.id || selectedCourse.title}.`
-          : 'Get clear explanations and learn at your own pace.',
-      gridDescription: 'Understand difficult concepts step-by-step',
-      enabled: true,
-    },
-    {
-      id: 'chat_with_notes',
-      view: 'ai-tutor',
-      iconKey: 'notes-chat',
-      accentHex: '#14b8a6',
-      badgeBgHex: '#0d9488',
-      title: 'Chat With Your Notes',
-      phoneDescription: 'Ask questions about your uploaded PDF & lecture notes.',
-      gridDescription: 'Get answers from your own materials',
-      enabled: true,
-    },
-    {
-      id: 'question_generator',
-      view: 'quizzes',
-      iconKey: 'quiz-gen',
-      accentHex: '#3b82f6',
-      badgeBgHex: '#16a34a',
-      title: 'Question Generator',
-      phoneDescription: `Create ${scopeLabel} practice questions from your materials.`,
-      gridDescription: 'Practise with custom AI questions',
-      enabled: true,
-    },
-    {
-      id: 'theory_questions',
-      view: 'past-questions',
-      iconKey: 'theory-eval',
-      accentHex: '#f97316',
-      badgeBgHex: '#2563eb',
-      title: 'Theory & Derivations',
-      phoneDescription: 'Get theory questions with AI-assisted marking & proofs.',
-      gridDescription: 'Build knowledge with AI-assisted marking',
-      enabled: true,
-    },
-    {
-      id: 'flashcards',
-      view: 'flashcards',
-      iconKey: 'flashcards',
-      accentHex: '#6366f1',
-      badgeBgHex: '#7c3aed',
-      title: 'Smart Flashcards',
-      phoneDescription: 'Revise quickly with active-recall smart flashcards.',
-      gridDescription: 'Revise faster and remember longer',
-      enabled: true,
-    },
-    {
-      id: 'exam_mode',
-      view: 'quizzes',
-      iconKey: 'exam-mode',
-      accentHex: '#059669',
-      badgeBgHex: '#eab308',
-      title: 'Exam Mode',
-      phoneDescription: 'Take timed practice exams and track your readiness.',
-      gridDescription: 'Test yourself with timed exams',
-      enabled: true,
-    },
-    {
-      id: 'my_notes',
-      view: 'notebook',
-      iconKey: 'notebook',
-      accentHex: '#2563eb',
-      badgeBgHex: '#d97706',
-      title: 'My Study Notes',
-      phoneDescription:
-        totalModules > 0
-          ? `Access ${totalModules}+ structured modules & saved notes.`
-          : 'Keep all your study materials in one place.',
-      gridDescription: 'Keep your study materials organised',
-      enabled: true,
-    },
-    {
-      id: 'study_planner',
-      view: 'study-plan',
-      iconKey: 'study-planner',
-      accentHex: '#16a34a',
-      badgeBgHex: '#0284c7',
-      title: 'Study Planner',
-      phoneDescription: 'Plan your study timetable and stay consistent.',
-      gridDescription: 'Plan, track and stay consistent',
-      enabled: true,
-    },
-    {
-      id: 'formula_diagram_hub',
-      view: 'formulas',
-      iconKey: 'formulas',
-      accentHex: '#8b5cf6',
-      badgeBgHex: '#4f46e5',
-      title: 'Formulas & Diagrams',
-      phoneDescription:
-        totalFormulas > 0
-          ? `Explore ${totalFormulas}+ verified KaTeX formulas & diagrams.`
-          : 'Verified KaTeX equations and interactive diagrams.',
-      gridDescription: 'Verified formulas & visual diagrams',
-      enabled: false,
-    },
-    {
-      id: 'voice_tutor',
-      view: 'ai-tutor',
-      iconKey: 'voice-tutor',
-      accentHex: '#ec4899',
-      badgeBgHex: '#db2777',
-      title: 'Voice AI Tutor',
-      phoneDescription: 'Hands-free spoken explanations and oral mastery checks.',
-      gridDescription: 'Learn hands-free with live voice AI',
-      enabled: false,
-    },
-    {
-      id: 'battle_arena',
-      view: 'arena',
-      iconKey: 'arena',
-      accentHex: '#e11d48',
-      badgeBgHex: '#be123c',
-      title: 'Academic Arena',
-      phoneDescription: 'Compete in daily academic challenges & XP leaderboards.',
-      gridDescription: 'Daily quests & student leaderboard',
-      enabled: false,
-      featureSwitchKey: 'arena',
-    },
-    {
-      id: 'course_hub',
-      view: 'hub',
-      iconKey: 'course-hub',
-      accentHex: '#0d9488',
-      badgeBgHex: '#0f766e',
-      title: 'Accredited Course Hub',
-      phoneDescription:
-        totalCourses > 0
-          ? `Browse ${totalCourses} accredited university courses & syllabi.`
-          : 'Full accredited university course catalogue.',
-      gridDescription: 'Complete university course syllabi',
-      enabled: false,
-    },
-  ];
-
-  return allCapabilities.filter((cap) => {
-    if (cap.featureSwitchKey === 'arena' && !arenaEnabled) {
-      return false;
+    switch (definition.id) {
+      case 'ai_tutor':
+        phoneDescription = selectedCourse
+          ? `Ask for step-by-step help with ${selectedCourse.id}.`
+          : 'Ask questions and work through difficult topics.';
+        gridDescription = 'Step-by-step academic explanations';
+        break;
+      case 'chat_with_notes':
+        phoneDescription = 'Ask questions about uploaded study materials.';
+        gridDescription = 'Discuss your study materials';
+        break;
+      case 'question_generator':
+        phoneDescription = `Practise topics relevant to ${scopeLabel}.`;
+        gridDescription = 'Practise course topics';
+        break;
+      case 'theory_questions':
+        phoneDescription = 'Review questions from available past papers.';
+        gridDescription = 'Review past questions';
+        break;
+      case 'flashcards':
+        phoneDescription = 'Use flashcards for active-recall practice.';
+        gridDescription = 'Active-recall revision';
+        break;
+      case 'exam_mode':
+        phoneDescription = 'Practise with available course quizzes.';
+        gridDescription = 'Course quiz practice';
+        break;
+      case 'my_notes':
+        phoneDescription = totalModules > 0
+          ? `Browse ${totalModules} published course modules.`
+          : 'Keep personal study notes together.';
+        gridDescription = 'Organise study notes';
+        break;
+      case 'study_planner':
+        phoneDescription = 'Plan and organise study sessions.';
+        gridDescription = 'Plan study sessions';
+        break;
+      case 'formula_diagram_hub':
+        enabled = formulaInventoryVerified && (totalFormulas || 0) > 0;
+        availability = enabled ? 'data_available' : 'data_unavailable';
+        phoneDescription = enabled
+          ? `Browse ${totalFormulas} course formula records.`
+          : 'Formula inventory is not verified or has no live records.';
+        gridDescription = enabled ? 'Browse course formulas' : 'Formula inventory not verified';
+        break;
+      case 'battle_arena': {
+        const switchEnabled = ctx.featureSwitches?.arena === true;
+        // The switch proves that the feature is configured on; it does not prove
+        // that the Arena can complete a student-facing session successfully.
+        enabled = false;
+        availability = switchEnabled
+          ? 'switch_enabled'
+          : ctx.featureSwitches && typeof ctx.featureSwitches.arena === 'boolean'
+            ? 'switch_disabled'
+            : 'data_unavailable';
+        phoneDescription = switchEnabled
+          ? 'Enabled in configuration; live operation is not verified.'
+          : 'Academic Arena is disabled or its configuration is unavailable.';
+        gridDescription = switchEnabled
+          ? 'Runtime operation not verified'
+          : 'Not enabled for students';
+        break;
+      }
+      case 'course_hub':
+        enabled = liveCourses.length > 0;
+        availability = enabled ? 'data_available' : 'data_unavailable';
+        phoneDescription = enabled
+          ? `Browse ${liveCourses.length} published course offerings.`
+          : 'No live published course offerings are verified.';
+        gridDescription = 'Browse live course offerings';
+        break;
     }
-    return true;
-  });
+
+    if (definition.featureSwitchKey && ctx.featureSwitches?.[definition.featureSwitchKey] !== true) {
+      enabled = false;
+    }
+
+    return { ...definition, phoneDescription, gridDescription, enabled, availability };
+  }).filter((item) => MARKETING_VIEWS.includes(item.view));
 }
 
-/**
- * Builds the complete Dynamic Flyer configuration from live system state.
- */
 export function buildDynamicFlyerConfig(ctx: PlatformMarketingContext): DynamicFlyerConfig {
   const { url, displayHost } = getCleanHost(ctx.liveOrigin);
-  const courseList = Object.values(ctx.courses || {});
+  const liveCourses = getCoursesForMarketingScope(ctx);
+  const scopedCourses = liveCourses;
+  const selectedCourse = getSelectedCourse(ctx);
   const capabilities = resolveDynamicCapabilities(ctx);
+  const blockingReasons: string[] = [];
+  const courseAudience = selectedCourse ? getCourseAudienceLabel(selectedCourse) : null;
 
-  const selectedCourse =
-    ctx.selectedCourseId && ctx.courses[ctx.selectedCourseId]
-      ? ctx.courses[ctx.selectedCourseId]
-      : undefined;
-
-  let headlineLine1 = 'Study Smarter,';
-  let headlineLine2 = 'Not Harder';
-  let leadBoldParagraph =
-    'UniAce Mastery Hub is an all-in-one AI-powered academic platform built for university students.';
-  let subParagraph =
-    'Get instant step-by-step derivations, practise with your own lecture materials, stay organised and prepare for your exams — all in one place.';
+  let headlineLine1 = 'Study with greater';
+  let headlineLine2 = 'clarity and structure';
+  let leadBoldParagraph = 'UniAce brings course information and student study tools together in one learning workspace.';
+  let subParagraph = 'Explore current course offerings and use the learning tools that are available in the application.';
   let phoneGreeting = 'Hello, Scholar 👋';
 
-  if (ctx.targetScope === 'course' && selectedCourse) {
-    headlineLine1 = `Master ${selectedCourse.id || 'Your Course'},`;
-    headlineLine2 = 'Ace Every Exam';
-    leadBoldParagraph = `UniAce Mastery Hub is your dedicated AI study companion for ${selectedCourse.title} (${selectedCourse.id || selectedCourse.department}).`;
-    subParagraph = `Explore ${selectedCourse.syllabus?.length || 10} structured university modules, interactive diagrams, verified formulas, and exam-grade practice questions — all in one place.`;
-    phoneGreeting = `Studying ${selectedCourse.id || 'UniAce'} 👋`;
+  if (ctx.targetScope === 'course') {
+    if (selectedCourse) {
+      headlineLine1 = `Explore ${selectedCourse.id}`;
+      headlineLine2 = selectedCourse.title;
+      leadBoldParagraph = courseAudience
+        ? `Explore the live ${selectedCourse.id} course offering in UniAce Mastery Hub for ${courseAudience}.`
+        : `The ${selectedCourse.id} course offering is listed, but its intended student audience is not fully verified.`;
+      subParagraph = selectedCourse.syllabus.length > 0
+        ? `The published outline contains ${selectedCourse.syllabus.length} modules. Access is limited to the course's configured academic audience.`
+        : 'View the published course information and the study tools currently available.';
+      phoneGreeting = `Studying ${selectedCourse.id} 👋`;
+    }
   } else if (ctx.targetScope === 'department' && ctx.selectedDepartment) {
-    const deptCourses = courseList.filter(
-      (c) => c.department?.toLowerCase() === ctx.selectedDepartment?.toLowerCase()
-    );
-    headlineLine1 = `Built for ${ctx.selectedDepartment}`;
-    headlineLine2 = 'Scholars';
-    leadBoldParagraph = `UniAce Mastery Hub is an all-in-one AI-powered platform tailored for ${ctx.selectedDepartment} university students.`;
-    subParagraph = `Master ${deptCourses.length > 0 ? `${deptCourses.length} core department courses` : 'your department curriculum'}, solve complex theory questions, and prepare for semester exams with confidence.`;
+    headlineLine1 = 'Study with';
+    headlineLine2 = ctx.selectedDepartment;
+    leadBoldParagraph = `UniAce course offerings for ${ctx.selectedDepartment} students.`;
+    subParagraph = `${scopedCourses.length} live course offering(s) match this department audience. Course visibility remains subject to each offering's academic scope.`;
   } else if (ctx.targetScope === 'faculty' && ctx.selectedFaculty) {
-    headlineLine1 = `Excel Across`;
-    headlineLine2 = `${ctx.selectedFaculty}`;
-    leadBoldParagraph = `UniAce Mastery Hub empowers ${ctx.selectedFaculty} students with interactive AI tutoring and accredited university syllabi.`;
-    subParagraph =
-      'Get instant step-by-step explanations, upload your lecture notes, practise timed exams, and track your concept mastery in real time.';
+    headlineLine1 = 'Explore courses in';
+    headlineLine2 = ctx.selectedFaculty;
+    leadBoldParagraph = `Explore UniAce course offerings targeted to ${ctx.selectedFaculty}.`;
+    subParagraph = `${scopedCourses.length} live course offering(s) match this faculty audience. Department and faculty restrictions still apply.`;
   } else if (ctx.targetScope === 'exam_readiness') {
-    headlineLine1 = 'Crush Your Exams,';
-    headlineLine2 = 'Zero Panic';
-    leadBoldParagraph =
-      'UniAce Mastery Hub turns your lecture notes and syllabus into timed mock exams, smart flashcards, and step-by-step solutions.';
-    subParagraph =
-      'Test your recall under real exam conditions, identify weak topics automatically, and boost your semester GPA.';
+    headlineLine1 = 'Prepare with';
+    headlineLine2 = 'practice and revision';
+    leadBoldParagraph = 'Use the study and practice tools that are currently available in UniAce.';
+    subParagraph = selectedCourse
+      ? `This campaign is focused on ${selectedCourse.id} — ${selectedCourse.title}.`
+      : 'Choose a live course offering to make this campaign course-specific.';
   }
 
   const supportContact =
     ctx.supportConfig?.whatsappSupport?.trim() ||
     ctx.supportConfig?.contactEmail?.trim() ||
-    'support@uniace.app';
+    '';
   const isPhone = /^[+\d\s()-]{7,}$/.test(supportContact);
+  const enabledNames = capabilities.filter((capability) => capability.enabled).slice(0, 8).map((item) => item.title);
+  const featureList = enabledNames.length > 0
+    ? enabledNames.map((name) => `• ${name}`).join('\n')
+    : 'No capabilities are currently cleared for display.';
+
+  if (ctx.targetScope === 'course' && !selectedCourse) {
+    blockingReasons.push('Select a course that is published, student-visible and at a live academic level.');
+  }
+  if (ctx.targetScope === 'course' && selectedCourse && !courseAudience) {
+    blockingReasons.push('The selected course is missing a valid scope, target audience, level or semester. Correct its persisted academic metadata before exporting.');
+  }
+  if (ctx.targetScope === 'department' && (!ctx.selectedDepartment || scopedCourses.length === 0)) {
+    blockingReasons.push('No live course offering is verified for the selected department.');
+  }
+  if (ctx.targetScope === 'faculty' && (!ctx.selectedFaculty || scopedCourses.length === 0)) {
+    blockingReasons.push('No live course offering is verified for the selected faculty.');
+  }
+  if ((ctx.targetScope === 'full_ecosystem' || ctx.targetScope === 'exam_readiness') && liveCourses.length === 0) {
+    blockingReasons.push('The authoritative catalog contains no published course marked live for student access.');
+  }
 
   return {
     brandName: 'UniAce Mastery Hub',
-    brandSubline: ['Learn', 'Practise', 'Excel'],
+    brandSubline: ['Learn', 'Practise', 'Revise'],
     topScriptCallout: 'Your Study Companion',
-    midScriptCallout: 'Your goals are valid',
+    midScriptCallout: 'Build your understanding',
     headlineLine1,
     headlineLine2,
     leadBoldParagraph,
     subParagraph,
     phoneGreeting,
-    phonePrompt: 'What would you like to do today?',
+    phonePrompt: 'Explore the tools available in UniAce',
     capabilities,
-    ctaText: 'Visit Now',
+    ctaText: 'Explore UniAce',
     websiteDisplayUrl: displayHost,
     qrTargetUrl: url,
-    supportLabel: 'Need Help?',
+    supportLabel: supportContact ? 'Need Help?' : '',
     supportContact,
-    supportSublabel: isPhone ? '(Support Line)' : '(Official Support)',
-    footerPillars: ['BUILT FOR UNIVERSITY STUDENTS', 'POWERED BY AI', 'YOUR SUCCESS MATTERS'],
+    supportSublabel: supportContact ? (isPhone ? '(Support Line)' : '(Official Support)') : '',
+    footerPillars: ['COURSE-BASED LEARNING', 'PRACTICE & REVISION', 'STUDENT STUDY TOOLS'],
     themeId: 'emerald_gold',
     studentPortraitMode: 'campus_scholar_svg',
     captions: {
-      whatsapp: `🎓 *${headlineLine1} ${headlineLine2}*\n\n${leadBoldParagraph}\n\n✅ 24/7 AI Academic Tutor & Derivations\n✅ Chat With Your Uploaded Notes\n✅ Smart Quizzes, Theory Marking & Timed Exams\n✅ Structured University Course Syllabi\n\n🔗 Start now: ${url}`,
-      twitter: `🎓 ${headlineLine1} ${headlineLine2}!\n\n${leadBoldParagraph}\n\n✨ AI Tutor & Chat With Notes\n📝 Question Generator & Timed Exam Mode\n📚 Flashcards & Study Planner\n\n🔗 ${url} #UniAce #University #EdTech #StudySmarter`,
-      linkedin: `${headlineLine1} ${headlineLine2} — Introducing UniAce Mastery Hub 🎓\n\n${leadBoldParagraph}\n\n${subParagraph}\n\nExplore the live platform: ${url}\n\n#HigherEducation #EdTech #AIInEducation #StudentSuccess #UniAce`,
-      tiktok: `${headlineLine1} ${headlineLine2} 🚀🎓 The all-in-one AI study companion for university students! Chat with your notes, generate practice exams & master every course. 🔗 ${displayHost} #studytok #universitylife #examhacks #uniace`,
+      whatsapp: `🎓 *${headlineLine1} ${headlineLine2}*\n\n${leadBoldParagraph}\n\nAvailable tools:\n${featureList}\n\n🔗 Explore: ${url}`,
+      twitter: `🎓 ${headlineLine1} ${headlineLine2}\n${leadBoldParagraph}\nTools: ${enabledNames.join(', ')}\n${url} #UniAce #University`.slice(0, 275),
+      linkedin: `${headlineLine1} ${headlineLine2} — UniAce Mastery Hub\n\n${leadBoldParagraph}\n\n${subParagraph}\n\nExplore the live platform: ${url}\n\n#HigherEducation #EdTech #UniAce`,
+      tiktok: `${headlineLine1} ${headlineLine2}. Explore the learning tools currently available in UniAce. ${url} #university #studytok #uniace`
     },
+    campaignReady: blockingReasons.length === 0,
+    blockingReasons
   };
 }
 
-/**
- * Uses the live multi-provider AI backend to synthesize tailored campaign copy,
- * feature descriptions, and social captions grounded in real platform context.
- */
 export async function synthesizeFlyerWithAI(
   ctx: PlatformMarketingContext,
   currentConfig: DynamicFlyerConfig,
   customCampaignAngle?: string
 ): Promise<DynamicFlyerConfig> {
-  const courseList = Object.values(ctx.courses || {});
-  const selectedCourse =
-    ctx.selectedCourseId && ctx.courses[ctx.selectedCourseId]
-      ? ctx.courses[ctx.selectedCourseId]
-      : undefined;
-
-  const activeCaps = currentConfig.capabilities.filter((c) => c.enabled).slice(0, 8);
+  const selectedCourse = getSelectedCourse(ctx);
+  const scopedCourses = getCoursesForMarketingScope(ctx);
+  const activeCaps = currentConfig.capabilities.filter((capability) => capability.enabled);
 
   const contextSummary = {
-    brandName: currentConfig.brandName,
     targetScope: ctx.targetScope,
     selectedFaculty: ctx.selectedFaculty || null,
     selectedDepartment: ctx.selectedDepartment || null,
@@ -413,606 +521,360 @@ export async function synthesizeFlyerWithAI(
           code: selectedCourse.id,
           title: selectedCourse.title,
           department: selectedCourse.department,
-          moduleCount: selectedCourse.syllabus?.length || 0,
-          sampleModules: (selectedCourse.syllabus || []).slice(0, 4).map((m) => m.title),
+          level: selectedCourse.level,
+          semester: selectedCourse.semester,
+          moduleTitles: selectedCourse.syllabus.map((module) => module.title),
+          moduleCount: selectedCourse.syllabus.length
         }
       : null,
-    totalCoursesAvailable: courseList.length,
-    availableFaculties: ctx.faculties,
-    availableDepartments: ctx.departments.slice(0, 12),
-    activeFeatureTitles: activeCaps.map((c) => ({ id: c.id, title: c.title })),
+    scopedCourseOfferings: scopedCourses.map((course) => ({
+      id: course.id,
+      title: course.title,
+      scope: course.scope,
+      department: course.department,
+      faculty: course.faculty,
+      departments: course.departments,
+      faculties: course.faculties
+    })),
+    verifiedCourseOfferingCount: scopedCourses.length,
+    availableCapabilityIdsAndNames: activeCaps.map((capability) => ({
+      id: capability.id,
+      title: capability.title,
+      description: capability.phoneDescription
+    })),
     liveWebsiteUrl: currentConfig.qrTargetUrl,
-    customCampaignAngle: customCampaignAngle?.trim() || 'High-impact university student adoption campaign',
+    customCampaignAngle: customCampaignAngle?.trim() || null
   };
 
-  const prompt = `You are the Senior Academic Growth & Brand Copywriter for UniAce Mastery Hub.
-Generate dynamic, factual promotional flyer copy grounded STRICTLY in the live platform context below:
+  const prompt = `You are UniAce Mastery Hub's marketing copy editor.
+Use only the exact factual information supplied in this verified platform snapshot:
 
 ${JSON.stringify(contextSummary, null, 2)}
 
-Return ONLY a valid JSON object matching this exact structure (no markdown fences, no commentary):
+Rules:
+- Do not invent course counts, module counts, prices, student numbers, ratings, outcomes, accreditations, guarantees, service hours, performance claims or feature availability.
+- Do not describe a capability unless its exact ID and name appear in availableCapabilityIdsAndNames.
+- Preserve course names, codes, faculty names and department names exactly.
+- Do not claim that all students can access a targeted course; scope restrictions apply.
+- You may improve tone, clarity, structure and campaign relevance.
+- Return complete copy as a DRAFT for administrator review, not as independently verified fact.
+
+Return only a JSON object with this structure:
 {
-  "headlineLine1": "Short punchy first headline line (max 24 chars, e.g. 'Study Smarter,')",
-  "headlineLine2": "Short punchy second headline line (max 24 chars, e.g. 'Not Harder')",
-  "topScriptCallout": "Short warm 2-4 word callout (e.g. 'Your Study Companion')",
-  "midScriptCallout": "Short encouraging 3-4 word note (e.g. 'Your goals are valid')",
-  "leadBoldParagraph": "1 sentence bold value proposition tailored to the target audience (max 125 chars)",
-  "subParagraph": "1-2 sentence supporting explanation of what students can do on UniAce (max 175 chars)",
-  "phoneGreeting": "Warm mobile greeting (max 26 chars, e.g. 'Hello, Scholar 👋')",
+  "headlineLine1": "Short first headline (maximum 32 characters)",
+  "headlineLine2": "Short second headline (maximum 32 characters)",
+  "topScriptCallout": "Short brand callout",
+  "midScriptCallout": "Short encouragement",
+  "leadBoldParagraph": "One concise value proposition based only on the supplied snapshot",
+  "subParagraph": "One or two concise supporting sentences",
+  "phoneGreeting": "Short greeting",
   "featureBlurbs": [
     {
-      "id": "exact feature id from activeFeatureTitles",
-      "phoneDescription": "Concise 5-8 word mobile card description",
-      "gridDescription": "Concise 4-6 word bottom grid description"
+      "id": "exact capability ID from availableCapabilityIdsAndNames",
+      "phoneDescription": "Short description with no new factual claims",
+      "gridDescription": "Short description with no new factual claims"
     }
   ],
   "captions": {
-    "whatsapp": "Ready-to-forward WhatsApp broadcast message with emojis and ${currentConfig.qrTargetUrl}",
-    "twitter": "Punchy X/Twitter post under 260 chars with ${currentConfig.qrTargetUrl}",
-    "linkedin": "Professional LinkedIn announcement post with ${currentConfig.qrTargetUrl}",
-    "tiktok": "High-energy TikTok/Reels caption with hashtags"
+    "whatsapp": "Campaign caption that includes the exact live URL",
+    "twitter": "Campaign caption that includes the exact live URL",
+    "linkedin": "Professional campaign caption that includes the exact live URL",
+    "tiktok": "Campaign caption that includes the exact live URL"
   }
 }`;
 
   const result = await callAI(
     prompt,
-    'Return strictly valid JSON with dynamic marketing copy grounded in the provided UniAce platform metadata.',
+    'Return strictly valid JSON. Never add facts that are not present in the supplied marketing snapshot.',
     'json',
     1200,
     'standard',
     'chat'
   );
+  const raw = result.text.replace(/\`\`\`(?:json)?\s*([\s\S]*?)\s*\`\`\`/g, '$1').trim();
+  const parsed = JSON.parse(jsonrepair(raw));
 
-  const rawCleaned = result.text.replace(/```(?:json)?\s*([\s\S]*?)\s*```/g, '$1').trim();
-  const parsed = JSON.parse(jsonrepair(rawCleaned));
-
-  const blurbMap = new Map<string, { phoneDescription?: string; gridDescription?: string }>();
-  if (Array.isArray(parsed.featureBlurbs)) {
-    for (const item of parsed.featureBlurbs) {
-      if (item && typeof item.id === 'string') {
-        blurbMap.set(item.id, item);
-      }
+  const requiredStrings = [
+    'headlineLine1', 'headlineLine2', 'topScriptCallout', 'midScriptCallout',
+    'leadBoldParagraph', 'subParagraph', 'phoneGreeting'
+  ];
+  for (const key of requiredStrings) {
+    if (typeof parsed[key] !== 'string' || !parsed[key].trim()) {
+      throw new Error(`AI marketing draft is missing required field: ${key}.`);
+    }
+  }
+  for (const key of ['whatsapp', 'twitter', 'linkedin', 'tiktok']) {
+    if (typeof parsed.captions?.[key] !== 'string' || !parsed.captions[key].trim() ||
+        !parsed.captions[key].includes(currentConfig.qrTargetUrl)) {
+      throw new Error(`AI marketing draft did not return a complete ${key} caption with the verified URL.`);
     }
   }
 
-  const updatedCapabilities = currentConfig.capabilities.map((cap) => {
-    const match = blurbMap.get(cap.id);
-    if (!match) return cap;
+  const activeIds = new Set(activeCaps.map((capability) => capability.id));
+  const blurbs = new Map<string, any>();
+  if (Array.isArray(parsed.featureBlurbs)) {
+    for (const item of parsed.featureBlurbs) {
+      if (item && typeof item.id === 'string' && activeIds.has(item.id)) blurbs.set(item.id, item);
+    }
+  }
+  const capabilities = currentConfig.capabilities.map((capability) => {
+    const item = blurbs.get(capability.id);
+    if (!item) return capability;
     return {
-      ...cap,
-      phoneDescription:
-        typeof match.phoneDescription === 'string' && match.phoneDescription.trim()
-          ? match.phoneDescription.trim()
-          : cap.phoneDescription,
-      gridDescription:
-        typeof match.gridDescription === 'string' && match.gridDescription.trim()
-          ? match.gridDescription.trim()
-          : cap.gridDescription,
+      ...capability,
+      phoneDescription: typeof item.phoneDescription === 'string' && item.phoneDescription.trim()
+        ? item.phoneDescription.trim()
+        : capability.phoneDescription,
+      gridDescription: typeof item.gridDescription === 'string' && item.gridDescription.trim()
+        ? item.gridDescription.trim()
+        : capability.gridDescription
     };
   });
 
   return {
     ...currentConfig,
-    headlineLine1:
-      typeof parsed.headlineLine1 === 'string' && parsed.headlineLine1.trim()
-        ? parsed.headlineLine1.trim()
-        : currentConfig.headlineLine1,
-    headlineLine2:
-      typeof parsed.headlineLine2 === 'string' && parsed.headlineLine2.trim()
-        ? parsed.headlineLine2.trim()
-        : currentConfig.headlineLine2,
-    topScriptCallout:
-      typeof parsed.topScriptCallout === 'string' && parsed.topScriptCallout.trim()
-        ? parsed.topScriptCallout.trim()
-        : currentConfig.topScriptCallout,
-    midScriptCallout:
-      typeof parsed.midScriptCallout === 'string' && parsed.midScriptCallout.trim()
-        ? parsed.midScriptCallout.trim()
-        : currentConfig.midScriptCallout,
-    leadBoldParagraph:
-      typeof parsed.leadBoldParagraph === 'string' && parsed.leadBoldParagraph.trim()
-        ? parsed.leadBoldParagraph.trim()
-        : currentConfig.leadBoldParagraph,
-    subParagraph:
-      typeof parsed.subParagraph === 'string' && parsed.subParagraph.trim()
-        ? parsed.subParagraph.trim()
-        : currentConfig.subParagraph,
-    phoneGreeting:
-      typeof parsed.phoneGreeting === 'string' && parsed.phoneGreeting.trim()
-        ? parsed.phoneGreeting.trim()
-        : currentConfig.phoneGreeting,
-    capabilities: updatedCapabilities,
+    headlineLine1: parsed.headlineLine1.trim(),
+    headlineLine2: parsed.headlineLine2.trim(),
+    topScriptCallout: parsed.topScriptCallout.trim(),
+    midScriptCallout: parsed.midScriptCallout.trim(),
+    leadBoldParagraph: parsed.leadBoldParagraph.trim(),
+    subParagraph: parsed.subParagraph.trim(),
+    phoneGreeting: parsed.phoneGreeting.trim(),
+    capabilities,
     captions: {
-      whatsapp:
-        typeof parsed.captions?.whatsapp === 'string' && parsed.captions.whatsapp.trim()
-          ? parsed.captions.whatsapp.trim()
-          : currentConfig.captions.whatsapp,
-      twitter:
-        typeof parsed.captions?.twitter === 'string' && parsed.captions.twitter.trim()
-          ? parsed.captions.twitter.trim()
-          : currentConfig.captions.twitter,
-      linkedin:
-        typeof parsed.captions?.linkedin === 'string' && parsed.captions.linkedin.trim()
-          ? parsed.captions.linkedin.trim()
-          : currentConfig.captions.linkedin,
-      tiktok:
-        typeof parsed.captions?.tiktok === 'string' && parsed.captions.tiktok.trim()
-          ? parsed.captions.tiktok.trim()
-          : currentConfig.captions.tiktok,
-    },
+      whatsapp: parsed.captions.whatsapp.trim(),
+      twitter: parsed.captions.twitter.trim(),
+      linkedin: parsed.captions.linkedin.trim(),
+      tiktok: parsed.captions.tiktok.trim()
+    }
   };
 }
 
-export const DEMO_SCENARIOS: Record<string, DemoScenario> = {
-  full_ecosystem: {
-    id: 'full_ecosystem',
-    name: '🌟 Complete University Platform Tour',
-    tagline: 'Comprehensive showcase of the entire academic ecosystem',
-    totalDurationSec: 40,
-    recommendedFor: ['YouTube', 'LinkedIn', 'Institutional Partners', 'Investor Pitch'],
-    aspectRatioHint: '16:9 Landscape',
-    steps: [
-      {
-        id: 'step_hub',
-        view: 'hub',
-        durationMs: 7000,
-        title: 'Curriculum & Department Hub',
-        subtitle: 'Dynamic navigation across departments, semesters & accredited courses',
-        badge: 'Accredited Catalog',
-      },
-      {
-        id: 'step_dashboard',
-        view: 'dashboard',
-        durationMs: 6000,
-        title: 'Student Performance & XP Engine',
-        subtitle: 'Live study streaks, mastery radar, and adaptive difficulty tracking',
-        badge: 'Adaptive Analytics',
-      },
-      {
-        id: 'step_syllabus',
-        view: 'course-syllabus',
-        durationMs: 6000,
-        title: 'Structured University Modules',
-        subtitle: 'Deep syllabus with self-healing curriculum integrity',
-        badge: 'Curriculum Integrity',
-      },
-      {
-        id: 'step_ai_tutor',
-        view: 'ai-tutor',
-        durationMs: 9000,
-        title: 'AI Academic Companion with KaTeX',
-        subtitle: 'Live interactive university tutor with rigorous math proofs & voice synthesis',
-        badge: 'Multi-Model Fallback',
-        simulatedQuery:
-          "Explain Maxwell's equations and derive electromagnetic wave velocity $c = \\frac{1}{\\sqrt{\\mu_0 \\epsilon_0}}$",
-      },
-      {
-        id: 'step_quizzes',
-        view: 'quizzes',
-        durationMs: 7000,
-        title: 'Smart Practice Quiz Engine',
-        subtitle: 'Instant active-recall testing with dynamic difficulty scaling',
-        badge: 'Active Recall',
-      },
-      {
-        id: 'step_mastery',
-        view: 'mastery',
-        durationMs: 5000,
-        title: 'Mastery Retention & Concept Map',
-        subtitle: 'Visual retention tracking and personalized exam readiness scores',
-        badge: 'Mastery Retention',
-      },
-    ],
-    captions: {
-      twitter: `🎓 Meet UniAce: The next-generation AI Academic Ecosystem for University Students!
-✨ Real-time AI Tutor with KaTeX mathematical proofs
-⚡ Multi-provider AI routing & adaptive course mastery
-📊 Smart quizzes, flashcards & study planner
-🔗 Try it live: https://uniace.app #EdTech #AI #University #HigherEd`,
-      linkedin: `Proud to showcase UniAce Mastery Hub — an end-to-end academic learning ecosystem built for university students and higher education institutions.
-
-Key Capabilities:
-🔹 Multi-Model AI Routing with automatic circuit breakers
-🔹 Dynamic University Curriculums with KaTeX & Mermaid rendering
-🔹 Real-Time Interactive Quizzes & Adaptive Retention Tracking
-🔹 Zero-Fallback Architecture built with React 18, Vite & Tailwind
-
-#EdTech #ArtificialIntelligence #HigherEducation #StudentSuccess #UniAce`,
-      tiktok: `Studying at university just got 10x easier 🚀🤖 Watch how UniAce breaks down complex courses step-by-step with formulas and quizzes! #studentlife #collegehacks #aitools #studytok`,
-      whatsapp: `🎓 Check out this live demo of UniAce Mastery Hub! Real-time AI tutoring for university courses with step-by-step solutions and exam practice: https://uniace.app`,
-    },
-  },
-  ai_tutor_deepdive: {
-    id: 'ai_tutor_deepdive',
-    name: '🤖 AI Academic Tutor & Derivations',
-    tagline: 'Spotlight on deep-reasoning AI tutoring with KaTeX LaTeX math',
-    totalDurationSec: 22,
-    recommendedFor: ['TikTok', 'Instagram Reels', 'YouTube Shorts', 'X / Twitter'],
-    aspectRatioHint: '9:16 Vertical Reel',
-    steps: [
-      {
-        id: 'step_syllabus_intro',
-        view: 'course-syllabus',
-        durationMs: 4000,
-        title: 'Select Complex Academic Topic',
-        subtitle: 'Browsing accredited university curriculum syllabus',
-        badge: 'Syllabus Browser',
-      },
-      {
-        id: 'step_ai_tutor_solve',
-        view: 'ai-tutor',
-        durationMs: 14000,
-        title: 'Live Multi-Step Proof & Tutoring',
-        subtitle: 'Generating step-by-step LaTeX derivation with conceptual analogies',
-        badge: 'KaTeX & Multi-Model',
-        simulatedQuery:
-          'Derive the time-dependent Schrödinger equation $\\hat{H}\\Psi = i\\hbar\\frac{\\partial}{\\partial t}\\Psi$ and explain its physical significance.',
-      },
-      {
-        id: 'step_formulas',
-        view: 'formulas',
-        durationMs: 4000,
-        title: 'Instant Formula Reference Library',
-        subtitle: 'Verified academic equation reference for rapid problem solving',
-        badge: 'KaTeX Formulas',
-      },
-    ],
-    captions: {
-      twitter: `Stuck on tough university derivations? 🤯 Watch UniAce AI break down step-by-step proofs with LaTeX notation in seconds. 🚀 #STEM #UniAce #University`,
-      linkedin: `Accelerating higher education through rigorous, interactive AI tutoring. UniAce generates verifiable step-by-step derivations with KaTeX typography. #EdTech #AI #HigherEducation`,
-      tiktok: `POV: You found the AI tutor that actually explains university derivations step-by-step with zero errors 🤯🔥 #collegelife #engineeringstudent #studytok #fyp`,
-      whatsapp: `🚀 Watch UniAce AI solve university-level problems step-by-step with formulas: https://uniace.app`,
-    },
-  },
-  quiz_sprint: {
-    id: 'quiz_sprint',
-    name: '⚡ Interactive Quiz & Mastery Sprint',
-    tagline: 'High-energy active recall and exam readiness demo',
-    totalDurationSec: 18,
-    recommendedFor: ['TikTok', 'Instagram Stories', 'X / Twitter'],
-    aspectRatioHint: '9:16 Vertical Reel',
-    steps: [
-      {
-        id: 'step_quizzes_start',
-        view: 'quizzes',
-        durationMs: 9000,
-        title: 'Smart Practice Quiz Engine',
-        subtitle: 'Dynamic question bank with instant explanations & XP rewards',
-        badge: 'Exam Prep',
-      },
-      {
-        id: 'step_mastery_level',
-        view: 'mastery',
-        durationMs: 5000,
-        title: 'Live Mastery Tracking',
-        subtitle: 'Visual retention bars and concept mastery progression',
-        badge: 'Adaptive Growth',
-      },
-      {
-        id: 'step_arena',
-        view: 'arena',
-        durationMs: 4000,
-        title: 'Student Arena & Daily Quests',
-        subtitle: 'Gamified academic challenges and community leaderboards',
-        badge: 'Gamification',
-      },
-    ],
-    captions: {
-      twitter: `Turn passive studying into active recall! ⚡ Practice with AI-generated university quizzes and track your mastery live on UniAce. 🎯 #StudyHacks #Student #EdTech`,
-      linkedin: `Active recall and spaced repetition powered by AI. See how UniAce keeps university students engaged with smart quizzes and real-time mastery tracking. #LearningScience #EdTech`,
-      tiktok: `Testing my knowledge before exams with AI-generated quizzes 📝⚡ +100 XP unlocked! #studymotivation #examszn #collegeexam #studytok`,
-      whatsapp: `🎯 Practice university quizzes and track your mastery with UniAce: https://uniace.app`,
-    },
-  },
-  quick_social: {
-    id: 'quick_social',
-    name: '🚀 15-Second Viral Teaser',
-    tagline: 'Ultra-fast snappy cut perfect for social feeds',
-    totalDurationSec: 15,
-    recommendedFor: ['Instagram Reels', 'TikTok', 'YouTube Shorts'],
-    aspectRatioHint: '9:16 Vertical Reel',
-    steps: [
-      {
-        id: 'step_hub_quick',
-        view: 'hub',
-        durationMs: 4000,
-        title: 'University Learning Platform',
-        subtitle: 'Full accredited course catalogue',
-        badge: 'All Departments',
-      },
-      {
-        id: 'step_ai_quick',
-        view: 'ai-tutor',
-        durationMs: 6000,
-        title: 'Instant 24/7 AI Academic Tutor',
-        subtitle: 'Step-by-step rigorous answers',
-        badge: 'Instant AI',
-      },
-      {
-        id: 'step_quiz_quick',
-        view: 'quizzes',
-        durationMs: 5000,
-        title: 'Master Every Course',
-        subtitle: 'Smart quizzes and XP leaderboard',
-        badge: 'Get Ahead',
-      },
-    ],
-    captions: {
-      twitter: `Ace your university exams with UniAce 🎓 24/7 AI Tutor, smart quizzes & curated syllabi in one hub. Try now: https://uniace.app 🚀 #University #StudentTools`,
-      linkedin: `Transforming university student success with personalized AI tutoring and continuous mastery feedback. Explore UniAce today. #EdTech #Innovation`,
-      tiktok: `The ultimate university study hack you didn't know existed 🎓✨ Try UniAce! #collegetips #freshmanadvice #aitools #studytok`,
-      whatsapp: `🎓 Try UniAce Mastery Hub — your 24/7 university study companion: https://uniace.app`,
-    },
-  },
-};
-
-/**
- * Dynamically resolves all Video Reel scenarios using live courses, active feature switches,
- * and the current deployment origin URL.
- */
-export function buildDynamicDemoScenarios(
-  ctx: PlatformMarketingContext
-): Record<string, DemoScenario> {
-  const { url } = getCleanHost(ctx.liveOrigin);
-  const courseList = Object.values(ctx.courses || {});
-  const arenaEnabled = ctx.featureSwitches?.arena !== false;
-
-  const selectedCourse =
-    ctx.selectedCourseId && ctx.courses[ctx.selectedCourseId]
-      ? ctx.courses[ctx.selectedCourseId]
-      : courseList.find(
-          (c) =>
-            ctx.targetScope === 'department' &&
-            ctx.selectedDepartment &&
-            c.department?.toLowerCase() === ctx.selectedDepartment.toLowerCase()
-        ) || courseList[0];
-
-  const sampleModuleTitle =
-    selectedCourse?.syllabus?.[0]?.title ||
-    selectedCourse?.title ||
-    'Fundamental Principles and Derivations';
-  const sampleFormula = selectedCourse?.formulas?.[0]?.latex;
-
-  const dynamicQuery = selectedCourse
-    ? sampleFormula
-      ? `In ${selectedCourse.id || selectedCourse.title} (${sampleModuleTitle}), derive and explain the significance of $${sampleFormula}$ with a practical university exam example.`
-      : `In ${selectedCourse.id || selectedCourse.title}, break down the core principles of "${sampleModuleTitle}" step-by-step and show how it is tested in exams.`
-    : DEMO_SCENARIOS.full_ecosystem.steps[3].simulatedQuery!;
-
-  const replaceUrl = (text: string) => text.replace(/https:\/\/uniace\.app/g, url);
-
-  const resolved: Record<string, DemoScenario> = {};
-
-  for (const [id, baseScenario] of Object.entries(DEMO_SCENARIOS)) {
-    const adaptedSteps = baseScenario.steps.map((step) => {
-      // If Arena is switched off in Feature Switches, dynamically substitute Flashcards
-      if (step.view === 'arena' && !arenaEnabled) {
-        return {
-          ...step,
-          view: 'flashcards' as View,
-          title: 'Active Recall Smart Flashcards',
-          subtitle: 'Spaced-repetition decks generated from live university modules',
-          badge: 'Spaced Repetition',
-        };
-      }
-      if (step.view === 'ai-tutor' && step.simulatedQuery && selectedCourse) {
-        return {
-          ...step,
-          courseId: selectedCourse.id,
-          simulatedQuery: dynamicQuery,
-        };
-      }
-      if (selectedCourse && (step.view === 'course-syllabus' || step.view === 'quizzes')) {
-        return {
-          ...step,
-          courseId: selectedCourse.id,
-        };
-      }
-      return step;
-    });
-
-    resolved[id] = {
-      ...baseScenario,
-      steps: adaptedSteps,
-      captions: {
-        twitter: replaceUrl(baseScenario.captions.twitter),
-        linkedin: replaceUrl(baseScenario.captions.linkedin),
-        tiktok: replaceUrl(baseScenario.captions.tiktok),
-        whatsapp: replaceUrl(baseScenario.captions.whatsapp),
-      },
-    };
-  }
-
-  // Add a live Course / Department Spotlight Scenario whenever live courses exist
-  if (selectedCourse) {
-    const targetName =
-      ctx.targetScope === 'department' && ctx.selectedDepartment
-        ? `${ctx.selectedDepartment} Department`
-        : `${selectedCourse.id || ''} ${selectedCourse.title}`.trim();
-
-    resolved.live_course_spotlight = {
-      id: 'live_course_spotlight',
-      name: `🎯 Live Spotlight: ${targetName}`,
-      tagline: `Dynamically generated walkthrough for ${selectedCourse.title} (${selectedCourse.syllabus?.length || 0} modules)`,
-      totalDurationSec: 28,
-      recommendedFor: ['WhatsApp Broadcast', 'Department Groups', 'X / Twitter', 'LinkedIn'],
-      aspectRatioHint: '16:9 Landscape',
-      steps: [
-        {
-          id: 'dyn_step_syllabus',
-          view: 'course-syllabus',
-          courseId: selectedCourse.id,
-          durationMs: 6000,
-          title: `${selectedCourse.id || 'Course'}: ${selectedCourse.title}`,
-          subtitle: `Exploring ${selectedCourse.syllabus?.length || 10} accredited university modules in ${selectedCourse.department}`,
-          badge: selectedCourse.department || 'Live Course',
-        },
-        {
-          id: 'dyn_step_tutor',
-          view: 'ai-tutor',
-          courseId: selectedCourse.id,
-          durationMs: 11000,
-          title: `AI Tutor: ${sampleModuleTitle}`,
-          subtitle: 'Live step-by-step academic explanation & mathematical derivation',
-          badge: 'Live AI Solver',
-          simulatedQuery: dynamicQuery,
-        },
-        {
-          id: 'dyn_step_quiz',
-          view: 'quizzes',
-          courseId: selectedCourse.id,
-          durationMs: 6000,
-          title: `${selectedCourse.id || 'Course'} Exam Practice`,
-          subtitle: 'Active-recall testing with instant grading & step-by-step feedback',
-          badge: 'Exam Readiness',
-        },
-        {
-          id: 'dyn_step_flashcards',
-          view: 'flashcards',
-          courseId: selectedCourse.id,
-          durationMs: 5000,
-          title: 'Smart Flashcards & Formula Review',
-          subtitle: 'Rapid concept retention before semester exams',
-          badge: 'Rapid Revision',
-        },
-      ],
-      captions: {
-        twitter: `📚 Studying ${targetName}? Watch how UniAce AI breaks down "${sampleModuleTitle}" and generates instant exam practice! 🎓⚡\n🔗 ${url} #UniAce #University #StudySmarter`,
-        linkedin: `Demonstrating live course mastery for ${targetName} on UniAce Mastery Hub.\n\nStudents get structured syllabus modules, real-time AI derivations for "${sampleModuleTitle}", and adaptive exam practice in one unified workspace.\n\n🔗 ${url} #HigherEducation #EdTech #UniAce`,
-        tiktok: `How to get an A in ${targetName} this semester 🚀🎓 Watch UniAce explain "${sampleModuleTitle}" step-by-step! #studytok #university #examszn`,
-        whatsapp: `🎓 *Studying ${targetName}?*\nWatch how UniAce Mastery Hub explains *${sampleModuleTitle}*, generates practice quizzes, and helps you prepare for exams:\n🔗 ${url}`,
-      },
-    };
-  }
-
-  return resolved;
+function buildScenarioCaptions(
+  url: string,
+  targetName: string,
+  course?: MarketingCourse,
+  capabilities: DynamicCapabilityItem[] = []
+): DemoScenario['captions'] {
+  const names = capabilities.filter((item) => item.enabled).map((item) => item.title);
+  const features = names.length > 0 ? names.join(', ') : 'the current student-facing interface';
+  const courseContext = course ? `Course spotlight: ${course.id} — ${course.title}. ` : '';
+  return {
+    twitter: `${targetName}: ${courseContext}Explore ${features} in UniAce. ${url} #UniAce #University`,
+    linkedin: `Explore UniAce Mastery Hub. ${courseContext}This walkthrough demonstrates ${features}. Course access remains subject to the published faculty, department and academic-level scope. ${url} #HigherEducation #EdTech`,
+    tiktok: `${courseContext}See the current UniAce learning interface. ${url} #university #studytok #uniace`,
+    whatsapp: `🎓 ${targetName}\n${courseContext}Explore the student-facing study tools currently shown in UniAce Mastery Hub:\n${features}\n${url}`
+  };
 }
 
-/**
- * Synthesizes a bespoke Video Reel Scenario at runtime using the live AI router.
- */
+export function buildDynamicDemoScenarios(ctx: PlatformMarketingContext): Record<string, DemoScenario> {
+  const { url } = getCleanHost(ctx.liveOrigin);
+  const eligibleCourses = getCoursesForMarketingScope(ctx);
+  const selectedCourse = getSelectedCourse(ctx);
+  const capabilities = resolveDynamicCapabilities(ctx);
+  const active = capabilities.filter((item) => item.enabled);
+  const targetName =
+    ctx.targetScope === 'department' ? (ctx.selectedDepartment || 'Department campaign') :
+    ctx.targetScope === 'faculty' ? (ctx.selectedFaculty || 'Faculty campaign') :
+    ctx.targetScope === 'course' && selectedCourse ? `${selectedCourse.id} — ${selectedCourse.title}` :
+    ctx.targetScope === 'exam_readiness' ? 'Exam practice campaign' :
+    'UniAce platform';
+
+  const steps: DemoStep[] = [];
+  if (active.some((item) => item.view === 'hub') && eligibleCourses.length > 0) {
+    steps.push({
+      id: 'live_step_hub',
+      view: 'hub',
+      durationMs: 6000,
+      title: 'Live Course Hub',
+      subtitle: `${eligibleCourses.length} live course offering(s) match this campaign scope.`,
+      badge: 'Course discovery'
+    });
+  }
+  if (selectedCourse) {
+    steps.push({
+      id: 'live_step_syllabus',
+      view: 'course-syllabus',
+      courseId: selectedCourse.id,
+      durationMs: 6000,
+      title: `${selectedCourse.id}: ${selectedCourse.title}`,
+      subtitle: selectedCourse.syllabus.length > 0
+        ? `Explore its ${selectedCourse.syllabus.length} published modules.`
+        : 'Explore the published course information.',
+      badge: 'Course spotlight'
+    });
+  }
+  for (const feature of active.filter((item) => ['question_generator', 'flashcards', 'study_planner', 'my_notes'].includes(item.id))) {
+    if (steps.length >= 6) break;
+    steps.push({
+      id: `live_step_${feature.id}`,
+      view: feature.view,
+      courseId: selectedCourse?.id,
+      durationMs: 5000,
+      title: feature.title,
+      subtitle: feature.phoneDescription,
+      badge: 'Live interface'
+    });
+  }
+
+  const scenarios: Record<string, DemoScenario> = {};
+  if (steps.length > 0) {
+    scenarios.full_ecosystem = {
+      id: 'full_ecosystem',
+      name: 'Live UniAce Walkthrough',
+      tagline: `A guided tour assembled from current ${ctx.targetScope.replace('_', ' ')} data and implemented student views.`,
+      totalDurationSec: Math.round(steps.reduce((sum, step) => sum + step.durationMs, 0) / 1000),
+      recommendedFor: ['WhatsApp', 'LinkedIn', 'YouTube'],
+      aspectRatioHint: '16:9 Landscape',
+      steps,
+      captions: buildScenarioCaptions(url, targetName, selectedCourse, capabilities)
+    };
+  }
+
+  if (selectedCourse && active.some((item) => item.id === 'question_generator')) {
+    scenarios.course_practice = {
+      id: 'course_practice',
+      name: `Practice spotlight: ${selectedCourse.id}`,
+      tagline: `A course-specific look at the available practice interface for ${selectedCourse.title}.`,
+      totalDurationSec: 16,
+      recommendedFor: ['TikTok', 'Instagram Stories', 'WhatsApp'],
+      aspectRatioHint: '9:16 Vertical Reel',
+      steps: [
+        {
+          id: 'practice_syllabus',
+          view: 'course-syllabus',
+          courseId: selectedCourse.id,
+          durationMs: 5000,
+          title: `${selectedCourse.id}: ${selectedCourse.title}`,
+          subtitle: 'Open a published course module.',
+          badge: 'Course context'
+        },
+        {
+          id: 'practice_quiz',
+          view: 'quizzes',
+          courseId: selectedCourse.id,
+          durationMs: 11000,
+          title: 'Course Practice',
+          subtitle: 'Demonstrate the actual quiz and practice controls.',
+          badge: 'Practice interface'
+        }
+      ],
+      captions: buildScenarioCaptions(url, targetName, selectedCourse, capabilities)
+    };
+  }
+
+  return scenarios;
+}
+
 export async function synthesizeCustomDemoScenarioWithAI(
   ctx: PlatformMarketingContext,
   customDirective?: string
 ): Promise<DemoScenario> {
   const { url } = getCleanHost(ctx.liveOrigin);
-  const courseList = Object.values(ctx.courses || {});
-  const arenaEnabled = ctx.featureSwitches?.arena !== false;
+  const selectedCourse = getSelectedCourse(ctx);
+  const capabilities = resolveDynamicCapabilities(ctx).filter((item) => item.enabled);
+  const allowedViews = Array.from(new Set(capabilities.map((item) => item.view)));
+  if (selectedCourse) allowedViews.push('course-syllabus');
+  const validViews = allowedViews.filter((view, index) =>
+    allowedViews.indexOf(view) === index && view !== 'ai-tutor'
+  );
 
-  const selectedCourse =
-    ctx.selectedCourseId && ctx.courses[ctx.selectedCourseId]
-      ? ctx.courses[ctx.selectedCourseId]
-      : courseList[0];
+  if (validViews.length === 0) {
+    throw new Error('No implemented student views are currently eligible for a marketing demonstration.');
+  }
 
-  const allowedViews: View[] = [
-    'hub',
-    'dashboard',
-    'course-syllabus',
-    'ai-tutor',
-    'quizzes',
-    'flashcards',
-    'past-questions',
-    'formulas',
-    'mastery',
-    'study-plan',
-    'notebook',
-    ...(arenaEnabled ? (['arena'] as View[]) : []),
-  ];
+  const prompt = `You are the creative director for a UniAce product demonstration.
+Create a short screen-recording storyboard from the verified runtime context below:
 
-  const prompt = `You are the Creative Director for UniAce Mastery Hub.
-Create a dynamic, live screen-recording Demo Reel Scenario based on this real platform state:
-- Target Scope: ${ctx.targetScope}
-- Selected Faculty: ${ctx.selectedFaculty || 'All Faculties'}
-- Selected Department: ${ctx.selectedDepartment || selectedCourse?.department || 'All Departments'}
-- Selected Course: ${selectedCourse ? `${selectedCourse.id} - ${selectedCourse.title} (Modules: ${(selectedCourse.syllabus || []).slice(0, 5).map((m) => m.title).join(', ')})` : 'General University Catalog'}
-- Allowed App Views for Steps: ${allowedViews.join(', ')}
-- Live Platform URL: ${url}
-- Custom Admin Directive: ${customDirective?.trim() || 'Create a high-converting showcase highlighting rigorous AI tutoring, active recall quizzes, and course mastery.'}
+- Target scope: ${ctx.targetScope}
+- Selected faculty: ${ctx.selectedFaculty || 'not selected'}
+- Selected department: ${ctx.selectedDepartment || 'not selected'}
+- Selected course: ${selectedCourse ? `${selectedCourse.id} — ${selectedCourse.title}` : 'none'}
+- Actual course modules: ${selectedCourse ? selectedCourse.syllabus.map((module) => module.title).join(' | ') : 'none'}
+- Allowed application views: ${validViews.join(', ')}
+- Current enabled capability names: ${capabilities.map((item) => item.title).join(', ')}
+- Live URL: ${url}
+- Administrator direction: ${customDirective?.trim() || 'Show the current student-facing product clearly.'}
 
-Return ONLY a valid JSON object with this exact structure:
+Do not invent numbers, results, service guarantees, accreditation, student usage, prices or product capabilities.
+Use only allowed views. Do not invent a course, module or formula.
+Return only valid JSON:
 {
-  "name": "Scenario title with 1 leading emoji (max 45 chars)",
-  "tagline": "Concise 1-sentence description of the reel",
+  "name": "Short storyboard name",
+  "tagline": "One-sentence storyboard purpose",
   "aspectRatioHint": "16:9 Landscape",
-  "recommendedFor": ["WhatsApp", "LinkedIn", "TikTok", "X / Twitter"],
+  "recommendedFor": ["WhatsApp", "LinkedIn"],
   "steps": [
     {
-      "id": "step_1",
-      "view": "one of Allowed App Views",
+      "view": "one allowed application view",
       "durationMs": 6000,
-      "title": "Step overlay headline (max 36 chars)",
-      "subtitle": "Step overlay subtitle (max 75 chars)",
-      "badge": "Short 2-word badge",
-      "simulatedQuery": "Optional: If view is 'ai-tutor', provide a rigorous university question with LaTeX math ($...$) relevant to the selected course/department"
+      "title": "Short scene title",
+      "subtitle": "A factual description of what the viewer will see",
+      "badge": "Short label"
     }
   ],
   "captions": {
-    "twitter": "Ready-to-post X caption including ${url}",
-    "linkedin": "Ready-to-post LinkedIn caption including ${url}",
-    "tiktok": "Ready-to-post TikTok/Reels caption",
-    "whatsapp": "Ready-to-post WhatsApp broadcast caption including ${url}"
+    "twitter": "Caption including the exact URL ${url}",
+    "linkedin": "Caption including the exact URL ${url}",
+    "tiktok": "Caption including the exact URL ${url}",
+    "whatsapp": "Caption including the exact URL ${url}"
   }
 }`;
 
-  const result = await callAI(
-    prompt,
-    'Return strictly valid JSON for a dynamic DemoScenario.',
-    'json',
-    1200,
-    'standard',
-    'chat'
-  );
-
-  const rawCleaned = result.text.replace(/```(?:json)?\s*([\s\S]*?)\s*```/g, '$1').trim();
-  const parsed = JSON.parse(jsonrepair(rawCleaned));
-
-  const validSteps: DemoStep[] = (Array.isArray(parsed.steps) ? parsed.steps : [])
-    .slice(0, 6)
-    .map((s: any, idx: number) => {
-      const candidateView = allowedViews.includes(s?.view) ? (s.view as View) : 'ai-tutor';
-      const durationMs = Math.min(15000, Math.max(4000, Number(s?.durationMs) || 6000));
-      return {
-        id: `ai_step_${idx + 1}_${Date.now()}`,
-        view: candidateView,
-        courseId: selectedCourse?.id,
-        durationMs,
-        title: String(s?.title || `Step ${idx + 1}: UniAce Feature`).slice(0, 50),
-        subtitle: String(s?.subtitle || 'Live interactive demonstration').slice(0, 100),
-        badge: String(s?.badge || 'Live Demo').slice(0, 24),
-        simulatedQuery:
-          candidateView === 'ai-tutor' && typeof s?.simulatedQuery === 'string'
-            ? s.simulatedQuery
-            : undefined,
-      };
-    });
-
-  if (validSteps.length === 0) {
-    throw new Error('AI returned an empty step sequence for the demo reel.');
+  const result = await callAI(prompt, 'Return strict JSON and do not add unsupported facts.', 'json', 1200, 'standard', 'chat');
+  const raw = result.text.replace(/\`\`\`(?:json)?\s*([\s\S]*?)\s*\`\`\`/g, '$1').trim();
+  const parsed = JSON.parse(jsonrepair(raw));
+  if (!Array.isArray(parsed.steps) || parsed.steps.length === 0) {
+    throw new Error('AI did not return a usable demonstration sequence.');
   }
 
-  const totalDurationSec = Math.round(
-    validSteps.reduce((acc, s) => acc + s.durationMs, 0) / 1000
-  );
+  const steps: DemoStep[] = parsed.steps.slice(0, 6).map((step: any, index: number) => {
+    if (!validViews.includes(step?.view) ||
+        typeof step?.title !== 'string' || !step.title.trim() ||
+        typeof step?.subtitle !== 'string' || !step.subtitle.trim() ||
+        typeof step?.badge !== 'string' || !step.badge.trim()) {
+      throw new Error(`AI storyboard step ${index + 1} is incomplete or uses an unsupported application view.`);
+    }
+    const duration = Number(step.durationMs);
+    if (!Number.isFinite(duration) || duration < 4000 || duration > 15000) {
+      throw new Error(`AI storyboard step ${index + 1} has an invalid duration.`);
+    }
+    return {
+      id: `ai_step_${index + 1}_${Date.now()}`,
+      view: step.view,
+      durationMs: Math.round(duration),
+      title: step.title.trim().slice(0, 50),
+      subtitle: step.subtitle.trim().slice(0, 100),
+      badge: step.badge.trim().slice(0, 24),
+      courseId: selectedCourse?.id
+    };
+  });
 
+  const captions: DemoScenario['captions'] = {
+    twitter: String(parsed.captions?.twitter || ''),
+    linkedin: String(parsed.captions?.linkedin || ''),
+    tiktok: String(parsed.captions?.tiktok || ''),
+    whatsapp: String(parsed.captions?.whatsapp || '')
+  };
+  for (const [channel, caption] of Object.entries(captions)) {
+    if (!caption.trim() || !caption.includes(url)) {
+      throw new Error(`AI storyboard is missing a complete ${channel} caption with the verified deployment URL.`);
+    }
+  }
+
+  const totalDurationSec = Math.round(steps.reduce((sum, step) => sum + step.durationMs, 0) / 1000);
   return {
     id: `ai_custom_${Date.now()}`,
-    name: String(parsed.name || '✨ AI Custom Campaign Reel'),
-    tagline: String(parsed.tagline || 'Dynamically synthesized live demonstration sequence'),
+    name: typeof parsed.name === 'string' && parsed.name.trim() ? parsed.name.trim().slice(0, 45) : 'AI Demo Draft',
+    tagline: typeof parsed.tagline === 'string' && parsed.tagline.trim() ? parsed.tagline.trim().slice(0, 140) : 'Administrator review required.',
     totalDurationSec,
-    recommendedFor: Array.isArray(parsed.recommendedFor)
-      ? parsed.recommendedFor.map(String)
-      : ['WhatsApp', 'X / Twitter', 'LinkedIn'],
-    aspectRatioHint:
-      parsed.aspectRatioHint === '9:16 Vertical Reel' || parsed.aspectRatioHint === '1:1 Square'
-        ? parsed.aspectRatioHint
-        : '16:9 Landscape',
-    steps: validSteps,
-    captions: {
-      twitter: String(parsed.captions?.twitter || `Explore UniAce Mastery Hub: ${url}`),
-      linkedin: String(parsed.captions?.linkedin || `Explore UniAce Mastery Hub: ${url}`),
-      tiktok: String(parsed.captions?.tiktok || `Study smarter with UniAce Mastery Hub!`),
-      whatsapp: String(parsed.captions?.whatsapp || `Try UniAce Mastery Hub: ${url}`),
-    },
+    recommendedFor: Array.isArray(parsed.recommendedFor) ? parsed.recommendedFor.filter((item: unknown) => typeof item === 'string').slice(0, 5) : ['WhatsApp', 'LinkedIn'],
+    aspectRatioHint: parsed.aspectRatioHint === '9:16 Vertical Reel' || parsed.aspectRatioHint === '1:1 Square'
+      ? parsed.aspectRatioHint
+      : '16:9 Landscape',
+    steps,
+    captions,
     isDynamicAI: true,
+    requiresReview: true
   };
 }

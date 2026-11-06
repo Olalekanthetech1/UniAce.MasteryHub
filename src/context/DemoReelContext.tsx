@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useRef, useEffect, useCallback, ReactNode } from 'react';
 import { View } from '../types';
-import { DemoScenario, DEMO_SCENARIOS, DemoStep } from '../services/demoReelService';
+import { DemoScenario, DemoStep, isDemoScenarioIsolated } from '../services/demoReelService';
 import toast from 'react-hot-toast';
 
 interface DemoReelContextType {
@@ -16,9 +16,8 @@ interface DemoReelContextType {
   isModalOpen: boolean;
   selectedScenarioId: string;
   screenCaptureSupported: boolean;
-  activeSimulatedQuery: string | null;
   setSelectedScenarioId: (id: string) => void;
-  startDemoReel: (scenarioOrId?: string | DemoScenario, navigateCallback?: (view: View) => void, onSimulateChat?: (prompt: string) => void) => Promise<boolean>;
+  startDemoReel: (scenario: DemoScenario, navigateCallback?: (view: View) => void) => Promise<boolean>;
   skipToNextStep: () => void;
   pauseDemoReel: () => void;
   resumeDemoReel: () => void;
@@ -41,8 +40,7 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
   const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
   const [recordedDuration, setRecordedDuration] = useState(0);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [selectedScenarioId, setSelectedScenarioId] = useState('full_ecosystem');
-  const [activeSimulatedQuery, setActiveSimulatedQuery] = useState<string | null>(null);
+  const [selectedScenarioId, setSelectedScenarioId] = useState('');
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -50,8 +48,8 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
   const timerIntervalRef = useRef<any>(null);
   const stepTimeoutRef = useRef<any>(null);
   const navigateFnRef = useRef<((view: View) => void) | null>(null);
-  const simulateChatFnRef = useRef<((prompt: string) => void) | null>(null);
   const startTimeRef = useRef<number>(0);
+  const discardRecordingRef = useRef(false);
 
   const screenCaptureSupported = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getDisplayMedia;
 
@@ -87,26 +85,6 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
       navigateFnRef.current(step.view);
     } else if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('navigate', { detail: step.view }));
-    }
-
-    // 2. If step includes simulated chat query, trigger simulation
-    if (step.simulatedQuery) {
-      setActiveSimulatedQuery(step.simulatedQuery);
-      if (simulateChatFnRef.current) {
-        setTimeout(() => {
-          simulateChatFnRef.current?.(step.simulatedQuery!);
-        }, 1200);
-      } else if (typeof window !== 'undefined') {
-        setTimeout(() => {
-          window.dispatchEvent(
-            new CustomEvent('uniace:demo-query', {
-              detail: { prompt: step.simulatedQuery, courseId: step.courseId },
-            })
-          );
-        }, 1200);
-      }
-    } else {
-      setActiveSimulatedQuery(null);
     }
 
     // 3. Schedule next step
@@ -160,9 +138,11 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
   const cancelDemoReel = useCallback(() => {
     if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
     if (stepTimeoutRef.current) clearTimeout(stepTimeoutRef.current);
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+    discardRecordingRef.current = true;
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
       try {
-        mediaRecorderRef.current.stop();
+        recorder.stop();
       } catch (e) {
         console.warn('Error stopping media recorder on cancel:', e);
       }
@@ -176,44 +156,57 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
     setCurrentScenario(null);
     setCurrentStepIndex(0);
     setElapsedSeconds(0);
-    setActiveSimulatedQuery(null);
     toast('Demo reel cancelled', { icon: '🛑' });
   }, []);
 
   const stopAndSaveReel = useCallback(async () => {
     if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
     if (stepTimeoutRef.current) clearTimeout(stepTimeoutRef.current);
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === 'inactive') {
+      setIsRecording(false);
+      setIsPaused(false);
+      return;
+    }
+
     const duration = Math.max(1, Math.round((Date.now() - startTimeRef.current) / 1000));
     setRecordedDuration(duration);
+    setIsRecording(false);
+    setIsPaused(false);
 
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
+    try {
+      recorder.stop();
+    } catch (error) {
+      toast.error('The browser could not finalize this recording.');
+      console.error('Failed to stop demo recorder:', error);
     }
 
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
     }
-
-    setIsRecording(false);
-    setIsPaused(false);
-    setActiveSimulatedQuery(null);
-    toast.success('🎬 Demo Reel recorded successfully! Ready to export & download.');
   }, []);
 
   const startDemoReel = useCallback(async (
-    scenarioOrId: string | DemoScenario = selectedScenarioId,
-    navigateCallback?: (view: View) => void,
-    onSimulateChat?: (prompt: string) => void
+    scenario: DemoScenario,
+    navigateCallback?: (view: View) => void
   ): Promise<boolean> => {
-    const scenario: DemoScenario =
-      typeof scenarioOrId === 'string'
-        ? DEMO_SCENARIOS[scenarioOrId] || DEMO_SCENARIOS.full_ecosystem
-        : scenarioOrId;
+    if (!scenario || !Array.isArray(scenario.steps) || scenario.steps.length === 0) {
+      toast.error('A verified Demo Studio scenario is required before recording.');
+      return false;
+    }
+    if (!isDemoScenarioIsolated(scenario)) {
+      toast.error('This scenario contains an AI Tutor or automated chat step. Chat execution is disabled in Demo Studio until an isolated demo path is available.');
+      return false;
+    }
+    if (scenario.requiresReview) {
+      toast.error('This AI-generated demo script requires administrator review before recording.');
+      return false;
+    }
+    discardRecordingRef.current = false;
     setSelectedScenarioId(scenario.id);
     setCurrentScenario(scenario);
     if (navigateCallback) navigateFnRef.current = navigateCallback;
-    if (onSimulateChat) simulateChatFnRef.current = onSimulateChat;
 
     chunksRef.current = [];
     setRecordedBlob(null);
@@ -241,16 +234,6 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
 
       streamRef.current = stream;
 
-      // Detect if user stops screen sharing via browser native floating button
-      const videoTrack = stream.getVideoTracks()[0];
-      if (videoTrack) {
-        videoTrack.onended = () => {
-          if (isRecording) {
-            stopAndSaveReel();
-          }
-        };
-      }
-
       // Pick best supported MIME type
       const mimeTypes = [
         'video/webm;codecs=vp9,opus',
@@ -273,12 +256,41 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
       };
 
       recorder.onstop = () => {
-        const fullBlob = new Blob(chunksRef.current, { type: selectedMime });
+        mediaRecorderRef.current = null;
+
+        if (discardRecordingRef.current) {
+          discardRecordingRef.current = false;
+          chunksRef.current = [];
+          setRecordedBlob(null);
+          setRecordedDuration(0);
+          setIsModalOpen(false);
+          return;
+        }
+
+        const fullBlob = new Blob(chunksRef.current, { type: recorder.mimeType || selectedMime });
+        chunksRef.current = [];
+        if (fullBlob.size <= 0) {
+          setRecordedBlob(null);
+          setIsModalOpen(false);
+          toast.error('The browser stopped recording but produced no video data. Nothing was saved.');
+          return;
+        }
+
         setRecordedBlob(fullBlob);
         const url = URL.createObjectURL(fullBlob);
         setRecordedVideoUrl(url);
         setIsModalOpen(true);
+        toast.success('Demo recording is ready. Review the video before exporting.');
       };
+
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.onended = () => {
+          if (recorder.state !== 'inactive') {
+            void stopAndSaveReel();
+          }
+        };
+      }
 
       mediaRecorderRef.current = recorder;
       recorder.start(1000); // chunk every 1 second
@@ -300,6 +312,11 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
       toast.success(`🎬 Recording started: ${scenario.name}`);
       return true;
     } catch (err: any) {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      mediaRecorderRef.current = null;
       console.error('Failed to initialize demo reel recording:', err);
       if (err.name === 'NotAllowedError') {
         toast.error('Screen capture permission was denied.');
@@ -316,7 +333,9 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
       toast.error('No recorded video available to download.');
       return;
     }
-    const defaultName = `uniace-${currentScenario?.id || 'demo'}-reel-${new Date().toISOString().slice(0, 10)}.webm`;
+    const extension = recordedBlob.type.toLowerCase().includes('mp4') ? 'mp4' : 'webm';
+    const scenarioName = currentScenario?.id || 'recording';
+    const defaultName = `uniace-${scenarioName}-reel-${new Date().toISOString().slice(0, 10)}.${extension}`;
     const finalName = filename || defaultName;
     const downloadUrl = recordedVideoUrl || URL.createObjectURL(recordedBlob);
     
@@ -347,7 +366,6 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
         isModalOpen,
         selectedScenarioId,
         screenCaptureSupported,
-        activeSimulatedQuery,
         setSelectedScenarioId,
         startDemoReel,
         skipToNextStep,
