@@ -17,7 +17,7 @@ test('normalizes Cloudinary cloud names and preserves configured folder hierarch
       cloudName: 'mycloud_01',
       apiKey: '123456',
       apiSecret: 'secret-value',
-      folderPrefix: 'marketing-demo-studio / exports'
+      folderPrefix: 'marketing-demo-studio/exports'
     }
   );
 });
