@@ -882,6 +882,8 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
       .then(() => true).catch(() => false);
     let credential: Awaited<ReturnType<typeof getDemoNarrationCredentialStatus>> | null = null;
     let credentialError: string | null = null;
+    let cloudinaryConfigured = false;
+    try { cloudinaryConfigured = Boolean(await getCloudinaryMediaConfig()); } catch { cloudinaryConfigured = false; }
     try {
       credential = await getDemoNarrationCredentialStatus();
     } catch (error: any) {
@@ -900,6 +902,7 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
       ffmpegAvailable,
       ffprobeAvailable,
       maxUploadBytes: MAX_UPLOAD_BYTES,
+      cloudinaryConfigured,
       maxScriptCharacters: MAX_SCRIPT_CHARACTERS,
       maxDurationSeconds: MAX_DURATION_SECONDS
     });
@@ -1073,9 +1076,13 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
     }
 
     try {
+      const config = await getCloudinaryMediaConfig();
+      if (!config) return res.status(503).json({ error: 'Cloudinary is not configured. Open Admin Dashboard → Settings → Cloudinary and verify the credentials before uploading a Demo Studio video.' });
       await ensureTempRoot();
       const id = crypto.randomUUID();
       const folder = await fs.promises.mkdtemp(path.join(TEMP_ROOT, 'upload-'));
+      const publicId = 'source-' + id;
+      const uploadSignature = await createCloudinaryVideoUploadSignature({ publicId, folder: config.folderPrefix });
       const upload: UploadRecord = {
         id,
         ownerId: String((req as any).user.uid),
@@ -1086,13 +1093,16 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
         expectedSize: size,
         receivedBytes: 0,
         complete: false,
+        cloudinaryFolder: config.folderPrefix,
+        cloudinaryPublicId: publicId,
+        cloudinaryAsset: null,
         expiresAt: Date.now() + UPLOAD_TTL_MS
       };
       uploads.set(id, upload);
-      return res.status(201).json({ uploadId: id, maxUploadBytes: MAX_UPLOAD_BYTES, expiresAt: new Date(upload.expiresAt).toISOString() });
+      return res.status(201).json({ uploadId: id, uploadSignature, maxUploadBytes: MAX_UPLOAD_BYTES, expiresAt: new Date(upload.expiresAt).toISOString() });
     } catch (error: any) {
-      console.error('[DemoNarration] Upload allocation failed:', error?.message || error);
-      return res.status(503).json({ error: 'Temporary server storage is unavailable. No video was uploaded.' });
+      console.error('[DemoNarration] Cloudinary upload allocation failed:', error?.message || error);
+      return res.status(503).json({ error: 'Cloudinary upload could not be prepared. Verify the Demo Studio Cloudinary credentials and try again.', detail: String(error?.message || '').slice(0, 220) });
     }
   });
 
@@ -1102,48 +1112,61 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
       return res.status(404).json({ error: 'Temporary upload session not found or expired.' });
     }
     uploads.delete(upload.id);
-    await removeFolder(upload.folder);
-    return res.json({ deleted: true });
+    try {
+      if (upload.cloudinaryAsset) await deleteCloudinaryAsset(upload.cloudinaryAsset);
+      await removeFolder(upload.folder);
+      return res.json({ deleted: true });
+    } catch (error: any) {
+      return res.status(503).json({ error: 'The upload session was closed but its Cloudinary source asset could not be deleted.', detail: String(error?.message || '').slice(0, 220) });
+    }
   });
 
-  app.put('/api/admin/demo-narration/uploads/:uploadId', async (req, res) => {
+  app.post('/api/admin/demo-narration/uploads/:uploadId/complete', async (req, res) => {
     const upload = uploads.get(req.params.uploadId);
     if (!upload || !ownerMatches(upload.ownerId, req)) {
-      return res.status(404).json({ error: 'Temporary upload session not found or expired.' });
+      return res.status(404).json({ error: 'Cloudinary upload session not found or expired.' });
     }
-    if (upload.complete) return res.status(409).json({ error: 'This upload session has already received its video.' });
-    const declaredLength = Number(req.headers['content-length']);
-    if (Number.isFinite(declaredLength) && declaredLength > 0 && declaredLength !== upload.expectedSize) {
-      await removeFolder(upload.folder);
-      uploads.delete(upload.id);
-      return res.status(400).json({ error: 'The transmitted file size does not match the selected video size.' });
+    if (upload.complete) return res.status(409).json({ error: 'This Cloudinary upload session has already been verified.' });
+    const payload = z.object({
+      assetId: z.string().trim().min(8).max(120),
+      publicId: z.string().trim().min(1).max(240)
+    }).strict().safeParse(req.body);
+    if (!payload.success || payload.data.publicId !== upload.cloudinaryPublicId) {
+      return res.status(400).json({ error: 'Cloudinary upload identity did not match the signed upload session.' });
     }
-
-    let received = 0;
-    const sizeGuard = new Transform({
-      transform(chunk, _encoding, callback) {
-        received += chunk.length;
-        if (received > MAX_UPLOAD_BYTES || received > upload.expectedSize) {
-          callback(new Error('The uploaded video exceeded its declared file size.'));
-          return;
-        }
-        callback(null, chunk);
-      }
-    });
-
     try {
-      await pipeline(req, sizeGuard, fs.createWriteStream(upload.sourcePath, { flags: 'wx', mode: 0o600 }));
-      if (received !== upload.expectedSize) {
-        throw new Error('The transmitted file was incomplete. Select the video and retry the upload.');
+      const asset = await verifyCloudinaryVideoUpload({
+        assetId: payload.data.assetId,
+        publicId: payload.data.publicId,
+        expectedBytes: upload.expectedSize
+      });
+      if (!asset.duration || !asset.width || !asset.height) {
+        throw new Error('Cloudinary did not return verified video duration and dimensions.');
       }
-      upload.receivedBytes = received;
+      const extension = getUploadExtension(upload.originalName).slice(1);
+      if (asset.format.toLowerCase() !== extension && !(extension === 'm4v' && asset.format.toLowerCase() === 'mp4')) {
+        throw new Error('Cloudinary video format did not match the selected source file extension.');
+      }
+      upload.cloudinaryAsset = asset;
+      upload.receivedBytes = asset.bytes;
       upload.complete = true;
       upload.expiresAt = Date.now() + UPLOAD_TTL_MS;
-      return res.status(201).json({ uploadId: upload.id, receivedBytes: received, verifiedTransfer: true });
+      return res.status(200).json({
+        verified: true,
+        asset: {
+          bytes: asset.bytes,
+          duration: asset.duration,
+          width: asset.width,
+          height: asset.height,
+          format: asset.format,
+          delivery: asset.deliveryType
+        }
+      });
     } catch (error: any) {
-      await removeFolder(upload.folder);
-      uploads.delete(upload.id);
-      if (!res.headersSent) return res.status(400).json({ error: error?.message || 'The video upload failed.' });
+      return res.status(422).json({
+        error: 'Cloudinary did not verify the uploaded source video. The narration job cannot start.',
+        detail: String(error?.message || '').slice(0, 260)
+      });
     }
   });
 
@@ -1158,8 +1181,8 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
     }
 
     const upload = uploads.get(parsed.data.uploadId);
-    if (!upload || !ownerMatches(upload.ownerId, req) || !upload.complete) {
-      return res.status(409).json({ error: 'The source video is not fully uploaded in this active server session.' });
+    if (!upload || !ownerMatches(upload.ownerId, req) || !upload.complete || !upload.cloudinaryAsset) {
+      return res.status(409).json({ error: 'The source video has not been uploaded to and verified by Cloudinary.' });
     }
 
     try {
@@ -1184,6 +1207,11 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
         ownerId: upload.ownerId,
         folder: upload.folder,
         sourcePath: upload.sourcePath,
+        cloudinaryFolder: upload.cloudinaryFolder,
+        sourceAsset: upload.cloudinaryAsset,
+        audioAsset: null,
+        outputAsset: null,
+        subtitleAsset: null,
         audioPath: path.join(upload.folder, 'narration.mp3'),
         subtitlePath: null,
         outputPath: path.join(upload.folder, safeBaseName + '-narrated.mp4'),
@@ -1219,6 +1247,12 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
       };
       uploads.delete(upload.id);
       jobs.set(jobId, job);
+      try {
+        await persistJob(job);
+      } catch (error: any) {
+        jobs.delete(jobId);
+        return res.status(503).json({ error: 'Neon could not save the Demo Studio media record. No narration job was started.', detail: String(error?.message || '').slice(0, 220) });
+      }
       setImmediate(() => {
         void createNarrationAudio(job, parsed.data).catch(async (error: any) => {
           if (job.status === 'cancelled') return;
@@ -1229,6 +1263,7 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
           job.progressPercent = null;
           job.expiresAt = Date.now() + JOB_TTL_MS;
           job.cleanupStarted = true;
+          await persistJob(job).catch(() => undefined);
           await removeFolder(job.folder);
         });
       });
@@ -1332,6 +1367,7 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
         job.progressPercent = null;
         job.expiresAt = Date.now() + JOB_TTL_MS;
         job.cleanupStarted = true;
+        await persistJob(job).catch(() => undefined);
         await removeFolder(job.folder);
       });
     });
