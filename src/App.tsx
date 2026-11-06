@@ -21,7 +21,7 @@ import { useUserProgress } from './hooks/useUserProgress';
 import { useSelfHealing } from './hooks/useSelfHealing';
 import { useAuth } from './context/AuthContext';
 import { useCourses } from './context/CourseContext';
-import { Menu, Mic, Video } from 'lucide-react';
+import { Bot, Menu, Mic, Video } from 'lucide-react';
 import { Toaster } from 'react-hot-toast';
 import { View, ChatMessage, CourseId, Department, Semester } from './types';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -272,6 +272,9 @@ function AppContent() {
     typeof window !== 'undefined' ? window.innerWidth >= 1024 : false
   );
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  // Keep only the small launcher in the initial bundle; mount the full tutor on first use.
+  const [isChatMounted, setIsChatMounted] = useState(false);
+  const [openChatOnMount, setOpenChatOnMount] = useState(false);
   const [autoStartQuiz, setAutoStartQuiz] = useState(false);
   const [regenerationProgress, setRegenerationProgress] = useState(0);
   const [regenerationStatus, setRegenerationStatus] = useState('');
@@ -418,6 +421,13 @@ function AppContent() {
     checkConnectivity();
     return () => { isMounted = false; };
   }, []);
+
+  useEffect(() => {
+    if (activeView === 'ai-tutor') {
+      setOpenChatOnMount(true);
+      setIsChatMounted(true);
+    }
+  }, [activeView]);
 
   useEffect(() => {
     let isSubscribed = true;
@@ -893,29 +903,57 @@ function AppContent() {
         {/* Consolidated Single Instance of ChatBot (Full page in 'ai-tutor' view, otherwise bottom-corner overlay) */}
       </div>
 
-      <Suspense fallback={null}>
-        <ChatBot 
-        isFullPage={activeView === 'ai-tutor'} 
-        onToggleFullPage={() => handleViewSelect(activeView === 'ai-tutor' ? 'dashboard' : 'ai-tutor')} 
-        messages={chatMessages}
-        setMessages={setChatMessages}
-        activeCourseId={activeCourseId}
-        activeModule={activeModule?.title}
-        activeSubTopic={activeModule?.subTopics?.find(s => s.id === activeSubTopicId)?.title}
-        subTopicContent={activeLessonContent || activeSubTopicContent}
-        progress={progress}
-        profile={profile}
-        onUpdatePersonality={updateAIPersonality}
-        onToggleCalculator={() => setIsCalculatorOpen(!isCalculatorOpen)}
-        onOpenVoiceTutor={() => setIsVoiceTutorOpen(true)}
-        onPdfTextChange={setActivePdfText}
-        onSaveBookmark={(b) => addBookmark(b.content, b.type, b.note)}
-        onSelectTopicContext={(cId, mTitle, sTitle, content) => {
-          setActiveCourseId(cId);
-          if (content) setActiveLessonContent(content);
-        }}
-        />
-      </Suspense>
+      {!isChatMounted && activeView !== 'ai-tutor' && (
+        <button
+          type="button"
+          onClick={() => {
+            setOpenChatOnMount(true);
+            setIsChatMounted(true);
+          }}
+          className="fixed bottom-6 right-6 z-50 p-4 bg-emerald-500 hover:bg-emerald-600 text-white rounded-full shadow-2xl hover:scale-105 transition-all flex items-center gap-2 group"
+          title="Open UniAce AI Academic Tutor"
+          aria-label="Open UniAce AI Academic Tutor"
+        >
+          <Bot size={24} />
+          <span className="hidden group-hover:inline text-xs font-bold pr-1">Ask UniAce</span>
+        </button>
+      )}
+
+      {isChatMounted && (
+        <Suspense fallback={
+          activeView === 'ai-tutor' ? (
+            <LoadingFallback fullScreen />
+          ) : (
+            <div className="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-full bg-emerald-600 text-white shadow-xl flex items-center gap-2 text-sm" role="status" aria-live="polite">
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" aria-hidden="true" />
+              Opening UniAce AI...
+            </div>
+          )
+        }>
+          <ChatBot
+            isFullPage={activeView === 'ai-tutor'}
+            initiallyOpen={openChatOnMount}
+            onToggleFullPage={() => handleViewSelect(activeView === 'ai-tutor' ? 'dashboard' : 'ai-tutor')}
+            messages={chatMessages}
+            setMessages={setChatMessages}
+            activeCourseId={activeCourseId}
+            activeModule={activeModule?.title}
+            activeSubTopic={activeModule?.subTopics?.find(s => s.id === activeSubTopicId)?.title}
+            subTopicContent={activeLessonContent || activeSubTopicContent}
+            progress={progress}
+            profile={profile}
+            onUpdatePersonality={updateAIPersonality}
+            onToggleCalculator={() => setIsCalculatorOpen(!isCalculatorOpen)}
+            onOpenVoiceTutor={() => setIsVoiceTutorOpen(true)}
+            onPdfTextChange={setActivePdfText}
+            onSaveBookmark={(b) => addBookmark(b.content, b.type, b.note)}
+            onSelectTopicContext={(cId, mTitle, sTitle, content) => {
+              setActiveCourseId(cId);
+              if (content) setActiveLessonContent(content);
+            }}
+          />
+        </Suspense>
+      )}
 
       {/* Bottom Navigation (Mobile) */}
       <BottomNav activeView={activeView} onViewSelect={handleViewSelect} />
