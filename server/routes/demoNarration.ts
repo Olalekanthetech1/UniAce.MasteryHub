@@ -7,7 +7,19 @@ import { spawn } from 'child_process';
 import type { ChildProcessWithoutNullStreams } from 'child_process';
 import { Transform } from 'stream';
 import { pipeline } from 'stream/promises';
+import { Readable } from 'stream';
 import { z } from 'zod';
+import { getCloudinaryMediaConfig } from '../services/cloudinaryCredentials.js';
+import {
+  createCloudinaryVideoUploadSignature,
+  verifyCloudinaryVideoUpload,
+  downloadCloudinaryAuthenticatedAsset,
+  uploadCloudinaryLocalAsset,
+  fetchCloudinaryAuthenticatedAsset,
+  deleteCloudinaryAsset,
+  type CloudinaryAsset
+} from '../services/cloudinaryDemoStudio.js';
+import { getSystemSettingsDoc, setSystemSettingsDoc } from '../systemConfigStore.js';
 import {
   buildSrtFromAlignment,
   sanitizeDemoVideoFileName,
@@ -49,6 +61,9 @@ interface UploadRecord {
   expectedSize: number;
   receivedBytes: number;
   complete: boolean;
+  cloudinaryFolder: string;
+  cloudinaryPublicId: string;
+  cloudinaryAsset: CloudinaryAsset | null;
   expiresAt: number;
 }
 
@@ -57,6 +72,11 @@ interface NarrationJob {
   ownerId: string;
   folder: string;
   sourcePath: string;
+  cloudinaryFolder: string;
+  sourceAsset: CloudinaryAsset | null;
+  audioAsset: CloudinaryAsset | null;
+  outputAsset: CloudinaryAsset | null;
+  subtitleAsset: CloudinaryAsset | null;
   audioPath: string;
   subtitlePath: string | null;
   outputPath: string;
@@ -339,8 +359,124 @@ function makeJobSnapshot(job: NarrationJob) {
     outputBytes: job.outputBytes,
     outputWidth: job.outputWidth,
     outputHeight: job.outputHeight,
+    mediaStorage: {
+      provider: 'Cloudinary',
+      sourceStored: Boolean(job.sourceAsset),
+      narrationStored: Boolean(job.audioAsset),
+      videoStored: Boolean(job.outputAsset),
+      subtitlesStored: Boolean(job.subtitleAsset),
+      delivery: 'authenticated'
+    },
     expiresAt: new Date(job.expiresAt).toISOString()
   };
+}
+
+
+const JOB_STORAGE_PREFIX = 'demo_studio_narration_job_';
+
+async function persistJob(job: NarrationJob): Promise<void> {
+  await setSystemSettingsDoc(JOB_STORAGE_PREFIX + job.id, {
+    schemaVersion: 1,
+    ownerId: job.ownerId,
+    jobId: job.id,
+    status: job.status,
+    stage: job.stage,
+    statusMessage: job.statusMessage,
+    progressPercent: job.progressPercent,
+    error: job.error,
+    characterCost: job.characterCost,
+    requestId: job.requestId,
+    durationSeconds: job.durationSeconds,
+    outputBytes: job.outputBytes,
+    outputWidth: job.outputWidth,
+    outputHeight: job.outputHeight,
+    originalName: job.originalName,
+    safeBaseName: job.safeBaseName,
+    createdAt: job.createdAt,
+    cloudinaryFolder: job.cloudinaryFolder,
+    sourceAsset: job.sourceAsset,
+    audioAsset: job.audioAsset,
+    outputAsset: job.outputAsset,
+    subtitleAsset: job.subtitleAsset
+  }, false);
+}
+
+async function restorePersistedJob(jobId: string): Promise<NarrationJob | null> {
+  const raw: any = await getSystemSettingsDoc(JOB_STORAGE_PREFIX + jobId);
+  if (!raw || raw.deleted === true || raw.schemaVersion !== 1 ||
+      raw.jobId !== jobId || typeof raw.ownerId !== 'string') return null;
+  const statusValues: JobStatus[] = ['generating_audio', 'narration_ready', 'rendering', 'completed', 'failed', 'cancelled'];
+  if (!statusValues.includes(raw.status)) return null;
+  const folder = path.join(TEMP_ROOT, 'restored-' + jobId);
+  const originalName = typeof raw.originalName === 'string' ? raw.originalName : 'uniace-demo-video';
+  const extension = path.extname(originalName).toLowerCase() || '.mp4';
+  const job: NarrationJob = {
+    id: jobId,
+    ownerId: raw.ownerId,
+    folder,
+    sourcePath: path.join(folder, 'source' + extension),
+    cloudinaryFolder: typeof raw.cloudinaryFolder === 'string' ? raw.cloudinaryFolder : 'marketing-demo-studio',
+    sourceAsset: raw.sourceAsset && typeof raw.sourceAsset.assetId === 'string' ? raw.sourceAsset as CloudinaryAsset : null,
+    audioAsset: raw.audioAsset && typeof raw.audioAsset.assetId === 'string' ? raw.audioAsset as CloudinaryAsset : null,
+    outputAsset: raw.outputAsset && typeof raw.outputAsset.assetId === 'string' ? raw.outputAsset as CloudinaryAsset : null,
+    subtitleAsset: raw.subtitleAsset && typeof raw.subtitleAsset.assetId === 'string' ? raw.subtitleAsset as CloudinaryAsset : null,
+    audioPath: path.join(folder, 'narration.mp3'),
+    subtitlePath: raw.subtitleAsset ? path.join(folder, 'narration.srt') : null,
+    outputPath: path.join(folder, (typeof raw.safeBaseName === 'string' ? raw.safeBaseName : 'uniace-demo') + '-narrated.mp4'),
+    originalName,
+    safeBaseName: typeof raw.safeBaseName === 'string' ? raw.safeBaseName : 'uniace-demo',
+    script: '',
+    modelId: '',
+    voiceId: '',
+    originalAudioMode: 'duck',
+    originalAudioVolume: 0.16,
+    narrationVolume: 1,
+    subtitlesEnabled: Boolean(raw.subtitleAsset),
+    aspectRatio: 'source',
+    resolution: 'source',
+    status: raw.status as JobStatus,
+    stage: typeof raw.stage === 'string' ? raw.stage : String(raw.status),
+    statusMessage: typeof raw.statusMessage === 'string' ? raw.statusMessage : 'Recovered saved Demo Studio media metadata.',
+    progressPercent: typeof raw.progressPercent === 'number' ? raw.progressPercent : null,
+    error: typeof raw.error === 'string' ? raw.error : null,
+    characterCost: typeof raw.characterCost === 'string' ? raw.characterCost : null,
+    requestId: typeof raw.requestId === 'string' ? raw.requestId : null,
+    durationSeconds: typeof raw.durationSeconds === 'number' ? raw.durationSeconds : null,
+    outputBytes: typeof raw.outputBytes === 'number' ? raw.outputBytes : null,
+    outputWidth: typeof raw.outputWidth === 'number' ? raw.outputWidth : null,
+    outputHeight: typeof raw.outputHeight === 'number' ? raw.outputHeight : null,
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString(),
+    expiresAt: Date.now() + JOB_TTL_MS,
+    abortController: null,
+    child: null,
+    downloadTicketHash: null,
+    downloadTicketExpiresAt: 0,
+    cleanupStarted: false
+  };
+  if (job.status === 'generating_audio' || job.status === 'rendering' || job.status === 'narration_ready') {
+    job.status = 'failed';
+    job.stage = 'interrupted';
+    job.progressPercent = null;
+    job.error = 'This processing session was interrupted by a server restart. The Cloudinary source asset remains stored; start a new narration job to process it again.';
+    job.statusMessage = 'Processing did not survive the server restart. Cloudinary media metadata was recovered.';
+    await persistJob(job);
+  }
+  return job;
+}
+
+async function streamCloudinaryAsset(
+  asset: CloudinaryAsset,
+  res: express.Response,
+  contentType: string,
+  attachmentName?: string
+): Promise<void> {
+  const response = await fetchCloudinaryAuthenticatedAsset(asset);
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Length', String(asset.bytes));
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  if (attachmentName) res.attachment(attachmentName);
+  await pipeline(Readable.fromWeb(response.body as import('stream/web').ReadableStream), res);
 }
 
 async function removeFolder(folder: string): Promise<void> {
@@ -394,6 +530,10 @@ async function probeAudioDuration(filePath: string): Promise<number> {
 async function createNarrationAudio(job: NarrationJob, input: z.infer<typeof CreateJobSchema>): Promise<void> {
   const apiKey = await getApiKey();
   if (!apiKey) throw new Error('No ElevenLabs API key is configured in Admin Dashboard or the Render environment.');
+  await fs.promises.mkdir(job.folder, { recursive: true, mode: 0o700 });
+  if (!job.sourceAsset) throw new Error('The verified Cloudinary source asset is missing from this narration job.');
+  const sourceStat = await fs.promises.stat(job.sourcePath).catch(() => null);
+  if (!sourceStat) await downloadCloudinaryAuthenticatedAsset(job.sourceAsset, job.sourcePath);
   const metadata = await probeVideo(job.sourcePath);
   job.durationSeconds = metadata.duration;
   job.stage = 'generating_audio';
@@ -458,6 +598,12 @@ async function createNarrationAudio(job: NarrationJob, input: z.infer<typeof Cre
     await fs.promises.writeFile(job.subtitlePath, srt, { encoding: 'utf8', mode: 0o600 });
   }
 
+  job.audioAsset = await uploadCloudinaryLocalAsset({
+    filePath: job.audioPath,
+    folder: job.cloudinaryFolder,
+    publicId: job.id + '-narration-audio',
+    resourceType: 'video'
+  });
   job.characterCost = response.headers.get('character-cost');
   job.requestId = response.headers.get('request-id');
   job.abortController = null;
@@ -466,6 +612,7 @@ async function createNarrationAudio(job: NarrationJob, input: z.infer<typeof Cre
   job.statusMessage = 'Narration audio is ready for review. Listen before rendering the final video.';
   job.progressPercent = null;
   job.expiresAt = Date.now() + JOB_TTL_MS;
+  await persistJob(job);
 }
 
 async function renderVideo(job: NarrationJob): Promise<void> {
@@ -567,26 +714,50 @@ async function renderVideo(job: NarrationJob): Promise<void> {
   await runCommand(ffmpeg, ['-v', 'error', '-i', job.outputPath, '-f', 'null', '-'], Math.max(60000, metadata.duration * 5000));
 
   const outputMetadata = await probeVideo(job.outputPath);
+  job.outputAsset = await uploadCloudinaryLocalAsset({
+    filePath: job.outputPath,
+    folder: job.cloudinaryFolder,
+    publicId: job.id + '-narrated-video',
+    resourceType: 'video'
+  });
+  if (job.subtitlePath) {
+    job.subtitleAsset = await uploadCloudinaryLocalAsset({
+      filePath: job.subtitlePath,
+      folder: job.cloudinaryFolder,
+      publicId: job.id + '-narration-subtitles.srt',
+      resourceType: 'raw'
+    });
+  }
   job.status = 'completed';
   job.stage = 'completed';
   job.progressPercent = 100;
   job.outputBytes = stat.size;
   job.outputWidth = outputMetadata.width;
   job.outputHeight = outputMetadata.height;
-  job.statusMessage = 'The final MP4 passed server-side media verification and is ready to download.';
+  job.statusMessage = 'The final MP4 and enabled SRT passed verification and are stored as protected Cloudinary assets.';
   job.expiresAt = Date.now() + JOB_TTL_MS;
+  await persistJob(job);
 }
 
-function getOwnedJob(req: express.Request, res: express.Response): NarrationJob | null {
+async function getOwnedJob(req: express.Request, res: express.Response): Promise<NarrationJob | null> {
   const jobId = String(req.params.jobId || '');
-  const job = jobs.get(jobId);
+  let job = jobs.get(jobId);
+  if (!job) {
+    try {
+      job = await restorePersistedJob(jobId) || undefined;
+      if (job) jobs.set(job.id, job);
+    } catch (error: any) {
+      res.status(503).json({ error: 'Saved Demo Studio media metadata could not be read from Neon.', detail: String(error?.message || '').slice(0, 240) });
+      return null;
+    }
+  }
   if (!job || !ownerMatches(job.ownerId, req)) {
     res.status(404).json({ error: 'Narration job not found or no longer available.' });
     return null;
   }
-  if (job.expiresAt < Date.now() && job.status !== 'rendering' && job.status !== 'generating_audio') {
+  if (job.expiresAt < Date.now() && job.status !== 'rendering' && job.status !== 'generating_audio' && job.status !== 'completed') {
     void cleanupJob(job);
-    res.status(410).json({ error: 'This temporary narration job has expired. Upload the source video again to create a new render.' });
+    res.status(410).json({ error: 'This temporary narration processing session has expired.' });
     return null;
   }
   return job;
