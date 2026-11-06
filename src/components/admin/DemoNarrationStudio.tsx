@@ -14,7 +14,6 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Subtitles,
-  Trash2,
   Volume2,
   XCircle
 } from 'lucide-react';
