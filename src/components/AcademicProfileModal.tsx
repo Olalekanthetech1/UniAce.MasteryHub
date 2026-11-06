@@ -20,6 +20,7 @@ export default function AcademicProfileModal({ onClose }: { onClose?: () => void
   const [academicLevels, setAcademicLevels] = useState<AcademicLevelOption[]>([]);
   const [levelsLoading, setLevelsLoading] = useState(true);
   const [levelsError, setLevelsError] = useState<string | null>(null);
+  const [levelLoadAttempt, setLevelLoadAttempt] = useState(0);
   
   const [step, setStep] = useState<1 | 2>(1);
   const [whatsappLink, setWhatsappLink] = useState('');
@@ -37,8 +38,8 @@ export default function AcademicProfileModal({ onClose }: { onClose?: () => void
           .normalize('NFKC')
           .trim()
           .toLowerCase()
-          .replace(/^level\\s*/, '')
-          .replace(/\\s*(?:level|lvl|l)$/, '')
+          .replace(/^level\s*/, '')
+          .replace(/\s*(?:level|lvl|l)$/, '')
           .replace(/[^a-z0-9_-]/g, '');
         const currentOption = result.find(option => option.level_key === currentKey);
         setLevel(currentOption?.level_key || '');
@@ -51,7 +52,7 @@ export default function AcademicProfileModal({ onClose }: { onClose?: () => void
     };
     void loadAcademicLevels();
     return () => { active = false; };
-  }, [user?.uid, profile?.academic_level]);
+  }, [user?.uid, profile?.academic_level, levelLoadAttempt]);
 
   useEffect(() => {
     const fetchLink = async () => {
@@ -193,9 +194,12 @@ export default function AcademicProfileModal({ onClose }: { onClose?: () => void
                       </select>
                     </div>
                     {levelsError ? (
-                      <p className="col-span-2 text-xs text-red-600 dark:text-red-400">
-                        {levelsError}
-                      </p>
+                      <div className="col-span-2 flex flex-wrap items-center gap-2 text-xs text-red-600 dark:text-red-400">
+                        <span>{levelsError}</span>
+                        <button type="button" onClick={() => setLevelLoadAttempt(value => value + 1)} className="font-semibold underline">
+                          Retry
+                        </button>
+                      </div>
                     ) : (
                       <p className="col-span-2 text-xs text-slate-500 dark:text-zinc-400">
                         Coming Soon levels are visible here but cannot be selected until an administrator makes them Live.
