@@ -87,8 +87,6 @@ interface NarrationJob {
 
 const uploads = new Map<string, UploadRecord>();
 const jobs = new Map<string, NarrationJob>();
-const instanceId = crypto.randomBytes(8).toString('hex');
-
 const UploadSchema = z.object({
   fileName: z.string().trim().min(1).max(180),
   mimeType: z.string().trim().min(1).max(120),
@@ -241,8 +239,8 @@ async function probeVideo(filePath: string): Promise<{
   }
   return {
     duration,
-    width: Number.isFinite(Number(videoStream.width)) ? Number(videoStream.width) : null,
-    height: Number.isFinite(Number(videoStream.height)) ? Number(videoStream.height) : null,
+    width: typeof videoStream.width === 'number' && Number.isFinite(videoStream.width) && videoStream.width > 0 ? videoStream.width : null,
+    height: typeof videoStream.height === 'number' && Number.isFinite(videoStream.height) && videoStream.height > 0 ? videoStream.height : null,
     hasAudio: streams.some((stream: any) => stream.codec_type === 'audio')
   };
 }
@@ -1011,8 +1009,7 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
     res.set({
       'Content-Type': 'video/mp4',
       'Cache-Control': 'private, no-store',
-      'Content-Length': String(output.size),
-      'Accept-Ranges': 'bytes'
+      'Content-Length': String(output.size)
     });
     return fs.createReadStream(job.outputPath).pipe(res);
   });
