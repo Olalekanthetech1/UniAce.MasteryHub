@@ -98,7 +98,7 @@ const CreateJobSchema = z.object({
   voiceId: z.string().trim().min(1).max(180),
   modelId: z.string().trim().min(1).max(120),
   script: z.string().trim().min(5).max(20000),
-  voiceSettings: VoiceSettingsSchema,
+  voiceSettings: VoiceSettingsSchema.optional(),
   originalAudioMode: z.enum(['mix', 'narration_only']),
   originalAudioVolume: z.number().min(0).max(1),
   narrationVolume: z.number().min(0.1).max(2),
@@ -347,13 +347,15 @@ async function createNarrationAudio(job: NarrationJob, input: z.infer<typeof Cre
     body: JSON.stringify({
       text: input.script,
       model_id: job.modelId,
-      voice_settings: {
-        stability: input.voiceSettings.stability,
-        similarity_boost: input.voiceSettings.similarity_boost,
-        style: input.voiceSettings.style,
-        use_speaker_boost: input.voiceSettings.use_speaker_boost,
-        speed: input.voiceSettings.speed
-      }
+      ...(input.voiceSettings ? {
+        voice_settings: {
+          stability: input.voiceSettings.stability,
+          similarity_boost: input.voiceSettings.similarity_boost,
+          style: input.voiceSettings.style,
+          use_speaker_boost: input.voiceSettings.use_speaker_boost,
+          speed: input.voiceSettings.speed
+        }
+      } : {})
     }),
     signal: controller.signal
   });
@@ -425,6 +427,7 @@ async function renderVideo(job: NarrationJob): Promise<void> {
     args.push('-sn');
   }
   args.push(
+    '-t', metadata.duration.toFixed(3),
     '-c:v', 'libx264',
     '-preset', 'veryfast',
     '-crf', '23',
@@ -432,7 +435,6 @@ async function renderVideo(job: NarrationJob): Promise<void> {
     '-c:a', 'aac',
     '-b:a', '192k',
     '-movflags', '+faststart',
-    '-shortest',
     '-progress', 'pipe:1',
     '-nostats',
     job.outputPath
@@ -873,6 +875,21 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
     return res.json(makeJobSnapshot(job));
   });
 
+  app.get('/api/admin/demo-narration/voices/:voiceId/settings', async (req, res) => {
+    const apiKey = requireApiKey(res);
+    if (!apiKey) return;
+    try {
+      const settings = await providerJson(
+        'https://api.elevenlabs.io/v1/voices/' + encodeURIComponent(req.params.voiceId) + '/settings',
+        apiKey
+      );
+      return res.json({ settings });
+    } catch (error: any) {
+      console.error('[DemoNarration] Live voice settings lookup failed:', error?.message || error);
+      return sendProviderError(res, error);
+    }
+  });
+
   app.get('/api/admin/demo-narration/jobs/:jobId/audio', async (req, res) => {
     const job = getOwnedJob(req, res);
     if (!job) return;
@@ -887,6 +904,42 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
       'Content-Length': String(audio.size)
     });
     return fs.createReadStream(job.audioPath).pipe(res);
+  });
+
+  app.get('/api/admin/demo-narration/jobs/:jobId/video-preview', async (req, res) => {
+    const job = getOwnedJob(req, res);
+    if (!job) return;
+    if (job.status !== 'completed' || !job.outputBytes) {
+      return res.status(409).json({ error: 'The final video has not passed verification and is not available to preview.' });
+    }
+    const output = await fs.promises.stat(job.outputPath).catch(() => null);
+    if (!output || output.size <= 1024) {
+      return res.status(404).json({ error: 'The verified temporary MP4 is no longer available.' });
+    }
+    res.set({
+      'Content-Type': 'video/mp4',
+      'Cache-Control': 'private, no-store',
+      'Content-Length': String(output.size),
+      'Accept-Ranges': 'bytes'
+    });
+    return fs.createReadStream(job.outputPath).pipe(res);
+  });
+
+  app.get('/api/admin/demo-narration/jobs/:jobId/subtitles', async (req, res) => {
+    const job = getOwnedJob(req, res);
+    if (!job) return;
+    if (!job.subtitlePath) {
+      return res.status(404).json({ error: 'This narration job has no generated subtitle file.' });
+    }
+    const subtitle = await fs.promises.stat(job.subtitlePath).catch(() => null);
+    if (!subtitle || subtitle.size <= 0) {
+      return res.status(404).json({ error: 'The temporary subtitle file is no longer available.' });
+    }
+    res.set({
+      'Content-Type': 'application/x-subrip; charset=utf-8',
+      'Cache-Control': 'private, no-store'
+    });
+    return res.download(job.subtitlePath, job.safeBaseName + '-narration.srt');
   });
 
   app.post('/api/admin/demo-narration/jobs/:jobId/render', (req, res) => {
@@ -962,9 +1015,9 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
       if (error) {
         console.warn('[DemoNarration] Video download failed:', error.message);
         if (!res.headersSent) res.status(500).end('The temporary video could not be downloaded.');
+        return;
       }
-    });
-    res.once('finish', () => {
+      // Delete the output only after Express confirms that the download completed.
       void cleanupJob(job);
     });
   });
