@@ -96,12 +96,14 @@ const UploadSchema = z.object({
 }).strict();
 
 const VoiceSettingsSchema = z.object({
-  stability: z.number().min(0).max(1),
-  similarity_boost: z.number().min(0).max(1),
-  style: z.number().min(0).max(1),
-  use_speaker_boost: z.boolean(),
+  stability: z.number().min(0).max(1).optional(),
+  similarity_boost: z.number().min(0).max(1).optional(),
+  style: z.number().min(0).max(1).optional(),
+  use_speaker_boost: z.boolean().optional(),
   speed: z.number().min(0.7).max(1.2).optional()
-}).strict();
+}).strict().refine((settings) => Object.keys(settings).length > 0, {
+  message: 'At least one provider-supported voice setting is required when custom settings are supplied.'
+});
 
 const CreateJobSchema = z.object({
   uploadId: z.string().uuid(),
@@ -399,10 +401,10 @@ async function createNarrationAudio(job: NarrationJob, input: z.infer<typeof Cre
       model_id: job.modelId,
       ...(input.voiceSettings ? {
         voice_settings: {
-          stability: input.voiceSettings.stability,
-          similarity_boost: input.voiceSettings.similarity_boost,
-          style: input.voiceSettings.style,
-          use_speaker_boost: input.voiceSettings.use_speaker_boost,
+          ...(typeof input.voiceSettings.stability === 'number' ? { stability: input.voiceSettings.stability } : {}),
+          ...(typeof input.voiceSettings.similarity_boost === 'number' ? { similarity_boost: input.voiceSettings.similarity_boost } : {}),
+          ...(typeof input.voiceSettings.style === 'number' ? { style: input.voiceSettings.style } : {}),
+          ...(typeof input.voiceSettings.use_speaker_boost === 'boolean' ? { use_speaker_boost: input.voiceSettings.use_speaker_boost } : {}),
           ...(typeof input.voiceSettings.speed === 'number' ? { speed: input.voiceSettings.speed } : {})
         }
       } : {})
@@ -671,6 +673,12 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
               Number.isFinite(model.maximum_text_length_per_request) &&
               model.maximum_text_length_per_request > 0
               ? model.maximum_text_length_per_request
+              : null,
+            canUseStyle: typeof model.can_use_style === 'boolean' ? model.can_use_style : null,
+            canUseSpeakerBoost: typeof model.can_use_speaker_boost === 'boolean' ? model.can_use_speaker_boost : null,
+            requiresAlphaAccess: typeof model.requires_alpha_access === 'boolean' ? model.requires_alpha_access : null,
+            tokenCostFactor: typeof model.token_cost_factor === 'number' && Number.isFinite(model.token_cost_factor)
+              ? model.token_cost_factor
               : null,
             languages: Array.isArray(model.languages)
               ? model.languages.map((language: any) => ({
