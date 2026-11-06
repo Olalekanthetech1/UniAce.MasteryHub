@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useDemoReel } from '../context/DemoReelContext';
+import DemoNarrationStudio from './admin/DemoNarrationStudio';
 import { Download, X, Copy, Check, Video, Share2, Sparkles, Play, Repeat, Clock, FileVideo, Globe, Send, MessageCircle, Camera } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -301,11 +302,18 @@ export default function DemoReelPreviewModal() {
 
               </div>
             </div>
+            <DemoNarrationStudio
+              videoBlob={recordedBlob}
+              videoDuration={recordedDuration}
+              videoFileName={recordedFileName}
+              videoMimeType={recordedBlob?.type || ''}
+              scenario={currentScenario}
+            />
           </div>
 
           {/* Footer */}
           <div className="p-4 sm:px-8 bg-slate-50 dark:bg-slate-800/60 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs text-slate-500">
-            <span>{recordingSource === 'imported' ? 'Imported locally in this browser · Not uploaded to UniAce' : 'Recorded in this browser using MediaRecorder'}</span>
+            <span>{recordingSource === 'imported' ? 'Imported locally · Uploaded to temporary server storage only when narration is started' : 'Recorded in this browser using MediaRecorder'}</span>
             <button
               onClick={closePreviewModal}
               className="px-5 py-2 rounded-xl bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-bold transition-colors"
