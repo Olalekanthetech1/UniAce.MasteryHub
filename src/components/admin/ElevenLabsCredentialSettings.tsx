@@ -21,11 +21,6 @@ interface CredentialStatus {
   decryptable: boolean;
 }
 
-interface ApiError {
-  error?: string;
-  detail?: string;
-}
-
 async function readResponse<T>(response: Response): Promise<T> {
   const raw = await response.text();
   let data: any = {};
