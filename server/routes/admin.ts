@@ -61,6 +61,7 @@ export function setupAdminRoutes(
   } 
 
   async function validateCourseForPublication(pool: any, courseId: string): Promise<void> {
+    await ensureAcademicAvailabilitySchema();
     const courseResult = await pool.query(
       `SELECT id, title, level, department, semester, scope
        FROM courses WHERE id = $1 LIMIT 1`,
@@ -1118,6 +1119,7 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
     await ensureCourseLearningSchema();
+    await ensureAcademicAvailabilitySchema();
     await ensureCourseLifecycleSchema();
 
     const client = await pool.connect();
@@ -1196,6 +1198,7 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
     const pool = getPostgresPool();
     if (!pool) return res.status(503).json({ error: 'Database service unavailable' });
     await ensureCourseLearningSchema();
+    await ensureAcademicAvailabilitySchema();
 
     const client = await pool.connect();
     try {
