@@ -352,7 +352,7 @@ export default function DemoStudioTab() {
               </button>
             </div>
             <p className="mt-3 text-[10px] leading-4 text-slate-500 dark:text-slate-400">
-              Local-only import · MP4, WebM and browser-decodable video formats · Maximum file size: 250 MB · Selection is cleared when this page session ends.
+              Local video selection · MP4, WebM and browser-decodable formats · The live server upload limit is checked before narration begins · Selection is cleared when this page session ends.
             </p>
           </section>
 
