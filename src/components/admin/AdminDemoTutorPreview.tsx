@@ -71,7 +71,7 @@ export default function AdminDemoTutorPreview({ onUseInRecording }: AdminDemoTut
         </button>
       </form>
 
-      <p className="text-[11px] text-amber-700 dark:text-amber-300 leading-relaxed">Provider API usage is still incurred by UniAce's configured provider account. Only aggregate provider, token and latency metadata are recorded; the preview prompt and answer are not saved. This manual preview is not yet part of automated video recordings.</p>
+      <p className="text-[11px] text-amber-700 dark:text-amber-300 leading-relaxed">Provider API usage is still incurred by UniAce's configured provider account. Only aggregate provider, token and latency metadata are recorded; the preview prompt and answer are not saved by the server. You can explicitly add a completed response to a recording scenario; it is then shown as a non-interactive admin preview overlay without invoking the student chat route or charging student Sparks.</p>
 
       {error && <div role="alert" className="flex gap-2 rounded-xl border border-rose-300 bg-rose-50 dark:bg-rose-950/30 p-3 text-xs text-rose-800 dark:text-rose-200"><AlertCircle size={16} className="shrink-0" />{error}</div>}
 
