@@ -318,9 +318,10 @@ export default function DemoStudioTab() {
               className="sr-only"
               aria-label="Choose a video recording from this device"
               onChange={async (event) => {
-                const file = event.currentTarget.files?.[0];
+                const input = event.currentTarget;
+                const file = input.files?.[0];
                 if (file) await importVideoFile(file);
-                event.currentTarget.value = '';
+                input.value = '';
               }}
             />
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
