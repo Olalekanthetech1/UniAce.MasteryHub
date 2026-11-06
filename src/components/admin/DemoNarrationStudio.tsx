@@ -147,20 +147,21 @@ function uploadDirectToCloudinary(
     deliveryType: string;
   },
   blob: Blob,
+  fileName: string,
   onProgress: (percentage: number | null) => void
 ): Promise<{ assetId: string; publicId: string }> {
   const chunkSize = 6 * 1024 * 1024;
-  const uploadId = window.crypto?.randomUUID?.() || 'uniace-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  const uploadId = window.crypto?.randomUUID?.() ||
+    'uniace-' + Date.now() + '-' + Array.from(window.crypto.getRandomValues(new Uint8Array(16))).map((byte) => byte.toString(16).padStart(2, '0')).join('');
   const sendChunk = (start: number, end: number): Promise<any> => new Promise((resolve, reject) => {
     const form = new FormData();
-    form.append('file', blob.slice(start, end + 1), 'chunk');
+    form.append('file', blob.slice(start, end + 1, blob.type), fileName);
     form.append('api_key', signature.apiKey);
     form.append('timestamp', String(signature.timestamp));
     form.append('signature', signature.signature);
     form.append('folder', signature.folder);
     form.append('public_id', signature.publicId);
     form.append('overwrite', 'false');
-    form.append('type', signature.deliveryType);
 
     const xhr = new XMLHttpRequest();
     xhr.open('POST', signature.uploadUrl);
@@ -573,7 +574,7 @@ export default function DemoNarrationStudio({
       }>(allocationResponse);
       uploadId = allocation.uploadId;
       setUploadProgress(0);
-      const uploaded = await uploadDirectToCloudinary(allocation.uploadSignature, videoBlob, setUploadProgress);
+      const uploaded = await uploadDirectToCloudinary(allocation.uploadSignature, videoBlob, fileName, setUploadProgress);
       const verificationResponse = await authFetch('/api/admin/demo-narration/uploads/' + encodeURIComponent(uploadId) + '/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
