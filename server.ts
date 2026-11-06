@@ -1209,7 +1209,7 @@ app.get('/api/catalog/full', verifyAuth, async (req: any, res: any) => {
             record,
             accessContext.account!.learning_profile,
             accessContext.institution!
-          ).allowed)
+          ).visible)
           .map(record => record.id)
       );
       courses = catalogCourses.filter(course => eligibleIds.has(course.id));
@@ -1278,7 +1278,7 @@ app.get('/api/courses', verifyAuth, async (req: any, res: any) => {
             record,
             accessContext.account!.learning_profile,
             accessContext.institution!
-          ).allowed)
+          ).visible)
           .map(record => record.id)
       );
       courses = allPublishedCourses.filter(course => eligibleIds.has(course.id));
