@@ -26,7 +26,8 @@ import {
   listAcademicLevelAvailability,
   createAcademicLevelAvailability,
   updateAcademicLevelAvailability,
-  updateCourseStudentVisibility
+  updateCourseStudentVisibility,
+  listRecentAcademicAvailabilityAudit
 } from '../services/academicAvailability';
 import { activeCancelledJobs, activeRunningCourseJobs, activeCoordinatedJobSnapshots } from '../services/courseJobControl.js';
 import {
@@ -1053,6 +1054,18 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
       return res.json({ success: true, level });
     } catch (error: any) {
       return res.status(error?.statusCode || 500).json({ error: error?.message || 'Failed to update academic level.' });
+    }
+  });
+
+  app.get('/api/admin/academic-availability/audit', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    if (!(await checkIsAdmin(user.uid, user.email))) return res.status(403).json({ error: 'Admin privileges required' });
+    try {
+      const entries = await listRecentAcademicAvailabilityAudit(req.query?.limit);
+      res.set('Cache-Control', 'private, no-store');
+      return res.json({ success: true, entries });
+    } catch (error: any) {
+      return res.status(503).json({ error: error?.message || 'Availability history is temporarily unavailable.' });
     }
   });
 
