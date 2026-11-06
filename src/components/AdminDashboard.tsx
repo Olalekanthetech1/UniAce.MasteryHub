@@ -26,6 +26,7 @@ import MathEngineTab from './admin/MathEngineTab';
 import AcademicMCPDashboard from './admin/AcademicMCPDashboard';
 import DemoStudioTab from './admin/DemoStudioTab';
 import ElevenLabsCredentialSettings from './admin/ElevenLabsCredentialSettings';
+import CloudinaryCredentialSettings from './admin/CloudinaryCredentialSettings';
 import GoldenSetTrustTab from './admin/GoldenSetTrustTab';
 import DatabaseAccountingTab from './admin/DatabaseAccountingTab';
 import DatabaseEngineTab from './admin/DatabaseEngineTab';
@@ -5381,6 +5382,7 @@ export default function AdminDashboard({ onBackToApp }: { onBackToApp?: () => vo
       {activeTab === 'settings' && (
         <div className="space-y-8">
           <ElevenLabsCredentialSettings />
+          <CloudinaryCredentialSettings />
           {/* AI Provider Status & Metrics */}
           <div className="bg-white dark:bg-slate-800 rounded-3xl p-8 shadow-sm border border-slate-200 dark:border-slate-700">
             <div className="flex items-center justify-between mb-8">
