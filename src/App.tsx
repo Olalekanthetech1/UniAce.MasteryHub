@@ -431,7 +431,7 @@ function AppContent() {
 
   useEffect(() => {
     let isSubscribed = true;
-    if (user && chatMessages.length === 0) {
+    if (user && isChatMounted && chatMessages.length === 0) {
       user.getIdToken()
         .then(token => {
           if (!token) return null;
@@ -468,7 +468,7 @@ function AppContent() {
     return () => {
       isSubscribed = false;
     };
-  }, [user]);
+  }, [user, isChatMounted]);
 
   if (!isConfigured) {
     return (
