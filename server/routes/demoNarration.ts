@@ -17,6 +17,7 @@ import {
   uploadCloudinaryLocalAsset,
   fetchCloudinaryAuthenticatedAsset,
   deleteCloudinaryAsset,
+  deleteCloudinaryAssetByPublicId,
   type CloudinaryAsset
 } from '../services/cloudinaryDemoStudio.js';
 import { getSystemSettingsDoc, setSystemSettingsDoc } from '../systemConfigStore.js';
@@ -768,8 +769,19 @@ async function cleanExpiredItems(): Promise<void> {
   const now = Date.now();
   for (const upload of uploads.values()) {
     if (upload.expiresAt <= now) {
-      uploads.delete(upload.id);
-      await removeFolder(upload.folder);
+      try {
+        if (upload.cloudinaryAsset) {
+          await deleteCloudinaryAsset(upload.cloudinaryAsset);
+        } else {
+          // The browser may have completed the Cloudinary upload but failed before
+          // the server could verify and attach the immutable asset ID.
+          await deleteCloudinaryAssetByPublicId(upload.cloudinaryPublicId, 'video');
+        }
+        uploads.delete(upload.id);
+        await removeFolder(upload.folder);
+      } catch (error: any) {
+        console.warn('[DemoNarration] Expired Cloudinary upload cleanup will retry:', error?.message || error);
+      }
     }
   }
   for (const job of jobs.values()) {
@@ -1273,31 +1285,6 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
       console.error('[DemoNarration] Job creation failed:', error?.message || error);
       return sendProviderError(res, error);
     }
-  });
-
-  app.delete('/api/admin/demo-narration/jobs/:jobId/assets', async (req, res) => {
-    const job = await getOwnedJob(req, res);
-    if (!job) return;
-    const assets = [job.sourceAsset, job.audioAsset, job.outputAsset, job.subtitleAsset].filter(Boolean) as CloudinaryAsset[];
-    const failures: string[] = [];
-    for (const asset of assets) {
-      try {
-        await deleteCloudinaryAsset(asset);
-        if (job.sourceAsset?.assetId === asset.assetId) job.sourceAsset = null;
-        if (job.audioAsset?.assetId === asset.assetId) job.audioAsset = null;
-        if (job.outputAsset?.assetId === asset.assetId) job.outputAsset = null;
-        if (job.subtitleAsset?.assetId === asset.assetId) job.subtitleAsset = null;
-      } catch (error: any) {
-        failures.push(asset.publicId + ': ' + String(error?.message || 'delete failed').slice(0, 160));
-      }
-    }
-    if (failures.length) {
-      await persistJob(job).catch(() => undefined);
-      return res.status(502).json({ error: 'Some Demo Studio media assets could not be removed from Cloudinary.', failures });
-    }
-    await setSystemSettingsDoc(JOB_STORAGE_PREFIX + job.id, { schemaVersion: 1, deleted: true, jobId: job.id }, false);
-    await cleanupJob(job);
-    return res.json({ deleted: true, deletedAssets: assets.length, jobId: job.id });
   });
 
   app.delete('/api/admin/demo-narration/jobs/:jobId/assets', async (req, res) => {
