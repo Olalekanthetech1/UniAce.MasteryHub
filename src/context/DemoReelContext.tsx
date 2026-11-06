@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useRef, useEffect, useCallback, ReactNode } from 'react';
 import { View } from '../types';
-import { DemoScenario, DEMO_SCENARIOS, DemoStep } from '../services/demoReelService';
+import { DemoScenario, DemoStep } from '../services/demoReelService';
 import toast from 'react-hot-toast';
 
 interface DemoReelContextType {
@@ -18,7 +18,7 @@ interface DemoReelContextType {
   screenCaptureSupported: boolean;
   activeSimulatedQuery: string | null;
   setSelectedScenarioId: (id: string) => void;
-  startDemoReel: (scenarioOrId?: string | DemoScenario, navigateCallback?: (view: View) => void, onSimulateChat?: (prompt: string) => void) => Promise<boolean>;
+  startDemoReel: (scenario: DemoScenario, navigateCallback?: (view: View) => void, onSimulateChat?: (prompt: string) => void) => Promise<boolean>;
   skipToNextStep: () => void;
   pauseDemoReel: () => void;
   resumeDemoReel: () => void;
@@ -41,7 +41,7 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
   const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
   const [recordedDuration, setRecordedDuration] = useState(0);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [selectedScenarioId, setSelectedScenarioId] = useState('full_ecosystem');
+  const [selectedScenarioId, setSelectedScenarioId] = useState('');
   const [activeSimulatedQuery, setActiveSimulatedQuery] = useState<string | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -90,17 +90,17 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
     }
 
     // 2. If step includes simulated chat query, trigger simulation
-    if (step.simulatedQuery) {
-      setActiveSimulatedQuery(step.simulatedQuery);
+    if (step.demoPrompt) {
+      setActiveSimulatedQuery(step.demoPrompt);
       if (simulateChatFnRef.current) {
         setTimeout(() => {
-          simulateChatFnRef.current?.(step.simulatedQuery!);
+          simulateChatFnRef.current?.(step.demoPrompt!);
         }, 1200);
       } else if (typeof window !== 'undefined') {
         setTimeout(() => {
           window.dispatchEvent(
             new CustomEvent('uniace:demo-query', {
-              detail: { prompt: step.simulatedQuery, courseId: step.courseId },
+              detail: { prompt: step.demoPrompt, courseId: step.courseId },
             })
           );
         }, 1200);
@@ -202,14 +202,18 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const startDemoReel = useCallback(async (
-    scenarioOrId: string | DemoScenario = selectedScenarioId,
+    scenario: DemoScenario,
     navigateCallback?: (view: View) => void,
     onSimulateChat?: (prompt: string) => void
   ): Promise<boolean> => {
-    const scenario: DemoScenario =
-      typeof scenarioOrId === 'string'
-        ? DEMO_SCENARIOS[scenarioOrId] || DEMO_SCENARIOS.full_ecosystem
-        : scenarioOrId;
+    if (!scenario || !Array.isArray(scenario.steps) || scenario.steps.length === 0) {
+      toast.error('A verified Demo Studio scenario is required before recording.');
+      return false;
+    }
+    if (scenario.requiresReview) {
+      toast.error('This AI-generated demo script requires administrator review before recording.');
+      return false;
+    }
     setSelectedScenarioId(scenario.id);
     setCurrentScenario(scenario);
     if (navigateCallback) navigateFnRef.current = navigateCallback;

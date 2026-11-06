@@ -85,7 +85,7 @@ function AppContent() {
   const [isPending, startTransition] = useTransition();
   const { courses, refreshCourses } = useCourses();
   const { progress, addXp, updateMastery, recordQuizScore, recordStudyTime, addBookmark, removeBookmark, enrollCourse, unenrollCourse, updateAIPersonality, isOnline, checkAndUpdateStreak } = useUserProgress();
-  const { isRecording, startDemoReel, stopAndSaveReel, elapsedSeconds } = useDemoReel();
+  const { isRecording, stopAndSaveReel, elapsedSeconds } = useDemoReel();
   const isAdmin = Boolean(user && profile?.role === 'admin');
   
   // Activate advanced self-healing for robust dynamic client-state integrity
@@ -499,7 +499,7 @@ function AppContent() {
           </div>
         )}
 
-        {/* Quick-Access Demo Reel Button for Admins (Positioned bottom right to prevent overlapping top header actions) */}
+        {/* Admin shortcut opens the evidence-backed Demo Studio; recording must start from a verified scenario there. */}
         {isAdmin && (
           <div className="fixed bottom-20 lg:bottom-6 right-4 lg:right-6 z-[99] flex items-center gap-2">
             <button
@@ -507,7 +507,7 @@ function AppContent() {
                 if (isRecording) {
                   stopAndSaveReel();
                 } else {
-                  startDemoReel('full_ecosystem', handleViewSelect);
+                  handleViewSelect('admin-dashboard');
                 }
               }}
               className={`px-3.5 py-2.5 rounded-2xl font-bold text-xs shadow-2xl transition-all active:scale-95 flex items-center gap-2 border ${
@@ -515,10 +515,10 @@ function AppContent() {
                   ? 'bg-rose-600 text-white animate-pulse border-rose-400 shadow-rose-500/20'
                   : 'bg-slate-900/90 dark:bg-zinc-900/90 text-white dark:text-white hover:bg-slate-800 dark:hover:bg-zinc-800 backdrop-blur-md border-slate-700/50 dark:border-zinc-800 shadow-slate-950/20'
               }`}
-              title={isRecording ? 'Click to finish and save demo reel' : 'Launch Auto Demo Reel'}
+              title={isRecording ? 'Click to finish and save demo reel' : 'Open the Admin Dashboard and verified Demo Studio'}
             >
               <Video size={15} className={isRecording ? 'text-white' : 'text-rose-400 dark:text-rose-400'} />
-              <span>{isRecording ? `🔴 REC (${elapsedSeconds}s)` : '🎬 Record Reel'}</span>
+              <span>{isRecording ? `🔴 REC (${elapsedSeconds}s)` : 'Open Admin Dashboard'}</span>
             </button>
           </div>
         )}

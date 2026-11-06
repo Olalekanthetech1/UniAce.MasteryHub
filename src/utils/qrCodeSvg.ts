@@ -74,14 +74,18 @@ function rsEncode(data: Uint8Array, ecLen: number): Uint8Array {
 }
 
 export function generateQrMatrix(text: string): boolean[][] {
-  const utf8 = new TextEncoder().encode(text.trim() || 'https://uniace.app');
-  // Select smallest version that fits byte mode header (4 bits mode + 8 bits len + data + 4 bits terminator)
-  const spec =
-    QR_VERSIONS_L.find((v) => v.totalDataCodewords >= utf8.length + 2) ||
-    QR_VERSIONS_L[QR_VERSIONS_L.length - 1];
+  if (typeof text !== 'string' || !text.trim()) {
+    throw new Error('QR content is required; no default destination will be substituted.');
+  }
 
-  const maxPayload = spec.totalDataCodewords - 2;
-  const payload = utf8.slice(0, maxPayload);
+  const payload = new TextEncoder().encode(text.trim());
+  // Select the smallest supported version that can encode the entire destination.
+  // Never truncate a URL: a partial destination could scan successfully but lead nowhere.
+  const spec = QR_VERSIONS_L.find((version) => version.totalDataCodewords >= payload.length + 2);
+  if (!spec) {
+    const maxBytes = QR_VERSIONS_L[QR_VERSIONS_L.length - 1].totalDataCodewords - 2;
+    throw new Error(`QR content exceeds the supported capacity of ${maxBytes} UTF-8 bytes. Shorten the destination or use a tracked short link.`);
+  }
 
   // Build bit stream: 0100 (Byte mode) + 8-bit byte count + payload bytes + 0000 terminator
   const bits: number[] = [];
