@@ -59,6 +59,12 @@ interface ModelOption {
 
 interface ProviderStatus {
   configured: boolean;
+  credentialSource: 'admin_dashboard' | 'render_environment' | null;
+  credentialKeyHint: string | null;
+  credentialStorageAvailable: boolean;
+  credentialEncryptionReady: boolean;
+  credentialDecryptable: boolean;
+  credentialError: string | null;
   provider: string;
   ffmpegAvailable: boolean;
   ffprobeAvailable: boolean;
@@ -279,8 +285,25 @@ export default function DemoNarrationStudio({
         const status = await readJsonResponse<ProviderStatus>(statusResponse);
         if (!active) return;
         setProviderStatus(status);
+        if (status.credentialError) {
+          setProviderError(status.credentialError + ' The secure credential store must be available before voice discovery can be used.');
+          setLoadingProvider(false);
+          return;
+        }
+        if (!status.credentialStorageAvailable) {
+          setProviderError('Neon credential storage is unavailable. Restore the UniAce system_config database connection before using Admin Dashboard-managed ElevenLabs credentials.');
+          setLoadingProvider(false);
+          return;
+        }
+        if (status.configured && !status.credentialDecryptable) {
+          setProviderError('An ElevenLabs key is stored but cannot be decrypted. Check that the original ACADEMIC_RESEARCH_ENCRYPTION_KEY is still configured on Render.');
+          setLoadingProvider(false);
+          return;
+        }
         if (!status.configured) {
-          setProviderError('ElevenLabs is not connected. Configure ELEVENLABS_API_KEY on the UniAce Render service before using narration.');
+          setProviderError(status.credentialEncryptionReady
+            ? 'ElevenLabs is not configured. Open Admin Dashboard → Settings and save an API key using the secure ElevenLabs credential panel.'
+            : 'ElevenLabs is not configured and server-side encryption is unavailable. Configure ACADEMIC_RESEARCH_ENCRYPTION_KEY on the UniAce Render service, then save the ElevenLabs key in Admin Dashboard → Settings.');
           setLoadingProvider(false);
           return;
         }
