@@ -667,8 +667,10 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
             modelId: model.model_id,
             name: model.name || model.model_id,
             description: model.description || null,
-            maximumTextLength: Number.isFinite(Number(model.maximum_text_length_per_request))
-              ? Number(model.maximum_text_length_per_request)
+            maximumTextLength: typeof model.maximum_text_length_per_request === 'number' &&
+              Number.isFinite(model.maximum_text_length_per_request) &&
+              model.maximum_text_length_per_request > 0
+              ? model.maximum_text_length_per_request
               : null,
             languages: Array.isArray(model.languages)
               ? model.languages.map((language: any) => ({
@@ -694,14 +696,24 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
       return res.json({
         tier: account?.tier || null,
         status: account?.status || null,
-        characterCount: Number.isFinite(Number(account?.character_count)) ? Number(account.character_count) : null,
-        characterLimit: Number.isFinite(Number(account?.character_limit)) ? Number(account.character_limit) : null,
-        nextResetAt: Number.isFinite(Number(account?.next_character_count_reset_unix))
-          ? new Date(Number(account.next_character_count_reset_unix) * 1000).toISOString()
+        characterCount: typeof account?.character_count === 'number' && Number.isFinite(account.character_count)
+          ? account.character_count
+          : null,
+        characterLimit: typeof account?.character_limit === 'number' && Number.isFinite(account.character_limit)
+          ? account.character_limit
+          : null,
+        nextResetAt: typeof account?.next_character_count_reset_unix === 'number' &&
+          Number.isFinite(account.next_character_count_reset_unix) &&
+          account.next_character_count_reset_unix > 0
+          ? new Date(account.next_character_count_reset_unix * 1000).toISOString()
           : null,
         overageEnabled: account?.can_extend_character_limit === true,
-        voiceSlotsUsed: Number.isFinite(Number(account?.voice_slots_used)) ? Number(account.voice_slots_used) : null,
-        voiceLimit: Number.isFinite(Number(account?.voice_limit)) ? Number(account.voice_limit) : null
+        voiceSlotsUsed: typeof account?.voice_slots_used === 'number' && Number.isFinite(account.voice_slots_used)
+          ? account.voice_slots_used
+          : null,
+        voiceLimit: typeof account?.voice_limit === 'number' && Number.isFinite(account.voice_limit)
+          ? account.voice_limit
+          : null
       });
     } catch (error: any) {
       console.error('[DemoNarration] ElevenLabs account details failed:', error?.message || error);
