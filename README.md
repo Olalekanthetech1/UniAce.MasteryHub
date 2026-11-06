@@ -1,296 +1,361 @@
-# 🎓 UniAce Mastery Hub (UniAce Ecosystem)
+# UniAce Mastery Hub
 
-[![Live Demo](https://img.shields.io/badge/demo-online-brightgreen.svg)](https://uniace-ecosystem.onrender.com)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue?logo=typescript)](https://www.typescriptlang.org/)
-[![React](https://img.shields.io/badge/React-18-61dafb?logo=react)](https://react.dev/)
-[![Vite](https://img.shields.io/badge/Vite-5.x-646CFF?logo=vite)](https://vitejs.dev/)
-[![Node.js](https://img.shields.io/badge/Node.js-18+-339933?logo=nodedotjs)](https://nodejs.org/)
-[![Firebase](https://img.shields.io/badge/Firebase-Firestore_%26_Auth-FFCA28?logo=firebase)](https://firebase.google.com/)
-[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker)](https://www.docker.com/)
+[![React](https://img.shields.io/badge/React-19-61dafb?logo=react)](https://react.dev/)
+[![Vite](https://img.shields.io/badge/Vite-6.x-646CFF?logo=vite)](https://vitejs.dev/)
+[![Node.js](https://img.shields.io/badge/Node.js-22-339933?logo=nodedotjs)](https://nodejs.org/)
+[![Firebase](https://img.shields.io/badge/Firebase-Authentication%20%26%20Firestore-FFCA28?logo=firebase)](https://firebase.google.com/)
+[![PostgreSQL](https://img.shields.io/badge/Database-PostgreSQL-4169E1?logo=postgresql)](https://www.postgresql.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **UniAce Mastery Hub** is an enterprise-grade, multi-provider AI learning ecosystem engineered for university students, educators, and academic institutions. It bridges rigorous STEM and humanities curricula with adaptive spaced-repetition analytics, mathematical typesetting, real-time voice synthesis, and fault-tolerant multi-model AI routing.
+UniAce Mastery Hub is an AI-assisted university learning platform. It is designed to help students understand course material, practise concepts, assess their understanding, revise, and prepare for examinations. It complements lecturers, tutors, and student learning communities; it is not intended to replace them.
+
+The platform combines a React application, an Express API, Firebase Authentication, Firestore, and PostgreSQL-backed academic data. Course content and academic availability are governed by persisted institutional and administrator-controlled data rather than frontend-only assumptions.
 
 ---
 
-## 📑 Table of Contents
+## Contents
 
-- [Core Feature Modules](#-core-feature-modules)
-- [System Architecture & Security](#-system-architecture--security)
-- [Multi-Provider AI Routing](#-multi-provider-ai-routing)
-- [Technology Stack](#-technology-stack)
-- [Project Directory Structure](#-project-directory-structure)
-- [Getting Started & Local Development](#-getting-started--local-development)
-- [Environment Variables Reference](#-environment-variables-reference)
-- [Production Deployment](#-production-deployment)
-- [Testing & Quality Assurance](#-testing--quality-assurance)
-- [Contributing](#-contributing)
-- [License](#-license)
-
----
-
-## ⚡ Core Feature Modules
-
-### 1. 🧠 Interactive AI Academic Tutor
-- **Tri-Level Explanation Engine:** Toggles explanations across **Intuitive** (analogies & high-level models), **Core Mechanics** (operational dynamics), and **Rigorous Proof** (formal mathematical and algorithmic derivations).
-- **Native KaTeX / LaTeX Rendering:** First-class typesetting for chemical formulas, matrix calculus, differential equations, and thermodynamic equations (`$ ... $` and `$$ ... $$`).
-- **Multimodal Context & OCR:** Upload diagrams, circuit layouts, and past examination papers for instant computer-vision breakdown.
-
-### 2. 📈 Adaptive Mastery Center & Spaced Repetition
-- **Ebbinghaus Decay Tracking:** Algorithmic calculation determining optimal revision intervals per topic.
-- **Mastery Score Engine (0–100%):** Weighted retention models tracking active recall scores, quiz accuracies, and conceptual confidence.
-- **Exam Readiness Index:** Real-time percentage indicator benchmarking student preparation against university syllabi.
-
-### 3. 📝 Smart Problem & Question Bank Hub
-- **Dynamic Assessment Generator:** Generates multiple choice (MCQ), fill-in-the-blank, diagnostic scenario-based, and step-by-step technical problem sets.
-- **Past Paper Archives & Diagnostic Benchmarks:** Ingests previous examination questions with automated model-answer breakdowns.
-
-### 4. 🗓️ Study Architect & Exam Countdown
-- **Dynamic Curriculum Scheduling:** Deconstructs complex syllabi into milestone-driven daily sessions.
-- **Calendar Synchronization:** Direct export to iCalendar (`.ics`) and Google Calendar protocols.
-
-### 5. 🎙️ Real-Time Voice Synthesis & Auditory Tutor
-- **Low-Latency Speech Processing:** Streaming voice synthesis optimized for auditory comprehension and mobile learning sessions.
-- **Phonetic Formula Articulation:** Translates mathematical and chemical notation into readable verbal explanations.
-
-### 6. 🛠️ Administrative & Telemetry Control Center
-- **Telemetry & Latency Monitoring:** Real-time dashboard monitoring token expenditures, latency percentiles (p50/p95/p99), and provider uptime.
-- **Role-Based Access Control (RBAC):** Granular permissions separating `Student`, `Faculty/Instructor`, and `SuperAdmin`.
-- **System Broadcast Engine:** Global banner notifications and scheduled maintenance alerts.
+- [Core capabilities](#core-capabilities)
+- [Academic content model](#academic-content-model)
+- [Academic levels and course availability](#academic-levels-and-course-availability)
+- [Architecture and data responsibilities](#architecture-and-data-responsibilities)
+- [API reference: academic availability](#api-reference-academic-availability)
+- [Technology stack](#technology-stack)
+- [Repository structure](#repository-structure)
+- [Local development](#local-development)
+- [Environment configuration](#environment-configuration)
+- [Build, tests, and deployment](#build-tests-and-deployment)
+- [Contributing](#contributing)
+- [License](#license)
 
 ---
 
-## 🛡️ System Architecture & Security
+## Core capabilities
 
-```mermaid
-flowchart TD
-    subgraph Client["Client Tier (React 18 + Vite)"]
-        UI[User Interface & Chat Workspace]
-        VoiceMod[Voice Synthesis & KaTeX Math Renderer]
-    end
+### Learning and academic support
+- Course-oriented learning experiences for university students.
+- AI-assisted explanations and academic help.
+- Guided practice, quizzes, revision, and examination preparation.
+- Mathematical notation and technical learning content.
+- Multi-provider AI integrations, depending on configured credentials and provider availability.
 
-    subgraph Gateway["API & Security Layer (Express / Node.js - Port 3000)"]
-        Auth[Firebase Auth Validation & RBAC]
-        PII[Inbound PII Redaction Filter]
-        Escrow[Spark Escrow Pre-Authorization]
-    end
+### Course and curriculum administration
+- Course lifecycle management with separate draft, review, published, and archived states.
+- Course scope targeting for global, faculty, or department audiences.
+- Administrator tools for managing academic catalog visibility independently of course publication.
+- Audit records for academic availability changes.
 
-    subgraph Router["Multi-Provider AI Fallback Engine"]
-        CB{Circuit Breaker}
-        Groq[Groq LPU - Llama 3]
-        Gemini[Google Gemini 2.0 / Flash]
-        Mistral[Mistral Large / Codestral]
-        NVIDIA[NVIDIA NIM Microservices]
-        Cohere[Cohere Command-R]
-        HF[HuggingFace Hub]
-        OR[OpenRouter Free Tier]
-    end
+### Student access controls
+- Student-facing catalog visibility is checked by the backend.
+- Course access continues to enforce the student's academic profile, level, semester, department/faculty mapping, and configured course scope.
+- Hidden or unconfigured availability is treated as unavailable rather than being assumed to be accessible.
 
-    subgraph Security["Egress Sanitization & Settlement"]
-        Sanitize[Response Sanitizer & Strip <think> Tags]
-        Ledger[Atomic Token Ledger & Post-Settlement]
-        DB[(Firebase Firestore Database)]
-    end
+---
 
-    UI -->|HTTPS / WSS| Auth
-    Auth --> PII
-    PII --> Escrow
-    Escrow --> CB
-    CB -->|Priority 1| Groq
-    CB -.->|Failover 2| Gemini
-    CB -.->|Failover 3| Mistral
-    CB -.->|Failover 4| Cohere
-    CB -.->|Failover 5| HF
-    CB -.->|Failover 6| OR
-    CB -.->|Failover 7| NVIDIA
-    Groq & Gemini & Mistral & NVIDIA & Cohere & HF & OR --> Sanitize
-    Sanitize --> Ledger
-    Ledger --> DB
-    Sanitize -->|SSE Stream / JSON| VoiceMod
+## Academic content model
+
+Academic lessons support validated, typed content blocks rather than relying on one unstructured lesson string. The current block schema includes:
+
+| Block type | Intended use |
+|---|---|
+| `explanation` | Conceptual and descriptive teaching |
+| `mathematical_derivation` | Step-by-step mathematical reasoning |
+| `engineering_diagram` | Technical diagrams and their supporting content |
+| `worked_example` | Given data, method, steps, and a result |
+| `interactive_simulation` | Constrained, validated mathematical simulations |
+| `knowledge_check` | A reference to a learning activity or assessment |
+| `structured_block` | Extensible structured content for discipline-specific needs |
+
+The schema validates block structure, identifiers, and knowledge-check references. Simulation expressions are restricted to an allowlisted arithmetic/function model; they are not arbitrary executable code.
+
+The structured block format is intentionally extensible so that different disciplines can represent their content without forcing every subject into one generic module template.
+
+---
+
+## Academic levels and course availability
+
+Academic availability is separate from the course publication lifecycle. Publishing a course does not, by itself, make it accessible to students.
+
+### Availability states
+
+| State | Student catalogue | Direct course access |
+|---|---|---|
+| **Live** | Visible when the student's profile and course targeting match | Allowed only when both the course and its academic level are Live and all existing access checks pass |
+| **Coming Soon** | Visible as a locked/upcoming item | Blocked |
+| **Hidden** | Omitted from student-facing level/course listings | Blocked; hidden course access is returned as Not Found |
+
+Both the academic level and the individual course must be Live before a student can open the course. Existing profile, department/faculty, course-scope, level, and semester checks still apply.
+
+### Administrator controls
+
+The Admin Dashboard includes:
+
+- **Academic Level Availability:** view configured levels, change each level's state, and add future levels.
+- **Course Student Access:** set each course's student visibility to Live, Coming Soon, or Hidden.
+- **Availability overview:** see per-level published, student-live, and locked/hidden counts, with a warning when a level is Live but has no student-live courses.
+- **Availability audit history:** review recent state changes, including the actor and timestamp.
+
+Only authenticated administrators can use the admin availability endpoints. Availability controls do not delete course content, student progress, or change the course's draft/review/published/archived lifecycle state.
+
+### Initial database defaults
+
+On the first successful academic-availability schema setup, the system inserts these defaults only when the level key does not already exist:
+
+| Academic level | Initial availability |
+|---|---|
+| 100 Level | Live |
+| 200 Level | Coming Soon |
+| 300 Level | Coming Soon |
+| 400 Level | Coming Soon |
+| 500 Level | Coming Soon |
+
+Existing level settings are not overwritten by these default inserts.
+
+For existing course rows whose student visibility has not yet been set, the additive migration preserves visibility for courses already in the `published` lifecycle state by setting them to Live. Other lifecycle states are initialized as Hidden. Newly created courses default to Hidden until an administrator explicitly changes student availability.
+
+### Database migration behavior
+
+The availability service creates or updates the following PostgreSQL structures:
+
+- `academic_level_availability` — persisted level labels, ordering, and availability.
+- `courses.student_visibility` — independent student-facing availability for each course.
+- `academic_availability_audit` — records availability state changes.
+- Supporting indexes and database constraints for valid availability states.
+
+The migration is additive, transaction-protected, and serialized with a PostgreSQL advisory transaction lock. It is invoked by the academic-availability service when that functionality is first used; it is not evidence that a hosted production database has already been migrated.
+
+**Operational requirement:** configure `DATABASE_URL` for the API runtime. Verify the database connection and successful migration in the target environment before relying on the availability controls there.
+
+---
+
+## Architecture and data responsibilities
+
+| Layer | Responsibility |
+|---|---|
+| React + TypeScript + Vite | Student and administrator interfaces |
+| Express API on Node.js | Authenticated application APIs and server-side access enforcement |
+| Firebase Authentication | User identity and authentication |
+| Firebase Firestore | Existing application data and Firebase-backed functionality |
+| PostgreSQL | Relational course/catalog data and academic availability records |
+| AI provider integrations | AI-assisted learning features, subject to configured provider credentials and service availability |
+
+PostgreSQL connectivity is configured through `DATABASE_URL`. The `ENABLE_POSTGRES_CATALOG` flag controls the PostgreSQL catalog path. Other PostgreSQL feature flags are listed in `.env.example`; enable them only when the corresponding feature and data path have been configured and verified.
+
+---
+
+## API reference: academic availability
+
+All routes below require Firebase-authenticated requests. Routes under `/api/admin` additionally require administrator authorization.
+
+| Method | Route | Purpose |
+|---|---|---|
+| GET | `/api/academic-levels` | Return student-visible academic levels; Hidden levels are omitted |
+| GET | `/api/admin/academic-levels` | Return all configured levels and their states |
+| POST | `/api/admin/academic-levels` | Add an academic level |
+| PATCH | `/api/admin/academic-levels/:levelKey` | Update a level's availability, label, or ordering |
+| PATCH | `/api/admin/courses/:id/availability` | Update a course's student visibility |
+| GET | `/api/admin/academic-availability/audit` | Return recent availability audit records |
+
+### Example request bodies
+
+Add a level:
+
+```json
+{
+  "levelKey": "600",
+  "label": "600 Level",
+  "availability": "hidden",
+  "sortOrder": 600
+}
 ```
 
-### Key Architectural Tenets:
-1. **Circuit-Breaker AI Fallback:** Continuous health probing dynamically shifts traffic across the provider queue within milliseconds of rate limiting (HTTP 429), authentication errors (401/403), or upstream latency spikes.
-2. **Economic Spark Escrow Engine:** Prevents abusive compute loops by reserving estimated tokens in escrow prior to payload dispatch, settling the exact delta atomically upon stream closure.
-3. **Multi-Stage Sanitization Pipeline:**
-   - **Inbound:** Strips PII, sensitive session credentials, and adversarial jailbreak prompts (`redactPII`).
-   - **Outbound:** Isolates internal `<think>...</think>` reasoning traces and guarantees mathematical LaTeX boundary closure (`sanitizeAIResponse`).
+Change a level's availability:
+
+```json
+{
+  "availability": "live"
+}
+```
+
+Change a course's student visibility:
+
+```json
+{
+  "availability": "coming_soon"
+}
+```
+
+The accepted availability values are `live`, `coming_soon`, and `hidden`. New levels default to Hidden when availability is omitted. The audit endpoint accepts an optional `limit` query parameter.
 
 ---
 
-## 🤖 Multi-Provider AI Routing
-
-The platform routes academic queries through a prioritized multi-provider queue:
-
-| Priority | Provider | Primary Use Case |
-|---|---|---|
-| **1** | **Groq (LPU)** | High-speed, low-latency reasoning and conversational Q&A |
-| **2** | **Google Gemini** | Deep scientific analysis, long-context syllabi, and image/diagram vision |
-| **3** | **Mistral AI** | Specialized STEM reasoning and code generation |
-| **4** | **Cohere** | Complex semantic retrieval and academic structuring |
-| **5** | **HuggingFace** | Open-source foundation model fallbacks |
-| **6** | **OpenRouter** | Distributed community models |
-| **7** | **NVIDIA NIM** | Accelerated high-parameter vision and reasoning models |
-
----
-
-## 💻 Technology Stack
+## Technology stack
 
 | Layer | Technologies |
 |---|---|
-| **Frontend** | React 18, TypeScript, Vite, Tailwind CSS, Lucide Icons, Framer Motion |
-| **Data Viz & Math** | KaTeX, Recharts |
-| **Backend** | Node.js, Express, WebSocket (`ws`), Server-Sent Events (SSE), `tsx`, `esbuild` |
-| **Database & Auth** | Firebase Firestore, Firebase Authentication, Firebase Admin SDK |
-| **AI Inference & SDKs** | Google GenAI SDK (`@google/genai`), Groq SDK, Mistral AI, Cohere, NVIDIA NIM |
-| **DevOps & Hosting** | Docker, Render, Cloud Run, UptimeRobot |
+| Frontend | React 19, TypeScript, Vite 6, Tailwind CSS, Lucide React |
+| Backend | Node.js, Express, TypeScript, WebSocket/SSE-related services |
+| Authentication | Firebase Authentication, Firebase Admin SDK |
+| Data | Firebase Firestore, PostgreSQL, `pg` connection pool |
+| Academic content and validation | Zod, Math.js, Mermaid |
+| AI integrations | Google GenAI, Groq, Mistral, Cohere, Hugging Face, NVIDIA, OpenRouter (configured providers only) |
+| Build and deployment | Bun, Vite, esbuild, Docker; hosting configuration is environment-specific |
+
+Versions above describe the current repository dependencies/configuration, not a promise that every optional integration is enabled in every deployment.
 
 ---
 
-## 📁 Project Directory Structure
+## Repository structure
 
 ```text
-UniAce-Ecosystem/
-├── public/                     # Static assets, PWA manifest, and icons
-├── server/                     # Backend API & AI Engine
-│   └── providers.ts            # Multi-provider AI router & circuit breaker logic
-├── src/                        # Frontend Presentation Layer
-│   ├── components/             # UI Components (MasteryCenter, ChatBot, QuizHub, AdminDashboard)
-│   │   ├── admin/              # Specialized admin management views
-│   │   ├── chat/               # Conversational workspace & syllabus jumper
-│   │   └── renderers/          # Interactive KaTeX, Mermaid & Diagram visualizers
-│   ├── services/               # API clients, Firestore hooks, and AI service wrappers
-│   ├── types/                  # Application-wide TypeScript interfaces
-│   ├── utils/                  # Learning path algorithms, KaTeX helpers, and iCal exports
-│   ├── App.tsx                 # Core application controller and view routing
-│   ├── main.tsx                # Client initialization entry point
-│   └── index.css               # Global Tailwind CSS directives
-├── server.ts                   # Unified Express backend & Vite middleware (Port 3000)
-├── firestore.rules             # Firebase Firestore security & role-based rules
-├── firebase-blueprint.json     # Schema blueprint definitions
-├── package.json                # Dependencies and build scripts
-├── tsconfig.json               # TypeScript compiler options
-├── Dockerfile                  # Container definition for production deployment
-└── vite.config.ts              # Vite bundling pipeline
+UniAce.MasteryHub/
+├── .github/
+│   └── workflows/             # CI quality checks
+├── public/                    # Static assets and PWA resources
+├── server/
+│   ├── repositories/          # Database repositories
+│   ├── routes/                # Express API routes
+│   ├── services/              # Academic availability, course access, and domain services
+│   ├── postgresPool.ts        # PostgreSQL connection pool and health checks
+│   └── providers.ts           # AI provider integrations/routing
+├── src/
+│   ├── components/            # Student and administrator interfaces
+│   │   └── admin/             # Administrator management components
+│   ├── services/              # Frontend API/service clients
+│   ├── shared/                # Shared schemas and academic content validation
+│   ├── types/                 # TypeScript types and database models
+│   └── utils/                 # Shared utilities
+├── tests/                     # Automated tests
+├── server.ts                  # Express application entry point
+├── package.json               # Dependencies and scripts
+├── bun.lock                   # Locked Bun dependencies
+├── tsconfig.json              # TypeScript configuration
+├── Dockerfile                 # Container build definition
+└── vite.config.ts              # Vite configuration
 ```
 
 ---
 
-## 🚀 Getting Started & Local Development
+## Local development
 
 ### Prerequisites
-- **Node.js**: `v18.x` or higher
-- **npm**: `v9.x` or higher
-- A **Google Gemini API Key** and a **Firebase Project**
 
-### Step-by-Step Installation
+- Node.js 22 (matches the repository's GitHub Actions quality workflow).
+- Bun (used by CI and the committed lockfile).
+- Firebase project credentials for authenticated application functionality.
+- PostgreSQL connection string for PostgreSQL-backed catalog and academic-availability functionality.
+- Credentials for any AI/payment/messaging integrations you intend to exercise locally.
 
-1. **Clone the repository:**
+### Setup
+
+1. Clone the repository:
+
    ```bash
-   git clone https://github.com/uniacesupport/UniAce-Ecosystem.git
-   cd UniAce-Ecosystem
+   git clone https://github.com/Olalekanthetech1/UniAce.MasteryHub.git
+   cd UniAce.MasteryHub
    ```
 
-2. **Install dependencies:**
+2. Install the locked dependencies:
+
    ```bash
-   npm install
+   bun install --frozen-lockfile
    ```
 
-3. **Configure Environment Variables:**
+3. Create your local environment file:
+
    ```bash
    cp .env.example .env
    ```
-   Open `.env` and fill in your API keys (refer to the [Environment Variables](#-environment-variables-reference) table below).
 
-4. **Start the Development Server:**
+4. Add the credentials and configuration required for the features you intend to run. Do not commit `.env` or real secrets.
+
+5. Start the development server:
+
    ```bash
-   npm run dev
+   bun run dev
    ```
-   The application will start on unified port **`http://localhost:3000`** with Express backend APIs and hot Vite client serving.
+
+The development script starts the Express server and Vite middleware. The default application port is 3000 unless overridden by the runtime configuration.
 
 ---
 
-## 🔐 Environment Variables Reference
+## Environment configuration
 
-| Variable | Description | Required | Default |
-|---|---|:---:|:---:|
-| `PORT` | Application port (fixed) | No | `3000` |
-| `NODE_ENV` | Runtime environment (`development` / `production`) | No | `development` |
-| `GEMINI_API_KEY` | Google Gemini API key for multimodal reasoning | **Yes** | — |
-| `GROQ_API_KEY` | Groq LPU inference key for ultra-fast failover | No | — |
-| `MISTRAL_API_KEY` | Mistral AI API key for STEM reasoning | No | — |
-| `NVIDIA_NIM_API_KEY` | NVIDIA NIM endpoint key for high-parameter LLMs | No | — |
-| `COHERE_API_KEY` | Cohere API key for retrieval models | No | — |
-| `HUGGINGFACE_API_KEY` | Hugging Face inference key | No | — |
-| `OPENROUTER_API_KEY` | OpenRouter API key | No | — |
-| `FIREBASE_PROJECT_ID` | Firebase Project ID for Firestore and Auth | **Yes** | — |
-| `FIREBASE_CLIENT_EMAIL`| Service account email for Firebase Admin SDK | **Yes** | — |
-| `FIREBASE_PRIVATE_KEY`| Service account RSA private key | **Yes** | — |
+The repository's `.env.example` is the canonical list of supported environment variable names. It includes configuration for Firebase, PostgreSQL, AI providers, administrator accounts, Paystack, email, and optional messaging integrations.
+
+Important variables include:
+
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection string; required for PostgreSQL-backed academic availability |
+| `ENABLE_POSTGRES_CATALOG` | Enables the PostgreSQL catalog read path |
+| `ENABLE_POSTGRES_GENERATION_JOBS` | Feature flag for PostgreSQL-backed generation jobs |
+| `ENABLE_POSTGRES_PROGRESS` | Feature flag for PostgreSQL-backed progress functionality |
+| `ENABLE_POSTGRES_SHADOW_WRITE` | Feature flag for the PostgreSQL shadow-write path |
+| `FIREBASE_SERVICE_ACCOUNT` | Firebase Admin service-account configuration |
+| `ADMIN_EMAILS` | Administrator email configuration |
+| `GROQ_API_KEY`, `COHERE_API_KEY`, `MISTRAL_API_KEY`, `HUGGINGFACE_API_KEY`, `NVIDIA_API_KEY`, `OPENROUTER_API_KEY` | Optional AI provider credentials, depending on the active provider configuration |
+| `PAYSTACK_SECRET_KEY` | Paystack server-side integration credential |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM_EMAIL` | Outbound email configuration |
+
+Do not place private keys or service-account JSON in source files, frontend variables, commits, or public issue comments. Only expose values prefixed with `VITE_` when they are explicitly designed to be public client-side configuration.
 
 ---
 
-## 🚢 Production Deployment
+## Build, tests, and deployment
 
-### Option 1: Standard Node Production Build
+### Automated quality checks
+
+Run the same core commands used by the repository's quality workflow:
+
 ```bash
-# Build Vite client and bundle production server via esbuild
-npm run build
+# Unit tests
+bun run test
 
-# Start production server
-npm start
+# TypeScript validation
+bun run lint
+
+# Production build (also runs TypeScript validation)
+bun run build
 ```
 
-### Option 2: Docker Containerization
-A multi-stage `Dockerfile` is included for containerized hosting environments (Render, Cloud Run, AWS ECS):
+GitHub Actions runs the quality workflow for pull requests targeting `main`, pushes to `main` and `feature/**` branches, and manual workflow dispatches. The workflow executes unit tests, TypeScript validation, and the production build.
+
+### Production build and start
 
 ```bash
-# Build Docker image
-docker build -t uniace-mastery-hub .
+bun run build
+bun run start
+```
 
-# Run container with environment configuration
+The build produces the Vite client bundle and bundles the Express server into `dist/server.js`. Supply all required runtime environment variables through the hosting platform or deployment secret manager.
+
+### Docker
+
+A Dockerfile is included for container-based deployment:
+
+```bash
+docker build -t uniace-mastery-hub .
 docker run -p 3000:3000 --env-file .env uniace-mastery-hub
 ```
 
----
-
-## 🧪 Testing & Quality Assurance
-
-```bash
-# Run TypeScript type validation and linting
-npm run lint
-
-# Compile and verify full production bundle
-npm run build
-```
+Deployment configuration, environment secrets, database connectivity, and migration execution must be verified in the target hosting environment. Merging code into `main` does not by itself confirm that a production deployment has completed or that a production database migration has run.
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
-1. **Fork** the Repository.
-2. **Create a Feature Branch:**
-   ```bash
-   git checkout -b feature/adaptive-flashcards
-   ```
-3. **Commit your changes:**
-   ```bash
-   git commit -m "feat(spaced-repetition): add Leitner card decay calculation"
-   ```
-4. **Push to branch:**
-   ```bash
-   git push origin feature/adaptive-flashcards
-   ```
-5. **Open a Pull Request** against `main` detailing rationale, testing steps, and relevant screenshots.
+1. Create a focused feature branch from `main`.
+2. Make changes that follow the existing TypeScript and service boundaries.
+3. Add or update tests for behavior changes.
+4. Run `bun run test`, `bun run lint`, and `bun run build`.
+5. Open a pull request against `main`, describing the behavior, relevant migration impact, and verification performed.
+
+Avoid presenting mock data, fabricated academic references, static success fallbacks, or unverified external operations as real results. When an operation depends on live data or a configured service, handle unavailable or unverified states explicitly.
 
 ---
 
-## 📄 License
+## License
 
-This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
-
----
-
-<p align="center">
-  Built with precision by the <b>UniAce Platform Engineering Team</b>.<br/>
-  <i>Empowering students and faculty through high-performance learning intelligence.</i>
-</p>
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
