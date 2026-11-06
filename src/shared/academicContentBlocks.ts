@@ -328,7 +328,6 @@ export const AcademicContentBlockCollectionSchema = z.preprocess((raw: unknown) 
   const obj = { ...(raw as Record<string, any>) };
   if (!obj.schemaVersion) obj.schemaVersion = '1.0';
   if (Array.isArray(obj.blocks)) {
-    const seenChecks = new Set<number>();
     const dedupedBlocks: any[] = [];
     for (let i = 0; i < obj.blocks.length; i++) {
       const b = obj.blocks[i];
@@ -355,10 +354,6 @@ export const AcademicContentBlockCollectionSchema = z.preprocess((raw: unknown) 
             return g;
           });
         }
-      }
-      if (copy.type === 'knowledge_check' && typeof copy.activityIndex === 'number') {
-        if (seenChecks.has(copy.activityIndex)) continue;
-        seenChecks.add(copy.activityIndex);
       }
       dedupedBlocks.push(copy);
     }
