@@ -21,6 +21,13 @@ import { ensureCourseLearningSchema } from '../services/courseLearningSchema';
 import { ensureCourseReviewSchema } from '../services/courseReviewSchema';
 import { ensureCourseAssessmentSchema } from '../services/courseAssessmentSchema';
 import { ensureCourseLifecycleSchema } from '../services/courseLifecycleSchema.js';
+import {
+  ensureAcademicAvailabilitySchema,
+  listAcademicLevelAvailability,
+  createAcademicLevelAvailability,
+  updateAcademicLevelAvailability,
+  updateCourseStudentVisibility
+} from '../services/academicAvailability';
 import { activeCancelledJobs, activeRunningCourseJobs, activeCoordinatedJobSnapshots } from '../services/courseJobControl.js';
 import {
   getSystemConfigDoc,
@@ -991,6 +998,79 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
       res.json({ success: true, featureSwitches });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Student-facing availability is independent of course publication and lifecycle state.
+  app.get('/api/admin/academic-levels', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    if (!(await checkIsAdmin(user.uid, user.email))) return res.status(403).json({ error: 'Admin privileges required' });
+    try {
+      const levels = await listAcademicLevelAvailability();
+      res.set('Cache-Control', 'private, no-store');
+      return res.json({ success: true, levels });
+    } catch (error: any) {
+      return res.status(503).json({ error: error?.message || 'Academic level settings are unavailable.' });
+    }
+  });
+
+  app.post('/api/admin/academic-levels', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    if (!(await checkIsAdmin(user.uid, user.email))) return res.status(403).json({ error: 'Admin privileges required' });
+    try {
+      const level = await createAcademicLevelAvailability({
+        levelKey: req.body?.levelKey,
+        label: req.body?.label,
+        availability: req.body?.availability,
+        sortOrder: req.body?.sortOrder,
+        actorUid: user.uid
+      });
+      return res.status(201).json({ success: true, level });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ error: error?.message || 'Failed to create academic level.' });
+    }
+  });
+
+  app.patch('/api/admin/academic-levels/:levelKey', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    if (!(await checkIsAdmin(user.uid, user.email))) return res.status(403).json({ error: 'Admin privileges required' });
+    try {
+      const level = await updateAcademicLevelAvailability(req.params.levelKey, {
+        availability: req.body?.availability,
+        label: req.body?.label,
+        sortOrder: req.body?.sortOrder,
+        actorUid: user.uid
+      });
+      catalogCache.invalidateAll();
+      await recordBackendSystemLog(
+        'info',
+        'admin',
+        `Academic level availability updated for ${level.level_key}`,
+        { levelKey: level.level_key, availability: level.availability },
+        { uid: user.uid }
+      );
+      return res.json({ success: true, level });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ error: error?.message || 'Failed to update academic level.' });
+    }
+  });
+
+  app.patch('/api/admin/courses/:id/availability', verifyAuth, async (req: any, res: any) => {
+    const user = req.user;
+    if (!(await checkIsAdmin(user.uid, user.email))) return res.status(403).json({ error: 'Admin privileges required' });
+    try {
+      const result = await updateCourseStudentVisibility(req.params.id, req.body?.availability, user.uid);
+      catalogCache.invalidateAll();
+      await recordBackendSystemLog(
+        'info',
+        'admin',
+        `Student availability updated for course ${result.courseId}`,
+        { courseId: result.courseId, availability: result.availability },
+        { uid: user.uid }
+      );
+      return res.json({ success: true, ...result });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ error: error?.message || 'Failed to update course availability.' });
     }
   });
 
