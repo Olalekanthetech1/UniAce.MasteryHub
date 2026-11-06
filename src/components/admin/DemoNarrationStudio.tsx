@@ -797,10 +797,12 @@ export default function DemoNarrationStudio({
                   Style: {voiceSettings.style.toFixed(2)}
                   <input type="range" min="0" max="1" step="0.05" value={voiceSettings.style} onChange={(e) => setVoiceSettings({ ...voiceSettings, style: Number(e.target.value) })} className="mt-1 block w-full" />
                 </label>
-                <label className="text-[11px] text-slate-600 dark:text-slate-300">
-                  Speed: {voiceSettings.speed.toFixed(2)}
-                  <input type="range" min="0.7" max="1.2" step="0.05" value={voiceSettings.speed} onChange={(e) => setVoiceSettings({ ...voiceSettings, speed: Number(e.target.value) })} className="mt-1 block w-full" />
-                </label>
+                {typeof voiceSettings.speed === 'number' && (
+                  <label className="text-[11px] text-slate-600 dark:text-slate-300">
+                    Speed: {voiceSettings.speed.toFixed(2)}
+                    <input type="range" min="0.7" max="1.2" step="0.05" value={voiceSettings.speed} onChange={(e) => setVoiceSettings({ ...voiceSettings, speed: Number(e.target.value) })} className="mt-1 block w-full" />
+                  </label>
+                )}
                 <label className="flex items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300 sm:col-span-2">
                   <input type="checkbox" checked={voiceSettings.use_speaker_boost} onChange={(e) => setVoiceSettings({ ...voiceSettings, use_speaker_boost: e.target.checked })} />
                   Use speaker boost
