@@ -1141,7 +1141,7 @@ async function resolveCourseAccessForUser(uid: string, email: string | undefined
   );
   return {
     allowed: decision.allowed,
-    statusCode: decision.allowed ? 200 : 403,
+    statusCode: decision.allowed ? 200 : (decision.reason === 'availability_hidden' ? 404 : 403),
     reason: decision.reason,
     course
   };
