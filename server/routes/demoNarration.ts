@@ -14,7 +14,14 @@ import {
   type ElevenLabsAlignment
 } from '../services/demoNarration.js';
 
-const MAX_UPLOAD_BYTES = 250 * 1024 * 1024;
+const configuredUploadBytes = Number(process.env.DEMO_NARRATION_MAX_UPLOAD_BYTES);
+const MAX_UPLOAD_BYTES = Number.isSafeInteger(configuredUploadBytes) && configuredUploadBytes > 0
+  ? configuredUploadBytes
+  : 250 * 1024 * 1024;
+const configuredScriptCharacters = Number(process.env.DEMO_NARRATION_MAX_SCRIPT_CHARACTERS);
+const MAX_SCRIPT_CHARACTERS = Number.isSafeInteger(configuredScriptCharacters) && configuredScriptCharacters >= 100
+  ? configuredScriptCharacters
+  : 20000;
 const DEFAULT_MAX_DURATION_SECONDS = 15 * 60;
 const UPLOAD_TTL_MS = 20 * 60 * 1000;
 const JOB_TTL_MS = 30 * 60 * 1000;
@@ -49,7 +56,7 @@ interface NarrationJob {
   script: string;
   modelId: string;
   voiceId: string;
-  originalAudioMode: 'mix' | 'narration_only';
+  originalAudioMode: 'mix' | 'duck' | 'narration_only';
   originalAudioVolume: number;
   narrationVolume: number;
   subtitlesEnabled: boolean;
@@ -90,16 +97,16 @@ const VoiceSettingsSchema = z.object({
   similarity_boost: z.number().min(0).max(1),
   style: z.number().min(0).max(1),
   use_speaker_boost: z.boolean(),
-  speed: z.number().min(0.7).max(1.2)
+  speed: z.number().min(0.7).max(1.2).optional()
 }).strict();
 
 const CreateJobSchema = z.object({
   uploadId: z.string().uuid(),
   voiceId: z.string().trim().min(1).max(180),
   modelId: z.string().trim().min(1).max(120),
-  script: z.string().trim().min(5).max(20000),
+  script: z.string().trim().min(5).max(MAX_SCRIPT_CHARACTERS),
   voiceSettings: VoiceSettingsSchema.optional(),
-  originalAudioMode: z.enum(['mix', 'narration_only']),
+  originalAudioMode: z.enum(['mix', 'duck', 'narration_only']),
   originalAudioVolume: z.number().min(0).max(1),
   narrationVolume: z.number().min(0.1).max(2),
   subtitles: z.boolean(),
@@ -324,6 +331,40 @@ async function cleanupJob(job: NarrationJob): Promise<void> {
   }
 }
 
+async function probeAudioDuration(filePath: string): Promise<number> {
+  const binary = process.env.FFPROBE_PATH || 'ffprobe';
+  const output = await new Promise<string>((resolve, reject) => {
+    const child = spawn(binary, [
+      '-v', 'error',
+      '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      filePath
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    const timeout = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error('Narration audio metadata verification timed out.'));
+    }, 20000);
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk) => { stderr = (stderr + chunk.toString()).slice(-1500); });
+    child.on('error', () => {
+      clearTimeout(timeout);
+      reject(new Error('FFprobe is unavailable. Narration duration cannot be verified.'));
+    });
+    child.on('close', (code) => {
+      clearTimeout(timeout);
+      if (code !== 0) reject(new Error('Generated narration audio could not be inspected. ' + stderr.slice(-250)));
+      else resolve(stdout.trim());
+    });
+  });
+  const duration = Number(output);
+  if (!Number.isFinite(duration) || duration <= 0) {
+    throw new Error('ElevenLabs audio did not contain a verifiable positive duration.');
+  }
+  return duration;
+}
+
 async function createNarrationAudio(job: NarrationJob, input: z.infer<typeof CreateJobSchema>): Promise<void> {
   const apiKey = getApiKey();
   if (!apiKey) throw new Error('ELEVENLABS_API_KEY is missing from the server environment.');
@@ -353,7 +394,7 @@ async function createNarrationAudio(job: NarrationJob, input: z.infer<typeof Cre
           similarity_boost: input.voiceSettings.similarity_boost,
           style: input.voiceSettings.style,
           use_speaker_boost: input.voiceSettings.use_speaker_boost,
-          speed: input.voiceSettings.speed
+          ...(typeof input.voiceSettings.speed === 'number' ? { speed: input.voiceSettings.speed } : {})
         }
       } : {})
     }),
@@ -372,6 +413,14 @@ async function createNarrationAudio(job: NarrationJob, input: z.infer<typeof Cre
   const audio = Buffer.from(payload.audio_base64, 'base64');
   if (audio.length < 100) throw new Error('ElevenLabs returned an incomplete audio file.');
   await fs.promises.writeFile(job.audioPath, audio, { mode: 0o600 });
+  const narrationDuration = await probeAudioDuration(job.audioPath);
+  if (job.durationSeconds && narrationDuration > job.durationSeconds + 0.15) {
+    throw new Error(
+      'The generated narration is ' + narrationDuration.toFixed(1) +
+      ' seconds, but the source video is ' + job.durationSeconds.toFixed(1) +
+      ' seconds. Shorten the approved script or adjust the voice speed before rendering. The video will not be silently cut off.'
+    );
+  }
 
   const alignment = payload.alignment || payload.normalized_alignment;
   if (job.subtitlesEnabled) {
@@ -405,15 +454,25 @@ async function renderVideo(job: NarrationJob): Promise<void> {
   const args = ['-y', '-i', job.sourcePath, '-i', job.audioPath];
 
   let audioMap: string[] = [];
-  if (job.originalAudioMode === 'mix' && metadata.hasAudio) {
+  if ((job.originalAudioMode === 'mix' || job.originalAudioMode === 'duck') && metadata.hasAudio) {
     const originalVolume = job.originalAudioVolume.toFixed(3);
     const narrationVolume = job.narrationVolume.toFixed(3);
-    args.push(
-      '-filter_complex',
-      '[0:a:0]volume=' + originalVolume + '[original];' +
-      '[1:a:0]volume=' + narrationVolume + '[narration];' +
-      '[original][narration]amix=inputs=2:duration=longest:dropout_transition=2[mixed]'
-    );
+    if (job.originalAudioMode === 'duck') {
+      args.push(
+        '-filter_complex',
+        '[0:a:0]volume=' + originalVolume + '[background];' +
+        '[1:a:0]volume=' + narrationVolume + '[narration];' +
+        '[background][narration]sidechaincompress=threshold=0.025:ratio=8:attack=20:release=420[ducked];' +
+        '[ducked][narration]amix=inputs=2:duration=longest:dropout_transition=2[mixed]'
+      );
+    } else {
+      args.push(
+        '-filter_complex',
+        '[0:a:0]volume=' + originalVolume + '[original];' +
+        '[1:a:0]volume=' + narrationVolume + '[narration];' +
+        '[original][narration]amix=inputs=2:duration=longest:dropout_transition=2[mixed]'
+      );
+    }
     audioMap = ['-map', '[mixed]'];
   } else {
     audioMap = ['-map', '1:a:0'];
@@ -548,6 +607,7 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
       ffmpegAvailable,
       ffprobeAvailable,
       maxUploadBytes: MAX_UPLOAD_BYTES,
+      maxScriptCharacters: MAX_SCRIPT_CHARACTERS,
       maxDurationSeconds: Number(process.env.DEMO_NARRATION_MAX_DURATION_SECONDS) || DEFAULT_MAX_DURATION_SECONDS
     });
   });
