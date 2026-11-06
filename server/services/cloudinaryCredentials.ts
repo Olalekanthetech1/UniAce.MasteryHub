@@ -47,7 +47,7 @@ export interface CloudinaryCredentialStatus {
 }
 
 export function normalizeCloudinaryFolderPrefix(value: string): string {
-  const normalized = value.trim().replace(/^\\/+|\\/+$/g, '').split('/').map((segment) => segment.trim()).join('/');
+  const normalized = value.trim().replace(new RegExp('^/+|/+$', 'g'), '').split('/').map((segment) => segment.trim()).join('/');
   if (
     !normalized ||
     normalized.length > 180 ||
