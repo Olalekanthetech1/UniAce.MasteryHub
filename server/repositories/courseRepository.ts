@@ -167,6 +167,7 @@ export class CourseRepository {
    */
   async getCourseById(courseId: string): Promise<CourseEntity | null> {
     await ensureCourseLearningSchema();
+    await ensureAcademicAvailabilitySchema();
     const flags = getFeatureFlags();
     const cacheKey = `catalog:course:${courseId}`;
 
@@ -179,7 +180,7 @@ export class CourseRepository {
       try {
         const sql = `
           SELECT id, code, title, description, level, department, faculty, semester, credit_units, faculties, departments, scope,
-                 thumbnail_url, author_id, status, version, created_at, updated_at
+                 thumbnail_url, author_id, status, student_visibility, version, created_at, updated_at
           FROM courses
           WHERE id = $1
           LIMIT 1
