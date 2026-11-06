@@ -7,6 +7,8 @@ import {
   buildDynamicFlyerConfig,
   buildDynamicDemoScenarios,
   getCoursesForMarketingScope,
+  isDemoScenarioIsolated,
+  DemoScenario,
   PlatformMarketingContext
 } from '../src/services/demoReelService';
 import { MarketingCourse } from '../src/services/marketingSnapshot';
@@ -330,6 +332,33 @@ test('department campaign never borrows a course from an unrelated department', 
   assert.ok(scenario);
   assert.ok(scenario.steps.some((step) => step.courseId === 'LAW201'));
   assert.equal(scenario.steps.some((step) => step.courseId === 'MEE201'), false);
+});
+
+
+test('Demo Studio rejects AI Tutor and legacy automated-chat steps until isolated execution exists', () => {
+  const safeScenario = buildDynamicDemoScenarios(sampleContext).full_ecosystem;
+  assert.ok(safeScenario);
+  assert.equal(isDemoScenarioIsolated(safeScenario), true);
+
+  const tutorStep = {
+    ...safeScenario.steps[0],
+    view: 'ai-tutor' as const
+  };
+  const tutorScenario = {
+    ...safeScenario,
+    steps: [tutorStep]
+  } as DemoScenario;
+  assert.equal(isDemoScenarioIsolated(tutorScenario), false);
+
+  const legacyChatStep = {
+    ...safeScenario.steps[0],
+    demoPrompt: 'Explain a course module.'
+  };
+  const legacyScenario = {
+    ...safeScenario,
+    steps: [legacyChatStep]
+  } as DemoScenario;
+  assert.equal(isDemoScenarioIsolated(legacyScenario), false);
 });
 
 test('sanitizeCssColorString removes CSS Color 4 functions and gradient interpolation syntax', () => {

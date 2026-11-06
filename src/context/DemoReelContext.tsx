@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useRef, useEffect, useCallback, ReactNode } from 'react';
 import { View } from '../types';
-import { DemoScenario, DemoStep } from '../services/demoReelService';
+import { DemoScenario, DemoStep, isDemoScenarioIsolated } from '../services/demoReelService';
 import toast from 'react-hot-toast';
 
 interface DemoReelContextType {
@@ -16,9 +16,8 @@ interface DemoReelContextType {
   isModalOpen: boolean;
   selectedScenarioId: string;
   screenCaptureSupported: boolean;
-  activeSimulatedQuery: string | null;
   setSelectedScenarioId: (id: string) => void;
-  startDemoReel: (scenario: DemoScenario, navigateCallback?: (view: View) => void, onSimulateChat?: (prompt: string) => void) => Promise<boolean>;
+  startDemoReel: (scenario: DemoScenario, navigateCallback?: (view: View) => void) => Promise<boolean>;
   skipToNextStep: () => void;
   pauseDemoReel: () => void;
   resumeDemoReel: () => void;
@@ -42,7 +41,6 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
   const [recordedDuration, setRecordedDuration] = useState(0);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedScenarioId, setSelectedScenarioId] = useState('');
-  const [activeSimulatedQuery, setActiveSimulatedQuery] = useState<string | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -50,7 +48,6 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
   const timerIntervalRef = useRef<any>(null);
   const stepTimeoutRef = useRef<any>(null);
   const navigateFnRef = useRef<((view: View) => void) | null>(null);
-  const simulateChatFnRef = useRef<((prompt: string) => void) | null>(null);
   const startTimeRef = useRef<number>(0);
 
   const screenCaptureSupported = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getDisplayMedia;
@@ -87,26 +84,6 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
       navigateFnRef.current(step.view);
     } else if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('navigate', { detail: step.view }));
-    }
-
-    // 2. If step includes simulated chat query, trigger simulation
-    if (step.demoPrompt) {
-      setActiveSimulatedQuery(step.demoPrompt);
-      if (simulateChatFnRef.current) {
-        setTimeout(() => {
-          simulateChatFnRef.current?.(step.demoPrompt!);
-        }, 1200);
-      } else if (typeof window !== 'undefined') {
-        setTimeout(() => {
-          window.dispatchEvent(
-            new CustomEvent('uniace:demo-query', {
-              detail: { prompt: step.demoPrompt, courseId: step.courseId },
-            })
-          );
-        }, 1200);
-      }
-    } else {
-      setActiveSimulatedQuery(null);
     }
 
     // 3. Schedule next step
@@ -176,7 +153,6 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
     setCurrentScenario(null);
     setCurrentStepIndex(0);
     setElapsedSeconds(0);
-    setActiveSimulatedQuery(null);
     toast('Demo reel cancelled', { icon: '🛑' });
   }, []);
 
@@ -197,17 +173,19 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
 
     setIsRecording(false);
     setIsPaused(false);
-    setActiveSimulatedQuery(null);
     toast.success('🎬 Demo Reel recorded successfully! Ready to export & download.');
   }, []);
 
   const startDemoReel = useCallback(async (
     scenario: DemoScenario,
-    navigateCallback?: (view: View) => void,
-    onSimulateChat?: (prompt: string) => void
+    navigateCallback?: (view: View) => void
   ): Promise<boolean> => {
     if (!scenario || !Array.isArray(scenario.steps) || scenario.steps.length === 0) {
       toast.error('A verified Demo Studio scenario is required before recording.');
+      return false;
+    }
+    if (!isDemoScenarioIsolated(scenario)) {
+      toast.error('This scenario contains an AI Tutor or automated chat step. Chat execution is disabled in Demo Studio until an isolated demo path is available.');
       return false;
     }
     if (scenario.requiresReview) {
@@ -217,7 +195,6 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
     setSelectedScenarioId(scenario.id);
     setCurrentScenario(scenario);
     if (navigateCallback) navigateFnRef.current = navigateCallback;
-    if (onSimulateChat) simulateChatFnRef.current = onSimulateChat;
 
     chunksRef.current = [];
     setRecordedBlob(null);
@@ -351,7 +328,6 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
         isModalOpen,
         selectedScenarioId,
         screenCaptureSupported,
-        activeSimulatedQuery,
         setSelectedScenarioId,
         startDemoReel,
         skipToNextStep,

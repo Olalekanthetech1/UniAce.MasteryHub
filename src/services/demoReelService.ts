@@ -11,7 +11,6 @@ export interface DemoStep {
   title: string;
   subtitle: string;
   badge: string;
-  demoPrompt?: string;
   highlightSelector?: string;
   courseId?: string;
 }
@@ -32,6 +31,18 @@ export interface DemoScenario {
   };
   isDynamicAI?: boolean;
   requiresReview?: boolean;
+}
+
+export function isDemoScenarioIsolated(scenario: DemoScenario): boolean {
+  if (!scenario || !Array.isArray(scenario.steps) || scenario.steps.length === 0) {
+    return false;
+  }
+
+  return scenario.steps.every((step) =>
+    Boolean(step) &&
+    step.view !== 'ai-tutor' &&
+    !Object.prototype.hasOwnProperty.call(step, 'demoPrompt')
+  );
 }
 
 export type MarketingTargetScope =
@@ -693,24 +704,6 @@ export function buildDynamicDemoScenarios(ctx: PlatformMarketingContext): Record
       badge: 'Course spotlight'
     });
   }
-  if (active.some((item) => item.id === 'ai_tutor')) {
-    const firstModule = selectedCourse?.syllabus?.[0];
-    const prompt = selectedCourse && firstModule
-      ? `In ${selectedCourse.id} — ${selectedCourse.title}, explain the module "${firstModule.title}" step by step. Start with the prerequisite ideas and explain the core concepts without assuming prior mastery.`
-      : undefined;
-    steps.push({
-      id: 'live_step_tutor',
-      view: 'ai-tutor',
-      courseId: selectedCourse?.id,
-      durationMs: 8000,
-      title: 'AI Academic Tutor',
-      subtitle: selectedCourse && firstModule
-        ? `Use a real module from ${selectedCourse.id} as the tutoring prompt.`
-        : 'Open the tutor interface and demonstrate a real question.',
-      badge: 'Academic support',
-      demoPrompt: prompt
-    });
-  }
   for (const feature of active.filter((item) => ['question_generator', 'flashcards', 'study_planner', 'my_notes'].includes(item.id))) {
     if (steps.length >= 6) break;
     steps.push({
@@ -734,40 +727,6 @@ export function buildDynamicDemoScenarios(ctx: PlatformMarketingContext): Record
       recommendedFor: ['WhatsApp', 'LinkedIn', 'YouTube'],
       aspectRatioHint: '16:9 Landscape',
       steps,
-      captions: buildScenarioCaptions(url, targetName, selectedCourse, capabilities)
-    };
-  }
-
-  if (selectedCourse && selectedCourse.syllabus.length > 0 && active.some((item) => item.id === 'ai_tutor')) {
-    const module = selectedCourse.syllabus[0];
-    scenarios.ai_tutor_deepdive = {
-      id: 'ai_tutor_deepdive',
-      name: `Tutor spotlight: ${selectedCourse.id}`,
-      tagline: `A real course-module tutoring walkthrough for ${selectedCourse.title}.`,
-      totalDurationSec: 18,
-      recommendedFor: ['TikTok', 'Instagram Reels', 'YouTube Shorts'],
-      aspectRatioHint: '9:16 Vertical Reel',
-      steps: [
-        {
-          id: 'tutor_course_step',
-          view: 'course-syllabus',
-          courseId: selectedCourse.id,
-          durationMs: 5000,
-          title: `${selectedCourse.id} Course Outline`,
-          subtitle: `Open the published outline and select ${module.title}.`,
-          badge: 'Course context'
-        },
-        {
-          id: 'tutor_live_step',
-          view: 'ai-tutor',
-          courseId: selectedCourse.id,
-          durationMs: 13000,
-          title: `Tutor: ${module.title}`,
-          subtitle: 'Submit a real question to the live academic tutor.',
-          badge: 'Live request',
-          demoPrompt: `In ${selectedCourse.id} — ${selectedCourse.title}, explain the module "${module.title}" step by step. Include the key concepts and a check-for-understanding question.`
-        }
-      ],
       captions: buildScenarioCaptions(url, targetName, selectedCourse, capabilities)
     };
   }
@@ -816,7 +775,9 @@ export async function synthesizeCustomDemoScenarioWithAI(
   const capabilities = resolveDynamicCapabilities(ctx).filter((item) => item.enabled);
   const allowedViews = Array.from(new Set(capabilities.map((item) => item.view)));
   if (selectedCourse) allowedViews.push('course-syllabus');
-  const validViews = allowedViews.filter((view, index) => allowedViews.indexOf(view) === index);
+  const validViews = allowedViews.filter((view, index) =>
+    allowedViews.indexOf(view) === index && view !== 'ai-tutor'
+  );
 
   if (validViews.length === 0) {
     throw new Error('No implemented student views are currently eligible for a marketing demonstration.');
@@ -885,10 +846,7 @@ Return only valid JSON:
       title: step.title.trim().slice(0, 50),
       subtitle: step.subtitle.trim().slice(0, 100),
       badge: step.badge.trim().slice(0, 24),
-      courseId: selectedCourse?.id,
-      demoPrompt: step.view === 'ai-tutor' && selectedCourse?.syllabus?.[0]
-        ? `In ${selectedCourse.id} — ${selectedCourse.title}, explain the module "${selectedCourse.syllabus[0].title}" step by step.`
-        : undefined
+      courseId: selectedCourse?.id
     };
   });
 

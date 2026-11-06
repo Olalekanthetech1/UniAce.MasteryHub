@@ -19,6 +19,8 @@ import { ChatToolkitSheet } from './chat/ChatToolkitSheet';
 import { SyllabusJumperModal } from './chat/SyllabusJumperModal';
 import { MiniQuizModal } from './chat/MiniQuizModal';
 import { ensureMathDelimiters } from '../shared/mathText';
+import { useDemoReel } from '../context/DemoReelContext';
+import toast from 'react-hot-toast';
 
 interface ChatBotProps {
   isFullPage?: boolean;
@@ -60,6 +62,7 @@ export default function ChatBot({
   onClose
 }: ChatBotProps) {
   const { user, profile: authProfile } = useAuth();
+  const { isRecording: isDemoRecording } = useDemoReel();
   const { courses } = useCourses();
   const { isConnected: isWsConnected, sendMessage: sendWsMessage, abortStream: abortWsStream } = useWebSocketChat();
   const { isPremium, planType: effectivePlanType } = usePremiumStatus();
@@ -406,25 +409,11 @@ export default function ChatBot({
     }
   };
 
-  // Send Message Logic
-  const handleSendRef = useRef<(overrideInput?: string, isHintRequest?: boolean) => Promise<void>>(async () => {});
-
-  useEffect(() => {
-    const onDemoQuery = (e: Event) => {
-      const detail = (e as CustomEvent)?.detail;
-      if (detail?.courseId) {
-        setCurrentCourseId(detail.courseId);
-      }
-      if (typeof detail?.prompt === 'string' && detail.prompt.trim()) {
-        setIsOpen(true);
-        void handleSendRef.current(detail.prompt);
-      }
-    };
-    window.addEventListener('uniace:demo-query', onDemoQuery);
-    return () => window.removeEventListener('uniace:demo-query', onDemoQuery);
-  }, []);
-
   const handleSend = async (overrideInput?: string, isHintRequest: boolean = false) => {
+    if (isDemoRecording) {
+      toast.error('Chat requests are disabled during Demo Studio recording. End the recording before using live chat. No chat request was sent.');
+      return;
+    }
     let textToSend = overrideInput || input;
     if ((!textToSend.trim() && !selectedImage && !pdfText) || isLoading) return;
     if (!user) {
@@ -712,8 +701,6 @@ export default function ChatBot({
       setIsLoading(false);
     }
   };
-  handleSendRef.current = handleSend;
-
   // Render Full Page Experience
   const renderChatInterface = () => (
     <div className="flex-1 flex flex-col h-full bg-slate-50 dark:bg-zinc-950 overflow-hidden relative">
