@@ -176,6 +176,8 @@ export default function DemoNarrationStudio({
   const [selectedVoiceId, setSelectedVoiceId] = useState('');
   const [selectedModelId, setSelectedModelId] = useState('');
   const [voiceSettings, setVoiceSettings] = useState<VoiceSettings | null>(null);
+  const [voiceSettingsLoading, setVoiceSettingsLoading] = useState(false);
+  const [voiceSettingsError, setVoiceSettingsError] = useState<string | null>(null);
   const [script, setScript] = useState(() => scenario
     ? scenario.steps.map((step) => step.title + '. ' + step.subtitle).join('\n\n')
     : '');
@@ -223,6 +225,7 @@ export default function DemoNarrationStudio({
     providerStatus?.ffmpegAvailable &&
     providerStatus?.ffprobeAvailable &&
     selectedVoice &&
+    !voiceSettingsLoading &&
     selectedModel &&
     script.trim().length >= 5 &&
     scriptApproved &&
@@ -302,8 +305,11 @@ export default function DemoNarrationStudio({
   useEffect(() => {
     if (!selectedVoice) {
       setVoiceSettings(null);
+      setVoiceSettingsLoading(false);
+      setVoiceSettingsError(null);
       return;
     }
+    setVoiceSettingsError(null);
     const settings = selectedVoice.settings as any;
     if (
       settings &&
@@ -319,11 +325,13 @@ export default function DemoNarrationStudio({
         ...(typeof settings.speed === 'number' ? { speed: settings.speed } : {}),
         use_speaker_boost: settings.use_speaker_boost
       });
+      setVoiceSettingsLoading(false);
       return;
     }
 
     let active = true;
     setVoiceSettings(null);
+    setVoiceSettingsLoading(true);
     void authFetch('/api/admin/demo-narration/voices/' + encodeURIComponent(selectedVoice.voiceId) + '/settings')
       .then((response) => readJsonResponse<{ settings: Partial<VoiceSettings> }>(response))
       .then((data) => {
@@ -340,8 +348,11 @@ export default function DemoNarrationStudio({
           ...(typeof live.speed === 'number' ? { speed: live.speed } : {})
         });
       })
-      .catch(() => {
-        // Leave settings unavailable; TTS uses the provider's voice defaults.
+      .catch((error: any) => {
+        if (active) setVoiceSettingsError(error?.message || 'The selected voice settings could not be retrieved.');
+      })
+      .finally(() => {
+        if (active) setVoiceSettingsLoading(false);
       });
     return () => { active = false; };
   }, [selectedVoice, authFetch]);
@@ -813,6 +824,10 @@ export default function DemoNarrationStudio({
                   Use speaker boost
                 </label>
               </div>
+            ) : voiceSettingsLoading ? (
+              <p className="flex items-center gap-2 text-xs text-slate-500"><Loader2 size={13} className="animate-spin" /> Loading the selected voice's current settings from ElevenLabs…</p>
+            ) : voiceSettingsError ? (
+              <p className="text-xs text-rose-600">Voice settings lookup failed: {voiceSettingsError} Custom settings will not be sent; ElevenLabs' configured voice defaults will be used.</p>
             ) : (
               <p className="text-xs text-slate-500">ElevenLabs did not return editable settings for this voice. UniAce will omit them and use the voice's configured provider defaults.</p>
             )}
