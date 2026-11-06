@@ -12,6 +12,16 @@ export interface AcademicLevelOption {
   sort_order: number;
 }
 
+export interface AcademicAvailabilityAuditEntry {
+  id: string;
+  entity_type: 'academic_level' | 'course';
+  entity_id: string;
+  previous_state: string | null;
+  next_state: string;
+  actor_uid: string;
+  created_at: string;
+}
+
 export const sanitizeForFirestore = (obj: any): any => {
   if (obj === undefined) return null;
   if (obj === null) return null;
@@ -334,6 +344,15 @@ export const CourseService = {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.error || 'Failed to update academic level.');
     }
+  },
+
+  async getAcademicAvailabilityAudit(limit = 15): Promise<AcademicAvailabilityAuditEntry[]> {
+    const headers = await buildAuthHeaders();
+    const res = await safeFetchJson<any>(`/api/admin/academic-availability/audit?limit=${encodeURIComponent(String(limit))}`, { headers });
+    if (!res.ok || !res.data || !Array.isArray(res.data.entries)) {
+      throw new Error(res.error || 'Availability history could not be loaded.');
+    }
+    return res.data.entries as AcademicAvailabilityAuditEntry[];
   },
 
   async updateCourseAvailability(courseId: string, availability: StudentAvailability): Promise<void> {
