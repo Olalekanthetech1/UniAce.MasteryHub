@@ -297,7 +297,9 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
       toast.error('No recorded video available to download.');
       return;
     }
-    const defaultName = `uniace-${currentScenario?.id || 'demo'}-reel-${new Date().toISOString().slice(0, 10)}.webm`;
+    const extension = recordedBlob.type.toLowerCase().includes('mp4') ? 'mp4' : 'webm';
+    const scenarioName = currentScenario?.id || 'recording';
+    const defaultName = `uniace-${scenarioName}-reel-${new Date().toISOString().slice(0, 10)}.${extension}`;
     const finalName = filename || defaultName;
     const downloadUrl = recordedVideoUrl || URL.createObjectURL(recordedBlob);
     

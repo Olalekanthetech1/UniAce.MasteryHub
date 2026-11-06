@@ -25,20 +25,25 @@ export default function DemoReelPreviewModal() {
 
   if (!isModalOpen || !recordedVideoUrl) return null;
 
-  const fileSizeMB = recordedBlob ? (recordedBlob.size / (1024 * 1024)).toFixed(2) : '0.00';
-  const captions = currentScenario?.captions || {
-    twitter: 'Check out UniAce Mastery Hub 🎓 The AI Academic Ecosystem for University STEM students! https://uniace.app #EdTech #AI',
-    linkedin: 'Showcasing UniAce Mastery Hub — a next-generation academic tutoring ecosystem with multi-provider AI routing and KaTeX math derivations. https://uniace.app',
-    tiktok: 'Studying university STEM just got 10x easier 🚀🤖 Watch how UniAce breaks down college calculus and physics! #collegelife #studytok',
-    whatsapp: '🎓 Check out this demo of UniAce Mastery Hub: https://uniace.app'
-  };
+  const fileSizeMB = recordedBlob ? (recordedBlob.size / (1024 * 1024)).toFixed(2) : null;
+  const recordingFormat = recordedBlob?.type?.trim() || null;
+  const captions = currentScenario?.captions || null;
+  const activeCaption = captions?.[activeTab]?.trim() || '';
 
-  const handleCopyCaption = (platform: 'twitter' | 'linkedin' | 'tiktok' | 'whatsapp') => {
-    const textToCopy = captions[platform];
-    navigator.clipboard.writeText(textToCopy);
-    setCopiedTab(platform);
-    toast.success(`Copied ${platform.toUpperCase()} caption to clipboard!`);
-    setTimeout(() => setCopiedTab(null), 2500);
+  const handleCopyCaption = async (platform: 'twitter' | 'linkedin' | 'tiktok' | 'whatsapp') => {
+    const textToCopy = captions?.[platform]?.trim();
+    if (!textToCopy) {
+      toast.error('No scenario caption is available to copy.');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(textToCopy);
+      setCopiedTab(platform);
+      toast.success(`Copied ${platform.toUpperCase()} caption to clipboard!`);
+      setTimeout(() => setCopiedTab(null), 2500);
+    } catch {
+      toast.error('Clipboard access failed. Select and copy the caption manually.');
+    }
   };
 
   const handleSpeedChange = (speed: number) => {
@@ -65,13 +70,13 @@ export default function DemoReelPreviewModal() {
               </div>
               <div>
                 <h2 className="text-xl font-black text-slate-900 dark:text-white flex items-center gap-2">
-                  🎬 Demo Reel Ready to Export
-                  <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400 font-bold uppercase tracking-wider">
-                    HD 60 FPS
+                  🎬 Demo Recording Preview
+                  <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200 font-bold uppercase tracking-wider">
+                    Browser capture
                   </span>
                 </h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  {currentScenario?.name || 'Automated Platform Demonstration'}
+                  {currentScenario?.name || 'Scenario metadata unavailable'}
                 </p>
               </div>
             </div>
@@ -113,14 +118,14 @@ export default function DemoReelPreviewModal() {
                   <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-200/60 dark:border-slate-700/60 text-center">
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">File Size</span>
                     <span className="text-sm font-black text-indigo-600 dark:text-indigo-400 font-mono">
-                      {fileSizeMB} MB
+                      {fileSizeMB ? `${fileSizeMB} MB` : 'Unavailable'}
                     </span>
                   </div>
 
                   <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-200/60 dark:border-slate-700/60 text-center">
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Format</span>
                     <span className="text-sm font-black text-emerald-600 dark:text-emerald-400 font-mono">
-                      WebM (H.264/VP9)
+                      {recordingFormat || 'Unavailable'}
                     </span>
                   </div>
                 </div>
@@ -173,10 +178,10 @@ export default function DemoReelPreviewModal() {
                   <div className="flex items-center justify-between">
                     <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
                       <Share2 size={16} className="text-indigo-500" />
-                      Social Media Caption Presets
+                      Scenario Captions
                     </h3>
                     <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">
-                      Ready to Publish
+                      Review before publishing
                     </span>
                   </div>
 
@@ -199,13 +204,14 @@ export default function DemoReelPreviewModal() {
 
                   {/* Caption Content */}
                   <div className="relative bg-white dark:bg-slate-900 rounded-2xl p-4 border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300 font-sans leading-relaxed whitespace-pre-wrap min-h-[160px] max-h-[220px] overflow-y-auto">
-                    {captions[activeTab]}
+                    {activeCaption || 'No reviewed caption is available for this recording.'}
                   </div>
 
                   {/* Copy Button */}
                   <button
-                    onClick={() => handleCopyCaption(activeTab)}
-                    className="w-full py-2.5 px-4 rounded-xl bg-slate-900 dark:bg-white hover:bg-slate-800 dark:hover:bg-slate-100 text-white dark:text-slate-900 font-bold text-xs transition-all flex items-center justify-center gap-2 active:scale-95"
+                    onClick={() => void handleCopyCaption(activeTab)}
+                    disabled={!activeCaption}
+                    className="w-full py-2.5 px-4 rounded-xl bg-slate-900 dark:bg-white hover:bg-slate-800 dark:hover:bg-slate-100 text-white dark:text-slate-900 font-bold text-xs transition-all flex items-center justify-center gap-2 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     {copiedTab === activeTab ? (
                       <>
@@ -228,9 +234,9 @@ export default function DemoReelPreviewModal() {
                     Social Media Video Tips
                   </h4>
                   <ul className="text-indigo-800/80 dark:text-indigo-300/80 space-y-1.5 list-disc pl-4">
-                    <li>Add trending upbeat background music on TikTok / Instagram Reels.</li>
-                    <li>Tag university student groups, STEM clubs, and academic engineering pages.</li>
-                    <li>Optimal posting times for students: <strong>7:00 PM – 10:30 PM</strong>.</li>
+                    <li>Review every factual claim and audience restriction before publishing.</li>
+                    <li>Keep the QR destination aligned with the verified campaign URL.</li>
+                    <li>Use institution-approved logos, music and distribution channels.</li>
                   </ul>
                 </div>
 
@@ -240,7 +246,7 @@ export default function DemoReelPreviewModal() {
 
           {/* Footer */}
           <div className="p-4 sm:px-8 bg-slate-50 dark:bg-slate-800/60 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs text-slate-500">
-            <span>Powered by native in-browser MediaRecorder & Zero-Fallback Engine</span>
+            <span>Recorded in this browser using MediaRecorder</span>
             <button
               onClick={closePreviewModal}
               className="px-5 py-2 rounded-xl bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-bold transition-colors"
