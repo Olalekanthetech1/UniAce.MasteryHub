@@ -3,6 +3,7 @@ import { getPostgresPool } from './postgresPool';
 
 interface CachedConfigEntry {
   data: Record<string, any> | null;
+  updatedAtIso: string | null;
   fetchedAt: number;
 }
 
@@ -36,17 +37,66 @@ export async function getSystemConfigDoc(
   }
 
   try {
-    const res = await pool.query<{ data: Record<string, any> }>(
-      `SELECT data FROM system_config WHERE key = $1 LIMIT 1;`,
+    const res = await pool.query<{ data: Record<string, any>; updated_at?: Date | string }>(
+      `SELECT data, updated_at FROM system_config WHERE key = $1 LIMIT 1;`,
       [key]
     );
-    const data = res.rows.length > 0 && res.rows[0].data ? res.rows[0].data : null;
-    configMemoryCache.set(key, { data, fetchedAt: now });
+    const row = res.rows[0];
+    const data = row && row.data ? row.data : null;
+    const updatedAtIso = row?.updated_at ? new Date(row.updated_at).toISOString() : null;
+    configMemoryCache.set(key, { data, updatedAtIso, fetchedAt: now });
     return data ? { ...data } : null;
   } catch (err: any) {
     console.error(`[SystemConfigStore] Cannot verify system_config key '${key}' from Neon:`, err);
     throw new Error(`Cannot verify system configuration '${key}' from the authoritative database: ${err?.message || String(err)}`);
   }
+}
+
+/**
+ * Fetches multiple system_config keys in a single PostgreSQL round-trip and updates local cache.
+ */
+export async function getSystemConfigDocs(
+  keys: string[],
+  forceRefresh: boolean = false
+): Promise<Record<string, Record<string, any> | null>> {
+  const uniqueKeys = Array.from(new Set(keys.filter(Boolean)));
+  const result: Record<string, Record<string, any> | null> = {};
+  if (uniqueKeys.length === 0) return result;
+
+  const now = Date.now();
+  if (!forceRefresh) {
+    const allFresh = uniqueKeys.every(k => {
+      const entry = configMemoryCache.get(k);
+      return Boolean(entry && now - entry.fetchedAt < CONFIG_TTL_MS);
+    });
+    if (allFresh) {
+      for (const k of uniqueKeys) {
+        const entry = configMemoryCache.get(k);
+        result[k] = entry?.data ? { ...entry.data } : null;
+      }
+      return result;
+    }
+  }
+
+  const pool = getPostgresPool();
+  if (!pool) {
+    throw new Error(`Cannot verify system configurations (${uniqueKeys.join(', ')}): Neon PostgreSQL is unavailable.`);
+  }
+
+  const res = await pool.query<{ key: string; data: Record<string, any>; updated_at?: Date | string }>(
+    `SELECT key, data, updated_at FROM system_config WHERE key = ANY($1::text[]);`,
+    [uniqueKeys]
+  );
+
+  const byKey = new Map(res.rows.map(r => [r.key, r] as const));
+  for (const k of uniqueKeys) {
+    const row = byKey.get(k);
+    const data = row?.data ? row.data : null;
+    const updatedAtIso = row?.updated_at ? new Date(row.updated_at).toISOString() : null;
+    configMemoryCache.set(k, { data, updatedAtIso, fetchedAt: now });
+    result[k] = data ? { ...data } : null;
+  }
+  return result;
 }
 
 export async function setSystemConfigDoc(
@@ -64,16 +114,18 @@ export async function setSystemConfigDoc(
       nextData = { ...(existing || {}), ...payload };
     }
 
-    await pool.query(
+    const res = await pool.query<{ updated_at: Date }>(
       `INSERT INTO system_config (key, data, updated_at)
        VALUES ($1, $2::jsonb, NOW())
        ON CONFLICT (key) DO UPDATE SET
          data = $2::jsonb,
-         updated_at = NOW();`,
+         updated_at = NOW()
+       RETURNING updated_at;`,
       [key, JSON.stringify(nextData)]
     );
 
-    configMemoryCache.set(key, { data: nextData, fetchedAt: Date.now() });
+    const updatedAtIso = res.rows[0]?.updated_at ? new Date(res.rows[0].updated_at).toISOString() : new Date().toISOString();
+    configMemoryCache.set(key, { data: nextData, updatedAtIso, fetchedAt: Date.now() });
   } catch (err) {
     console.error(`[SystemConfigStore] Failed to write system_config key '${key}' to Neon:`, err);
     throw err;

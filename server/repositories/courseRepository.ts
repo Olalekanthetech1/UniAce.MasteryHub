@@ -99,15 +99,48 @@ function mapCourseRecord(row: any): CourseEntity {
 
 export class CourseRepository {
   /**
-   * Fetches published courses list with caching & resilient routing
+   * Computes a lightweight, authoritative PostgreSQL revision fingerprint across published courses,
+   * academic level availability, modules, and lessons so any mutation on any application instance
+   * immediately invalidates stale process-local L1 cache entries.
+   */
+  async getAuthoritativeCatalogRevision(): Promise<string> {
+    await ensureCourseLearningSchema();
+    await ensureAcademicAvailabilitySchema();
+    const res = await queryPostgres<{
+      courses_rev: string | null;
+      levels_rev: string | null;
+      modules_rev: string | null;
+      lessons_rev: string | null;
+    }>(`
+      SELECT
+        (SELECT COUNT(*) || ':' || COALESCE(SUM(version), 0) || ':' || COALESCE(MAX(updated_at)::text, '') || ':' || COALESCE(md5(string_agg(id || ':' || COALESCE(student_visibility, '') || ':' || COALESCE(status, ''), ',' ORDER BY id)), '') FROM courses WHERE status = 'published') AS courses_rev,
+        (SELECT COALESCE(md5(string_agg(level_key || ':' || COALESCE(availability, '') || ':' || COALESCE(updated_at::text, ''), ',' ORDER BY level_key)), '') FROM academic_level_availability) AS levels_rev,
+        (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at)::text, '') FROM course_modules WHERE COALESCE(is_archived, FALSE) = FALSE) AS modules_rev,
+        (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at)::text, '') FROM course_lessons) AS lessons_rev
+    `);
+    const row = res.rows[0] || ({} as any);
+    return `${row.courses_rev || '0'}|${row.levels_rev || '0'}|${row.modules_rev || '0'}|${row.lessons_rev || '0'}`;
+  }
+
+  /**
+   * Fetches published courses list with cross-instance revision-verified caching & concurrent queries
    */
   async listPublishedCourses(filter: CourseQueryFilter = {}, forceRefresh = false): Promise<CourseEntity[]> {
     await ensureCourseLearningSchema();
     await ensureAcademicAvailabilitySchema();
     const flags = getFeatureFlags();
-    const cacheKey = `catalog:list:${filter.department || 'all'}:${filter.level || 'all'}`;
+    const cacheKey = `catalog:list:${filter.department || 'all'}:${filter.level || 'all'}:${filter.limit || 'all'}`;
 
-    // 1. Attempt L1 memory cache read (<5ms)
+    if (flags.ENABLE_POSTGRES_CATALOG) {
+      try {
+        const dbRevision = await this.getAuthoritativeCatalogRevision();
+        catalogCache.reconcileDatabaseRevision(dbRevision);
+      } catch (revErr: any) {
+        logger.warn({ error: revErr.message }, '[CourseRepository] Failed to verify catalog revision before listPublishedCourses');
+      }
+    }
+
+    // 1. Attempt revision-verified L1 memory cache read (<5ms)
     const cached = forceRefresh ? null : catalogCache.getPublished<CourseEntity[]>(cacheKey);
     if (cached) {
       return cached;
@@ -143,8 +176,20 @@ export class CourseRepository {
           sql += ` LIMIT $${params.length}`;
         }
 
-        const res = await queryPostgres<any>(sql, params);
-        const courses: CourseEntity[] = res.rows.map(mapCourseRecord);
+        const [academicLevels, res] = await Promise.all([
+          listAcademicLevelAvailability(),
+          queryPostgres<any>(sql, params)
+        ]);
+        const levelAvailabilityByKey = new Map(
+          academicLevels.map(item => [normalizeAcademicLevelKey(item.level_key), item.availability] as const)
+        );
+        const courses: CourseEntity[] = res.rows.map((row: any) => {
+          const mapped = mapCourseRecord(row);
+          return {
+            ...mapped,
+            level_availability: levelAvailabilityByKey.get(normalizeAcademicLevelKey(String(mapped.level ?? ''))) || 'hidden'
+          };
+        });
 
         // Populate in-memory cache
         catalogCache.setPublished(cacheKey, courses, 1);
@@ -478,12 +523,23 @@ export class CourseRepository {
   /**
    * Retrieves full published catalog with titles & module structure only (no lesson content)
    * Enforces status = 'published' and filters out archived modules.
+   * Reconciles authoritative PostgreSQL revision fingerprint before serving L1 cache,
+   * and executes all 4 catalog queries concurrently via Promise.all on cache miss.
    */
   async getFullCatalogWithSyllabus(forceRefresh = false): Promise<{ courses: any[]; etag: string; maxUpdatedAt: string | null }> {
     await ensureCourseLearningSchema();
     await ensureAcademicAvailabilitySchema();
     const flags = getFeatureFlags();
     const cacheKey = 'catalog:full:published';
+
+    if (flags.ENABLE_POSTGRES_CATALOG) {
+      try {
+        const dbRevision = await this.getAuthoritativeCatalogRevision();
+        catalogCache.reconcileDatabaseRevision(dbRevision);
+      } catch (revErr: any) {
+        logger.warn({ error: revErr.message }, '[CourseRepository] Failed to verify catalog revision before getFullCatalogWithSyllabus');
+      }
+    }
 
     const cached = forceRefresh
       ? null
@@ -494,26 +550,29 @@ export class CourseRepository {
 
     if (flags.ENABLE_POSTGRES_CATALOG) {
       try {
-        const academicLevels = await listAcademicLevelAvailability();
-        const levelAvailabilityByKey = new Map(academicLevels.map(item => [normalizeAcademicLevelKey(item.level_key), item.availability] as const));
-        const coursesRes = await queryPostgres<any>(
-          `SELECT id, title, description, department, faculty, faculties, departments, level, semester, credit_units, status, student_visibility, scope, updated_at
-           FROM courses
-           WHERE status = 'published'
-           ORDER BY id ASC`
-        );
+        const [academicLevels, coursesRes, modulesRes, lessonsRes] = await Promise.all([
+          listAcademicLevelAvailability(),
+          queryPostgres<any>(
+            `SELECT id, title, description, department, faculty, faculties, departments, level, semester, credit_units, status, student_visibility, scope, updated_at
+             FROM courses
+             WHERE status = 'published'
+             ORDER BY id ASC`
+          ),
+          queryPostgres<any>(
+            `SELECT id, course_id, title, description, order_index, updated_at
+             FROM course_modules
+             WHERE (is_archived IS NOT TRUE OR is_archived IS NULL)
+             ORDER BY course_id, order_index ASC`
+          ),
+          queryPostgres<any>(
+            `SELECT id, course_id, module_id, title, order_index, updated_at
+             FROM course_lessons
+             ORDER BY course_id, module_id, order_index ASC`
+          )
+        ]);
 
-        const modulesRes = await queryPostgres<any>(
-          `SELECT id, course_id, title, description, order_index, updated_at
-           FROM course_modules
-           WHERE (is_archived IS NOT TRUE OR is_archived IS NULL)
-           ORDER BY course_id, order_index ASC`
-        );
-
-        const lessonsRes = await queryPostgres<any>(
-          `SELECT id, course_id, module_id, title, order_index, updated_at
-           FROM course_lessons
-           ORDER BY course_id, module_id, order_index ASC`
+        const levelAvailabilityByKey = new Map(
+          academicLevels.map(item => [normalizeAcademicLevelKey(item.level_key), item.availability] as const)
         );
 
         const modulesByCourse: Record<string, any[]> = {};
@@ -542,7 +601,7 @@ export class CourseRepository {
         let maxUpdatedAt: string | null = null;
 
         const fullCourses = coursesRes.rows.map(c => {
-          if (c.updated_at && c.updated_at > maxUpdatedAt) maxUpdatedAt = c.updated_at;
+          if (c.updated_at && (!maxUpdatedAt || c.updated_at > maxUpdatedAt)) maxUpdatedAt = c.updated_at;
           const creditUnits = c.credit_units == null ? null : Number(c.credit_units);
           if (creditUnits !== null && (!Number.isInteger(creditUnits) || creditUnits < 1 || creditUnits > 12)) {
             throw new Error(`Course ${c.id} has invalid persisted credit units.`);

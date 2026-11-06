@@ -31,6 +31,9 @@ export class MultiInstanceCatalogCache {
   private defaultTtlMs: number;
   private draftTtlMs: number;
   private globalCatalogVersion = 1;
+  private lastVerifiedDbRevision: string | null = null;
+  private hits = 0;
+  private misses = 0;
   private invalidationListeners: Array<(keyOrPattern: string) => void> = [];
 
   constructor(options: CatalogCacheOptions = {}) {
@@ -113,27 +116,55 @@ export class MultiInstanceCatalogCache {
 
   private get<T>(fullKey: string): T | null {
     const entry = this.cache.get(fullKey);
-    if (!entry) return null;
+    if (!entry) {
+      this.misses += 1;
+      return null;
+    }
 
     if (Date.now() > entry.expiresAt) {
       this.currentBytes -= entry.byteSize;
       this.cache.delete(fullKey);
+      this.misses += 1;
       return null;
     }
 
     // Refresh LRU ordering
     this.cache.delete(fullKey);
     this.cache.set(fullKey, entry);
+    this.hits += 1;
     return entry.value as T;
+  }
+
+  /**
+   * Reconciles local process cache against the authoritative PostgreSQL catalog revision token.
+   * If any instance mutated published courses, modules, lessons, or level availability,
+   * the revision token changes and all published entries in this instance are purged immediately.
+   */
+  public reconcileDatabaseRevision(dbRevision: string): boolean {
+    if (!dbRevision) return false;
+    if (this.lastVerifiedDbRevision !== null && this.lastVerifiedDbRevision !== dbRevision) {
+      for (const key of Array.from(this.cache.keys())) {
+        if (key.startsWith('pub:')) {
+          const entry = this.cache.get(key);
+          if (entry) this.currentBytes -= entry.byteSize;
+          this.cache.delete(key);
+        }
+      }
+      this.lastVerifiedDbRevision = dbRevision;
+      return true;
+    }
+    this.lastVerifiedDbRevision = dbRevision;
+    return false;
   }
 
   /**
    * Invalidates a course across local cache and notifies registered listeners
    */
   public invalidateCourse(courseId: string, newVersion = 1): void {
-    // Delete all keys matching this course
+    this.lastVerifiedDbRevision = null;
+    // Delete all keys matching this course or aggregate catalog
     for (const key of Array.from(this.cache.keys())) {
-      if (key.includes(courseId) || key.includes('catalog:list')) {
+      if (key.includes(courseId) || key.includes('catalog:list') || key.includes('catalog:full')) {
         const entry = this.cache.get(key);
         if (entry) this.currentBytes -= entry.byteSize;
         this.cache.delete(key);
@@ -156,9 +187,10 @@ export class MultiInstanceCatalogCache {
   public reconcileGlobalVersion(dbVersion: number): void {
     if (dbVersion > this.globalCatalogVersion) {
       this.globalCatalogVersion = dbVersion;
+      this.lastVerifiedDbRevision = null;
       // Invalidate all catalog listing entries
       for (const key of Array.from(this.cache.keys())) {
-        if (key.includes('catalog:list')) {
+        if (key.includes('catalog:list') || key.includes('catalog:full')) {
           const entry = this.cache.get(key);
           if (entry) this.currentBytes -= entry.byteSize;
           this.cache.delete(key);
@@ -171,6 +203,7 @@ export class MultiInstanceCatalogCache {
    * Invalidates full catalog and list entries across local cache
    */
   public invalidateFullCatalog(): void {
+    this.lastVerifiedDbRevision = null;
     for (const key of Array.from(this.cache.keys())) {
       if (key.includes('catalog:full') || key.includes('catalog:list')) {
         const entry = this.cache.get(key);
@@ -191,14 +224,28 @@ export class MultiInstanceCatalogCache {
   }
 
   /**
-   * Diagnostic snapshot of memory cache utilization
+   * Diagnostic snapshot of memory cache utilization and hit ratio
    */
-  public getStats(): { itemCount: number; memoryBytes: number; maxBytes: number; globalVersion: number } {
+  public getStats(): {
+    itemCount: number;
+    memoryBytes: number;
+    maxBytes: number;
+    globalVersion: number;
+    lastVerifiedDbRevision: string | null;
+    hits: number;
+    misses: number;
+    hitRatio: number;
+  } {
+    const totalLookups = this.hits + this.misses;
     return {
       itemCount: this.cache.size,
       memoryBytes: this.currentBytes,
       maxBytes: this.maxPayloadBytes,
-      globalVersion: this.globalCatalogVersion
+      globalVersion: this.globalCatalogVersion,
+      lastVerifiedDbRevision: this.lastVerifiedDbRevision,
+      hits: this.hits,
+      misses: this.misses,
+      hitRatio: totalLookups > 0 ? Number((this.hits / totalLookups).toFixed(4)) : 0
     };
   }
 
@@ -208,6 +255,7 @@ export class MultiInstanceCatalogCache {
   public clear(): void {
     this.cache.clear();
     this.currentBytes = 0;
+    this.lastVerifiedDbRevision = null;
   }
 
   public invalidateAll(): void {

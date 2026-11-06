@@ -99,12 +99,19 @@ export function isValidInstitutionAccessConfig(value: unknown): value is Institu
     .every(item => typeof item === 'string' && item.trim().length > 0);
 }
 
-export async function getLiveCourseAccessUser(uid: string): Promise<UserRecord | null> {
-  return UserRepository.getUserByUid(uid);
+export async function getLiveCourseAccessUser(uid: string, req?: any): Promise<UserRecord | null> {
+  if (req && req.authenticatedUserRecord && req.authenticatedUserRecord.uid === uid) {
+    return req.authenticatedUserRecord as UserRecord;
+  }
+  const user = await UserRepository.getUserByUid(uid);
+  if (req && user) {
+    req.authenticatedUserRecord = user;
+  }
+  return user;
 }
 
-export async function getLiveInstitutionAccessConfig(): Promise<InstitutionAccessConfig> {
-  const config = await getSystemConfigDoc('institution', true);
+export async function getLiveInstitutionAccessConfig(forceRefresh = false): Promise<InstitutionAccessConfig> {
+  const config = await getSystemConfigDoc('institution', forceRefresh);
   if (!isValidInstitutionAccessConfig(config)) {
     throw new Error('Course access is unavailable: authoritative institution configuration is missing or invalid.');
   }

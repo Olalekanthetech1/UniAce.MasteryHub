@@ -181,7 +181,7 @@ import {
   toKobo,
   toNgn
 } from './server/sparkRollups';
-import { probeNeonConnection } from './server/postgresPool';
+import { probeNeonConnection, warmupPostgresPool, getPostgresPoolTelemetry } from './server/postgresPool';
 import { courseRepository } from './server/repositories/courseRepository';
 import {
   evaluateStudentCourseAccess,
@@ -191,6 +191,7 @@ import {
   getLivePublishedCourseAccessRecords,
   normalizeCourseTargetValue
 } from './server/services/courseAccess';
+import { ensureAcademicAvailabilitySchema } from './server/services/academicAvailability';
 import { catalogCache } from './server/cache/catalogCache';
 import { progressRepository } from './server/repositories/progressRepository';
 import { JobRepository } from './server/repositories/jobRepository';
@@ -201,7 +202,7 @@ import { ensureCourseLearningSchema } from './server/services/courseLearningSche
 import { ensureCourseLifecycleSchema } from './server/services/courseLifecycleSchema.js';
 import { ensureCourseAssessmentSchema } from './server/services/courseAssessmentSchema';
 import { redactInstructionalAnswersForStudent, getInstructionalActivityReveal, type InstructionalActivityType } from './server/services/instructionalDelivery.js';
-import { getSystemConfigDoc, setSystemConfigDoc, getSystemSettingsDoc, setSystemSettingsDoc } from './server/systemConfigStore';
+import { getSystemConfigDoc, getSystemConfigDocs, setSystemConfigDoc, getSystemSettingsDoc, setSystemSettingsDoc } from './server/systemConfigStore';
 
 const latexInstruction = `
 
@@ -1093,20 +1094,29 @@ app.get('/api/health', async (req, res) => {
       RAG_VECTORS: flags.ENABLE_POSTGRES_RAG_VECTORS ?? true,
       USERS_LOGS: flags.ENABLE_POSTGRES_USERS_LOGS ?? true
     },
-    memory
+    memory,
+    postgresPoolTelemetry: getPostgresPoolTelemetry(),
+    catalogCacheStats: catalogCache.getStats()
   });
 });
 
 
 // Course access is derived from the authenticated UID, the live Neon user record,
 // and the current institution registry. Request query/body fields never grant access.
-async function loadCourseAccessContext(uid: string, email?: string) {
+async function loadCourseAccessContext(uid: string, email?: string, req?: any) {
   const configuredAdminUids = new Set(
     (process.env.ADMIN_UIDS_OVERRIDE || '').split(',').map(value => value.trim()).filter(Boolean)
   );
   const configuredAdmin = configuredAdminUids.has(uid) || isAdminEmail(email);
-  const account = configuredAdmin ? null : await getLiveCourseAccessUser(uid);
-  const isAdmin = configuredAdmin || account?.role === 'admin';
+  if (configuredAdmin) {
+    return { isAdmin: true, account: null, institution: null };
+  }
+
+  const [account, institution] = await Promise.all([
+    getLiveCourseAccessUser(uid, req),
+    getLiveInstitutionAccessConfig(false)
+  ]);
+  const isAdmin = account?.role === 'admin';
 
   if (isAdmin) {
     return { isAdmin: true, account, institution: null };
@@ -1115,15 +1125,16 @@ async function loadCourseAccessContext(uid: string, email?: string) {
     return { isAdmin: false, account: null, institution: null };
   }
 
-  const institution = await getLiveInstitutionAccessConfig();
   return { isAdmin: false, account, institution };
 }
 
-async function resolveCourseAccessForUser(uid: string, email: string | undefined, courseId: string) {
-  const course = await getLiveCourseAccessRecord(courseId);
+async function resolveCourseAccessForUser(uid: string, email: string | undefined, courseId: string, req?: any) {
+  const [course, context] = await Promise.all([
+    getLiveCourseAccessRecord(courseId),
+    loadCourseAccessContext(uid, email, req)
+  ]);
   if (!course) return { allowed: false, statusCode: 404, reason: 'course_not_found' as const, course: null };
 
-  const context = await loadCourseAccessContext(uid, email);
   if (context.isAdmin) {
     return { allowed: true, statusCode: 200, reason: 'admin' as const, course };
   }
@@ -1159,7 +1170,7 @@ async function requireCourseAccess(req: any, res: any, next: any) {
   if (!uid) return res.status(401).json({ error: 'Authenticated student session required.' });
 
   try {
-    const decision = await resolveCourseAccessForUser(uid, req.user?.email, req.params.courseId);
+    const decision = await resolveCourseAccessForUser(uid, req.user?.email, req.params.courseId, req);
     if (!decision.allowed) {
       if (decision.statusCode === 404) return res.status(404).json({ error: 'Course not found.' });
       return res.status(decision.statusCode).json({
@@ -1194,25 +1205,47 @@ app.get('/api/catalog/full', verifyAuth, async (req: any, res: any) => {
   if (!uid) return res.status(401).json({ error: 'Authenticated student session required.' });
 
   try {
-    const accessContext = await loadCourseAccessContext(uid, req.user?.email);
+    const forceRefresh = req.query.refresh === 'true';
+    const summaryOnly = req.query.summaryOnly === 'true';
+    const [accessContext, catalogData] = await Promise.all([
+      loadCourseAccessContext(uid, req.user?.email, req),
+      courseRepository.getFullCatalogWithSyllabus(forceRefresh)
+    ]);
+
     if (!accessContext.isAdmin && !accessContext.account) {
       return res.status(403).json({ error: 'An authoritative student academic profile is required before course access can be granted.' });
     }
 
-    const { courses: catalogCourses, maxUpdatedAt } = await courseRepository.getFullCatalogWithSyllabus(true);
+    const { courses: catalogCourses, maxUpdatedAt } = catalogData;
     let courses = catalogCourses;
     if (!accessContext.isAdmin) {
-      const liveAccessRecords = await getLivePublishedCourseAccessRecords();
-      const eligibleIds = new Set(
-        liveAccessRecords
-          .filter(record => evaluateStudentCourseAccess(
-            record,
-            accessContext.account!.learning_profile,
-            accessContext.institution!
-          ).visible)
-          .map(record => record.id)
+      courses = catalogCourses.filter(course =>
+        evaluateStudentCourseAccess(
+          course,
+          accessContext.account!.learning_profile,
+          accessContext.institution!
+        ).visible
       );
-      courses = catalogCourses.filter(course => eligibleIds.has(course.id));
+    }
+
+    if (summaryOnly) {
+      courses = courses.map(course => ({
+        ...course,
+        moduleCount: Array.isArray(course.syllabus) ? course.syllabus.length : 0,
+        lessonCount: Array.isArray(course.syllabus)
+          ? course.syllabus.reduce((sum: number, mod: any) => sum + (Array.isArray(mod.subTopics) ? mod.subTopics.length : 0), 0)
+          : 0,
+        syllabus: Array.isArray(course.syllabus)
+          ? course.syllabus.map((mod: any) => ({
+              id: mod.id,
+              title: mod.title,
+              description: mod.description ?? null,
+              order: mod.order,
+              lessonCount: Array.isArray(mod.subTopics) ? mod.subTopics.length : 0,
+              subTopics: []
+            }))
+          : []
+      }));
     }
 
     const etag = `W/"${crypto.createHash('sha256').update(JSON.stringify(courses)).digest('hex').substring(0, 16)}"`;
@@ -1229,6 +1262,7 @@ app.get('/api/catalog/full', verifyAuth, async (req: any, res: any) => {
     const rawBuffer = Buffer.from(JSON.stringify({
       courses,
       total: courses.length,
+      summaryOnly,
       latencyMs: Date.now() - t0
     }));
     const acceptEncoding = req.get('Accept-Encoding') || '';
@@ -1261,27 +1295,37 @@ app.get('/api/courses', verifyAuth, async (req: any, res: any) => {
   if (!uid) return res.status(401).json({ error: 'Authenticated student session required.' });
 
   try {
-    const accessContext = await loadCourseAccessContext(uid, req.user?.email);
+    const forceRefresh = req.query.refresh === 'true';
+    const [accessContext, allPublishedCourses] = await Promise.all([
+      loadCourseAccessContext(uid, req.user?.email, req),
+      courseRepository.listPublishedCourses({ status: 'published' }, forceRefresh)
+    ]);
+
     if (!accessContext.isAdmin && !accessContext.account) {
       return res.status(403).json({ error: 'An authoritative student academic profile is required before course access can be granted.' });
     }
 
-    // The status query parameter is intentionally ignored. Student routes only return
-    // published records; a client cannot request drafts or in-review content.
-    const allPublishedCourses = await courseRepository.listPublishedCourses({ status: 'published' }, true);
     let courses = allPublishedCourses;
     if (!accessContext.isAdmin) {
-      const liveAccessRecords = await getLivePublishedCourseAccessRecords();
-      const eligibleIds = new Set(
-        liveAccessRecords
-          .filter(record => evaluateStudentCourseAccess(
-            record,
-            accessContext.account!.learning_profile,
-            accessContext.institution!
-          ).visible)
-          .map(record => record.id)
+      courses = allPublishedCourses.filter(course =>
+        evaluateStudentCourseAccess(
+          {
+            id: course.id,
+            status: course.status,
+            scope: course.scope ?? null,
+            department: course.department,
+            faculty: course.faculty,
+            faculties: course.faculties ?? null,
+            departments: course.departments ?? null,
+            level: course.level,
+            semester: course.semester,
+            student_visibility: course.student_visibility ?? null,
+            level_availability: course.level_availability ?? null
+          },
+          accessContext.account!.learning_profile,
+          accessContext.institution!
+        ).visible
       );
-      courses = allPublishedCourses.filter(course => eligibleIds.has(course.id));
     }
 
     if (typeof req.query.level === 'string') {
@@ -2702,11 +2746,28 @@ async function verifyAdmin(req: express.Request, res: express.Response, next: ex
     }
 
     try {
+      const existingRecord = (req as any).authenticatedUserRecord;
+      if (existingRecord && existingRecord.uid === uid && existingRecord.role === 'admin') {
+        return next();
+      }
       const pool = getPostgresPool();
       if (pool) {
-        const { rows } = await pool.query('SELECT role FROM users WHERE uid = $1', [uid]);
-        if (rows.length > 0 && rows[0].role === 'admin') {
-          return next();
+        const { rows } = await pool.query(
+          `SELECT uid, email, display_name, role, plan_type, ai_sparks, learning_profile, last_spark_reset, created_at, updated_at,
+                  subscription_status, subscription_expiry, subscription_start_date
+           FROM users WHERE uid = $1`,
+          [uid]
+        );
+        if (rows.length > 0) {
+          (req as any).authenticatedUserRecord = {
+            ...rows[0],
+            learning_profile: typeof rows[0].learning_profile === 'string'
+              ? JSON.parse(rows[0].learning_profile)
+              : (rows[0].learning_profile || {})
+          };
+          if (rows[0].role === 'admin') {
+            return next();
+          }
         }
       }
     } catch (e: any) {
@@ -2840,7 +2901,7 @@ app.get('/api/chat/reactions', verifyAuth, async (req: any, res: any) => {
 });
 
 // --- Helper: Get and Validate Sparks (Neon PostgreSQL authoritative) ---
-const getAndValidateSparks = async (uid: string, email: string | undefined): Promise<{
+const getAndValidateSparks = async (uid: string, email: string | undefined, req?: any): Promise<{
   sparks: number | null;
   unlimited: boolean;
   plan: string;
@@ -2848,11 +2909,37 @@ const getAndValidateSparks = async (uid: string, email: string | undefined): Pro
   subscription_expiry?: string;
   subscription_status?: string;
   subscription_start_date?: string;
+  profile: Record<string, any>;
 }> => {
   const pool = getPostgresPool();
   if (!pool) throw new Error('Authoritative quota service unavailable: PostgreSQL is not connected.');
 
-  const policyData = (await getSystemConfigDoc('evaluation_policy')) || {};
+  const cachedReqUser = req?.authenticatedUserRecord && req.authenticatedUserRecord.uid === uid &&
+    req.authenticatedUserRecord.ai_sparks !== undefined &&
+    req.authenticatedUserRecord.learning_profile !== undefined
+    ? req.authenticatedUserRecord
+    : null;
+
+  const [configMap, userRes] = await Promise.all([
+    getSystemConfigDocs(['evaluation_policy', 'general'], false),
+    cachedReqUser
+      ? Promise.resolve({ rowCount: 1, rows: [cachedReqUser] })
+      : pool.query(
+          `SELECT uid, email, display_name, role, plan_type, ai_sparks,
+                  learning_profile, last_spark_reset, created_at, subscription_status,
+                  subscription_expiry, subscription_start_date
+           FROM users
+           WHERE uid = $1`,
+          [uid]
+        )
+  ]);
+
+  if ((userRes.rowCount ?? 0) === 0) {
+    throw new Error('Authoritative user account record is missing. Quota was not initialized with a synthetic balance.');
+  }
+
+  const policyData = configMap.evaluation_policy || {};
+  const generalConfig = configMap.general || {};
   const configuredDailyFreeSparks: number | null =
     typeof policyData.dailyFreeSparks === 'number' && Number.isFinite(policyData.dailyFreeSparks) && policyData.dailyFreeSparks >= 0
       ? policyData.dailyFreeSparks
@@ -2860,20 +2947,8 @@ const getAndValidateSparks = async (uid: string, email: string | undefined): Pro
 
   const now = new Date();
   const todayStr = now.toISOString().split('T')[0];
-  const userRes = await pool.query(
-    `SELECT uid, email, display_name, role, plan_type, ai_sparks,
-            last_spark_reset, created_at, subscription_status,
-            subscription_expiry, subscription_start_date
-     FROM users
-     WHERE uid = $1`,
-    [uid]
-  );
 
-  if ((userRes.rowCount ?? 0) === 0) {
-    throw new Error('Authoritative user account record is missing. Quota was not initialized with a synthetic balance.');
-  }
-
-  const row = userRes.rows[0];
+  let row = userRes.rows[0];
   const role = typeof row.role === 'string' && row.role.trim() ? row.role : null;
   const plan = typeof row.plan_type === 'string' && row.plan_type.trim() ? row.plan_type : null;
   const rawSparks = Number(row.ai_sparks);
@@ -2885,9 +2960,9 @@ const getAndValidateSparks = async (uid: string, email: string | undefined): Pro
   let expiry = row.subscription_expiry ? new Date(row.subscription_expiry).toISOString() : undefined;
   let status = row.subscription_status || 'none';
   let startDate = row.subscription_start_date ? new Date(row.subscription_start_date).toISOString() : undefined;
+  let lastSparkReset = row.last_spark_reset;
 
   const createdAt = row.created_at ? new Date(row.created_at) : null;
-  const generalConfig = await getSystemConfigDoc('general', true);
   const configuredTrialDays = Number(generalConfig?.trialDays);
   const isTrialPolicyVerified = Number.isFinite(configuredTrialDays) && configuredTrialDays > 0;
   const trialStartDate = createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt : null;
@@ -2905,76 +2980,135 @@ const getAndValidateSparks = async (uid: string, email: string | undefined): Pro
     expiry = new Date(trialStartDate!.getTime() + configuredTrialDays * 24 * 60 * 60 * 1000).toISOString();
   }
 
-  if (role !== 'admin' && effectivePlan !== 'free' && !isTrialActive) {
-    const expiryDate = expiry ? new Date(expiry) : null;
-    const isExpired = Boolean(
+  const expiryDate = expiry ? new Date(expiry) : null;
+  const needsExpiryDowngrade = Boolean(
+    role !== 'admin' &&
+    effectivePlan !== 'free' &&
+    !isTrialActive &&
+    (
       status === 'expired' ||
       (expiryDate && !Number.isNaN(expiryDate.getTime()) && now > expiryDate) ||
       (!expiryDate && status !== 'active')
-    );
-    if (isExpired) {
-      effectivePlan = 'free';
-      status = 'expired';
-      await pool.query(
-        `UPDATE users SET plan_type = 'free', subscription_status = 'expired', updated_at = NOW() WHERE uid = $1`,
+    )
+  );
+
+  const needsDailyRefill = (isFreePlan: boolean, currentSparks: number, resetVal: unknown): boolean => Boolean(
+    role !== 'admin' &&
+    isFreePlan &&
+    lastResetStr(resetVal) !== todayStr &&
+    configuredDailyFreeSparks !== null &&
+    configuredDailyFreeSparks > 0 &&
+    currentSparks < configuredDailyFreeSparks
+  );
+
+  // Execute subscription expiry transition and/or daily free Spark refill atomically in a single DB transaction
+  if (needsExpiryDowngrade || needsDailyRefill(effectivePlan === 'free', sparks, lastSparkReset)) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const lockRes = await client.query(
+        `SELECT plan_type, ai_sparks, last_spark_reset, subscription_status, subscription_expiry
+         FROM users WHERE uid = $1 FOR UPDATE`,
         [uid]
       );
-      await pool.query(
-        `UPDATE user_sparks_wallets SET plan_type = 'free', updated_at = NOW() WHERE uid = $1`,
-        [uid]
-      );
+      if ((lockRes.rowCount ?? 0) > 0) {
+        const locked = lockRes.rows[0];
+        sparks = Math.floor(Number(locked.ai_sparks ?? sparks));
+        lastSparkReset = locked.last_spark_reset;
+
+        if (needsExpiryDowngrade) {
+          effectivePlan = 'free';
+          status = 'expired';
+          await client.query(
+            `UPDATE users SET plan_type = 'free', subscription_status = 'expired', updated_at = NOW() WHERE uid = $1`,
+            [uid]
+          );
+          await client.query(
+            `UPDATE user_sparks_wallets SET plan_type = 'free', updated_at = NOW() WHERE uid = $1`,
+            [uid]
+          );
+        }
+
+        if (needsDailyRefill(effectivePlan === 'free', sparks, lastSparkReset)) {
+          const refillDelta = configuredDailyFreeSparks! - sparks;
+          sparks = configuredDailyFreeSparks!;
+          const resetNowIso = new Date().toISOString();
+          lastSparkReset = resetNowIso;
+          await client.query(
+            `INSERT INTO spark_ledger (ledger_id, user_id, delta, reason, ref_lock_id, created_at)
+             VALUES ($1, $2, $3, 'daily_free_refill', NULL, NOW())
+             ON CONFLICT (ledger_id) DO NOTHING`,
+            [`refill_${uid}_${todayStr}`, uid, refillDelta]
+          );
+          await client.query(
+            `UPDATE users SET ai_sparks = $1, last_spark_reset = NOW(), updated_at = NOW() WHERE uid = $2`,
+            [sparks, uid]
+          );
+          await client.query(
+            `INSERT INTO user_sparks_wallets (uid, balance, plan_type, last_spark_reset, updated_at)
+             VALUES ($1, $2, 'free', NOW(), NOW())
+             ON CONFLICT (uid) DO UPDATE SET
+               balance = EXCLUDED.balance,
+               last_spark_reset = NOW(),
+               updated_at = NOW()`,
+            [uid, sparks]
+          );
+        }
+      }
+      await client.query('COMMIT');
+    } catch (txErr) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw txErr;
+    } finally {
+      client.release();
     }
   }
 
-  if (role === 'admin' || effectivePlan !== 'free') {
-    return {
-      sparks,
-      unlimited: true,
-      plan: effectivePlan,
+  const parsedLearningProfile = typeof row.learning_profile === 'string'
+    ? (() => {
+        try { return JSON.parse(row.learning_profile); } catch { return {}; }
+      })()
+    : (row.learning_profile || {});
+
+  const profileData: Record<string, any> = {
+    uid: row.uid,
+    email: row.email,
+    displayName: row.display_name ?? row.displayName ?? null,
+    role,
+    plan_type: effectivePlan,
+    ai_sparks: sparks,
+    learningProfile: parsedLearningProfile,
+    last_spark_reset: lastSparkReset,
+    subscription_status: status,
+    subscription_expiry: expiry ?? row.subscription_expiry ?? null,
+    subscription_start_date: startDate ?? row.subscription_start_date ?? null
+  };
+
+  if (req) {
+    req.authenticatedUserRecord = {
+      ...row,
       role,
-      subscription_expiry: expiry,
+      plan_type: effectivePlan,
+      ai_sparks: sparks,
+      learning_profile: parsedLearningProfile,
+      last_spark_reset: lastSparkReset,
       subscription_status: status,
-      subscription_start_date: startDate
+      subscription_expiry: expiry ?? row.subscription_expiry ?? null,
+      subscription_start_date: startDate ?? row.subscription_start_date ?? null
     };
   }
 
-  if (
-    lastResetStr(row.last_spark_reset) !== todayStr &&
-    configuredDailyFreeSparks !== null &&
-    configuredDailyFreeSparks > 0 &&
-    sparks < configuredDailyFreeSparks
-  ) {
-    const refillDelta = configuredDailyFreeSparks - sparks;
-    sparks = configuredDailyFreeSparks;
-    await pool.query(
-      `INSERT INTO spark_ledger (ledger_id, user_id, delta, reason, ref_lock_id, created_at)
-       VALUES ($1, $2, $3, 'daily_free_refill', NULL, NOW())
-       ON CONFLICT (ledger_id) DO NOTHING`,
-      [`refill_${uid}_${todayStr}`, uid, refillDelta]
-    );
-    await pool.query(
-      `UPDATE users SET ai_sparks = $1, last_spark_reset = NOW(), updated_at = NOW() WHERE uid = $2`,
-      [sparks, uid]
-    );
-    await pool.query(
-      `INSERT INTO user_sparks_wallets (uid, balance, plan_type, last_spark_reset, updated_at)
-       VALUES ($1, $2, 'free', NOW(), NOW())
-       ON CONFLICT (uid) DO UPDATE SET
-         balance = EXCLUDED.balance,
-         last_spark_reset = NOW(),
-         updated_at = NOW()`,
-      [uid, sparks]
-    );
-  }
+  const unlimited = role === 'admin' || effectivePlan !== 'free';
 
   return {
     sparks,
-    unlimited: false,
+    unlimited,
     plan: effectivePlan,
     role,
     subscription_expiry: expiry,
     subscription_status: status,
-    subscription_start_date: startDate
+    subscription_start_date: startDate,
+    profile: profileData
   };
 };
 
@@ -2986,28 +3120,12 @@ function lastResetStr(value: unknown): string {
 
 // --- API Routes ---
 
-// 0. User Quota & Authoritative Profile Endpoint (Neon PostgreSQL primary)
+// 0. User Quota & Authoritative Profile Endpoint (Neon PostgreSQL single-pass)
 app.get('/api/user/quota', verifyAuth, async (req, res) => {
   const user = (req as any).user;
   try {
-    console.log(`Fetching quota for user: ${user.uid} (${user.email})`);
-    const quota = await getAndValidateSparks(user.uid, user.email);
-    let profileData: Record<string, any> | null = null;
-    const pool = getPostgresPool();
-    if (pool) {
-      const userRes = await pool.query(
-        `SELECT uid, email, display_name AS "displayName", role, plan_type, ai_sparks,
-                learning_profile AS "learningProfile", last_spark_reset,
-                subscription_status, subscription_expiry, subscription_start_date
-         FROM users
-         WHERE uid = $1`,
-        [user.uid]
-      );
-      if ((userRes.rowCount ?? 0) > 0) {
-        profileData = userRes.rows[0];
-      }
-    }
-    res.json({ ...quota, profile: profileData });
+    const quotaWithProfile = await getAndValidateSparks(user.uid, user.email, req);
+    res.json(quotaWithProfile);
   } catch (error: any) {
     console.error(`Error fetching quota for ${user.uid}:`, error);
     const unavailable = !getPostgresPool() || /not connected|unavailable|record is missing|incomplete or invalid/i.test(String(error?.message || ''));
@@ -12006,6 +12124,8 @@ app.get('/api/admin/db-quota-telemetry', verifyAuth, async (req, res) => {
     const bufferedLogs = getBufferedBackendSystemLogs(50);
     return res.json({
       ...snapshot,
+      postgresPoolTelemetry: getPostgresPoolTelemetry(),
+      catalogCacheStats: catalogCache.getStats(),
       bufferedBackendLogsCount: bufferedLogs.length,
       recentBufferedLogs: bufferedLogs.slice(0, 20)
     });
@@ -12020,6 +12140,23 @@ async function startServer() {
   // Initialize Telemetry in background so it never blocks port binding
   telemetry.initialize().catch(err => {
     console.warn('Telemetry initialization warning:', err);
+  });
+
+  // Explicit PostgreSQL connection warm-up and schema readiness sequence
+  (async () => {
+    const warmup = await warmupPostgresPool();
+    if (warmup.connected) {
+      await Promise.all([
+        ensureCourseLearningSchema(),
+        ensureAcademicAvailabilitySchema(),
+        initRuntimeFlagsSync(),
+        getSystemConfigDocs(['evaluation_policy', 'general', 'institution'], false)
+      ]).catch(err => {
+        logger.warn({ error: err?.message }, '[Startup Warmup] Schema or config pre-warm notice');
+      });
+    }
+  })().catch(err => {
+    logger.warn({ error: err?.message }, '[Startup Warmup] Unexpected warm-up error');
   });
 
   // Single authoritative final /api and /api/* 404 catch-all registered after all API routes

@@ -166,6 +166,25 @@ export default function AdminAffiliates() {
     setTimeout(() => setCopiedCode(null), 2000);
   };
 
+  const formatDateSafe = (val: any, fallback: string): string => {
+    if (!val) return fallback;
+    try {
+      let d: Date;
+      if (typeof val?.toDate === 'function') {
+        d = val.toDate();
+      } else if (typeof val?._seconds === 'number') {
+        d = new Date(val._seconds * 1000);
+      } else if (typeof val?.seconds === 'number') {
+        d = new Date(val.seconds * 1000);
+      } else {
+        d = new Date(val);
+      }
+      return Number.isNaN(d.getTime()) ? fallback : d.toLocaleDateString();
+    } catch {
+      return fallback;
+    }
+  };
+
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-between">
@@ -353,7 +372,7 @@ export default function AdminAffiliates() {
                     <td className="py-4 px-4">
                       <p className="font-bold text-slate-900 dark:text-white">{aff.name || 'System Generated'}</p>
                       <p className="text-xs text-slate-500">
-                        Added {aff.createdAt ? new Date(aff.createdAt.toDate()).toLocaleDateString() : 'Auto Tracked'}
+                        Added {formatDateSafe(aff.createdAt ?? aff.created_at, 'Auto Tracked')}
                       </p>
                     </td>
                     <td className="py-4 px-4 font-mono font-medium text-indigo-600 dark:text-indigo-400">
@@ -434,10 +453,10 @@ export default function AdminAffiliates() {
                   {payouts.map((payout) => (
                     <tr key={payout.id} className="border-b border-slate-100 dark:border-zinc-800/50 hover:bg-slate-50 dark:hover:bg-zinc-800/50 transition-colors text-sm">
                       <td className="py-4 px-4 whitespace-nowrap text-slate-600 dark:text-slate-400">
-                        {payout.createdAt ? new Date(payout.createdAt?.toDate ? payout.createdAt.toDate() : payout.createdAt).toLocaleDateString() : 'N/A'}
+                        {formatDateSafe(payout.createdAt ?? payout.created_at, 'N/A')}
                       </td>
                       <td className="py-4 px-4 font-bold text-slate-900 dark:text-white">
-                        {payout.affiliateId}
+                        {payout.affiliateId || payout.affiliateCode}
                       </td>
                       <td className="py-4 px-4 font-bold text-emerald-600 dark:text-emerald-400">
                         ₦{(payout.amount || 0).toLocaleString()}

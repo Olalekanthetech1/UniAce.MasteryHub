@@ -32,6 +32,75 @@ function normalizePostgresConnectionString(rawUrl: string): string {
   }
 }
 
+interface PostgresQuerySample {
+  acquireMs: number;
+  execMs: number;
+  totalMs: number;
+  timestamp: number;
+}
+
+const MAX_QUERY_SAMPLES = 200;
+const recentQuerySamples: PostgresQuerySample[] = [];
+let totalQueryCount = 0;
+let totalFailedQueryCount = 0;
+
+function recordQuerySample(acquireMs: number, execMs: number) {
+  totalQueryCount += 1;
+  recentQuerySamples.push({
+    acquireMs,
+    execMs,
+    totalMs: acquireMs + execMs,
+    timestamp: Date.now()
+  });
+  if (recentQuerySamples.length > MAX_QUERY_SAMPLES) {
+    recentQuerySamples.shift();
+  }
+}
+
+function computePercentile(sortedValues: number[], percentile: number): number {
+  if (sortedValues.length === 0) return 0;
+  const idx = Math.min(
+    sortedValues.length - 1,
+    Math.max(0, Math.ceil((percentile / 100) * sortedValues.length) - 1)
+  );
+  return Number(sortedValues[idx].toFixed(2));
+}
+
+export function getPostgresPoolTelemetry() {
+  const totalSorted = recentQuerySamples.map(s => s.totalMs).sort((a, b) => a - b);
+  const acquireSorted = recentQuerySamples.map(s => s.acquireMs).sort((a, b) => a - b);
+  const execSorted = recentQuerySamples.map(s => s.execMs).sort((a, b) => a - b);
+
+  return {
+    totalQueryCount,
+    totalFailedQueryCount,
+    sampleCount: recentQuerySamples.length,
+    poolState: pool
+      ? {
+          totalClients: pool.totalCount,
+          idleClients: pool.idleCount,
+          waitingClients: pool.waitingCount
+        }
+      : null,
+    totalLatencyMs: {
+      p50: computePercentile(totalSorted, 50),
+      p95: computePercentile(totalSorted, 95),
+      p99: computePercentile(totalSorted, 99)
+    },
+    poolAcquisitionMs: {
+      p50: computePercentile(acquireSorted, 50),
+      p95: computePercentile(acquireSorted, 95),
+      p99: computePercentile(acquireSorted, 99)
+    },
+    dbExecutionMs: {
+      p50: computePercentile(execSorted, 50),
+      p95: computePercentile(execSorted, 95),
+      p99: computePercentile(execSorted, 99)
+    },
+    lastKnownHealth
+  };
+}
+
 export function getPostgresPool(): pg.Pool | null {
   const rawConnectionString = process.env.DATABASE_URL;
   if (!rawConnectionString) {
@@ -46,7 +115,9 @@ export function getPostgresPool(): pg.Pool | null {
         ssl: { rejectUnauthorized: false },
         connectionTimeoutMillis: 15000,
         max: 10,
-        idleTimeoutMillis: 30000
+        idleTimeoutMillis: 30000,
+        keepAlive: true,
+        keepAliveInitialDelayMillis: 10000
       });
 
       pool.on('error', (err) => {
@@ -63,31 +134,49 @@ export function getPostgresPool(): pg.Pool | null {
 }
 
 /**
- * Checks whether PostgreSQL is configured and responsive
+ * Checks whether PostgreSQL is configured and responsive.
+ * Releases acquired client inside a finally block to prevent pool leaks on query errors.
  */
-export async function checkPostgresHealth(): Promise<{ connected: boolean; latencyMs: number; error?: string }> {
+export async function checkPostgresHealth(): Promise<{ connected: boolean; latencyMs: number; acquireMs?: number; execMs?: number; error?: string }> {
   const p = getPostgresPool();
   if (!p) {
     return { connected: false, latencyMs: 0, error: 'DATABASE_URL is not configured' };
   }
 
   const start = Date.now();
+  let client: pg.PoolClient | null = null;
   try {
-    const client = await p.connect();
+    client = await p.connect();
+    const acquireMs = Date.now() - start;
+    const execStart = Date.now();
     await client.query('SELECT 1');
-    client.release();
+    const execMs = Date.now() - execStart;
     const latencyMs = Date.now() - start;
+    recordQuerySample(acquireMs, execMs);
     lastKnownHealth = { connected: true, checkedAt: Date.now() };
-    return { connected: true, latencyMs };
+    return { connected: true, latencyMs, acquireMs, execMs };
   } catch (err: any) {
+    totalFailedQueryCount += 1;
     const latencyMs = Date.now() - start;
     lastKnownHealth = { connected: false, checkedAt: Date.now(), error: err.message };
     return { connected: false, latencyMs, error: err.message || String(err) };
+  } finally {
+    if (client) {
+      client.release();
+    }
   }
 }
 
 /**
- * Executes a PostgreSQL query with latency tracking
+ * Explicitly warms up the PostgreSQL connection pool at startup by establishing
+ * a live connection, executing a lightweight health query, and releasing it cleanly.
+ */
+export async function warmupPostgresPool(): Promise<{ connected: boolean; latencyMs: number; acquireMs?: number; execMs?: number; error?: string }> {
+  return checkPostgresHealth();
+}
+
+/**
+ * Executes a PostgreSQL query with pool acquisition and execution latency tracking
  */
 export async function queryPostgres<T = any>(
   sql: string,
@@ -99,17 +188,28 @@ export async function queryPostgres<T = any>(
   }
 
   const t0 = Date.now();
+  let client: pg.PoolClient | null = null;
   try {
-    const result = await p.query<T>(sql, params);
-    const durationMs = Date.now() - t0;
+    client = await p.connect();
+    const acquireMs = Date.now() - t0;
+    const execStart = Date.now();
+    const result = await client.query<T>(sql, params);
+    const execMs = Date.now() - execStart;
+    const durationMs = acquireMs + execMs;
+    recordQuerySample(acquireMs, execMs);
     if (durationMs > 200) {
-      logger.warn({ durationMs, rows: result.rowCount }, '[Postgres] Slow query executed');
+      logger.warn({ durationMs, acquireMs, execMs, rows: result.rowCount }, '[Postgres] Slow query executed');
     }
     return result;
   } catch (err: any) {
+    totalFailedQueryCount += 1;
     const durationMs = Date.now() - t0;
     logger.warn({ durationMs, error: err.message }, '[Postgres] Query failed');
     throw err;
+  } finally {
+    if (client) {
+      client.release();
+    }
   }
 }
 
@@ -155,10 +255,14 @@ export async function probeNeonConnection(timeoutMs = 5000): Promise<NeonHealthS
   }
 
   const t0 = Date.now();
+  let client: pg.PoolClient | null = null;
   try {
-    const client = await p.connect();
+    client = await p.connect();
+    const acquireMs = Date.now() - t0;
+    const execStart = Date.now();
     const res = await client.query('SELECT NOW() as now, current_database() as db;');
-    client.release();
+    const execMs = Date.now() - execStart;
+    recordQuerySample(acquireMs, execMs);
     const latencyMs = Date.now() - t0;
     return {
       connected: true,
@@ -167,6 +271,7 @@ export async function probeNeonConnection(timeoutMs = 5000): Promise<NeonHealthS
       database: res.rows[0]?.db || database
     };
   } catch (err: any) {
+    totalFailedQueryCount += 1;
     return {
       connected: false,
       latencyMs: Date.now() - t0,
@@ -174,6 +279,11 @@ export async function probeNeonConnection(timeoutMs = 5000): Promise<NeonHealthS
       database,
       error: err?.message || String(err)
     };
+  } finally {
+    if (client) {
+      client.release();
+    }
   }
 }
+
 

@@ -2201,6 +2201,24 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
         pool.query(`SELECT id, user_id, affiliate_code, amount, status, bank_details, data, created_at FROM payout_requests ORDER BY created_at DESC`)
       ]);
 
+      const resolveIsoCreatedAt = (pgVal: any, dataVal: any): string | null => {
+        if (pgVal) {
+          const d = new Date(pgVal);
+          if (!Number.isNaN(d.getTime())) return d.toISOString();
+        }
+        if (dataVal) {
+          if (typeof dataVal === 'string' || typeof dataVal === 'number') {
+            const d = new Date(dataVal);
+            if (!Number.isNaN(d.getTime())) return d.toISOString();
+          } else if (typeof dataVal?._seconds === 'number') {
+            return new Date(dataVal._seconds * 1000).toISOString();
+          } else if (typeof dataVal?.seconds === 'number') {
+            return new Date(dataVal.seconds * 1000).toISOString();
+          }
+        }
+        return null;
+      };
+
       const affiliates = affRes.rows.map((r) => ({
         ...(r.data || {}),
         id: r.code,
@@ -2211,18 +2229,20 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
         pendingBalance: Number(r.pending_payout ?? r.data?.pendingBalance ?? 0),
         signups: Number(r.data?.signups ?? r.referral_count ?? 0),
         clicks: Number(r.data?.clicks ?? 0),
-        paidConversions: Number(r.data?.paidConversions ?? r.referral_count ?? 0)
+        paidConversions: Number(r.data?.paidConversions ?? r.referral_count ?? 0),
+        createdAt: resolveIsoCreatedAt(r.created_at, r.data?.createdAt)
       }));
 
       const payouts = payRes.rows.map((r) => ({
         ...(r.data || {}),
         id: r.id,
         userId: r.user_id,
-        affiliateCode: r.affiliate_code || r.data?.affiliateCode || '',
+        affiliateId: r.affiliate_code || r.data?.affiliateId || r.data?.affiliateCode || '',
+        affiliateCode: r.affiliate_code || r.data?.affiliateCode || r.data?.affiliateId || '',
         amount: Number(r.amount ?? 0),
         status: r.status || 'pending',
         payoutDetails: r.bank_details || r.data?.payoutDetails || {},
-        createdAt: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString()
+        createdAt: resolveIsoCreatedAt(r.created_at, r.data?.createdAt)
       }));
 
       return res.json({ affiliates, payouts, commissionRate });
