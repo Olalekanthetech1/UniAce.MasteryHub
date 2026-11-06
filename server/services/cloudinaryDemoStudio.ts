@@ -71,7 +71,7 @@ export async function createCloudinaryVideoUploadSignature(input: {
     publicId: input.publicId,
     resourceType: 'video',
     deliveryType: 'authenticated',
-    uploadUrl: 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(config.cloudName) + '/video/authenticated/upload'
+    uploadUrl: 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(config.cloudName) + '/video/authenticated'
   };
 }
 
@@ -194,7 +194,7 @@ export async function uploadCloudinaryLocalAsset(input: {
       form.append('folder', input.folder);
       form.append('public_id', input.publicId);
       form.append('overwrite', 'false');
-      const endpoint = 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(config.cloudName) + '/' + input.resourceType + '/authenticated/upload';
+      const endpoint = 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(config.cloudName) + '/' + input.resourceType + '/authenticated';
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
