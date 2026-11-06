@@ -1,6 +1,9 @@
 # Use the official Node.js 22 image for better compatibility
 FROM node:22
 
+# FFmpeg and FFprobe are required for verified server-side narration rendering.
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+
 # Set the working directory inside the container
 WORKDIR /app
 
