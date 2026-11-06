@@ -89,7 +89,7 @@ export function DemoReelProvider({ children }: { children: ReactNode }) {
 
     const lowerName = file.name.toLowerCase();
     const hasVideoMime = file.type.toLowerCase().startsWith('video/');
-    const hasSupportedExtension = /\\.(mp4|m4v|webm|mov|ogv|3gp|3g2)$/i.test(lowerName);
+    const hasSupportedExtension = /\.(mp4|m4v|webm|mov|ogv|3gp|3g2)$/i.test(lowerName);
     if (!hasVideoMime && !hasSupportedExtension) {
       toast.error('Choose a supported video file, such as MP4, WebM or MOV.');
       return false;
