@@ -21,7 +21,7 @@ export interface CourseEntity {
   thumbnail_url: string | null;
   author_id: string | null;
   status: 'draft' | 'in_review' | 'published' | 'archived';
-  student_visibility: 'live' | 'coming_soon' | 'hidden';
+  student_visibility?: 'live' | 'coming_soon' | 'hidden';
   generation_status?: 'none' | 'queued' | 'generating' | 'completed' | 'failed';
   generation_job_id?: string | null;
   version: number;
