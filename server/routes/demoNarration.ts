@@ -1300,6 +1300,31 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
     return res.json({ deleted: true, deletedAssets: assets.length, jobId: job.id });
   });
 
+  app.delete('/api/admin/demo-narration/jobs/:jobId/assets', async (req, res) => {
+    const job = await getOwnedJob(req, res);
+    if (!job) return;
+    const assets = [job.sourceAsset, job.audioAsset, job.outputAsset, job.subtitleAsset].filter(Boolean) as CloudinaryAsset[];
+    const failures: string[] = [];
+    for (const asset of assets) {
+      try {
+        await deleteCloudinaryAsset(asset);
+        if (job.sourceAsset?.assetId === asset.assetId) job.sourceAsset = null;
+        if (job.audioAsset?.assetId === asset.assetId) job.audioAsset = null;
+        if (job.outputAsset?.assetId === asset.assetId) job.outputAsset = null;
+        if (job.subtitleAsset?.assetId === asset.assetId) job.subtitleAsset = null;
+      } catch (error: any) {
+        failures.push(asset.publicId + ': ' + String(error?.message || 'delete failed').slice(0, 160));
+      }
+    }
+    if (failures.length) {
+      await persistJob(job).catch(() => undefined);
+      return res.status(502).json({ error: 'Some Demo Studio media assets could not be removed from Cloudinary.', failures });
+    }
+    await setSystemSettingsDoc(JOB_STORAGE_PREFIX + job.id, { schemaVersion: 1, deleted: true, jobId: job.id }, false);
+    await cleanupJob(job);
+    return res.json({ deleted: true, deletedAssets: assets.length, jobId: job.id });
+  });
+
   app.get('/api/admin/demo-narration/jobs/:jobId', async (req, res) => {
     const job = await getOwnedJob(req, res);
     if (!job) return;
@@ -1328,49 +1353,41 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
     if (!['narration_ready', 'rendering', 'completed'].includes(job.status)) {
       return res.status(409).json({ error: 'Narration audio is not ready yet.' });
     }
-    const audio = await fs.promises.stat(job.audioPath).catch(() => null);
-    if (!audio || audio.size <= 0) return res.status(404).json({ error: 'Generated narration audio is no longer available.' });
-    res.set({
-      'Content-Type': 'audio/mpeg',
-      'Cache-Control': 'private, no-store',
-      'Content-Length': String(audio.size)
-    });
-    return fs.createReadStream(job.audioPath).pipe(res);
+    if (!job.audioAsset) return res.status(404).json({ error: 'The generated narration audio is not stored in Cloudinary.' });
+    try {
+      await streamCloudinaryAsset(job.audioAsset, res, 'audio/mpeg');
+    } catch (error: any) {
+      if (!res.headersSent) return res.status(502).json({ error: 'The protected Cloudinary narration preview could not be loaded.', detail: String(error?.message || '').slice(0, 220) });
+      res.destroy(error);
+    }
   });
 
   app.get('/api/admin/demo-narration/jobs/:jobId/video-preview', async (req, res) => {
     const job = await getOwnedJob(req, res);
     if (!job) return;
-    if (job.status !== 'completed' || !job.outputBytes) {
-      return res.status(409).json({ error: 'The final video has not passed verification and is not available to preview.' });
+    if (job.status !== 'completed' || !job.outputBytes || !job.outputAsset) {
+      return res.status(409).json({ error: 'The final video has not passed verification and is not stored in Cloudinary.' });
     }
-    const output = await fs.promises.stat(job.outputPath).catch(() => null);
-    if (!output || output.size <= 1024) {
-      return res.status(404).json({ error: 'The verified temporary MP4 is no longer available.' });
+    try {
+      await streamCloudinaryAsset(job.outputAsset, res, 'video/mp4');
+    } catch (error: any) {
+      if (!res.headersSent) return res.status(502).json({ error: 'The protected Cloudinary MP4 preview could not be loaded.', detail: String(error?.message || '').slice(0, 220) });
+      res.destroy(error);
     }
-    res.set({
-      'Content-Type': 'video/mp4',
-      'Cache-Control': 'private, no-store',
-      'Content-Length': String(output.size)
-    });
-    return fs.createReadStream(job.outputPath).pipe(res);
   });
 
   app.get('/api/admin/demo-narration/jobs/:jobId/subtitles', async (req, res) => {
     const job = await getOwnedJob(req, res);
     if (!job) return;
-    if (!job.subtitlePath) {
-      return res.status(404).json({ error: 'This narration job has no generated subtitle file.' });
+    if (!job.subtitleAsset) {
+      return res.status(404).json({ error: 'This narration job has no generated Cloudinary subtitle asset.' });
     }
-    const subtitle = await fs.promises.stat(job.subtitlePath).catch(() => null);
-    if (!subtitle || subtitle.size <= 0) {
-      return res.status(404).json({ error: 'The temporary subtitle file is no longer available.' });
+    try {
+      await streamCloudinaryAsset(job.subtitleAsset, res, 'application/x-subrip; charset=utf-8', job.safeBaseName + '-narration.srt');
+    } catch (error: any) {
+      if (!res.headersSent) return res.status(502).json({ error: 'The protected Cloudinary subtitle file could not be loaded.', detail: String(error?.message || '').slice(0, 220) });
+      res.destroy(error);
     }
-    res.set({
-      'Content-Type': 'application/x-subrip; charset=utf-8',
-      'Cache-Control': 'private, no-store'
-    });
-    return res.download(job.subtitlePath, job.safeBaseName + '-narration.srt');
   });
 
   app.post('/api/admin/demo-narration/jobs/:jobId/render', async (req, res) => {
@@ -1383,6 +1400,7 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
     job.stage = 'rendering';
     job.progressPercent = 0;
     job.statusMessage = 'Starting FFmpeg video rendering.';
+    void persistJob(job).catch((error) => console.warn('[DemoNarration] Could not persist render start:', error?.message || error));
     setImmediate(() => {
       void renderVideo(job).catch(async (error: any) => {
         if (job.status === 'cancelled') return;
@@ -1403,18 +1421,22 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
   app.delete('/api/admin/demo-narration/jobs/:jobId', async (req, res) => {
     const job = await getOwnedJob(req, res);
     if (!job) return;
+    if (job.status === 'completed') {
+      return res.status(409).json({ error: 'The completed media cannot be cancelled. Use the explicit media deletion action instead.' });
+    }
     job.status = 'cancelled';
     job.stage = 'cancelled';
     job.statusMessage = 'The administrator cancelled this narration job.';
+    await persistJob(job).catch(() => undefined);
     await cleanupJob(job);
-    return res.json({ cancelled: true, jobId: job.id });
+    return res.json({ cancelled: true, assetsPreserved: Boolean(job.sourceAsset), jobId: job.id });
   });
 
   app.post('/api/admin/demo-narration/jobs/:jobId/download-ticket', async (req, res) => {
     const job = await getOwnedJob(req, res);
     if (!job) return;
-    if (job.status !== 'completed' || !job.outputBytes) {
-      return res.status(409).json({ error: 'The final video has not passed verification and is not available to download.' });
+    if (job.status !== 'completed' || !job.outputBytes || !job.outputAsset) {
+      return res.status(409).json({ error: 'The final video has not passed verification and is not stored in Cloudinary.' });
     }
     const token = crypto.randomBytes(32).toString('base64url');
     job.downloadTicketHash = crypto.createHash('sha256').update(token).digest('hex');
@@ -1425,7 +1447,7 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
     });
   });
 
-  app.get('/api/demo-narration/download/:jobId', (req, res) => {
+  app.get('/api/demo-narration/download/:jobId', async (req, res) => {
     const job = jobs.get(req.params.jobId);
     const ticket = typeof req.query.ticket === 'string' ? req.query.ticket : '';
     const ticketHash = crypto.createHash('sha256').update(ticket).digest('hex');
@@ -1443,14 +1465,14 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
     }
     job.downloadTicketHash = null;
     res.setHeader('Cache-Control', 'no-store, private');
-    res.download(job.outputPath, job.safeBaseName + '-narrated.mp4', (error) => {
-      if (error) {
-        console.warn('[DemoNarration] Video download failed:', error.message);
-        if (!res.headersSent) res.status(500).end('The temporary video could not be downloaded.');
-        return;
-      }
-      // Delete the output only after Express confirms that the download completed.
-      void cleanupJob(job);
-    });
+    try {
+      if (!job.outputAsset) return res.status(404).json({ error: 'The protected Cloudinary output asset is unavailable.' });
+      await streamCloudinaryAsset(job.outputAsset, res, 'video/mp4', job.safeBaseName + '-narrated.mp4');
+      await cleanupJob(job);
+    } catch (error: any) {
+      console.warn('[DemoNarration] Protected Cloudinary download failed:', error?.message || error);
+      if (!res.headersSent) res.status(502).json({ error: 'The protected Cloudinary video could not be downloaded.' });
+      else res.destroy(error);
+    }
   });
 }
