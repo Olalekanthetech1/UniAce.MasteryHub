@@ -10,6 +10,7 @@ import {
 import { useMarketingSnapshot } from '../../hooks/useMarketingSnapshot';
 import { toMarketingCourseMap } from '../../services/marketingSnapshot';
 import DynamicFlyerStudio from './DynamicFlyerStudio';
+import AdminDemoTutorPreview from './AdminDemoTutorPreview';
 import {
   Video,
   Play,
@@ -259,6 +260,7 @@ export default function DemoStudioTab() {
       {/* MODE 2: DYNAMIC VIDEO REEL STUDIO */}
       {studioMode === 'video' && (
         <div className="space-y-8">
+          <AdminDemoTutorPreview />
           {/* Screen Capture Support Warning if in unsupported browser */}
           {!screenCaptureSupported && (
             <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-3">

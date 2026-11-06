@@ -1,6 +1,11 @@
 import express from 'express';
 import admin from 'firebase-admin';
 import crypto from 'crypto';
+import rateLimit from 'express-rate-limit';
+import { z } from 'zod';
+import { GeminiDirectProvider, MistralProvider, GroqProvider, CohereProvider, HuggingFaceProvider, OpenRouterFreeProvider, NvidiaProvider } from '../providers';
+import { splitAndInspectChatPayload, inspectAndScrubUntrustedText } from '../promptShield';
+import { buildAdminDemoTutorMessages, AdminDemoTutorRequestSchema } from '../services/adminDemoTutor';
 import { MailService } from '../mailService';
 
 import { GoogleGenAI } from '@google/genai';
@@ -2487,6 +2492,125 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
     }
   });
 
+  const marketingDemoTutorLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 12,
+    message: { error: 'Admin demo AI preview limit reached. Please try again later.' },
+    standardHeaders: true,
+    legacyHeaders: false
+  });
+  const marketingDemoProviders: Record<string, any> = {
+    gemini_direct: new GeminiDirectProvider(process.env.GEMINI_API_KEY || ''),
+    mistral_direct: new MistralProvider(process.env.MISTRAL_API_KEY || ''),
+    groq: new GroqProvider(process.env.GROQ_API_KEY || ''),
+    cohere: new CohereProvider(process.env.COHERE_API_KEY || ''),
+    huggingface: new HuggingFaceProvider(process.env.HUGGINGFACE_API_KEY || ''),
+    openrouter_free: new OpenRouterFreeProvider(process.env.OPENROUTER_API_KEY || ''),
+    nvidia: new NvidiaProvider(process.env.NVIDIA_API_KEY || '')
+  };
+
+  /** Admin-only stateless AI preview. This intentionally does not use the student chat/Sparks pipeline. */
+  app.post('/api/admin/marketing/demo-tutor', verifyAuth, marketingDemoTutorLimiter, async (req: any, res: any) => {
+    const parsed = AdminDemoTutorRequestSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Only a prompt and optional course context are accepted.' });
+    try {
+      const isAdmin = await checkIsAdmin(req.user?.uid, req.user?.email);
+      if (!isAdmin) return res.status(403).json({ error: 'Administrator privileges are required.' });
+      const pool = getPostgresPool();
+      if (!pool) return res.status(503).json({ error: 'Separate admin usage logging is unavailable. No provider call was started.' });
+
+      const hygiene = splitAndInspectChatPayload(parsed.data.message, null);
+      if (hygiene.questionScan?.isPureAttack) return res.status(400).json({ error: 'The preview prompt was rejected by the security filter. No provider call was made.' });
+      const cleanMessage = String(hygiene.cleanQuestion || '').trim();
+      if (!cleanMessage) return res.status(400).json({ error: 'A non-empty preview prompt is required.' });
+      const courseContext = parsed.data.courseContext
+        ? inspectAndScrubUntrustedText(parsed.data.courseContext, 'admin_demo_course_context').sanitizedText.trim()
+        : '';
+      const messages = buildAdminDemoTutorMessages({ message: cleanMessage, courseContext: courseContext || undefined });
+
+      // Only authenticated admin activity is attributed. Prompts and answers are never stored.
+      const logId = crypto.randomUUID();
+      await pool.query(
+        `INSERT INTO system_logs (log_id, level, category, message, details, user_id, created_at)
+         VALUES ($1, 'info', 'admin', $2, $3::jsonb, $4, NOW())`,
+        [logId, '[Marketing Demo AI] Isolated preview started', JSON.stringify({ outcome: 'started', promptPersisted: false, responsePersisted: false }), req.user.uid]
+      );
+
+      const routing = await getSystemSettingsDoc('routing', true);
+      if (!routing || typeof routing !== 'object') throw new Error('Live AI routing configuration is unavailable.');
+      const primary = String(routing.global_provider || routing.chat || '').trim().toLowerCase();
+      if (!primary || !marketingDemoProviders[primary]) throw new Error('The live chat provider is not explicitly configured for the isolated preview.');
+      const providerNames = [primary];
+      const fallbackMap = routing.fallbacksByTask;
+      const configuredFallbacks = fallbackMap?.chat;
+      if (routing.autoFallback !== false && configuredFallbacks !== undefined) {
+        if (!Array.isArray(configuredFallbacks)) throw new Error('The live chat fallback configuration is invalid.');
+        for (const value of configuredFallbacks) {
+          if (typeof value !== 'string' || !marketingDemoProviders[value.trim().toLowerCase()]) {
+            throw new Error('A configured chat fallback provider is invalid or unsupported.');
+          }
+          const name = value.trim().toLowerCase();
+          if (!providerNames.includes(name)) providerNames.push(name);
+        }
+      }
+
+      const controller = new AbortController();
+      const abortOnClose = () => { if (!res.writableEnded && !controller.signal.aborted) controller.abort(); };
+      res.on('close', abortOnClose);
+      const startedAt = Date.now();
+      let providerUsed: string | null = null;
+      let upstreamModel: string | null = null;
+      let promptTokens: number | null = null;
+      let completionTokens: number | null = null;
+      let totalTokens: number | null = null;
+      let responseText = '';
+      let lastError: any = null;
+      try {
+        for (const name of providerNames) {
+          if (controller.signal.aborted) throw new Error('Preview request was aborted.');
+          const provider = marketingDemoProviders[name];
+          providerUsed = name;
+          try {
+            // Direct provider call: no student Spark pre-auth/settlement, profile analysis, student history or chat_analytics.
+            const generated = await provider.generate(messages, { complexity: 'standard', signal: controller.signal });
+            const answer = typeof generated?.text === 'string' ? generated.text.trim() : '';
+            if (!answer) throw new Error('Configured provider returned no preview content.');
+            responseText = answer;
+            upstreamModel = typeof generated.upstreamModel === 'string' ? generated.upstreamModel : null;
+            const usage = generated.usage || {};
+            promptTokens = Number.isSafeInteger(usage.promptTokens) && usage.promptTokens > 0 ? usage.promptTokens : null;
+            completionTokens = Number.isSafeInteger(usage.completionTokens) && usage.completionTokens > 0 ? usage.completionTokens : null;
+            totalTokens = Number.isSafeInteger(usage.totalTokens) && usage.totalTokens > 0 ? usage.totalTokens : null;
+            lastError = null;
+            break;
+          } catch (error: any) {
+            if (controller.signal.aborted) throw error;
+            lastError = error;
+          }
+        }
+        if (!responseText) throw lastError || new Error('All explicitly configured preview providers failed.');
+        const latencyMs = Date.now() - startedAt;
+        await pool.query(
+          `UPDATE system_logs SET level = 'info', message = $1, details = $2::jsonb WHERE log_id = $3 AND user_id = $4 AND category = 'admin'`,
+          ['[Marketing Demo AI] Isolated preview succeeded', JSON.stringify({ outcome: 'success', providerUsed, upstreamModel, promptTokens, completionTokens, totalTokens, latencyMs, studentSparksCharged: false, studentProfileRead: false, studentHistoryRead: false, studentHistoryWritten: false, studentChatAnalyticsWritten: false, providerAccountUsage: true, promptPersisted: false, responsePersisted: false }), logId, req.user.uid]
+        );
+        return res.json({ response: responseText, meta: { providerUsed, upstreamModel, promptTokens, completionTokens, totalTokens, latencyMs, telemetryScope: 'admin_demo_ai_usage', studentSparksCharged: false, studentProfileRead: false, studentHistoryRead: false, studentHistoryWritten: false, studentChatAnalyticsWritten: false, providerAccountUsage: true } });
+      } catch (error: any) {
+        const latencyMs = Date.now() - startedAt;
+        await pool.query(
+          `UPDATE system_logs SET level = 'warning', message = $1, details = $2::jsonb WHERE log_id = $3 AND user_id = $4 AND category = 'admin'`,
+          ['[Marketing Demo AI] Isolated preview failed', JSON.stringify({ outcome: 'failed', providerUsed, failureCode: controller.signal.aborted ? 'ABORTED' : 'PROVIDER_OR_ROUTING_ERROR', latencyMs, promptPersisted: false, responsePersisted: false }), logId, req.user.uid]
+        ).catch((logError: any) => console.error('[AdminDemoTutor] Failed to finalize usage log:', logError?.message || logError));
+        if (controller.signal.aborted || res.destroyed) return;
+        return res.status(503).json({ error: 'The isolated AI Tutor preview could not be completed by an explicitly configured live provider.' });
+      } finally {
+        res.off('close', abortOnClose);
+      }
+    } catch (error: any) {
+      console.error('[AdminDemoTutor] Isolated preview request failed:', error?.message || error);
+      return res.status(503).json({ error: 'Isolated AI Tutor preview is unavailable. No student chat or Spark operation was executed.' });
+    }
+  });
   // Admin Support Overview, Ticket Status, and Broadcast (Neon PostgreSQL)
   app.get('/api/admin/support/overview', verifyAuth, async (req: any, res: any) => {
     try {
