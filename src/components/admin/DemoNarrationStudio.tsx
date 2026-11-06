@@ -326,21 +326,9 @@ export default function DemoNarrationStudio({
       return;
     }
     setVoiceSettingsError(null);
-    const settings = selectedVoice.settings as any;
-    if (
-      settings &&
-      typeof settings.stability === 'number' &&
-      typeof settings.similarity_boost === 'number' &&
-      typeof settings.style === 'number' &&
-      typeof settings.use_speaker_boost === 'boolean'
-    ) {
-      setVoiceSettings({
-        stability: settings.stability,
-        similarity_boost: settings.similarity_boost,
-        style: settings.style,
-        ...(typeof settings.speed === 'number' ? { speed: settings.speed } : {}),
-        use_speaker_boost: settings.use_speaker_boost
-      });
+    const settings = normalizeVoiceSettings(selectedVoice.settings);
+    if (settings) {
+      setVoiceSettings(settings);
       setVoiceSettingsLoading(false);
       return;
     }
@@ -351,18 +339,9 @@ export default function DemoNarrationStudio({
     void authFetch('/api/admin/demo-narration/voices/' + encodeURIComponent(selectedVoice.voiceId) + '/settings')
       .then((response) => readJsonResponse<{ settings: Partial<VoiceSettings> }>(response))
       .then((data) => {
-        const live = data.settings;
-        if (!active || typeof live?.stability !== 'number' ||
-            typeof live?.similarity_boost !== 'number' ||
-            typeof live?.style !== 'number' ||
-            typeof live?.use_speaker_boost !== 'boolean') return;
-        setVoiceSettings({
-          stability: live.stability,
-          similarity_boost: live.similarity_boost,
-          style: live.style,
-          use_speaker_boost: live.use_speaker_boost,
-          ...(typeof live.speed === 'number' ? { speed: live.speed } : {})
-        });
+        if (!active) return;
+        const live = normalizeVoiceSettings(data.settings);
+        if (live) setVoiceSettings(live);
       })
       .catch((error: any) => {
         if (active) setVoiceSettingsError(error?.message || 'The selected voice settings could not be retrieved.');
