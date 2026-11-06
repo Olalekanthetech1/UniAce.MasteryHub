@@ -218,6 +218,39 @@ function getSelectedCourse(ctx: PlatformMarketingContext): MarketingCourse | und
   return eligible[0];
 }
 
+function getCourseAudienceLabel(course: MarketingCourse): string | null {
+  const scope = String(course.scope || '').toUpperCase();
+  const level = course.level.trim();
+  const semester = course.semester.trim();
+  if (!level || !semester) return null;
+
+  if (scope === 'GLOBAL') {
+    return `students across the institution at ${level}, ${semester}`;
+  }
+
+  if (scope === 'FACULTY') {
+    const targets = course.faculties.length > 0
+      ? course.faculties
+      : (course.faculty ? [course.faculty] : []);
+    const names = Array.from(new Set(targets.map((value) => value.trim()).filter(Boolean)));
+    return names.length > 0
+      ? `students in ${names.join(', ')} at ${level}, ${semester}`
+      : null;
+  }
+
+  if (scope === 'DEPARTMENT') {
+    const targets = course.departments.length > 0
+      ? course.departments
+      : (course.department ? [course.department] : []);
+    const names = Array.from(new Set(targets.map((value) => value.trim()).filter(Boolean)));
+    return names.length > 0
+      ? `students in ${names.join(', ')} at ${level}, ${semester}`
+      : null;
+  }
+
+  return null;
+}
+
 const CAPABILITY_REGISTRY: Omit<DynamicCapabilityItem, 'phoneDescription' | 'gridDescription' | 'enabled' | 'availability'>[] = [
   { id: 'ai_tutor', view: 'ai-tutor', iconKey: 'ai-tutor', accentHex: '#10b981', badgeBgHex: '#059669', title: 'AI Academic Tutor' },
   { id: 'chat_with_notes', view: 'ai-tutor', iconKey: 'notes-chat', accentHex: '#14b8a6', badgeBgHex: '#0d9488', title: 'Chat With Study Materials' },
@@ -352,6 +385,8 @@ export function buildDynamicFlyerConfig(ctx: PlatformMarketingContext): DynamicF
   const scopedCourses = getCoursesForMarketingScope(ctx);
   const selectedCourse = getSelectedCourse(ctx);
   const capabilities = resolveDynamicCapabilities(ctx);
+  const blockingReasons: string[] = [];
+  const courseAudience = selectedCourse ? getCourseAudienceLabel(selectedCourse) : null;
 
   let headlineLine1 = 'Study with greater';
   let headlineLine2 = 'clarity and structure';
@@ -363,9 +398,11 @@ export function buildDynamicFlyerConfig(ctx: PlatformMarketingContext): DynamicF
     if (selectedCourse) {
       headlineLine1 = `Explore ${selectedCourse.id}`;
       headlineLine2 = selectedCourse.title;
-      leadBoldParagraph = `Explore the live ${selectedCourse.id} course offering in UniAce Mastery Hub.`;
+      leadBoldParagraph = courseAudience
+        ? `Explore the live ${selectedCourse.id} course offering in UniAce Mastery Hub for ${courseAudience}.`
+        : `The ${selectedCourse.id} course offering is listed, but its intended student audience is not fully verified.`;
       subParagraph = selectedCourse.syllabus.length > 0
-        ? `The published course outline currently contains ${selectedCourse.syllabus.length} modules.`
+        ? `The published outline contains ${selectedCourse.syllabus.length} modules. Access is limited to the course's configured academic audience.`
         : 'View the published course information and the study tools currently available.';
       phoneGreeting = `Studying ${selectedCourse.id} 👋`;
     }
@@ -398,9 +435,11 @@ export function buildDynamicFlyerConfig(ctx: PlatformMarketingContext): DynamicF
     ? enabledNames.map((name) => `• ${name}`).join('\n')
     : 'No capabilities are currently cleared for display.';
 
-  const blockingReasons: string[] = [];
   if (ctx.targetScope === 'course' && !selectedCourse) {
     blockingReasons.push('Select a course that is published, student-visible and at a live academic level.');
+  }
+  if (ctx.targetScope === 'course' && selectedCourse && !courseAudience) {
+    blockingReasons.push('The selected course is missing a valid scope, target audience, level or semester. Correct its persisted academic metadata before exporting.');
   }
   if (ctx.targetScope === 'department' && (!ctx.selectedDepartment || scopedCourses.length === 0)) {
     blockingReasons.push('No live course offering is verified for the selected department.');

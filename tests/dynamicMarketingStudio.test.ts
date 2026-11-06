@@ -198,6 +198,8 @@ test('flyer uses only scoped live data and omits unconfigured support details', 
 
   assert.ok(flyer.headlineLine1.includes('MEE201'));
   assert.ok(flyer.leadBoldParagraph.includes('MEE201'));
+  assert.match(flyer.leadBoldParagraph, /Mechanical Engineering at 200L, 1st Semester/);
+  assert.match(flyer.subParagraph, /limited to the course's configured academic audience/);
   assert.equal(flyer.websiteDisplayUrl, 'uniace-live.example.edu.ng');
   assert.equal(flyer.qrTargetUrl, 'https://uniace-live.example.edu.ng');
   assert.equal(flyer.supportContact, '');
@@ -210,6 +212,41 @@ test('flyer uses only scoped live data and omits unconfigured support details', 
     JSON.stringify(flyer),
     /24\/7|10x|zero errors|boost your semester GPA|10 accredited university modules/i
   );
+});
+
+test('course flyer export is blocked when the course audience scope is incomplete', () => {
+  const invalid = course({
+    scope: 'FACULTY',
+    faculties: [],
+    faculty: '',
+    level: '',
+    semester: ''
+  });
+  const flyer = buildDynamicFlyerConfig({
+    ...sampleContext,
+    courses: { MEE201: invalid }
+  });
+
+  assert.equal(flyer.campaignReady, false);
+  assert.ok(flyer.blockingReasons.some((reason) => reason.includes('valid scope, target audience, level or semester')));
+  assert.match(flyer.leadBoldParagraph, /audience is not fully verified/);
+});
+
+test('faculty course flyer copy retains the persisted faculty target', () => {
+  const facultyCourse = course({
+    scope: 'FACULTY',
+    department: 'Engineering',
+    departments: [],
+    faculty: 'Faculty of Engineering',
+    faculties: ['Faculty of Engineering']
+  });
+  const flyer = buildDynamicFlyerConfig({
+    ...sampleContext,
+    courses: { MEE201: facultyCourse }
+  });
+
+  assert.equal(flyer.campaignReady, true);
+  assert.match(flyer.leadBoldParagraph, /Faculty of Engineering at 200L, 1st Semester/);
 });
 
 test('flyer generation fails closed when the live deployment origin is missing', () => {

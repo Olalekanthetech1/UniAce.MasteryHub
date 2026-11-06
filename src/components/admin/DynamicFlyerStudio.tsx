@@ -699,6 +699,9 @@ export default function DynamicFlyerStudio() {
                 }}
                 className="w-full mt-1 px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono text-slate-900 dark:text-white"
               />
+              <p className="mt-1 text-[10px] text-slate-500">
+                Defaults to this deployed app origin. A manually entered destination is an administrator override; verify that it resolves to the official UniAce destination before sharing.
+              </p>
               {qrResult.error && (
                 <p className="mt-1 text-[10px] font-semibold text-rose-600 dark:text-rose-400">{qrResult.error}</p>
               )}
