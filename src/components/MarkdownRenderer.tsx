@@ -1,11 +1,13 @@
-import React, { Component, ErrorInfo, ReactNode, Suspense, useMemo } from 'react';
+import React, { Component, ErrorInfo, ReactNode, Suspense, useMemo, lazy } from 'react';
 import { Marked } from 'marked';
 import markedKatex from 'marked-katex-extension';
 import DOMPurify from 'dompurify';
-import MermaidViewer from './renderers/MermaidViewer';
-import FunctionPlotViewer from './renderers/FunctionPlotViewer';
-import VennDiagramViewer from './renderers/VennDiagramViewer';
-import SvgDiagramViewer from './renderers/SvgDiagramViewer';
+// Load diagram engines only when matching diagram content is actually rendered.
+// In particular, Mermaid is a multi-megabyte dependency and is not needed for plain text/math.
+const MermaidViewer = lazy(() => import('./renderers/MermaidViewer'));
+const FunctionPlotViewer = lazy(() => import('./renderers/FunctionPlotViewer'));
+const VennDiagramViewer = lazy(() => import('./renderers/VennDiagramViewer'));
+const SvgDiagramViewer = lazy(() => import('./renderers/SvgDiagramViewer'));
 import { normalizeMathDelimiters as normalizeSharedMathDelimiters } from '../shared/mathText';
 
 interface ErrorBoundaryProps {
