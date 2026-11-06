@@ -297,6 +297,25 @@ export async function deleteCloudinaryAsset(asset: CloudinaryAsset): Promise<voi
   }
 }
 
+
+export async function deleteCloudinaryAssetByPublicId(
+  publicId: string,
+  resourceType: 'video' | 'raw'
+): Promise<void> {
+  if (!publicId || publicId.length > 255 || /[?#\\\\]/.test(publicId)) {
+    throw new Error('The Cloudinary public ID is invalid.');
+  }
+  await configureCloudinary();
+  const result: any = await cloudinary.uploader.destroy(publicId, {
+    resource_type: resourceType,
+    type: 'authenticated',
+    invalidate: true
+  });
+  if (result?.result !== 'ok' && result?.result !== 'not found') {
+    throw new Error('Cloudinary did not confirm deletion of asset ' + publicId + '.');
+  }
+}
+
 export function cloudinaryFolderForAsset(config: CloudinaryMediaConfig): string {
   return config.folderPrefix;
 }
