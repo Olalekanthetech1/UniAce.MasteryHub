@@ -22,7 +22,10 @@ const configuredScriptCharacters = Number(process.env.DEMO_NARRATION_MAX_SCRIPT_
 const MAX_SCRIPT_CHARACTERS = Number.isSafeInteger(configuredScriptCharacters) && configuredScriptCharacters >= 100
   ? configuredScriptCharacters
   : 20000;
-const DEFAULT_MAX_DURATION_SECONDS = 15 * 60;
+const configuredDurationSeconds = Number(process.env.DEMO_NARRATION_MAX_DURATION_SECONDS);
+const MAX_DURATION_SECONDS = Number.isSafeInteger(configuredDurationSeconds) && configuredDurationSeconds > 0
+  ? configuredDurationSeconds
+  : 15 * 60;
 const UPLOAD_TTL_MS = 20 * 60 * 1000;
 const JOB_TTL_MS = 30 * 60 * 1000;
 const DOWNLOAD_TICKET_TTL_MS = 2 * 60 * 1000;
@@ -230,7 +233,7 @@ async function probeVideo(filePath: string): Promise<{
   if (!Number.isFinite(duration) || duration <= 0 || !videoStream) {
     throw new Error('The server could not verify a valid video stream and duration.');
   }
-  const maxDuration = Number(process.env.DEMO_NARRATION_MAX_DURATION_SECONDS) || DEFAULT_MAX_DURATION_SECONDS;
+  const maxDuration = MAX_DURATION_SECONDS;
   if (duration > maxDuration) {
     throw new Error('This recording exceeds the server rendering duration limit of ' + Math.round(maxDuration / 60) + ' minutes.');
   }
@@ -265,7 +268,9 @@ function runCommand(binary: string, args: string[], timeoutMs = 60000): Promise<
 
 function buildVideoFilter(
   aspectRatio: NarrationJob['aspectRatio'],
-  resolution: NarrationJob['resolution']
+  resolution: NarrationJob['resolution'],
+  sourceWidth: number,
+  sourceHeight: number
 ): string | null {
   if (aspectRatio === 'source' && resolution === 'source') return null;
 
@@ -274,7 +279,11 @@ function buildVideoFilter(
     return 'scale=-2:min(ih\\,' + height + '):force_original_aspect_ratio=decrease';
   }
 
-  const base = resolution === '720p' ? 720 : 1080;
+  const base = resolution === '720p'
+    ? 720
+    : resolution === '1080p'
+      ? 1080
+      : Math.min(sourceWidth, sourceHeight);
   let width = base;
   let height = base;
   if (aspectRatio === '16:9') {
@@ -450,7 +459,10 @@ async function renderVideo(job: NarrationJob): Promise<void> {
   job.progressPercent = 0;
 
   const metadata = await probeVideo(job.sourcePath);
-  const filter = buildVideoFilter(job.aspectRatio, job.resolution);
+  if (!metadata.width || !metadata.height) {
+    throw new Error('The source video dimensions could not be verified. Rendering stopped without guessing an output size.');
+  }
+  const filter = buildVideoFilter(job.aspectRatio, job.resolution, metadata.width, metadata.height);
   const args = ['-y', '-i', job.sourcePath, '-i', job.audioPath];
 
   let audioMap: string[] = [];
@@ -608,7 +620,7 @@ export function setupDemoNarrationRoutes(app: express.Express): void {
       ffprobeAvailable,
       maxUploadBytes: MAX_UPLOAD_BYTES,
       maxScriptCharacters: MAX_SCRIPT_CHARACTERS,
-      maxDurationSeconds: Number(process.env.DEMO_NARRATION_MAX_DURATION_SECONDS) || DEFAULT_MAX_DURATION_SECONDS
+      maxDurationSeconds: MAX_DURATION_SECONDS
     });
   });
 
