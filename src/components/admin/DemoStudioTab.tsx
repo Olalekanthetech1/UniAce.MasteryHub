@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useDemoReel } from '../../context/DemoReelContext';
 import {
   DemoScenario,
@@ -27,6 +27,8 @@ import {
   Film,
   Image as ImageIcon,
   Sliders,
+  Upload,
+  Smartphone,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -37,6 +39,10 @@ export default function DemoStudioTab() {
     setSelectedScenarioId,
     recordedVideoUrl,
     recordedDuration,
+    recordingSource,
+    recordedFileName,
+    isImportingVideo,
+    importVideoFile,
     openPreviewModal,
     screenCaptureSupported,
   } = useDemoReel();
@@ -69,6 +75,7 @@ export default function DemoStudioTab() {
 
   const [activeScenarioPreview, setActiveScenarioPreview] = useState<string>('full_ecosystem');
   const [isStarting, setIsStarting] = useState(false);
+  const videoImportInputRef = useRef<HTMLInputElement | null>(null);
 
   const courseList = useMemo(() => Object.values(courses || {}), [courses]);
 
@@ -303,13 +310,58 @@ export default function DemoStudioTab() {
       {/* MODE 2: DYNAMIC VIDEO REEL STUDIO */}
       {studioMode === 'video' && (
         <div className="space-y-8">
+          <section className="rounded-3xl border border-indigo-200 bg-white p-5 shadow-sm dark:border-indigo-900/50 dark:bg-slate-800 sm:p-6">
+            <input
+              ref={videoImportInputRef}
+              type="file"
+              accept="video/*,.mp4,.m4v,.webm,.mov,.ogv,.3gp,.3g2"
+              className="sr-only"
+              aria-label="Choose a video recording from this device"
+              onChange={async (event) => {
+                const file = event.currentTarget.files?.[0];
+                if (file) await importVideoFile(file);
+                event.currentTarget.value = '';
+              }}
+            />
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-3">
+                <div className="rounded-2xl bg-indigo-50 p-3 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300">
+                  <Smartphone size={22} />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-black text-slate-900 dark:text-white">Import a video recorded on your phone</h3>
+                  <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-600 dark:text-slate-300">
+                    Record your UniAce walkthrough with your phone’s Screen Recorder, then choose the saved video here. The file is previewed in this browser and is not uploaded to UniAce.
+                  </p>
+                  {recordingSource === 'imported' && recordedFileName && (
+                    <p className="mt-2 break-all text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+                      Current local video: {recordedFileName}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => videoImportInputRef.current?.click()}
+                disabled={isRecording || isImportingVideo}
+                className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 text-xs font-black text-white shadow-lg shadow-indigo-600/20 transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isImportingVideo ? <RefreshCw size={16} className="animate-spin" /> : <Upload size={16} />}
+                {isImportingVideo ? 'Checking video…' : recordingSource === 'imported' ? 'Replace imported video' : 'Choose video from phone'}
+              </button>
+            </div>
+            <p className="mt-3 text-[10px] leading-4 text-slate-500 dark:text-slate-400">
+              Local-only import · MP4, WebM and browser-decodable video formats · Maximum file size: 250 MB · Selection is cleared when this page session ends.
+            </p>
+          </section>
+
           <AdminDemoTutorPreview onUseInRecording={handleUseTutorPreviewInRecording} />
           {/* Screen Capture Support Warning if in unsupported browser */}
           {!screenCaptureSupported && (
             <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-3">
               <AlertCircle size={20} className="shrink-0 text-amber-400" />
               <span>
-                Note: Screen recording uses the standard browser{' '}
+                Note: This warning applies only to direct browser screen recording. The phone video import above works separately. Browser screen capture uses the standard{' '}
                 <code className="bg-amber-950/60 px-1 py-0.5 rounded font-mono">
                   getDisplayMedia
                 </code>{' '}
