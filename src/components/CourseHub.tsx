@@ -70,6 +70,14 @@ export default function CourseHub({ onSelectCourse, onProfileClick, onViewSelect
   const filteredCourses = useMemo(() => {
     let result = Object.values(courses);
 
+    // The API returns only visible records; fail closed if availability metadata is absent.
+    if (!isAdmin) {
+      result = result.filter(course =>
+        (course.studentVisibility === 'live' || course.studentVisibility === 'coming_soon') &&
+        (course.levelAvailability === 'live' || course.levelAvailability === 'coming_soon')
+      );
+    }
+
     const normalize = (s: any) => String(s || '').toLowerCase().trim().replace(/\s+/g, ' ');
     const extractLevel = (lvl: any) => String(lvl || '').match(/\d+/)?.[0] || '';
 
@@ -301,7 +309,10 @@ export default function CourseHub({ onSelectCourse, onProfileClick, onViewSelect
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-2 gap-6">
-            {filteredCourses.map((course, index) => (
+            {filteredCourses.map((course, index) => {
+              const isLockedForStudent = !isAdmin && (course.studentVisibility !== 'live' || course.levelAvailability !== 'live');
+              const lockLabel = course.levelAvailability === 'coming_soon' ? 'Level Coming Soon' : 'Coming Soon';
+              return (
               <motion.div
                 key={course.id}
                 initial={{ opacity: 0, y: 20 }}
@@ -326,6 +337,11 @@ export default function CourseHub({ onSelectCourse, onProfileClick, onViewSelect
                 <h3 className="text-lg sm:text-xl font-bold text-slate-900 dark:text-white mb-2.5 group-hover:text-slate-700 dark:group-hover:text-slate-300 transition-colors leading-snug">
                   {course.title}
                 </h3>
+                {isLockedForStudent && (
+                  <span className="mb-3 inline-flex w-fit items-center rounded-lg bg-amber-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">
+                    {lockLabel}
+                  </span>
+                )}
                 
                 <p className="text-sm text-slate-500 dark:text-zinc-400 mb-8 flex-grow line-clamp-3 leading-relaxed">
                   {course.description}
@@ -361,13 +377,16 @@ export default function CourseHub({ onSelectCourse, onProfileClick, onViewSelect
                   </div>
                   
                   <button 
+                    type="button"
+                    disabled={isLockedForStudent}
                     onClick={() => {
+                      if (isLockedForStudent) return;
                       addLastAccessedCourse(course.id);
                       onSelectCourse(course.id as CourseId);
                     }}
-                    className="bg-slate-900 text-white dark:bg-white dark:text-slate-900 px-5 sm:px-6 py-2.5 rounded-xl font-semibold text-sm hover:scale-105 active:scale-95 transition-transform flex items-center gap-2"
+                    className={`bg-slate-900 text-white dark:bg-white dark:text-slate-900 px-5 sm:px-6 py-2.5 rounded-xl font-semibold text-sm transition-transform flex items-center gap-2 ${isLockedForStudent ? 'cursor-not-allowed opacity-60' : 'hover:scale-105 active:scale-95'}`}
                   >
-                    {(() => {
+                    {isLockedForStudent ? 'Coming Soon' : (() => {
                       const isEnrolled = activeTab === 'your-courses' || enrolledCourses.includes(course.id as CourseId);
                       if (!isEnrolled) return 'Enroll Now';
                       
@@ -383,7 +402,8 @@ export default function CourseHub({ onSelectCourse, onProfileClick, onViewSelect
                   </button>
                 </div>
               </motion.div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
