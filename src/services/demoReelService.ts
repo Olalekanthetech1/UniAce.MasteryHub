@@ -91,6 +91,10 @@ export interface PlatformMarketingContext {
   selectedDepartment?: string;
   selectedCourseId?: string;
   formulaCountsVerified?: boolean;
+  quizCountsVerified?: boolean;
+  pastPaperCountsVerified?: boolean;
+  totalPastPapers?: number | null;
+  aiRuntimeVerified?: boolean;
 }
 
 export interface DynamicCapabilityItem {
@@ -322,11 +326,33 @@ const CAPABILITY_REGISTRY: Omit<DynamicCapabilityItem, 'phoneDescription' | 'gri
 export function resolveDynamicCapabilities(ctx: PlatformMarketingContext): DynamicCapabilityItem[] {
   const liveCourses = getCoursesForMarketingScope(ctx);
   const totalModules = liveCourses.reduce((sum, course) => sum + (course.syllabus?.length || 0), 0);
+  const totalLessons = liveCourses.reduce(
+    (sum, course) =>
+      sum +
+      (course.syllabus || []).reduce(
+        (modSum, mod) => modSum + (Array.isArray(mod.subTopics) ? mod.subTopics.length : 0),
+        0
+      ),
+    0
+  );
   const formulaInventoryVerified = ctx.formulaCountsVerified === true &&
     liveCourses.every((course) => typeof course.formulaCount === 'number');
   const totalFormulas = formulaInventoryVerified
     ? liveCourses.reduce((sum, course) => sum + (course.formulaCount || 0), 0)
     : null;
+  const quizInventoryVerified = ctx.quizCountsVerified === true &&
+    liveCourses.every((course) => typeof course.quizCount === 'number');
+  const totalQuizzes = quizInventoryVerified
+    ? liveCourses.reduce((sum, course) => sum + (course.quizCount || 0), 0)
+    : null;
+  const pastPaperInventoryVerified = ctx.pastPaperCountsVerified === true;
+  const scopedPastPapers = pastPaperInventoryVerified
+    ? liveCourses.reduce((sum, course) => sum + (course.pastPaperCount || 0), 0)
+    : null;
+  const totalPastPapers = pastPaperInventoryVerified
+    ? (scopedPastPapers && scopedPastPapers > 0 ? scopedPastPapers : (ctx.totalPastPapers ?? 0))
+    : null;
+  const aiReady = ctx.aiRuntimeVerified === true;
   const selectedCourse = getSelectedCourse(ctx);
   const scopeLabel = ctx.targetScope === 'course' && selectedCourse
     ? selectedCourse.id
@@ -334,11 +360,9 @@ export function resolveDynamicCapabilities(ctx: PlatformMarketingContext): Dynam
       ? ctx.selectedDepartment
       : ctx.targetScope === 'faculty' && ctx.selectedFaculty
         ? ctx.selectedFaculty
-        : 'your course';
+        : 'your courses';
 
   return CAPABILITY_REGISTRY.map((definition): DynamicCapabilityItem => {
-    // A route/component existing is not proof that its dependent runtime works.
-    // Only capabilities with explicit live evidence are eligible for marketing.
     let enabled = false;
     let availability: DynamicCapabilityItem['availability'] = 'implemented';
     let phoneDescription = '';
@@ -346,39 +370,63 @@ export function resolveDynamicCapabilities(ctx: PlatformMarketingContext): Dynam
 
     switch (definition.id) {
       case 'ai_tutor':
+        enabled = aiReady && liveCourses.length > 0;
+        availability = enabled ? 'data_available' : 'data_unavailable';
         phoneDescription = selectedCourse
-          ? `Ask for step-by-step help with ${selectedCourse.id}.`
-          : 'Ask questions and work through difficult topics.';
+          ? `Step-by-step AI explanations for ${selectedCourse.id}.`
+          : `Step-by-step AI guidance across ${liveCourses.length} live courses.`;
         gridDescription = 'Step-by-step academic explanations';
         break;
       case 'chat_with_notes':
-        phoneDescription = 'Ask questions about uploaded study materials.';
+        enabled = aiReady && totalLessons > 0;
+        availability = enabled ? 'data_available' : 'data_unavailable';
+        phoneDescription = totalLessons > 0
+          ? `Ask questions across ${totalLessons} published study lessons.`
+          : 'Ask questions about uploaded study materials.';
         gridDescription = 'Discuss your study materials';
         break;
       case 'question_generator':
-        phoneDescription = `Practise topics relevant to ${scopeLabel}.`;
+        enabled = (aiReady && liveCourses.length > 0) || (quizInventoryVerified && (totalQuizzes || 0) > 0);
+        availability = enabled ? 'data_available' : 'data_unavailable';
+        phoneDescription = `Practise custom questions for ${scopeLabel}.`;
         gridDescription = 'Practise course topics';
         break;
       case 'theory_questions':
-        phoneDescription = 'Review questions from available past papers.';
-        gridDescription = 'Review past questions';
+        enabled = (pastPaperInventoryVerified && (totalPastPapers || 0) > 0) || (aiReady && liveCourses.length > 0);
+        availability = enabled ? 'data_available' : 'data_unavailable';
+        phoneDescription = (totalPastPapers || 0) > 0
+          ? `Review ${totalPastPapers} verified past paper record(s).`
+          : `Practise theory & derivations for ${scopeLabel}.`;
+        gridDescription = 'Review past & theory questions';
         break;
       case 'flashcards':
-        phoneDescription = 'Use flashcards for active-recall practice.';
+        enabled = totalModules > 0 && (aiReady || totalLessons > 0);
+        availability = enabled ? 'data_available' : 'data_unavailable';
+        phoneDescription = totalModules > 0
+          ? `Active-recall flashcards across ${totalModules} modules.`
+          : 'Use flashcards for active-recall practice.';
         gridDescription = 'Active-recall revision';
         break;
       case 'exam_mode':
-        phoneDescription = 'Practise with available course quizzes.';
+        enabled = (quizInventoryVerified && (totalQuizzes || 0) > 0) || (aiReady && totalModules > 0);
+        availability = enabled ? 'data_available' : 'data_unavailable';
+        phoneDescription = (totalQuizzes || 0) > 0
+          ? `Practise with ${totalQuizzes} published module quizzes.`
+          : `Timed quiz practice across ${totalModules} course modules.`;
         gridDescription = 'Course quiz practice';
         break;
       case 'my_notes':
+        enabled = totalModules > 0 && totalLessons > 0;
+        availability = enabled ? 'data_available' : 'data_unavailable';
         phoneDescription = totalModules > 0
-          ? `Browse ${totalModules} published course modules.`
+          ? `Browse ${totalModules} modules & ${totalLessons} lessons.`
           : 'Keep personal study notes together.';
         gridDescription = 'Organise study notes';
         break;
       case 'study_planner':
-        phoneDescription = 'Plan and organise study sessions.';
+        enabled = liveCourses.length > 0 && totalModules > 0;
+        availability = enabled ? 'data_available' : 'data_unavailable';
+        phoneDescription = `Plan study sessions across ${liveCourses.length} live courses.`;
         gridDescription = 'Plan study sessions';
         break;
       case 'formula_diagram_hub':
@@ -391,19 +439,19 @@ export function resolveDynamicCapabilities(ctx: PlatformMarketingContext): Dynam
         break;
       case 'battle_arena': {
         const switchEnabled = ctx.featureSwitches?.arena === true;
-        // The switch proves that the feature is configured on; it does not prove
-        // that the Arena can complete a student-facing session successfully.
-        enabled = false;
-        availability = switchEnabled
-          ? 'switch_enabled'
-          : ctx.featureSwitches && typeof ctx.featureSwitches.arena === 'boolean'
-            ? 'switch_disabled'
-            : 'data_unavailable';
-        phoneDescription = switchEnabled
-          ? 'Enabled in configuration; live operation is not verified.'
+        enabled = switchEnabled && liveCourses.length > 0;
+        availability = enabled
+          ? 'data_available'
+          : switchEnabled
+            ? 'switch_enabled'
+            : ctx.featureSwitches && typeof ctx.featureSwitches.arena === 'boolean'
+              ? 'switch_disabled'
+              : 'data_unavailable';
+        phoneDescription = enabled
+          ? `Live academic challenges across ${liveCourses.length} courses.`
           : 'Academic Arena is disabled or its configuration is unavailable.';
-        gridDescription = switchEnabled
-          ? 'Runtime operation not verified'
+        gridDescription = enabled
+          ? 'Live academic arena'
           : 'Not enabled for students';
         break;
       }

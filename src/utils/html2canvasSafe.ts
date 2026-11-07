@@ -204,6 +204,17 @@ function sanitizeClonedDocument(clonedDoc: Document): void {
       htmlEl.setAttribute('style', sanitizeCssColorString(inlineStyleAttr));
     }
 
+    // Prevent html2canvas baseline descender slicing on elements tagged for canvas-safe text rendering
+    if (
+      htmlEl.dataset &&
+      (htmlEl.dataset.canvasText === 'safe' || htmlEl.dataset.flyerUnclip === 'true')
+    ) {
+      htmlEl.style.overflow = 'visible';
+      htmlEl.style.textOverflow = 'clip';
+      htmlEl.style.webkitLineClamp = 'unset';
+      htmlEl.style.paddingBottom = '2px';
+    }
+
     try {
       const computed = win.getComputedStyle(el);
       for (const prop of COLOR_STYLE_PROPERTIES) {
@@ -216,6 +227,18 @@ function sanitizeClonedDocument(clonedDoc: Document): void {
         ) {
           (htmlEl.style as any)[prop] = sanitizeCssColorString(rawVal);
         }
+      }
+
+      // Prevent html2canvas baseline/descender slicing on elements using Tailwind `truncate` or `line-clamp-*`
+      const className = typeof htmlEl.className === 'string' ? htmlEl.className : '';
+      if (
+        className.includes('truncate') ||
+        className.includes('line-clamp-') ||
+        htmlEl.hasAttribute('data-flyer-unclip')
+      ) {
+        htmlEl.style.overflow = 'visible';
+        htmlEl.style.textOverflow = 'clip';
+        htmlEl.style.webkitLineClamp = 'unset';
       }
     } catch {
       // Ignore inaccessible pseudo/detached nodes
@@ -232,6 +255,14 @@ export async function renderElementToCanvasSafe(
   element: HTMLElement,
   options: Partial<Html2CanvasOptions> = {}
 ): Promise<HTMLCanvasElement> {
+  if (typeof document !== 'undefined' && (document as any).fonts?.ready) {
+    try {
+      await (document as any).fonts.ready;
+    } catch {
+      // Ignore font readiness rejection and continue rendering
+    }
+  }
+
   const restoreMainWindow = wrapGetComputedStyle(window);
   let restoreClonedWindow: (() => void) | null = null;
 

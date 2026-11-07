@@ -2949,7 +2949,7 @@ const getAndValidateSparks = async (uid: string, email: string | undefined, req?
       ? Promise.resolve({ rowCount: 1, rows: [cachedReqUser] })
       : pool.query(
           `SELECT uid, email, display_name, role, plan_type, ai_sparks,
-                  learning_profile, last_spark_reset, created_at, subscription_status,
+                  learning_profile, last_spark_reset, created_at, updated_at, subscription_status,
                   subscription_expiry, subscription_start_date
            FROM users
            WHERE uid = $1`,
@@ -2984,6 +2984,7 @@ const getAndValidateSparks = async (uid: string, email: string | undefined, req?
   let status = row.subscription_status || 'none';
   let startDate = row.subscription_start_date ? new Date(row.subscription_start_date).toISOString() : undefined;
   let lastSparkReset = row.last_spark_reset;
+  let updatedAtIso = row.updated_at ? new Date(row.updated_at).toISOString() : undefined;
 
   const createdAt = row.created_at ? new Date(row.created_at) : null;
   const configuredTrialDays = Number(generalConfig?.trialDays);
@@ -3038,10 +3039,12 @@ const getAndValidateSparks = async (uid: string, email: string | undefined, req?
         const locked = lockRes.rows[0];
         sparks = Math.floor(Number(locked.ai_sparks ?? sparks));
         lastSparkReset = locked.last_spark_reset;
+        const mutationNowIso = new Date().toISOString();
 
         if (needsExpiryDowngrade) {
           effectivePlan = 'free';
           status = 'expired';
+          updatedAtIso = mutationNowIso;
           await client.query(
             `UPDATE users SET plan_type = 'free', subscription_status = 'expired', updated_at = NOW() WHERE uid = $1`,
             [uid]
@@ -3055,8 +3058,8 @@ const getAndValidateSparks = async (uid: string, email: string | undefined, req?
         if (needsDailyRefill(effectivePlan === 'free', sparks, lastSparkReset)) {
           const refillDelta = configuredDailyFreeSparks! - sparks;
           sparks = configuredDailyFreeSparks!;
-          const resetNowIso = new Date().toISOString();
-          lastSparkReset = resetNowIso;
+          lastSparkReset = mutationNowIso;
+          updatedAtIso = mutationNowIso;
           await client.query(
             `INSERT INTO spark_ledger (ledger_id, user_id, delta, reason, ref_lock_id, created_at)
              VALUES ($1, $2, $3, 'daily_free_refill', NULL, NOW())
@@ -3104,7 +3107,9 @@ const getAndValidateSparks = async (uid: string, email: string | undefined, req?
     last_spark_reset: lastSparkReset,
     subscription_status: status,
     subscription_expiry: expiry ?? row.subscription_expiry ?? null,
-    subscription_start_date: startDate ?? row.subscription_start_date ?? null
+    subscription_start_date: startDate ?? row.subscription_start_date ?? null,
+    createdAt: createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt.toISOString() : undefined,
+    updatedAt: updatedAtIso
   };
 
   if (req) {

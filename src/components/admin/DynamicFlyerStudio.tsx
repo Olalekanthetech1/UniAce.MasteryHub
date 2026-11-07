@@ -441,6 +441,10 @@ export default function DynamicFlyerStudio() {
       supportConfig,
       liveOrigin: typeof window !== 'undefined' ? window.location.origin : undefined,
       formulaCountsVerified: snapshot?.totals.formulasVerified === true,
+      quizCountsVerified: snapshot?.totals.quizzesVerified === true,
+      pastPaperCountsVerified: snapshot?.totals.pastPapersVerified === true,
+      totalPastPapers: snapshot?.totals.pastPapers ?? null,
+      aiRuntimeVerified: snapshot?.totals.aiRuntimeVerified === true,
       targetScope,
       selectedFaculty,
       selectedDepartment,
@@ -1806,76 +1810,84 @@ export default function DynamicFlyerStudio() {
                       </div>
 
                       {/* App Header & Greeting */}
-                      <div className="px-4 pt-1.5 pb-2 bg-white border-b border-slate-100">
+                      <div className="px-4 pt-1 pb-1.5 bg-white border-b border-slate-100 shrink-0">
                         <div className="flex items-center gap-2">
                           <div
-                            className="w-6 h-6 rounded-lg flex items-center justify-center text-white text-xs font-black"
+                            className="w-5 h-5 rounded-md flex items-center justify-center text-white text-[11px] font-black shrink-0"
                             style={{ backgroundColor: palette.accentText }}
                           >
                             🎓
                           </div>
-                          <span className="text-[13px] font-black text-slate-900">
+                          <span data-flyer-unclip="true" className="text-[12.5px] font-black text-slate-900 leading-[1.3]">
                             UniAce <span style={{ color: palette.accentText }}>Mastery AI</span>
                           </span>
                         </div>
-                        <div className="mt-1.5">
-                          <div className="text-[14px] font-black text-slate-900 leading-tight">
+                        <div className="mt-1">
+                          <div data-flyer-unclip="true" className="text-[13px] font-black text-slate-900 leading-[1.3]">
                             {flyerConfig.phoneGreeting}
                           </div>
-                          <div className="text-[10.5px] text-slate-500 font-medium">
+                          <div data-flyer-unclip="true" className="text-[10px] text-slate-500 font-medium leading-[1.3]">
                             {flyerConfig.phonePrompt}
                           </div>
                         </div>
                       </div>
 
                       {/* 8 Dynamic Feature Cards inside Phone Screen */}
-                      <div className="px-3 py-2 space-y-1.5 flex-1 overflow-hidden bg-[#f1f5f9]">
+                      <div className="px-2.5 py-1.5 space-y-1 flex-1 flex flex-col justify-center bg-[#f1f5f9]">
                         {enabledCapabilities.map((cap) => (
                           <div
                             key={cap.id}
-                            className="bg-white rounded-xl px-2.5 py-1.5 border border-slate-200/80 shadow-2xs flex items-center justify-between gap-2"
+                            className="bg-white rounded-xl px-2.5 py-1 border border-slate-200/80 shadow-2xs flex items-center justify-between gap-2"
                           >
-                            <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="flex items-center gap-2 min-w-0 flex-1">
                               <div
-                                className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 shadow-2xs"
+                                className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 shadow-2xs"
                                 style={{ backgroundColor: cap.accentHex }}
                               >
-                                {renderCapabilityIcon(cap.iconKey, 15)}
+                                {renderCapabilityIcon(cap.iconKey, 14)}
                               </div>
-                              <div className="min-w-0">
-                                <div className="text-[11px] font-extrabold text-slate-900 leading-tight truncate">
+                              <div className="min-w-0 flex-1 overflow-visible">
+                                <div
+                                  data-flyer-unclip="true"
+                                  className="text-[10.5px] font-extrabold text-slate-900 leading-[1.32] pb-[1px] whitespace-nowrap"
+                                >
                                   {cap.title}
                                 </div>
-                                <div className="text-[9px] text-slate-500 font-medium leading-tight line-clamp-1 mt-0.5">
-                                  {cap.phoneDescription}
+                                <div
+                                  data-flyer-unclip="true"
+                                  className="text-[8.5px] text-slate-500 font-medium leading-[1.32] pb-[1px] whitespace-nowrap"
+                                >
+                                  {cap.phoneDescription.length > 42
+                                    ? `${cap.phoneDescription.slice(0, 40).trimEnd()}…`
+                                    : cap.phoneDescription}
                                 </div>
                               </div>
                             </div>
-                            <ChevronRight size={12} className="text-slate-400 shrink-0" />
+                            <ChevronRight size={11} className="text-slate-400 shrink-0" />
                           </div>
                         ))}
                       </div>
 
                       {/* Phone Bottom Navigation Bar */}
-                      <div className="px-5 py-2 bg-white border-t border-slate-200 flex items-center justify-between text-[9px] font-bold text-slate-400">
+                      <div className="px-5 py-1.5 bg-white border-t border-slate-200 flex items-center justify-between text-[8.5px] font-bold text-slate-400 leading-[1.3] shrink-0">
                         <div
                           className="flex flex-col items-center gap-0.5"
                           style={{ color: palette.accentText }}
                         >
-                          <Home size={13} />
-                          <span>Home</span>
+                          <Home size={12} />
+                          <span data-flyer-unclip="true">Home</span>
                         </div>
                         <div className="flex flex-col items-center gap-0.5">
-                          <Library size={13} />
-                          <span>Library</span>
+                          <Library size={12} />
+                          <span data-flyer-unclip="true">Library</span>
                         </div>
                         <div className="flex flex-col items-center gap-0.5">
-                          <Calendar size={13} />
-                          <span>Planner</span>
+                          <Calendar size={12} />
+                          <span data-flyer-unclip="true">Planner</span>
                         </div>
                         <div className="flex flex-col items-center gap-0.5">
-                          <User size={13} />
-                          <span>Profile</span>
+                          <User size={12} />
+                          <span data-flyer-unclip="true">Profile</span>
                         </div>
                       </div>
                     </div>
@@ -1888,22 +1900,22 @@ export default function DynamicFlyerStudio() {
             <div className="relative z-30 -mt-12">
               {/* Diagonal Sweep Header Wave */}
               <svg
-                viewBox="0 0 760 54"
-                className="w-full h-[54px] block -mb-1"
+                viewBox="0 0 760 50"
+                className="w-full h-[50px] block -mb-1"
                 preserveAspectRatio="none"
               >
                 <path
-                  d="M 0 54 L 0 22 Q 260 52, 520 12 L 760 0 L 760 54 Z"
+                  d="M 0 50 L 0 20 Q 260 48, 520 11 L 760 0 L 760 50 Z"
                   fill={flyerConfig.themeId === 'emerald_gold' ? '#085c2f' : palette.accentText}
                 />
               </svg>
 
               <div
                 style={{ background: palette.deckGradient }}
-                className="px-9 pt-4 pb-6 text-white space-y-6"
+                className="px-9 pt-3.5 pb-4 text-white space-y-4"
               >
                 {/* 8-Feature Grid (2 Rows x 4 Columns) */}
-                <div className="grid grid-cols-4 gap-x-4 gap-y-5">
+                <div className="grid grid-cols-4 gap-x-4 gap-y-3.5">
                   {enabledCapabilities.map((cap, idx) => (
                     <div
                       key={cap.id}
@@ -1912,16 +1924,16 @@ export default function DynamicFlyerStudio() {
                       }`}
                     >
                       <div
-                        className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 border-2 border-white shadow-md"
+                        className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 border-2 border-white shadow-md"
                         style={{ backgroundColor: cap.badgeBgHex }}
                       >
-                        {renderCapabilityIcon(cap.iconKey, 17)}
+                        {renderCapabilityIcon(cap.iconKey, 16)}
                       </div>
                       <div className="min-w-0">
-                        <div className="text-[13px] font-extrabold text-white leading-tight">
+                        <div data-flyer-unclip="true" className="text-[12.5px] font-extrabold text-white leading-[1.3]">
                           {cap.title}
                         </div>
-                        <div className="text-[10.5px] text-emerald-100/90 font-medium leading-[1.28] mt-1">
+                        <div data-flyer-unclip="true" className="text-[10px] text-emerald-100/90 font-medium leading-[1.32] mt-0.5">
                           {cap.gridDescription}
                         </div>
                       </div>
@@ -1930,25 +1942,38 @@ export default function DynamicFlyerStudio() {
                 </div>
 
                 {/* CTA Bar: Visit Now Button + Live Domain + Scannable Vector QR Code + Support Line */}
-                <div className="pt-2 flex items-center justify-between gap-4 border-t border-white/15">
+                <div className="pt-2 flex items-center justify-between gap-3 border-t border-white/15">
                   {/* Left: Visit Now CTA + Website URL */}
-                  <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
                     <div
                       style={{ backgroundColor: palette.ctaBg, color: palette.ctaText }}
-                      className="px-6 py-3 rounded-full font-black text-[18px] shadow-lg flex items-center gap-2 shrink-0"
+                      className="px-5 py-2.5 rounded-full font-black text-[17px] leading-[1.25] shadow-lg flex items-center justify-center gap-1.5 shrink-0"
                     >
-                      <span>{flyerConfig.ctaText}</span>
-                      <ChevronRight size={20} strokeWidth={3} />
+                      <span data-flyer-unclip="true" className="pb-[1px]">{flyerConfig.ctaText}</span>
+                      <ChevronRight size={19} strokeWidth={3} />
                     </div>
-                    <span className="text-[22px] font-extrabold tracking-tight text-white truncate max-w-[235px]">
+                    <span
+                      data-flyer-unclip="true"
+                      style={{
+                        fontSize:
+                          flyerConfig.websiteDisplayUrl.length > 32
+                            ? '13.5px'
+                            : flyerConfig.websiteDisplayUrl.length > 26
+                              ? '15px'
+                              : flyerConfig.websiteDisplayUrl.length > 20
+                                ? '17px'
+                                : '19.5px',
+                      }}
+                      className="font-extrabold tracking-tight text-white leading-[1.35] pb-[2px] whitespace-nowrap overflow-visible"
+                    >
                       {flyerConfig.websiteDisplayUrl}
                     </span>
                   </div>
 
                   {/* Right: Real Vector SVG QR Code + Support Contact */}
-                  <div className="flex items-center gap-4 shrink-0">
+                  <div className="flex items-center gap-3.5 shrink-0">
                     {/* Scannable QR Code Box */}
-                    <div className="bg-white p-1.5 rounded-xl shadow-lg w-[68px] h-[68px] flex items-center justify-center">
+                    <div className="bg-white p-1.5 rounded-xl shadow-lg w-[64px] h-[64px] flex items-center justify-center">
                       {qrMatrix.length > 0 ? (
                         <svg
                           viewBox={`0 0 ${qrMatrix.length} ${qrMatrix.length}`}
@@ -1978,18 +2003,18 @@ export default function DynamicFlyerStudio() {
 
                     {/* Support details appear only when an administrator has configured a real contact. */}
                     {flyerConfig.supportContact && (
-                      <div className="flex items-center gap-2.5">
-                        <div className="w-10 h-10 rounded-full bg-white/10 border border-white/25 flex items-center justify-center text-white">
-                          <Headphones size={20} />
+                      <div className="flex items-center gap-2">
+                        <div className="w-9 h-9 rounded-full bg-white/10 border border-white/25 flex items-center justify-center text-white shrink-0">
+                          <Headphones size={18} />
                         </div>
                         <div>
-                          <div className="text-[11px] text-emerald-200 font-semibold leading-tight">
+                          <div data-flyer-unclip="true" className="text-[10.5px] text-emerald-200 font-semibold leading-[1.3]">
                             {flyerConfig.supportLabel}
                           </div>
-                          <div className="text-[16px] font-black text-white leading-tight tracking-tight">
+                          <div data-flyer-unclip="true" className="text-[14.5px] font-black text-white leading-[1.3] tracking-tight">
                             {flyerConfig.supportContact}
                           </div>
-                          <div className="text-[10.5px] text-emerald-200/80 font-medium leading-tight">
+                          <div data-flyer-unclip="true" className="text-[10px] text-emerald-200/80 font-medium leading-[1.3]">
                             {flyerConfig.supportSublabel}
                           </div>
                         </div>
@@ -2002,13 +2027,13 @@ export default function DynamicFlyerStudio() {
               {/* Bottom Footer Strip */}
               <div
                 style={{ backgroundColor: palette.footerStripBg }}
-                className="py-3 px-8 text-center text-[11px] font-bold tracking-[0.2em] text-emerald-100/80 uppercase flex items-center justify-center gap-4"
+                className="py-2.5 px-8 text-center text-[10.5px] font-bold tracking-[0.18em] text-emerald-100/85 uppercase flex items-center justify-center gap-4 leading-[1.35]"
               >
-                <span>{flyerConfig.footerPillars[0]}</span>
+                <span data-flyer-unclip="true">{flyerConfig.footerPillars[0]}</span>
                 <span className="text-emerald-400">|</span>
-                <span>{flyerConfig.footerPillars[1]}</span>
+                <span data-flyer-unclip="true">{flyerConfig.footerPillars[1]}</span>
                 <span className="text-emerald-400">|</span>
-                <span>{flyerConfig.footerPillars[2]}</span>
+                <span data-flyer-unclip="true">{flyerConfig.footerPillars[2]}</span>
               </div>
             </div>
           </div>

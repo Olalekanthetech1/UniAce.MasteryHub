@@ -14,7 +14,7 @@ export interface SafeFetchResult<T = any> {
 export async function safeFetchJson<T = any>(
   input: RequestInfo | URL,
   init?: RequestInit,
-  retries: number = 2
+  retries: number = 4
 ): Promise<SafeFetchResult<T>> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -29,14 +29,18 @@ export async function safeFetchJson<T = any>(
         }
         return {
           ok: false,
-          status: res.status,
+          status: res.status === 200 ? 503 : res.status,
           data: null,
-          error: 'Server warming up or returned non-JSON response',
+          error: 'Backend server is warming up and returned a non-JSON response.',
           isHtmlFallback: true
         };
       }
 
       if (!res.ok) {
+        if ((res.status === 502 || res.status === 503 || res.status === 504) && attempt < retries) {
+          await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
+          continue;
+        }
         const errBody = await res.json().catch(() => null);
         return {
           ok: false,

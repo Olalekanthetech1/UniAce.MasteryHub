@@ -989,26 +989,74 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
 
       let formulaCounts: Record<string, number> = {};
       let formulaCountsVerified = false;
+      let quizCounts: Record<string, number> = {};
+      let quizCountsVerified = false;
+      let pastPaperCountsByCode: Record<string, number> = {};
+      let totalPastPapersCount: number | null = null;
+      let pastPaperCountsVerified = false;
+
       if (courseIds.length > 0) {
-        try {
-          const formulaResult = await queryPostgres<{ course_id: string; count: string | number }>(
+        const [formulaOutcome, quizOutcome, pastPapersOutcome] = await Promise.allSettled([
+          queryPostgres<{ course_id: string; count: string | number }>(
             `SELECT course_id, COUNT(*)::int AS count
              FROM course_formulas
              WHERE course_id = ANY($1::text[])
              GROUP BY course_id`,
             [courseIds]
-          );
+          ),
+          queryPostgres<{ course_id: string; count: string | number }>(
+            `SELECT course_id, COUNT(*)::int AS count
+             FROM course_module_quizzes
+             WHERE course_id = ANY($1::text[])
+             GROUP BY course_id`,
+            [courseIds]
+          ),
+          queryPostgres<{ course_code: string; count: string | number }>(
+            `SELECT UPPER(TRIM(COALESCE(course_code, data->>'courseCode', ''))) AS course_code,
+                    COUNT(*)::int AS count
+             FROM past_papers
+             GROUP BY 1`
+          )
+        ]);
+
+        if (formulaOutcome.status === 'fulfilled') {
           formulaCounts = Object.fromEntries(
-            formulaResult.rows.map(row => [row.course_id, Number(row.count)])
+            formulaOutcome.value.rows.map(row => [row.course_id, Number(row.count)])
           );
           formulaCountsVerified = true;
-        } catch (formulaError: any) {
-          // A missing/unavailable formula source is unknown, not a zero count.
-          console.warn('[MarketingSnapshot] Formula inventory could not be verified:', formulaError?.message || formulaError);
+        } else {
+          console.warn('[MarketingSnapshot] Formula inventory could not be verified:', formulaOutcome.reason?.message || formulaOutcome.reason);
+        }
+
+        if (quizOutcome.status === 'fulfilled') {
+          quizCounts = Object.fromEntries(
+            quizOutcome.value.rows.map(row => [row.course_id, Number(row.count)])
+          );
+          quizCountsVerified = true;
+        } else {
+          console.warn('[MarketingSnapshot] Quiz inventory could not be verified:', quizOutcome.reason?.message || quizOutcome.reason);
+        }
+
+        if (pastPapersOutcome.status === 'fulfilled') {
+          pastPaperCountsByCode = Object.fromEntries(
+            pastPapersOutcome.value.rows
+              .filter(row => Boolean(row.course_code))
+              .map(row => [String(row.course_code).toUpperCase(), Number(row.count)])
+          );
+          totalPastPapersCount = pastPapersOutcome.value.rows.reduce(
+            (sum, row) => sum + Number(row.count || 0),
+            0
+          );
+          pastPaperCountsVerified = true;
+        } else {
+          console.warn('[MarketingSnapshot] Past papers inventory could not be verified:', pastPapersOutcome.reason?.message || pastPapersOutcome.reason);
         }
       } else {
         // An empty live catalog is a verified empty result from the authoritative catalog.
         formulaCountsVerified = true;
+        quizCountsVerified = true;
+        pastPaperCountsVerified = true;
+        totalPastPapersCount = 0;
       }
 
       const readOptionalConfig = async (key: string) => {
@@ -1020,12 +1068,59 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
         }
       };
 
-      const [institutionResult, switchesResult, supportResult, pricingResult] = await Promise.all([
+      const readOptionalSettings = async (key: string) => {
+        try {
+          const value = await getSystemSettingsDoc(key, true);
+          return { configured: value !== null, available: true, value };
+        } catch (error: any) {
+          return { configured: false, available: false, value: null, error: error?.message || String(error) };
+        }
+      };
+
+      const [institutionResult, switchesResult, supportResult, pricingResult, routingResult, apiKeysResult] = await Promise.all([
         readOptionalConfig('institution'),
         readOptionalConfig('feature_switches'),
         readOptionalConfig('support'),
-        readOptionalConfig('pricing')
+        readOptionalConfig('pricing'),
+        readOptionalConfig('routing'),
+        readOptionalSettings('api_keys')
       ]);
+
+      const providerEnvKeyMap: Record<string, string | undefined> = {
+        gemini_direct: process.env.GEMINI_API_KEY,
+        groq: process.env.GROQ_API_KEY,
+        mistral_direct: process.env.MISTRAL_API_KEY,
+        cohere: process.env.COHERE_API_KEY,
+        huggingface: process.env.HUGGINGFACE_API_KEY,
+        openrouter_free: process.env.OPENROUTER_API_KEY,
+        nvidia: process.env.NVIDIA_API_KEY
+      };
+      const dbApiKeys = apiKeysResult.value && typeof apiKeysResult.value === 'object' ? apiKeysResult.value : {};
+      const hasProviderCredential = (providerId: string): boolean => {
+        const envKey = providerEnvKeyMap[providerId];
+        if (typeof envKey === 'string' && envKey.trim().length > 0) return true;
+        const dbEntry = (dbApiKeys as Record<string, any>)[providerId];
+        if (typeof dbEntry === 'string' && dbEntry.trim().length > 0) return true;
+        if (dbEntry && typeof dbEntry === 'object') {
+          if (typeof dbEntry.key === 'string' && dbEntry.key.trim().length > 0 && dbEntry.exhausted !== true) return true;
+          if (Array.isArray(dbEntry.keys) && dbEntry.keys.some((k: any) => typeof k === 'string' ? k.trim().length > 0 : (typeof k?.key === 'string' && k.key.trim().length > 0 && k.exhausted !== true))) {
+            return true;
+          }
+        }
+        return false;
+      };
+
+      const rawRouting = routingResult.value && typeof routingResult.value === 'object' ? routingResult.value : null;
+      const candidateProviders = Array.from(new Set([
+        typeof rawRouting?.global_provider === 'string' ? rawRouting.global_provider.trim().toLowerCase() : '',
+        typeof rawRouting?.chat === 'string' ? rawRouting.chat.trim().toLowerCase() : '',
+        ...(Array.isArray(rawRouting?.fallbacksByTask?.chat)
+          ? rawRouting.fallbacksByTask.chat.map((p: unknown) => typeof p === 'string' ? p.trim().toLowerCase() : '')
+          : []),
+        ...Object.keys(providerEnvKeyMap)
+      ].filter(Boolean)));
+      const verifiedProviders = candidateProviders.filter(hasProviderCredential);
+      const aiRuntimeVerified = verifiedProviders.length > 0;
 
       const institutionValue = institutionResult.value;
       const institutionValid = Boolean(
@@ -1081,6 +1176,8 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
         : null;
 
       const courses = liveCourses.map((course: any) => {
+        const courseId = String(course.id);
+        const normalizedCode = courseId.trim().toUpperCase();
         const modules = Array.isArray(course.syllabus) ? course.syllabus.map((module: any) => ({
           id: String(module.id || ''),
           title: String(module.title || ''),
@@ -1092,7 +1189,7 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
             : []
         })) : [];
         return {
-          id: String(course.id),
+          id: courseId,
           title: String(course.title),
           description: typeof course.description === 'string' ? course.description : '',
           department: typeof course.department === 'string' ? course.department : '',
@@ -1108,7 +1205,9 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
           modules,
           moduleCount: modules.length,
           lessonCount: modules.reduce((sum: number, module: any) => sum + module.lessons.length, 0),
-          formulaCount: formulaCountsVerified ? (formulaCounts[String(course.id)] ?? 0) : null
+          formulaCount: formulaCountsVerified ? (formulaCounts[courseId] ?? 0) : null,
+          quizCount: quizCountsVerified ? (quizCounts[courseId] ?? 0) : null,
+          pastPaperCount: pastPaperCountsVerified ? (pastPaperCountsByCode[normalizedCode] ?? 0) : null
         };
       });
 
@@ -1116,6 +1215,9 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
       const totalLessons = courses.reduce((sum: number, course: any) => sum + course.lessonCount, 0);
       const totalFormulas = formulaCountsVerified
         ? courses.reduce((sum: number, course: any) => sum + (course.formulaCount ?? 0), 0)
+        : null;
+      const totalQuizzes = quizCountsVerified
+        ? courses.reduce((sum: number, course: any) => sum + (course.quizCount ?? 0), 0)
         : null;
 
       res.set('Cache-Control', 'private, no-store');
@@ -1132,7 +1234,12 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
             modules: totalModules,
             lessons: totalLessons,
             formulas: totalFormulas,
-            formulasVerified: formulaCountsVerified
+            formulasVerified: formulaCountsVerified,
+            quizzes: totalQuizzes,
+            quizzesVerified: quizCountsVerified,
+            pastPapers: pastPaperCountsVerified ? totalPastPapersCount : null,
+            pastPapersVerified: pastPaperCountsVerified,
+            aiRuntimeVerified
           },
           institution: {
             status: institutionValid ? 'configured' : (institutionResult.available ? 'unconfigured' : 'unavailable'),
@@ -2375,7 +2482,7 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
   app.get('/api/admin/past-papers', verifyAuth, async (req: any, res: any) => {
     try {
       const pool = getPostgresPool();
-      if (!pool) return res.json({ papers: [] });
+      if (!pool) return res.status(503).json({ error: 'Database service unavailable: PostgreSQL is not connected.' });
       const result = await pool.query(
         `SELECT id, course_code, course_title, year, semester, department, questions, data, created_at
          FROM past_papers
@@ -2412,12 +2519,11 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
       const isAdmin = await checkIsAdmin(req.user.uid, req.user.email);
       if (!isAdmin) return res.status(403).json({ error: 'Admin access required' });
       const pool = getPostgresPool();
-      const commissionsDoc = (await getSystemConfigDoc('commissions')) || (await getSystemSettingsDoc('commissions')) || { rate: 0.3 };
-      const commissionRate = typeof commissionsDoc.rate === 'number' ? commissionsDoc.rate : 0.3;
-
       if (!pool) {
-        return res.json({ affiliates: [], payouts: [], commissionRate });
+        return res.status(503).json({ error: 'Affiliates service unavailable: PostgreSQL is not connected.' });
       }
+      const commissionsDoc = (await getSystemConfigDoc('commissions')) || (await getSystemSettingsDoc('commissions'));
+      const commissionRate = typeof commissionsDoc?.rate === 'number' ? commissionsDoc.rate : null;
 
       const [affRes, payRes] = await Promise.all([
         pool.query(`SELECT code, user_id, email, display_name, total_earned, pending_payout, referral_count, bank_details, status, data, created_at FROM affiliates ORDER BY created_at DESC`),
@@ -2930,7 +3036,7 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
       const isAdmin = await checkIsAdmin(req.user.uid, req.user.email);
       if (!isAdmin) return res.status(403).json({ error: 'Admin access required' });
       const pool = getPostgresPool();
-      if (!pool) return res.json({ tickets: [], chats: [] });
+      if (!pool) return res.status(503).json({ error: 'Support service unavailable: PostgreSQL is not connected.' });
 
       const [tRes, cRes] = await Promise.all([
         pool.query(`SELECT id, user_id, user_email, user_name, subject, message, status, created_at FROM support_tickets ORDER BY created_at DESC LIMIT 100`),

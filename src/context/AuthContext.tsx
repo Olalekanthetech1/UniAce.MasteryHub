@@ -177,11 +177,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       let subscription_start_date: string | undefined = firestoreData.subscription_start_date || cachedProfile?.subscription_start_date;
 
       // Fetch accurate quota and authoritative profile from backend without blocking UI
-      const fetchQuota = async (retries = 1, attempt = 1): Promise<UserProfile['role'] | null> => {
+      const fetchQuota = async (retries = 4, attempt = 1): Promise<UserProfile['role'] | null> => {
         try {
           const token = await currentUser.getIdToken();
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 4000);
+          const timeoutId = setTimeout(() => controller.abort(), 10000);
 
           const response = await fetch('/api/user/quota', {
             headers: {
@@ -193,35 +193,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           });
           clearTimeout(timeoutId);
 
-          if (response.ok) {
-            const contentType = response.headers.get('content-type') || '';
-            if (contentType.includes('application/json')) {
-              const data = await response.json();
-              const validRoles: UserProfile['role'][] = ['student', 'admin', 'tutor', 'moderator'];
-              if (typeof data.role !== 'string' || !validRoles.includes(data.role as UserProfile['role']) ||
-                  typeof data.plan !== 'string' || !data.plan.trim() ||
-                  (typeof data.sparks !== 'number' || !Number.isFinite(data.sparks))) {
-                throw new Error('The server returned an incomplete or unverified account quota.');
-              }
-              ai_sparks = data.sparks;
-              unlimited_sparks = data.unlimited === true;
-              plan_type = data.plan as PlanType;
-              if (data.subscription_expiry) subscription_expiry = data.subscription_expiry;
-              if (data.subscription_status) subscription_status = data.subscription_status;
-              if (data.subscription_start_date) subscription_start_date = data.subscription_start_date;
-              if (data.profile && typeof data.profile === 'object') {
-                backendProfile = data.profile;
-              }
-              return data.role as UserProfile['role'];
+          const contentType = (response.headers.get('content-type') || '').toLowerCase();
+          if (response.ok && contentType.includes('application/json')) {
+            const data = await response.json();
+            const validRoles: UserProfile['role'][] = ['student', 'admin', 'tutor', 'moderator'];
+            if (typeof data.role !== 'string' || !validRoles.includes(data.role as UserProfile['role']) ||
+                typeof data.plan !== 'string' || !data.plan.trim() ||
+                (typeof data.sparks !== 'number' || !Number.isFinite(data.sparks))) {
+              throw new Error('The server returned an incomplete or unverified account quota.');
             }
-          } else if (retries > 0) {
-            await new Promise(resolve => setTimeout(resolve, 800));
+            ai_sparks = data.sparks;
+            unlimited_sparks = data.unlimited === true;
+            plan_type = data.plan as PlanType;
+            if (data.subscription_expiry) subscription_expiry = data.subscription_expiry;
+            if (data.subscription_status) subscription_status = data.subscription_status;
+            if (data.subscription_start_date) subscription_start_date = data.subscription_start_date;
+            if (data.profile && typeof data.profile === 'object') {
+              backendProfile = data.profile;
+            }
+            return data.role as UserProfile['role'];
+          }
+
+          if (retries > 0) {
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
             return fetchQuota(retries - 1, attempt + 1);
           }
           return null;
         } catch {
           if (retries > 0) {
-            await new Promise(resolve => setTimeout(resolve, 800));
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
             return fetchQuota(retries - 1, attempt + 1);
           }
           return null;

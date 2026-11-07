@@ -107,7 +107,7 @@ export const SRSService = {
       headers: { 'Authorization': `Bearer ${token}` }
     });
     if (!res.ok) {
-      throw new Error(`Spaced-repetition lookup failed with HTTP ${res.status}.`);
+      throw new Error(res.error || `Spaced-repetition lookup failed with HTTP ${res.status}.`);
     }
     if (!res.data || !Array.isArray(res.data.cards)) {
       throw new Error('Spaced-repetition response did not contain a verified cards array.');
@@ -161,7 +161,7 @@ export const SRSService = {
       headers: { 'Authorization': `Bearer ${token}` }
     });
     if (!res.ok) {
-      throw new Error(`Spaced-repetition review lookup failed with HTTP ${res.status}.`);
+      throw new Error(res.error || `Spaced-repetition review lookup failed with HTTP ${res.status}.`);
     }
     if (!res.data || !Array.isArray(res.data.cards)) {
       throw new Error('Spaced-repetition response did not contain a verified cards array.');

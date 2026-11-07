@@ -15,6 +15,8 @@ export interface MarketingCourse {
   studentVisibility: 'live';
   levelAvailability: 'live';
   formulaCount: number | null;
+  quizCount?: number | null;
+  pastPaperCount?: number | null;
   syllabus: Array<{ id: string; title: string; subTopics: Array<{ id: string; title: string }> }>;
 }
 
@@ -40,6 +42,8 @@ export interface MarketingSnapshotCourse {
   moduleCount: number;
   lessonCount: number;
   formulaCount: number | null;
+  quizCount?: number | null;
+  pastPaperCount?: number | null;
 }
 
 export interface MarketingSnapshot {
@@ -53,6 +57,11 @@ export interface MarketingSnapshot {
     lessons: number;
     formulas: number | null;
     formulasVerified: boolean;
+    quizzes?: number | null;
+    quizzesVerified?: boolean;
+    pastPapers?: number | null;
+    pastPapersVerified?: boolean;
+    aiRuntimeVerified?: boolean;
   };
   institution: {
     status: 'configured' | 'unconfigured' | 'unavailable';
@@ -99,6 +108,8 @@ export function toMarketingCourseMap(snapshot: MarketingSnapshot): Record<string
       studentVisibility: course.studentVisibility,
       levelAvailability: course.levelAvailability,
       formulaCount: course.formulaCount,
+      quizCount: course.quizCount ?? null,
+      pastPaperCount: course.pastPaperCount ?? null,
       syllabus: course.modules.map((module) => ({
         id: module.id,
         title: module.title,
@@ -159,7 +170,9 @@ export function isMarketingSnapshot(value: unknown): value is MarketingSnapshot 
       !Number.isInteger(course.moduleCount) ||
       course.moduleCount !== course.modules.length ||
       !Number.isInteger(course.lessonCount) ||
-      !(course.formulaCount === null || (Number.isInteger(course.formulaCount) && course.formulaCount >= 0))
+      !(course.formulaCount === null || (Number.isInteger(course.formulaCount) && course.formulaCount >= 0)) ||
+      !(course.quizCount === undefined || course.quizCount === null || (Number.isInteger(course.quizCount) && course.quizCount >= 0)) ||
+      !(course.pastPaperCount === undefined || course.pastPaperCount === null || (Number.isInteger(course.pastPaperCount) && course.pastPaperCount >= 0))
     ) return false;
 
     return course.modules.every((module: any) =>
