@@ -25,16 +25,26 @@ mermaid.initialize({
   startOnLoad: false,
   theme: 'default',
   securityLevel: 'loose',
-  fontFamily: 'inherit',
+  fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  htmlLabels: false,
+  flowchart: {
+    htmlLabels: false,
+    curve: 'basis',
+    padding: 14,
+    useMaxWidth: true
+  },
   suppressErrorRendering: true,
   themeVariables: {
     fontSize: '14px',
-    primaryColor: '#6366f1',
-    primaryTextColor: '#1e293b',
-    primaryBorderColor: '#cbd5e1',
-    lineColor: '#64748b',
+    primaryColor: '#eef2ff',
+    primaryTextColor: '#0f172a',
+    primaryBorderColor: '#6366f1',
+    lineColor: '#475569',
     secondaryColor: '#f8fafc',
-    tertiaryColor: '#ffffff'
+    tertiaryColor: '#ffffff',
+    nodeTextColor: '#0f172a',
+    mainBkg: '#eef2ff',
+    nodeBorder: '#6366f1'
   }
 });
 
@@ -179,7 +189,8 @@ export default function MermaidViewer({ chart, aiRepairFn }: MermaidViewerProps)
 
         const cleanSvg = DOMPurify.sanitize(svg, {
           USE_PROFILES: { svg: true, svgFilters: true, html: true },
-          ADD_TAGS: ['foreignObject']
+          ADD_TAGS: ['foreignObject', 'div', 'span', 'p', 'br', 'b', 'i', 'strong', 'em', 'text', 'tspan'],
+          ADD_ATTR: ['style', 'class', 'xmlns', 'dominant-baseline', 'text-anchor', 'dy', 'dx', 'x', 'y', 'transform']
         });
 
         // Guard against any residual error graphic output
@@ -285,10 +296,10 @@ export default function MermaidViewer({ chart, aiRepairFn }: MermaidViewerProps)
 
   return (
     <div className="my-6 space-y-4">
-      {/* Isolated React-managed offscreen host for Mermaid SVG measurement */}
+      {/* Isolated React-managed offscreen host with non-zero dimensions for accurate Mermaid SVG text measurement */}
       <div
         ref={sandboxRef}
-        className="sr-only pointer-events-none overflow-hidden w-0 h-0"
+        className="fixed -left-[9999px] top-0 w-[1024px] h-[768px] opacity-0 pointer-events-none overflow-hidden"
         aria-hidden="true"
       />
 

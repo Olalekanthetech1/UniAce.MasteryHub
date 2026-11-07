@@ -306,8 +306,9 @@ export function convertLatexLabelToReadableText(label: string): { text: string; 
     .replace(/\\\(([\s\S]+?)\\\)/g, '$1')
     .replace(/\\\[([\s\S]+?)\\\]/g, '$1');
 
-  // Unwrap \text{...}, \mathrm{...}, \mathbf{...}
-  working = working.replace(/\\(?:text|mathrm|mathbf|mathit|mathsf|operatorname)\s*\{([^{}]*)\}/g, '$1');
+  // Unwrap \text{...}, \mathrm{...}, \mathbf{...}, \vec{...}, \hat{...}
+  working = working.replace(/\\(?:text|mathrm|mathbf|mathit|mathsf|operatorname|vec|hat|bar)\s*\{([^{}]*)\}/g, '$1');
+  working = working.replace(/\\\|/g, '||');
 
   // Convert \frac{a}{b} -> (a)/(b) or a/b when simple
   working = working.replace(/\\(?:d|t)?frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}/g, (_m, num: string, den: string) => {
@@ -340,13 +341,22 @@ export function convertLatexLabelToReadableText(label: string): { text: string; 
     return `^(${rawExp})`;
   });
 
-  // Convert simple subscripts _{...} or _0 when all characters map cleanly to Unicode subscripts
-  working = working.replace(/_\{([^{}]+)\}|_([0-9a-z])/g, (match, braced?: string, single?: string) => {
+  // Convert simple subscripts _{...} or _0 when all characters map cleanly to Unicode subscripts.
+  // Because Unicode lacks subscript 'y' and 'z', keep single-letter coordinate subscripts (_x, _y, _z)
+  // consistent rather than producing mixed Aₓ, A_(y), A_(z).
+  const hasYOrZSubscript = /_(?:\{[yz]\}|[yz]\b)/i.test(working);
+  working = working.replace(/_\{([^{}]+)\}|_([0-9a-zA-Z])/g, (match, braced?: string, single?: string) => {
     const rawSub = (braced ?? single ?? '').trim();
     if (!rawSub) return match;
+    if (hasYOrZSubscript && /^[xyzXYZ]$/.test(rawSub)) {
+      return `_${rawSub}`;
+    }
     const chars = Array.from(rawSub);
     if (chars.every((ch) => Boolean(SUBSCRIPT_CHAR_MAP[ch]))) {
       return chars.map((ch) => SUBSCRIPT_CHAR_MAP[ch]).join('');
+    }
+    if (/^[a-zA-Z0-9]$/.test(rawSub)) {
+      return `_${rawSub}`;
     }
     return `_(${rawSub})`;
   });

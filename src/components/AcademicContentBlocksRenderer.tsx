@@ -6,11 +6,45 @@ import {
   type DynamicStructuredBlock
 } from '../shared/academicContentBlocks';
 import type { StudentInstructionalContent } from '../shared/courseSchemas';
+import { asDisplayMath, ensureMathDelimiters } from '../shared/mathText';
 import { serializeStructuredDiagramToMermaid } from '../services/mermaidRepairService';
 import MarkdownRenderer from './MarkdownRenderer';
 import MermaidViewer from './renderers/MermaidViewer';
 import ParameterizedSimulation from './renderers/ParameterizedSimulation';
 import { KnowledgeCheckCard } from './MasteryLessonPanel';
+
+/**
+ * Normalizes a structured mathematical symbol, value, or expression so bare
+ * subscripts/superscripts/LaTeX commands (such as `F_x`, `\|\mathbf{F}\| = 13 \text{ N}`,
+ * `|A|^2`, or `l^2 + m^2 + n^2 = 1`) are wrapped in `$ ... $` for KaTeX rendering.
+ */
+function formatMathAwareText(raw: string | undefined | null, forceMathForSymbol = false): string {
+  if (typeof raw !== 'string' || !raw.trim()) return '';
+  const trimmed = raw.trim();
+  if (forceMathForSymbol && !trimmed.includes('$') && !trimmed.includes('\\(') && !trimmed.includes('\\[')) {
+    // Symbols like F_x, A_y, \alpha, r, |F| should render in math mode when short symbolic tokens
+    if (/^(?:\\[A-Za-z]+|[A-Za-z](?:_[A-Za-z0-9]+|_\([A-Za-z0-9]+\)|_\{[^{}]+\})?(?:\^[A-Za-z0-9]+|\^\{[^{}]+\})?|\|[A-Za-z0-9\\{}]+\|)$/.test(trimmed)) {
+      return `$${trimmed}$`;
+    }
+  }
+  return ensureMathDelimiters(trimmed);
+}
+
+/**
+ * Checks whether the finalAnswer.unit is already represented inside finalAnswer.value
+ * so we do not duplicate trailing unit text right after `\text{ N}` or similar.
+ */
+function isUnitAlreadyInValue(value: string, unit?: string): boolean {
+  if (!unit || !unit.trim()) return true;
+  const cleanUnit = unit.trim();
+  const cleanVal = (value || '').trim();
+  if (!cleanVal) return false;
+  if (cleanVal.toLowerCase().includes(cleanUnit.toLowerCase())) return true;
+  // Also check if `\text{<unit>}` or `\mathrm{<unit>}` is already present in value
+  const escapedUnit = cleanUnit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const latexUnitRegex = new RegExp(`\\\\(?:text|mathrm)\\s*\\{\\s*${escapedUnit}\\s*\\}`, 'i');
+  return latexUnitRegex.test(cleanVal);
+}
 
 interface AcademicContentBlocksRendererProps {
   collection: AcademicContentBlockCollection;
@@ -59,7 +93,7 @@ function renderStructuredExtensions(block: {
               <h4 className="text-xs font-bold uppercase tracking-wide text-sky-800 dark:text-sky-300">
                 {section.heading}
               </h4>
-              <MarkdownRenderer content={section.content} />
+              <MarkdownRenderer content={formatMathAwareText(section.content)} />
             </div>
           ))}
         </div>
@@ -71,7 +105,7 @@ function renderStructuredExtensions(block: {
             <div key={idx} className="rounded-lg border border-zinc-200/80 dark:border-zinc-800 p-3 space-y-1">
               <div className="flex items-center justify-between gap-2">
                 <dt className="text-xs font-bold uppercase tracking-wide text-zinc-700 dark:text-zinc-200">
-                  {item.label}
+                  <MarkdownRenderer content={formatMathAwareText(item.label)} inline />
                 </dt>
                 {item.tag && (
                   <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-200">
@@ -80,7 +114,7 @@ function renderStructuredExtensions(block: {
                 )}
               </div>
               <dd className="text-sm text-zinc-600 dark:text-zinc-300">
-                <MarkdownRenderer content={item.detail} />
+                <MarkdownRenderer content={formatMathAwareText(item.detail)} />
               </dd>
             </div>
           ))}
@@ -99,7 +133,7 @@ function renderStructuredExtensions(block: {
               <tr className="bg-zinc-100/80 dark:bg-zinc-800/70">
                 {block.table.headers.map((header, hIdx) => (
                   <th key={hIdx} className="px-3 py-2 font-semibold text-zinc-800 dark:text-zinc-200 border-b border-zinc-200 dark:border-zinc-700">
-                    <MarkdownRenderer content={header} inline />
+                    <MarkdownRenderer content={formatMathAwareText(header)} inline />
                   </th>
                 ))}
               </tr>
@@ -109,7 +143,7 @@ function renderStructuredExtensions(block: {
                 <tr key={rIdx}>
                   {row.map((cell, cIdx) => (
                     <td key={cIdx} className="px-3 py-2 text-zinc-700 dark:text-zinc-300 align-top">
-                      <MarkdownRenderer content={cell} inline />
+                      <MarkdownRenderer content={formatMathAwareText(cell)} inline />
                     </td>
                   ))}
                 </tr>
@@ -122,7 +156,7 @@ function renderStructuredExtensions(block: {
       {block.equationsLatex && block.equationsLatex.length > 0 && (
         <div className="space-y-2">
           {block.equationsLatex.map((eq, idx) => (
-            <MarkdownRenderer key={idx} content={`$$${eq}$$`} />
+            <MarkdownRenderer key={idx} content={asDisplayMath(eq)} />
           ))}
         </div>
       )}
@@ -133,7 +167,7 @@ function renderStructuredExtensions(block: {
 
       {block.callout && (
         <div className="rounded-lg border-l-4 border-sky-500 bg-sky-50/60 dark:bg-sky-950/20 p-3 text-sm text-zinc-700 dark:text-zinc-300">
-          <MarkdownRenderer content={block.callout} />
+          <MarkdownRenderer content={formatMathAwareText(block.callout)} />
         </div>
       )}
 
@@ -157,10 +191,10 @@ function renderDynamicStructuredBlock(block: DynamicStructuredBlock, label: stri
       <BlockHeading title={block.title} label={label} />
       {block.summary && (
         <div className="text-sm text-zinc-700 dark:text-zinc-300">
-          <MarkdownRenderer content={block.summary} />
+          <MarkdownRenderer content={formatMathAwareText(block.summary)} />
         </div>
       )}
-      {block.body && <MarkdownRenderer content={block.body} />}
+      {block.body && <MarkdownRenderer content={formatMathAwareText(block.body)} />}
       {renderStructuredExtensions(block)}
     </section>
   );
@@ -177,13 +211,13 @@ function renderBlock(
       return (
         <section key={block.id} className="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 sm:p-5 space-y-3">
           <BlockHeading title={block.title} label={label} />
-          <MarkdownRenderer content={block.body} />
+          <MarkdownRenderer content={formatMathAwareText(block.body)} />
           {block.keyTakeaways && block.keyTakeaways.length > 0 && (
             <div className="rounded-lg bg-zinc-50 dark:bg-zinc-900/60 p-3 space-y-1.5">
               <h4 className="text-xs font-bold uppercase tracking-wide text-zinc-600 dark:text-zinc-400">Key Takeaways</h4>
               <ul className="list-disc pl-5 space-y-1 text-sm text-zinc-700 dark:text-zinc-300">
                 {block.keyTakeaways.map((item, idx) => (
-                  <li key={idx}><MarkdownRenderer content={item} inline /></li>
+                  <li key={idx}><MarkdownRenderer content={formatMathAwareText(item)} inline /></li>
                 ))}
               </ul>
             </div>
@@ -196,12 +230,12 @@ function renderBlock(
       return (
         <section key={block.id} className="rounded-xl border border-violet-200 dark:border-violet-900/70 p-4 sm:p-5 space-y-4">
           <BlockHeading title={block.title} label={label} />
-          <MarkdownRenderer content={block.introduction} />
+          <MarkdownRenderer content={formatMathAwareText(block.introduction)} />
           {block.assumptions.length > 0 && (
             <div className="rounded-lg bg-violet-50/70 dark:bg-violet-950/20 p-3">
               <h4 className="text-xs font-bold uppercase tracking-wide text-violet-800 dark:text-violet-200 mb-2">Assumptions & Premises</h4>
               <ul className="list-disc pl-5 space-y-1 text-sm text-zinc-700 dark:text-zinc-300">
-                {block.assumptions.map((assumption, index) => <li key={index}><MarkdownRenderer content={assumption} inline /></li>)}
+                {block.assumptions.map((assumption, index) => <li key={index}><MarkdownRenderer content={formatMathAwareText(assumption)} inline /></li>)}
               </ul>
             </div>
           )}
@@ -212,14 +246,14 @@ function renderBlock(
                   {index + 1}
                 </span>
                 <div className="min-w-0 flex-1 space-y-2">
-                  <MarkdownRenderer content={step.explanation} />
-                  {step.equationLatex && <MarkdownRenderer content={`$$${step.equationLatex}$$`} />}
+                  <MarkdownRenderer content={formatMathAwareText(step.explanation)} />
+                  {step.equationLatex && <MarkdownRenderer content={asDisplayMath(step.equationLatex)} />}
                   {step.codeSnippet && (
                     <MarkdownRenderer content={`\`\`\`${step.language || ''}\n${step.codeSnippet}\n\`\`\``} />
                   )}
                   {step.evidenceOrCitation && (
                     <div className="text-xs italic text-violet-700 dark:text-violet-300">
-                      Authority / Evidence: <MarkdownRenderer content={step.evidenceOrCitation} inline />
+                      Authority / Evidence: <MarkdownRenderer content={formatMathAwareText(step.evidenceOrCitation)} inline />
                     </div>
                   )}
                 </div>
@@ -228,7 +262,7 @@ function renderBlock(
           </ol>
           <div className="border-t border-violet-200 dark:border-violet-900 pt-3">
             <h4 className="text-xs font-bold uppercase tracking-wide text-violet-800 dark:text-violet-200 mb-1">Conclusion</h4>
-            <MarkdownRenderer content={block.conclusion} />
+            <MarkdownRenderer content={formatMathAwareText(block.conclusion)} />
           </div>
         </section>
       );
@@ -238,7 +272,7 @@ function renderBlock(
         return (
           <section key={block.id} className="rounded-xl border border-emerald-200 dark:border-emerald-900/70 p-4 sm:p-5 space-y-3">
             <BlockHeading title={block.title} label={label} />
-            <MarkdownRenderer content={block.description} />
+            <MarkdownRenderer content={formatMathAwareText(block.description)} />
             <MermaidViewer chart={serializeStructuredDiagramToMermaid(block.diagram)} />
           </section>
         );
@@ -246,24 +280,43 @@ function renderBlock(
         return <UnavailableBlock key={block.id} title={block.title} reason="This diagram specification failed validation. The surrounding lesson content remains available." />;
       }
 
-    case 'worked_example':
+    case 'worked_example': {
+      const showSeparateFinalUnit = Boolean(
+        block.finalAnswer.unit &&
+        block.finalAnswer.unit.trim() &&
+        !isUnitAlreadyInValue(block.finalAnswer.value, block.finalAnswer.unit)
+      );
       return (
         <section key={block.id} className="rounded-xl border border-amber-200 dark:border-amber-900/70 p-4 sm:p-5 space-y-4">
           <BlockHeading title={block.title} label={label} />
           <div>
             <h4 className="text-xs font-bold uppercase tracking-wide text-amber-800 dark:text-amber-200 mb-1">Problem / Scenario</h4>
-            <MarkdownRenderer content={block.problem} />
+            <MarkdownRenderer content={formatMathAwareText(block.problem)} />
           </div>
           {block.givens.length > 0 && (
             <div className="rounded-lg bg-amber-50/70 dark:bg-amber-950/20 p-3">
               <h4 className="text-xs font-bold uppercase tracking-wide text-amber-800 dark:text-amber-200 mb-2">Given information</h4>
-              <dl className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {block.givens.map((given, index) => (
-                  <div key={index} className="flex justify-between gap-3 text-sm">
-                    <dt className="font-mono text-zinc-600 dark:text-zinc-300">{given.symbol}</dt>
-                    <dd className="font-mono text-zinc-900 dark:text-zinc-100">{given.value}{given.unit ? ` ${given.unit}` : ''}</dd>
-                  </div>
-                ))}
+              <dl className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                {block.givens.map((given, index) => {
+                  const formattedSymbol = formatMathAwareText(given.symbol, true);
+                  const rawValWithUnit = given.unit && !isUnitAlreadyInValue(given.value, given.unit)
+                    ? `${given.value} ${given.unit}`
+                    : given.value;
+                  const formattedValue = formatMathAwareText(rawValWithUnit, false);
+                  return (
+                    <div
+                      key={index}
+                      className="flex items-center justify-between gap-3 rounded-lg border border-amber-200/80 dark:border-amber-800/50 bg-white/80 dark:bg-zinc-900/60 px-3 py-1.5 text-sm"
+                    >
+                      <dt className="font-semibold text-zinc-700 dark:text-zinc-200 shrink-0">
+                        <MarkdownRenderer content={formattedSymbol} inline />
+                      </dt>
+                      <dd className="font-medium text-zinc-900 dark:text-zinc-100 text-right">
+                        <MarkdownRenderer content={formattedValue} inline />
+                      </dd>
+                    </div>
+                  );
+                })}
               </dl>
             </div>
           )}
@@ -274,7 +327,7 @@ function renderBlock(
                 {block.contextFactors.map((factor, index) => (
                   <div key={index} className="text-sm">
                     <dt className="font-semibold text-zinc-800 dark:text-zinc-200 inline">{factor.label}: </dt>
-                    <dd className="text-zinc-700 dark:text-zinc-300 inline"><MarkdownRenderer content={factor.detail} inline /></dd>
+                    <dd className="text-zinc-700 dark:text-zinc-300 inline"><MarkdownRenderer content={formatMathAwareText(factor.detail)} inline /></dd>
                   </div>
                 ))}
               </dl>
@@ -282,13 +335,13 @@ function renderBlock(
           )}
           <div>
             <h4 className="text-xs font-bold uppercase tracking-wide text-amber-800 dark:text-amber-200 mb-1">Find / Objective</h4>
-            <MarkdownRenderer content={block.target} />
+            <MarkdownRenderer content={formatMathAwareText(block.target)} />
           </div>
           {block.assumptions.length > 0 && (
             <div>
               <h4 className="text-xs font-bold uppercase tracking-wide text-zinc-500 mb-1">Assumptions & Scope</h4>
               <ul className="list-disc pl-5 space-y-1 text-sm text-zinc-700 dark:text-zinc-300">
-                {block.assumptions.map((assumption, index) => <li key={index}><MarkdownRenderer content={assumption} inline /></li>)}
+                {block.assumptions.map((assumption, index) => <li key={index}><MarkdownRenderer content={formatMathAwareText(assumption)} inline /></li>)}
               </ul>
             </div>
           )}
@@ -297,27 +350,41 @@ function renderBlock(
               <li key={index} className="flex gap-3">
                 <span className="w-7 h-7 rounded-full bg-amber-100 dark:bg-amber-900/50 text-amber-800 dark:text-amber-200 text-xs font-bold flex items-center justify-center shrink-0">{index + 1}</span>
                 <div className="min-w-0 flex-1 space-y-2">
-                  <MarkdownRenderer content={step.explanation} />
-                  {step.equationLatex && <MarkdownRenderer content={`$$${step.equationLatex}$$`} />}
+                  <MarkdownRenderer content={formatMathAwareText(step.explanation)} />
+                  {step.equationLatex && <MarkdownRenderer content={asDisplayMath(step.equationLatex)} />}
                   {step.codeSnippet && (
                     <MarkdownRenderer content={`\`\`\`${step.language || ''}\n${step.codeSnippet}\n\`\`\``} />
                   )}
                   {step.evidenceOrCitation && (
                     <div className="text-xs italic text-amber-800 dark:text-amber-300">
-                      Authority / Evidence: <MarkdownRenderer content={step.evidenceOrCitation} inline />
+                      Authority / Evidence: <MarkdownRenderer content={formatMathAwareText(step.evidenceOrCitation)} inline />
                     </div>
                   )}
                 </div>
               </li>
             ))}
           </ol>
-          <div className="rounded-lg border border-emerald-200 dark:border-emerald-900/70 bg-emerald-50/50 dark:bg-emerald-950/10 p-3 space-y-2">
-            <h4 className="text-xs font-bold uppercase tracking-wide text-emerald-800 dark:text-emerald-200">Final answer / Resolution</h4>
-            <p className="font-mono font-semibold text-zinc-900 dark:text-zinc-100">{block.finalAnswer.value}{block.finalAnswer.unit ? ` ${block.finalAnswer.unit}` : ''}</p>
-            <div className="text-sm text-zinc-700 dark:text-zinc-300"><strong>Verification:</strong> <MarkdownRenderer content={block.verification} inline /></div>
+          <div className="rounded-lg border border-emerald-200 dark:border-emerald-900/70 bg-emerald-50/50 dark:bg-emerald-950/10 p-3.5 space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h4 className="text-xs font-bold uppercase tracking-wide text-emerald-800 dark:text-emerald-200">
+                Final answer / Resolution
+              </h4>
+              {showSeparateFinalUnit && (
+                <span className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-emerald-100/80 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-200">
+                  Unit: <MarkdownRenderer content={formatMathAwareText(block.finalAnswer.unit)} inline />
+                </span>
+              )}
+            </div>
+            <div className="text-base font-semibold text-zinc-900 dark:text-zinc-100 overflow-x-auto py-0.5">
+              <MarkdownRenderer content={formatMathAwareText(block.finalAnswer.value)} inline />
+            </div>
+            <div className="text-sm text-zinc-700 dark:text-zinc-300 border-t border-emerald-200/60 dark:border-emerald-900/50 pt-2">
+              <strong>Verification:</strong> <MarkdownRenderer content={formatMathAwareText(block.verification)} inline />
+            </div>
           </div>
         </section>
       );
+    }
 
     case 'interactive_simulation':
       return <ParameterizedSimulation key={block.id} block={block} />;
