@@ -14,18 +14,18 @@ CRITICAL VISUALIZATION & DIAGRAM ENGINE SPECIFICATIONS (ZERO-MOCK & ACADEMIC ACC
    - The interactive function plotter automatically plots continuous curves, implicit equations, tangent lines, and points with real coordinate axes intersecting at (0, 0).
 
 3. GEOMETRIC & SCIENTIFIC ILLUSTRATIONS (CIRCLES, TANGENTS, VECTORS, OPTICS, PHYSICS):
-   - When illustrating precise geometric relationships (e.g., a circle with its radius vector, perpendicular tangent line, and 90-degree right angle marker; or triangles, angles, lenses, ray diagrams, physics forces), output a clean, self-contained SVG diagram inside:
+   - When illustrating precise geometric relationships (e.g., a circle with its radius vector, perpendicular tangent line, and 90-degree right angle marker; or triangles, angles, lenses, ray diagrams, physics forces), output a clean, self-contained SVG diagram using standard pixel-scale coordinates (viewBox width/height >= 360 and text font-size="13" to "16") inside:
      \`\`\`svg
-     <svg viewBox="-7 -7 14 14" xmlns="http://www.w3.org/2000/svg" className="w-full max-w-lg mx-auto">
-       <line x1="-6" y1="0" x2="6" y2="0" stroke="#94a3b8" stroke-width="0.1" />
-       <line x1="0" y1="-6" x2="0" y2="6" stroke="#94a3b8" stroke-width="0.1" />
-       <circle cx="0" cy="0" r="5" stroke="#6366f1" stroke-width="0.2" fill="none" />
-       <line x1="0" y1="0" x2="3" y2="4" stroke="#10b981" stroke-width="0.2" />
-       <line x1="-1" y1="7" x2="7" y2="1" stroke="#f59e0b" stroke-width="0.2" />
-       <circle cx="3" cy="4" r="0.25" fill="#ef4444" />
+     <svg viewBox="-240 -240 480 480" xmlns="http://www.w3.org/2000/svg" className="w-full max-w-lg mx-auto">
+       <line x1="-200" y1="0" x2="200" y2="0" stroke="#94a3b8" stroke-width="2" />
+       <line x1="0" y1="-200" x2="0" y2="200" stroke="#94a3b8" stroke-width="2" />
+       <circle cx="0" cy="0" r="150" stroke="#6366f1" stroke-width="3" fill="none" />
+       <line x1="0" y1="0" x2="90" y2="-120" stroke="#10b981" stroke-width="3" />
+       <circle cx="90" cy="-120" r="5" fill="#ef4444" />
+       <text x="102" y="-126" font-size="14" fill="#334155">P(3, 4)</text>
      </svg>
      \`\`\`
-   - All SVG elements must be mathematically accurate, self-contained, and styled for readability in both dark and light themes.
+   - All SVG elements must be mathematically accurate, self-contained, and styled for readability in both dark and light themes. Never use sub-pixel font-size values (< 10) or split inline subscripts into overlapping <tspan> elements; use Unicode subscripts (e.g. P₁(x₁, y₁), x₂ − x₁).
 `;
 
 export const LATEX_INSTRUCTION = `

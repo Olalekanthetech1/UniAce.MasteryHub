@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo, useId } from 'react';
 import mermaid from 'mermaid';
+import katex from 'katex';
 import DOMPurify from 'dompurify';
 import {
   Copy,
@@ -26,11 +27,14 @@ mermaid.initialize({
   theme: 'default',
   securityLevel: 'loose',
   fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-  htmlLabels: false,
+  htmlLabels: true,
   flowchart: {
-    htmlLabels: false,
+    htmlLabels: true,
+    wrappingWidth: 380,
+    nodeSpacing: 48,
+    rankSpacing: 52,
     curve: 'basis',
-    padding: 14,
+    padding: 16,
     useMaxWidth: true
   },
   suppressErrorRendering: true,
@@ -47,6 +51,419 @@ mermaid.initialize({
     nodeBorder: '#6366f1'
   }
 });
+
+const UNICODE_TO_LATEX_MAP: ReadonlyArray<readonly [RegExp, string]> = [
+  [/α/g, '\\alpha '],
+  [/β/g, '\\beta '],
+  [/γ/g, '\\gamma '],
+  [/δ/g, '\\delta '],
+  [/ε/g, '\\varepsilon '],
+  [/ζ/g, '\\zeta '],
+  [/η/g, '\\eta '],
+  [/θ/g, '\\theta '],
+  [/κ/g, '\\kappa '],
+  [/λ/g, '\\lambda '],
+  [/μ/g, '\\mu '],
+  [/ν/g, '\\nu '],
+  [/ξ/g, '\\xi '],
+  [/π/g, '\\pi '],
+  [/ρ/g, '\\rho '],
+  [/σ/g, '\\sigma '],
+  [/τ/g, '\\tau '],
+  [/υ/g, '\\upsilon '],
+  [/φ/g, '\\phi '],
+  [/χ/g, '\\chi '],
+  [/ψ/g, '\\psi '],
+  [/ω/g, '\\omega '],
+  [/Γ/g, '\\Gamma '],
+  [/Δ/g, '\\Delta '],
+  [/Θ/g, '\\Theta '],
+  [/Λ/g, '\\Lambda '],
+  [/Ξ/g, '\\Xi '],
+  [/Π/g, '\\Pi '],
+  [/Σ/g, '\\Sigma '],
+  [/Φ/g, '\\Phi '],
+  [/Ψ/g, '\\Psi '],
+  [/Ω/g, '\\Omega '],
+  [/∂/g, '\\partial '],
+  [/∇/g, '\\nabla '],
+  [/∞/g, '\\infty '],
+  [/±/g, '\\pm '],
+  [/∓/g, '\\mp '],
+  [/×/g, '\\times '],
+  [/÷/g, '\\div '],
+  [/·/g, '\\cdot '],
+  [/≈/g, '\\approx '],
+  [/≠/g, '\\neq '],
+  [/≡/g, '\\equiv '],
+  [/≤/g, '\\leq '],
+  [/≥/g, '\\geq '],
+  [/∈/g, '\\in '],
+  [/∉/g, '\\notin '],
+  [/⊂/g, '\\subset '],
+  [/⊆/g, '\\subseteq '],
+  [/∪/g, '\\cup '],
+  [/∩/g, '\\cap '],
+  [/∀/g, '\\forall '],
+  [/∃/g, '\\exists '],
+  [/→/g, '\\to '],
+  [/←/g, '\\leftarrow '],
+  [/⇒/g, '\\implies '],
+  [/⇔/g, '\\iff '],
+  [/∫/g, '\\int '],
+  [/∑/g, '\\sum '],
+  [/∏/g, '\\prod '],
+  [/∝/g, '\\propto '],
+  [/½/g, '\\frac{1}{2}'],
+  [/⅓/g, '\\frac{1}{3}'],
+  [/⅔/g, '\\frac{2}{3}'],
+  [/¼/g, '\\frac{1}{4}'],
+  [/¾/g, '\\frac{3}{4}']
+];
+
+const UNICODE_SUP_MAP: Record<string, string> = {
+  '⁰': '0', '¹': '1', '²': '2', '³': '3', '⁴': '4',
+  '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9',
+  '⁺': '+', '⁻': '-', '⁼': '=', '⁽': '(', '⁾': ')',
+  'ⁿ': 'n', 'ⁱ': 'i'
+};
+
+const UNICODE_SUB_MAP: Record<string, string> = {
+  '₀': '0', '₁': '1', '₂': '2', '₃': '3', '₄': '4',
+  '₅': '5', '₆': '6', '₇': '7', '₈': '8', '₉': '9',
+  '₊': '+', '₋': '-', '₌': '=', '₍': '(', '₎': ')',
+  'ₐ': 'a', 'ₑ': 'e', 'ᵢ': 'i', 'ⱼ': 'j', 'ₖ': 'k',
+  'ₘ': 'm', 'ₙ': 'n', 'ₒ': 'o', 'ₚ': 'p', 'ᵣ': 'r',
+  'ₛ': 's', 'ₜ': 't', 'ᵤ': 'u', 'ᵥ': 'v', 'ₓ': 'x'
+};
+
+const RESERVED_MATH_FUNCTIONS = new Set([
+  'sin', 'cos', 'tan', 'cot', 'sec', 'csc',
+  'arcsin', 'arccos', 'arctan', 'sinh', 'cosh', 'tanh',
+  'ln', 'log', 'exp', 'det', 'lim', 'max', 'min',
+  'mod', 'gcd', 'lcm', 'sup', 'inf', 'arg', 'deg', 'dim', 'ker', 'rank'
+]);
+
+/**
+ * Replaces balanced parenthesized or braced radical calls (such as `sqrt((x2 - x1)^2 + (y2 - y1)^2)`
+ * or `√(Ax² + Ay² + Az²)`) with `\sqrt{...}` at arbitrary nesting depth.
+ */
+function replaceSqrtCallsWithLatex(input: string): string {
+  let result = input;
+  const headRegex = /(?:\\sqrt\b|\bsqrt|√)\s*\(/gi;
+  let guard = 0;
+  while (guard++ < 25) {
+    headRegex.lastIndex = 0;
+    const match = headRegex.exec(result);
+    if (!match) break;
+    const startIdx = match.index;
+    const openIdx = startIdx + match[0].length - 1;
+    if (result[openIdx] !== '(') break;
+    let depth = 1;
+    let cursor = openIdx + 1;
+    while (cursor < result.length && depth > 0) {
+      if (result[cursor] === '(') depth += 1;
+      else if (result[cursor] === ')') depth -= 1;
+      cursor += 1;
+    }
+    if (depth !== 0) break;
+    const inner = result.slice(openIdx + 1, cursor - 1).trim();
+    result = `${result.slice(0, startIdx)}\\sqrt{${inner}}${result.slice(cursor)}`;
+  }
+  result = result.replace(/√([A-Za-z0-9_^{}]+)/g, '\\sqrt{$1}');
+  return result;
+}
+
+function convertDiagramFormulaToLatex(rawExpr: string, isVectorContext = false): string {
+  let expr = rawExpr.trim();
+
+  // 1. Convert shorthand coordinate/index variables (e.g. Ax, Ay, Az, Fx, vx, x1, y2) inside math formulas
+  expr = expr.replace(/\b([A-Za-z])([xyz])(?=(?:[²³⁴0-9_\s+\-*/^=),]|$))/g, (full, base: string, axis: string) => {
+    const tokenLower = `${base}${axis}`.toLowerCase();
+    if (tokenLower === 'by' || tokenLower === 'my' || tokenLower === 'ox' || tokenLower === 'ex') {
+      // Only treat 'by'/'ex' as subscripted if uppercase Base (e.g., B_y, E_x)
+      if (base === base.toLowerCase()) return full;
+    }
+    return `${base}_${axis}`;
+  });
+  expr = expr.replace(/\b([A-Za-z])([0-9]+)\b/g, '$1_{$2}');
+
+  // 2. Convert Unicode superscripts and subscripts to standard LaTeX ^{...} and _{...}
+  expr = expr.replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿⁱ]+/g, (seq) => {
+    const mapped = Array.from(seq).map((ch) => UNICODE_SUP_MAP[ch] || ch).join('');
+    return mapped.length === 1 ? `^${mapped}` : `^{${mapped}}`;
+  });
+  expr = expr.replace(/[₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑᵢⱼₖₘₙₒₚᵣₛₜᵤᵥₓ]+/g, (seq) => {
+    const mapped = Array.from(seq).map((ch) => UNICODE_SUB_MAP[ch] || ch).join('');
+    return mapped.length === 1 ? `_${mapped}` : `_{${mapped}}`;
+  });
+
+  // 3. Convert nested sqrt(...) / √(...) to \sqrt{...}
+  expr = replaceSqrtCallsWithLatex(expr);
+
+  // 4. Prefix standard mathematical function identifiers with backslash
+  expr = expr.replace(/(?<!\\)\b([a-zA-Z]+)\b/g, (word) => {
+    return RESERVED_MATH_FUNCTIONS.has(word) ? `\\${word}` : word;
+  });
+
+  // 5. Convert Unicode Greek/calculus/set/operator symbols to LaTeX commands
+  for (const [pattern, replacement] of UNICODE_TO_LATEX_MAP) {
+    expr = expr.replace(pattern, replacement);
+  }
+
+  // 6. Format unit vectors (i, j, k) and vector magnitude norms cleanly
+  if (/_[xyz]\s+[ijk]\b/.test(expr)) {
+    expr = expr.replace(/(_[xyz])\s+([ijk])\b/g, '$1\\mathbf{$2}');
+    isVectorContext = true;
+  }
+  if (isVectorContext) {
+    expr = expr.replace(/^([A-Z])(?=\s*=)/, '\\mathbf{$1}');
+    expr = expr.replace(/\|\|([A-Za-z])\|\|/g, '\\|\\mathbf{$1}\\|');
+    expr = expr.replace(/\|([A-Z])\|/g, '|\\mathbf{$1}|');
+  }
+
+  return expr.replace(/\s+/g, ' ').trim();
+}
+
+function escapeHtmlText(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * Formats a single line of a diagram label into HTML + KaTeX.
+ * Supports explicit $...$ delimiters, "Title: Equation", "Title Equation", "Title (math tuple)", and pure equations.
+ */
+function renderSingleDiagramLineWithKaTeX(rawLine: string): { html: string; upgraded: boolean } {
+  const trimmed = (rawLine || '').trim();
+  if (!trimmed) return { html: '', upgraded: false };
+
+  // 0. If the line already contains explicit $...$ inline math delimiters
+  if (/\$[^$\n]+\$/.test(trimmed)) {
+    let anyMath = false;
+    const parts = trimmed.split(/(\$[^$\n]+\$)/g);
+    const html = parts
+      .map((part, idx) => {
+        if (idx % 2 === 1) {
+          anyMath = true;
+          const inner = part.slice(1, -1).trim();
+          return katex.renderToString(convertDiagramFormulaToLatex(inner), {
+            throwOnError: false,
+            output: 'html'
+          });
+        }
+        return escapeHtmlText(part);
+      })
+      .join('');
+    return { html, upgraded: anyMath };
+  }
+
+  const isVectorLabel =
+    /\b(?:vector|magnitude|norm)\b/i.test(trimmed) ||
+    /\b[A-Za-z]_[xyz]\s+[ijk]\b|\b[A-Za-z][xyz]\s+[ijk]\b/.test(trimmed);
+
+  // 1. Leading descriptive title followed by an equation (supports any LHS: variables, norms |A|, functions H(s)/det(...), calculus ∑/∫/∂/∇)
+  const lhsLookahead =
+    '(?:\\|\\|?[A-Za-z0-9\\\\{}]+\\|\\|?|[∑∏∫∂∇∆\\\\][A-Za-z0-9_^{}()\\\\²³⁴₀-₉ₓ\\s+\\-*/]*|[A-Za-zα-ωΑ-Ω][A-Za-z0-9_^{}\\\\²³⁴₀-₉ₓ]*(?:\\([^()]+\\))?(?:\\s*[/+\\-]\\s*[∂∇A-Za-z0-9_^{}\\\\²³⁴₀-₉ₓ]+)*)\\s*[=≈≠<>≤≥→⇒⇔]';
+  const eqSplitRegex = new RegExp(`^([A-Za-z][A-Za-z0-9\\s'\\-]*?)(?:\\s*:\\s*|\\s+)(?=${lhsLookahead})([\\s\\S]+)$`);
+  const eqSplitMatch = trimmed.match(eqSplitRegex);
+  if (eqSplitMatch) {
+    const prefixTitle = eqSplitMatch[1].trim();
+    const mathPart = eqSplitMatch[2].trim();
+    const latex = convertDiagramFormulaToLatex(mathPart, isVectorLabel);
+    const renderedMath = katex.renderToString(latex, { throwOnError: false, output: 'html' });
+    return {
+      html: `<span style="font-weight:600;margin-right:6px;">${escapeHtmlText(prefixTitle)}</span>${renderedMath}`,
+      upgraded: true
+    };
+  }
+
+  // 2. Descriptive title followed by a parenthesized or bracketed mathematical expression / symbol tuple
+  const parenMathMatch = trimmed.match(
+    /^([A-Za-z][A-Za-z0-9\s'\-]*?)\s*(\((?:[A-Za-z0-9_^{}\\²³⁴₀-₉ₓα-ωΑ-Ω∑∏∫∂∇+\-*/=<>≤≥±×·,\s]+)\))$/
+  );
+  if (parenMathMatch) {
+    const prefixTitle = parenMathMatch[1].trim();
+    const parenContent = parenMathMatch[2].slice(1, -1).trim();
+    const tokens = parenContent.split(',').map((t) => t.trim());
+    const looksLikeMathTuple =
+      /[=<>≤≥±×·²³⁴₀-₉ₓ\\α-ωΑ-Ω∑∏∫∂∇0-9_]/.test(parenContent) ||
+      (tokens.length >= 2 && tokens.every((t) => /^[A-Za-z0-9_^{}]+$/.test(t) && t.length <= 3));
+    if (looksLikeMathTuple) {
+      const latex = `(${convertDiagramFormulaToLatex(parenContent, isVectorLabel)})`;
+      const renderedMath = katex.renderToString(latex, { throwOnError: false, output: 'html' });
+      return {
+        html: `<span style="font-weight:600;margin-right:5px;">${escapeHtmlText(prefixTitle)}</span>${renderedMath}`,
+        upgraded: true
+      };
+    }
+  }
+
+  // 3. Standalone equation or formula with no descriptive prefix
+  const standaloneEqRegex = new RegExp(`^${lhsLookahead}[\\s\\S]+$`);
+  if (standaloneEqRegex.test(trimmed)) {
+    const latex = convertDiagramFormulaToLatex(trimmed, isVectorLabel);
+    return {
+      html: katex.renderToString(latex, { throwOnError: false, output: 'html' }),
+      upgraded: true
+    };
+  }
+
+  // 4. Standalone mathematical expression containing radicals, explicit scripts, or calculus operators without multi-word prose
+  if (/(?:\\sqrt|\bsqrt\s*\(|√|[²³⁴₀-₉ₓ]|_[0-9xyz]|\^[0-9]|[∑∏∫∂∇])/.test(trimmed)) {
+    const proseWords = trimmed
+      .replace(/\bsqrt\b/gi, ' ')
+      .replace(/[^A-Za-z\s]/g, ' ')
+      .trim()
+      .split(/\s+/)
+      .filter((w) => w.length > 2 && !RESERVED_MATH_FUNCTIONS.has(w.toLowerCase()));
+    if (proseWords.length === 0) {
+      const latex = convertDiagramFormulaToLatex(trimmed, isVectorLabel);
+      return {
+        html: katex.renderToString(latex, { throwOnError: false, output: 'html' }),
+        upgraded: true
+      };
+    }
+  }
+
+  return { html: escapeHtmlText(trimmed), upgraded: false };
+}
+
+/**
+ * Upgrades mathematical equations, radicals, vectors, and symbol tuples across single-line
+ * or multi-line diagram labels into KaTeX HTML while preserving line breaks.
+ */
+function renderDiagramLabelWithKaTeX(rawContentOrHtml: string): { html: string; upgraded: boolean } {
+  if (!rawContentOrHtml) return { html: '', upgraded: false };
+  const lines = rawContentOrHtml
+    .split(/<br\s*\/?>|\r?\n/i)
+    .map((line) => line.replace(/<[^>]+>/g, '').trim())
+    .filter((line) => line.length > 0);
+
+  if (lines.length === 0) return { html: '', upgraded: false };
+
+  let anyUpgraded = false;
+  const renderedLines = lines.map((line) => {
+    const res = renderSingleDiagramLineWithKaTeX(line);
+    if (res.upgraded) anyUpgraded = true;
+    return res.html;
+  });
+
+  return {
+    html: renderedLines.join('<br/>'),
+    upgraded: anyUpgraded
+  };
+}
+
+/**
+ * Mounts the Mermaid SVG inside the offscreen sandbox, upgrades mathematical node/edge labels
+ * with KaTeX HTML, adjusts `<foreignObject>` and `<rect>` containers so formulas never wrap or clip,
+ * and expands the root `<svg viewBox>` if any outer node grew wider/taller.
+ */
+function upgradeMermaidSvgLabelsWithKaTeX(rawSvg: string, sandboxHost?: HTMLDivElement | null): string {
+  if (!rawSvg || typeof window === 'undefined' || !sandboxHost) return rawSvg;
+  try {
+    sandboxHost.innerHTML = rawSvg;
+    const svgEl = sandboxHost.querySelector('svg');
+    if (!svgEl) {
+      sandboxHost.innerHTML = '';
+      return rawSvg;
+    }
+
+    const labelSpans = Array.from(svgEl.querySelectorAll<HTMLElement>('.nodeLabel, .edgeLabel'));
+    let anyUpgraded = false;
+
+    for (const span of labelSpans) {
+      const rawSource = span.innerHTML && /<br\s*\/?>/i.test(span.innerHTML)
+        ? span.innerHTML
+        : (span.textContent || '').trim();
+      if (!rawSource) continue;
+      const { html, upgraded } = renderDiagramLabelWithKaTeX(rawSource);
+      if (!upgraded) continue;
+
+      anyUpgraded = true;
+      span.innerHTML = html;
+      span.style.display = 'inline-block';
+      span.style.textAlign = 'center';
+      span.style.whiteSpace = 'nowrap';
+      span.style.lineHeight = '1.35';
+
+      const wrapperDiv = span.parentElement as HTMLElement | null;
+      if (wrapperDiv && wrapperDiv.tagName.toLowerCase() === 'div') {
+        wrapperDiv.style.maxWidth = 'none';
+        wrapperDiv.style.whiteSpace = 'nowrap';
+        wrapperDiv.style.display = 'inline-block';
+      }
+    }
+
+    if (anyUpgraded) {
+      const nodeGroups = Array.from(svgEl.querySelectorAll<SVGGElement>('g.node'));
+      for (const nodeG of nodeGroups) {
+        const fo = nodeG.querySelector<SVGForeignObjectElement>('foreignObject');
+        const span = nodeG.querySelector<HTMLElement>('.nodeLabel');
+        if (!fo || !span) continue;
+
+        const rect = span.getBoundingClientRect();
+        const measuredW = Math.ceil(Math.max(rect.width, span.scrollWidth || 0)) + 10;
+        const measuredH = Math.ceil(Math.max(rect.height, span.scrollHeight || 0)) + 8;
+        const origFoW = parseFloat(fo.getAttribute('width') || '0') || 0;
+        const origFoH = parseFloat(fo.getAttribute('height') || '0') || 0;
+
+        const finalFoW = Math.max(origFoW, measuredW);
+        const finalFoH = Math.max(origFoH, measuredH);
+
+        if (finalFoW > origFoW || finalFoH > origFoH) {
+          fo.setAttribute('width', String(finalFoW));
+          fo.setAttribute('height', String(finalFoH));
+          const labelG = fo.parentElement as Element | null;
+          if (labelG && labelG.tagName.toLowerCase() === 'g') {
+            labelG.setAttribute('transform', `translate(${-finalFoW / 2}, ${-finalFoH / 2})`);
+          }
+          const boxRect = nodeG.querySelector<SVGRectElement>('rect.label-container, rect.basic');
+          if (boxRect) {
+            const origRectW = parseFloat(boxRect.getAttribute('width') || '0') || 0;
+            const origRectH = parseFloat(boxRect.getAttribute('height') || '0') || 0;
+            const finalRectW = Math.max(origRectW, finalFoW + 28);
+            const finalRectH = Math.max(origRectH, finalFoH + 20);
+            boxRect.setAttribute('width', String(finalRectW));
+            boxRect.setAttribute('height', String(finalRectH));
+            boxRect.setAttribute('x', String(-finalRectW / 2));
+            boxRect.setAttribute('y', String(-finalRectH / 2));
+          }
+        }
+      }
+
+      // Ensure the root SVG viewBox encompasses any widened outer nodes without edge clipping
+      try {
+        const bbox = svgEl.getBBox();
+        if (bbox && Number.isFinite(bbox.width) && bbox.width > 0 && Number.isFinite(bbox.height) && bbox.height > 0) {
+          const pad = 16;
+          const vbAttr = svgEl.getAttribute('viewBox') || '';
+          const vbNums = vbAttr.trim().split(/[\s,]+/).map((n) => parseFloat(n));
+          if (vbNums.length === 4 && vbNums.every((n) => Number.isFinite(n))) {
+            const minX = Math.min(vbNums[0], Math.floor(bbox.x - pad));
+            const minY = Math.min(vbNums[1], Math.floor(bbox.y - pad));
+            const maxX = Math.max(vbNums[0] + vbNums[2], Math.ceil(bbox.x + bbox.width + pad));
+            const maxY = Math.max(vbNums[1] + vbNums[3], Math.ceil(bbox.y + bbox.height + pad));
+            svgEl.setAttribute('viewBox', `${minX} ${minY} ${maxX - minX} ${maxY - minY}`);
+          }
+        }
+      } catch {
+        // Ignore getBBox errors in non-visual test environments
+      }
+    }
+
+    const serialized = svgEl.outerHTML;
+    sandboxHost.innerHTML = '';
+    return serialized;
+  } catch {
+    if (sandboxHost) sandboxHost.innerHTML = '';
+    return rawSvg;
+  }
+}
 
 export interface MermaidViewerProps {
   chart: string;
@@ -181,16 +598,24 @@ export default function MermaidViewer({ chart, aiRepairFn }: MermaidViewerProps)
         clearSandboxContainer();
         const sandboxHost = sandboxRef.current || undefined;
         const { svg } = await mermaid.render(renderId, validation.chart, sandboxHost);
+        const katexUpgradedSvg = upgradeMermaidSvgLabelsWithKaTeX(svg, sandboxRef.current);
         clearSandboxContainer();
 
         if (isCancelled || currentSeq !== renderSeqRef.current) {
           return;
         }
 
-        const cleanSvg = DOMPurify.sanitize(svg, {
-          USE_PROFILES: { svg: true, svgFilters: true, html: true },
-          ADD_TAGS: ['foreignObject', 'div', 'span', 'p', 'br', 'b', 'i', 'strong', 'em', 'text', 'tspan'],
-          ADD_ATTR: ['style', 'class', 'xmlns', 'dominant-baseline', 'text-anchor', 'dy', 'dx', 'x', 'y', 'transform']
+        const cleanSvg = DOMPurify.sanitize(katexUpgradedSvg, {
+          USE_PROFILES: { svg: true, svgFilters: true, html: true, mathMl: true },
+          HTML_INTEGRATION_POINTS: { 'annotation-xml': true, foreignobject: true },
+          ADD_TAGS: [
+            'foreignObject', 'div', 'span', 'p', 'br', 'b', 'i', 'strong', 'em', 'text', 'tspan',
+            'svg', 'path', 'line', 'rect', 'circle', 'g'
+          ],
+          ADD_ATTR: [
+            'style', 'class', 'xmlns', 'dominant-baseline', 'text-anchor', 'dy', 'dx', 'x', 'y',
+            'transform', 'viewBox', 'd', 'width', 'height', 'preserveAspectRatio', 'aria-hidden'
+          ]
         });
 
         // Guard against any residual error graphic output

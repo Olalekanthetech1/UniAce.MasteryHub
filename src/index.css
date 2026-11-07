@@ -229,3 +229,22 @@
   color: inherit !important;
 }
 
+/* Prevent negative letter-spacing (-0.01em) on html/body/.markdown-body from inheriting as
+   absolute pixel offsets into small-viewBox SVG user coordinate systems */
+svg,
+svg text,
+svg tspan {
+  letter-spacing: 0px !important;
+  word-spacing: 0px !important;
+}
+
+/* Inside Mermaid node cards (which use light indigo/slate fills in both light and dark themes),
+   keep KaTeX text inheriting the Mermaid node label color */
+.mermaid-svg-wrapper .katex,
+.mermaid-svg-wrapper .katex .katex-html,
+.dark .mermaid-svg-wrapper .katex,
+.dark .mermaid-svg-wrapper .katex .katex-html {
+  color: inherit !important;
+}
+
+

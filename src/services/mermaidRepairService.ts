@@ -319,11 +319,39 @@ export function convertLatexLabelToReadableText(label: string): { text: string; 
     return `${numWrapped}/${denWrapped}`;
   });
 
-  // Convert \sqrt{x} -> √(x)
-  working = working.replace(/\\sqrt\s*\{([^{}]+)\}/g, (_m, rad: string) => {
-    const cleanRad = rad.trim();
-    return cleanRad.length === 1 ? `√${cleanRad}` : `√(${cleanRad})`;
-  });
+  // Convert \sqrt{x} (including nested braces) and ASCII sqrt(x) (including nested parens) -> √(x)
+  const replaceBalancedRadical = (
+    src: string,
+    headRegex: RegExp,
+    openChar: '{' | '(',
+    closeChar: '}' | ')'
+  ): string => {
+    let out = src;
+    let guard = 0;
+    while (guard++ < 25) {
+      headRegex.lastIndex = 0;
+      const m = headRegex.exec(out);
+      if (!m) break;
+      const start = m.index;
+      const openIdx = start + m[0].length - 1;
+      if (out[openIdx] !== openChar) break;
+      let depth = 1;
+      let cursor = openIdx + 1;
+      while (cursor < out.length && depth > 0) {
+        if (out[cursor] === openChar) depth += 1;
+        else if (out[cursor] === closeChar) depth -= 1;
+        cursor += 1;
+      }
+      if (depth !== 0) break;
+      const inner = out.slice(openIdx + 1, cursor - 1).trim();
+      const formatted = inner.length === 1 ? `√${inner}` : `√(${inner})`;
+      out = out.slice(0, start) + formatted + out.slice(cursor);
+    }
+    return out;
+  };
+
+  working = replaceBalancedRadical(working, /\\sqrt\s*\{/g, '{', '}');
+  working = replaceBalancedRadical(working, /\bsqrt\s*\(/gi, '(', ')');
 
   // Replace known LaTeX Greek/operator commands with Unicode symbols
   for (const [pattern, replacement] of LATEX_SYMBOL_TO_READABLE_MAP) {

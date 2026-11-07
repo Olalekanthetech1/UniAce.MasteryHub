@@ -269,11 +269,26 @@ function renderBlock(
 
     case 'engineering_diagram':
       try {
+        const nodes = Array.isArray(block.diagram?.nodes) ? block.diagram.nodes : [];
+        const edges = Array.isArray(block.diagram?.edges) ? block.diagram.edges : [];
+        const hasValidRelationalGraph = nodes.length >= 2 && edges.length >= 1;
+        const singleNodeLabel = nodes.length === 1 ? String(nodes[0]?.label || '').trim() : '';
+        const isGenericPlaceholderLabel =
+          !singleNodeLabel ||
+          /^(?:svg\s+illustration|illustration|diagram|visual\s+diagram|visual\s+representation|visual\s+proof|flowchart|figure|graph|chart|geometric\s+diagram)$/i.test(singleNodeLabel) ||
+          singleNodeLabel.toLowerCase() === String(block.title || '').trim().toLowerCase();
+
         return (
           <section key={block.id} className="rounded-xl border border-emerald-200 dark:border-emerald-900/70 p-4 sm:p-5 space-y-3">
             <BlockHeading title={block.title} label={label} />
             <MarkdownRenderer content={formatMathAwareText(block.description)} />
-            <MermaidViewer chart={serializeStructuredDiagramToMermaid(block.diagram)} />
+            {hasValidRelationalGraph ? (
+              <MermaidViewer chart={serializeStructuredDiagramToMermaid(block.diagram)} />
+            ) : !isGenericPlaceholderLabel ? (
+              <div className="rounded-lg border border-emerald-200/80 dark:border-emerald-800/60 bg-emerald-50/40 dark:bg-emerald-950/20 px-4 py-3">
+                <MarkdownRenderer content={formatMathAwareText(singleNodeLabel)} />
+              </div>
+            ) : null}
           </section>
         );
       } catch {
@@ -413,12 +428,64 @@ function renderBlock(
   }
 }
 
+function blockContainsSvgDiagram(block: AcademicContentBlock | undefined): boolean {
+  if (!block) return false;
+  if (block.type === 'explanation' || block.type === 'structured_block') {
+    const bodyText = 'body' in block && typeof block.body === 'string' ? block.body : '';
+    const snippetText = typeof block.codeSnippet === 'string' ? block.codeSnippet : '';
+    const lang = typeof block.language === 'string' ? block.language.toLowerCase() : '';
+    return (
+      /<svg[\s>]/i.test(bodyText) ||
+      /```(?:svg|svg-diagram|geometry|vector-diagram)\b/i.test(bodyText) ||
+      /<svg[\s>]/i.test(snippetText) ||
+      lang === 'svg' ||
+      lang === 'svg-diagram' ||
+      lang === 'geometry'
+    );
+  }
+  return false;
+}
+
 export default function AcademicContentBlocksRenderer(props: AcademicContentBlocksRendererProps) {
+  const blocks = props.collection.blocks;
+  const renderedNodes: React.ReactNode[] = [];
+
+  for (let i = 0; i < blocks.length; i += 1) {
+    const block = blocks[i];
+    if (
+      block.type === 'engineering_diagram' &&
+      (!Array.isArray(block.diagram?.nodes) ||
+        block.diagram.nodes.length < 2 ||
+        !Array.isArray(block.diagram?.edges) ||
+        block.diagram.edges.length === 0)
+    ) {
+      const nextBlock = blocks[i + 1];
+      if (nextBlock && (nextBlock.type === 'explanation' || nextBlock.type === 'structured_block') && blockContainsSvgDiagram(nextBlock)) {
+        const label = resolveBlockAcademicLabel(block);
+        renderedNodes.push(
+          <section key={block.id} className="rounded-xl border border-emerald-200 dark:border-emerald-900/70 p-4 sm:p-5 space-y-3">
+            <BlockHeading title={block.title} label={label} />
+            <MarkdownRenderer content={formatMathAwareText(block.description)} />
+            {nextBlock.type === 'structured_block' && nextBlock.summary && (
+              <MarkdownRenderer content={formatMathAwareText(nextBlock.summary)} />
+            )}
+            {nextBlock.body && <MarkdownRenderer content={formatMathAwareText(nextBlock.body)} />}
+            {renderStructuredExtensions(nextBlock)}
+          </section>
+        );
+        i += 1; // Skip the merged SVG block
+        continue;
+      }
+    }
+    renderedNodes.push(renderBlock(block, props));
+  }
+
   return (
     <div className="space-y-5" aria-label="Structured academic lesson content">
-      {props.collection.blocks.map(block => renderBlock(block, props))}
+      {renderedNodes}
     </div>
   );
 }
+
 
 

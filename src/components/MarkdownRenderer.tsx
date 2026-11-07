@@ -7,6 +7,7 @@ import FunctionPlotViewer from './renderers/FunctionPlotViewer';
 import VennDiagramViewer from './renderers/VennDiagramViewer';
 import SvgDiagramViewer from './renderers/SvgDiagramViewer';
 import { normalizeMathDelimiters as normalizeSharedMathDelimiters } from '../shared/mathText';
+import { convertLatexLabelToReadableText } from '../services/mermaidRepairService';
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -156,6 +157,174 @@ export function sanitizeRenderedHtml(dirtyHtml: string): string {
   );
 }
 
+const SVG_DIGIT_SUB_MAP: Record<string, string> = {
+  '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄',
+  '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉'
+};
+
+function formatSvgMathLabelText(raw: string): string {
+  if (!raw) return '';
+  let text = convertLatexLabelToReadableText(raw).text;
+  // Convert coordinate / indexed variable tokens like P1, P2, x1, x2, y1, y2 -> P₁, P₂, x₁, x₂, y₁, y₂
+  text = text.replace(/\b([A-Za-z])([0-9])\b/g, (_m, sym: string, digit: string) => {
+    return `${sym}${SVG_DIGIT_SUB_MAP[digit] || digit}`;
+  });
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Repairs SVG <text> and <tspan> typography anomalies at runtime:
+ * 1. Collapses inline subscript/superscript <tspan> sequences or redundant x-positioned <tspan> children
+ *    that cause characters/words (such as P1(x1, y1), x2 - x1, Distance d) to stack at the same X coordinate.
+ * 2. Resets inherited negative letter-spacing (-0.01em) so small-viewBox user units are never compressed.
+ * 3. When an SVG uses a small coordinate viewBox (or font-size < 9 in user units), normalizes <text>
+ *    to font-size="16" with an exact compensating translate(x,y) scale(s) translate(-x,-y) transform
+ *    so Chrome/Blink never clamps glyph height relative to character advance.
+ */
+function normalizeSvgDiagramTypography(svgMarkup: string): string {
+  if (!svgMarkup || typeof DOMParser === 'undefined') return svgMarkup;
+  try {
+    const doc = new DOMParser().parseFromString(svgMarkup, 'image/svg+xml');
+    const svgEl = doc.querySelector('svg');
+    if (!svgEl || doc.querySelector('parsererror')) {
+      return svgMarkup;
+    }
+
+    const vbAttr = svgEl.getAttribute('viewBox') || '';
+    const vbParts = vbAttr
+      .trim()
+      .split(/[\s,]+/)
+      .map((n) => parseFloat(n));
+    const hasValidVb = vbParts.length === 4 && vbParts.every((n) => Number.isFinite(n));
+    const vbWidth = hasValidVb ? Math.abs(vbParts[2]) : 600;
+    const vbHeight = hasValidVb ? Math.abs(vbParts[3]) : 400;
+    const minVbDim = Math.min(vbWidth, vbHeight);
+
+    const parseFontSizeFromEl = (el: Element | null): number | null => {
+      let curr: Element | null = el;
+      while (curr && curr.tagName.toLowerCase() !== 'svg') {
+        const attrFs = curr.getAttribute('font-size');
+        if (attrFs) {
+          const val = parseFloat(attrFs);
+          if (Number.isFinite(val) && val > 0) return val;
+        }
+        const styleAttr = curr.getAttribute('style') || '';
+        const styleMatch = styleAttr.match(/font-size\s*:\s*([0-9.]+)/i);
+        if (styleMatch) {
+          const val = parseFloat(styleMatch[1]);
+          if (Number.isFinite(val) && val > 0) return val;
+        }
+        curr = curr.parentElement;
+      }
+      return null;
+    };
+
+    const textEls = Array.from(svgEl.querySelectorAll('text'));
+    for (const textEl of textEls) {
+      textEl.removeAttribute('textLength');
+      textEl.removeAttribute('lengthAdjust');
+
+      const tspans = Array.from(textEl.querySelectorAll('tspan'));
+      if (tspans.length > 0) {
+        // Check if tspans are inline segments (no multi-line vertical break)
+        const parentX = textEl.getAttribute('x');
+        const effectiveFs = parseFontSizeFromEl(textEl) || (minVbDim < 120 ? minVbDim * 0.045 : 14);
+        const hasTrueLineBreak = tspans.some((ts, idx) => {
+          if (idx === 0) return false;
+          const dyRaw = ts.getAttribute('dy') || '';
+          if (!dyRaw) return false;
+          if (/em$/i.test(dyRaw.trim())) {
+            return Math.abs(parseFloat(dyRaw)) >= 0.85;
+          }
+          const dyVal = parseFloat(dyRaw);
+          return Number.isFinite(dyVal) && Math.abs(dyVal) >= effectiveFs * 0.85;
+        });
+
+        if (!hasTrueLineBreak) {
+          // Collapse inline tspans into a single clean text string so baseline/x resets cannot stack glyphs
+          const combinedRaw = (textEl.textContent || '').replace(/\s+/g, ' ').trim();
+          textEl.textContent = formatSvgMathLabelText(combinedRaw);
+        } else {
+          // Multi-line tspan block: ensure only true line-break tspans reset x, and format each span's text
+          tspans.forEach((ts, idx) => {
+            ts.removeAttribute('textLength');
+            ts.removeAttribute('lengthAdjust');
+            const dyRaw = ts.getAttribute('dy') || '';
+            if (idx > 0 && !dyRaw && ts.getAttribute('x') === parentX) {
+              ts.removeAttribute('x');
+            }
+            if (ts.childNodes.length === 1 && ts.firstChild?.nodeType === 3) {
+              ts.textContent = formatSvgMathLabelText(ts.textContent || '');
+            }
+          });
+        }
+      } else {
+        textEl.textContent = formatSvgMathLabelText(textEl.textContent || '');
+      }
+
+      // Reset letter-spacing and word-spacing on <text>
+      const prevStyle = (textEl.getAttribute('style') || '').replace(
+        /(?:letter-spacing|word-spacing)\s*:[^;]+;?/gi,
+        ''
+      ).trim();
+      textEl.setAttribute(
+        'style',
+        `${prevStyle ? `${prevStyle}; ` : ''}letter-spacing: 0px; word-spacing: 0px;`
+      );
+
+      // If font-size in SVG user space is small (< 9 user units) or viewBox is compact (< 160 units),
+      // normalize font-size to 16px and apply a local scale transform around (x, y)
+      const explicitFs = parseFontSizeFromEl(textEl);
+      const desiredUserFs =
+        explicitFs !== null
+          ? explicitFs
+          : minVbDim < 160
+            ? Math.max(minVbDim * 0.045, 0.35)
+            : 14;
+
+      if (desiredUserFs < 9.5) {
+        const targetFs = 16;
+        const scale = Number((desiredUserFs / targetFs).toFixed(5));
+        const xVal = parseFloat(textEl.getAttribute('x') || '0') || 0;
+        const yVal = parseFloat(textEl.getAttribute('y') || '0') || 0;
+
+        textEl.setAttribute('font-size', String(targetFs));
+        // Strip inline style font-size if present so attribute font-size=16 governs
+        const cleanedStyle = (textEl.getAttribute('style') || '').replace(/font-size\s*:[^;]+;?/gi, '').trim();
+        textEl.setAttribute('style', cleanedStyle);
+
+        // Scale dx/dy offsets on textEl if present
+        if (textEl.hasAttribute('dx')) {
+          const dxNum = parseFloat(textEl.getAttribute('dx') || '0');
+          if (Number.isFinite(dxNum) && dxNum !== 0) {
+            textEl.setAttribute('dx', String(Number((dxNum / scale).toFixed(2))));
+          }
+        }
+        if (textEl.hasAttribute('dy') && !/%|em/i.test(textEl.getAttribute('dy') || '')) {
+          const dyNum = parseFloat(textEl.getAttribute('dy') || '0');
+          if (Number.isFinite(dyNum) && dyNum !== 0) {
+            textEl.setAttribute('dy', String(Number((dyNum / scale).toFixed(2))));
+          }
+        }
+
+        const existingTransform = (textEl.getAttribute('transform') || '').trim();
+        const scaleTransform =
+          xVal === 0 && yVal === 0
+            ? `scale(${scale})`
+            : `translate(${xVal}, ${yVal}) scale(${scale}) translate(${-xVal}, ${-yVal})`;
+        textEl.setAttribute(
+          'transform',
+          existingTransform ? `${existingTransform} ${scaleTransform}` : scaleTransform
+        );
+      }
+    }
+
+    return new XMLSerializer().serializeToString(svgEl);
+  } catch {
+    return svgMarkup;
+  }
+}
+
 /**
  * Sanitizes raw SVG diagram markup using DOMPurify.
  */
@@ -175,7 +344,8 @@ export function sanitizeSvgMarkup(rawSvg: string): { cleanSvg: string; error?: s
   const sanitized = String(
     DOMPurify.sanitize(svgCandidate, {
       USE_PROFILES: { svg: true, svgFilters: true, html: true },
-      ADD_TAGS: ['foreignObject'],
+      HTML_INTEGRATION_POINTS: { 'annotation-xml': true, foreignobject: true },
+      ADD_TAGS: ['foreignObject', 'text', 'tspan'],
       FORBID_TAGS: ['script', 'iframe', 'object', 'embed'],
       FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover']
     })
@@ -197,9 +367,11 @@ export function sanitizeSvgMarkup(rawSvg: string): { cleanSvg: string; error?: s
   if (!/style\s*=/i.test(responsiveSvg)) {
     responsiveSvg = responsiveSvg.replace(
       /<svg/i,
-      '<svg style="width: 100%; height: auto; max-height: 480px; display: block; margin: 0 auto;"'
+      '<svg style="width: 100%; height: auto; max-height: 480px; display: block; margin: 0 auto; letter-spacing: 0px; word-spacing: 0px;"'
     );
   }
+
+  responsiveSvg = normalizeSvgDiagramTypography(responsiveSvg);
 
   return { cleanSvg: responsiveSvg };
 }
