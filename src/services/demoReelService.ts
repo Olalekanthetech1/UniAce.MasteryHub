@@ -125,6 +125,31 @@ export interface DynamicCapabilityItem {
 
 export type FlyerPhoneScreenMode = 'course_hub_ui' | 'capabilities_list' | 'custom_screen_upload';
 
+export type FlyerThemeId =
+  | 'emerald_gold'
+  | 'royal_indigo'
+  | 'cyber_slate'
+  | 'crimson_scholar'
+  | 'obsidian_amber'
+  | 'violet_cosmos';
+
+export type FlyerLayoutVariant =
+  | 'classic_campus_split'
+  | 'modern_bento_showcase'
+  | 'executive_spotlight'
+  | 'academic_crest_editorial';
+
+export type FlyerWaveStyle =
+  | 'curved'
+  | 'diagonal'
+  | 'stepped'
+  | 'architectural_arch';
+
+export type FlyerHeroVisualMode =
+  | 'campus_scholar_svg'
+  | 'academic_cohort_card'
+  | 'custom_photo';
+
 export interface DynamicFlyerConfig {
   brandName: string;
   brandSubline: string[];
@@ -150,8 +175,11 @@ export interface DynamicFlyerConfig {
   supportContact: string;
   supportSublabel: string;
   footerPillars: [string, string, string];
-  themeId: 'emerald_gold' | 'royal_indigo' | 'cyber_slate';
-  studentPortraitMode: 'campus_scholar_svg' | 'custom_photo';
+  themeId: FlyerThemeId;
+  layoutVariant?: FlyerLayoutVariant;
+  waveStyle?: FlyerWaveStyle;
+  phoneTiltDeg?: number;
+  studentPortraitMode: FlyerHeroVisualMode;
   customPhotoDataUrl?: string;
   captions: {
     whatsapp: string;
@@ -534,12 +562,20 @@ export function getEligibleCoursesForCohort(
     isCourseEligibleForStudentCohort(c, department, level, semester, ctx, allLiveCourses)
   );
 
-  // Sort so primary foundational physics/active courses lead the top "Continue Learning" row
+  // Sort dynamically by curriculum depth (published module/lesson count) then course ID
   eligible.sort((a, b) => {
-    const aIsPhyLead = /^PHY\s*10[127]$/i.test(a.id);
-    const bIsPhyLead = /^PHY\s*10[127]$/i.test(b.id);
-    if (aIsPhyLead && !bIsPhyLead) return -1;
-    if (!aIsPhyLead && bIsPhyLead) return 1;
+    const aLessons = (a.syllabus || []).reduce(
+      (sum, mod) => sum + (Array.isArray(mod.subTopics) ? mod.subTopics.length : 0),
+      0
+    );
+    const bLessons = (b.syllabus || []).reduce(
+      (sum, mod) => sum + (Array.isArray(mod.subTopics) ? mod.subTopics.length : 0),
+      0
+    );
+    if (bLessons !== aLessons) return bLessons - aLessons;
+    const aModules = a.syllabus?.length || 0;
+    const bModules = b.syllabus?.length || 0;
+    if (bModules !== aModules) return bModules - aModules;
     return a.id.localeCompare(b.id);
   });
 
@@ -564,6 +600,26 @@ export function getEligibleCoursesForCohort(
   return eligible;
 }
 
+export function getCandidateCohortLevels(ctx: PlatformMarketingContext): string[] {
+  const allLiveCourses = getAllVerifiedLiveCourses(ctx);
+  const levels = Array.from(
+    new Set(allLiveCourses.map((c) => canonicalizeAcademicLevel(c.level)).filter(Boolean))
+  ).sort((a, b) => Number(a) - Number(b));
+  return levels.length > 0 ? levels : ['100'];
+}
+
+export function getCandidateCohortSemesters(
+  ctx: PlatformMarketingContext
+): ('1st Semester' | '2nd Semester')[] {
+  const allLiveCourses = getAllVerifiedLiveCourses(ctx);
+  const sems = Array.from(
+    new Set(allLiveCourses.map((c) => canonicalizeAcademicSemester(c.semester)).filter(Boolean))
+  );
+  return sems.length > 0
+    ? (sems as ('1st Semester' | '2nd Semester')[])
+    : ['1st Semester', '2nd Semester'];
+}
+
 export function resolveActivePhoneHubCohort(
   ctx: PlatformMarketingContext,
   override?: PhoneHubCohortOverride
@@ -571,12 +627,8 @@ export function resolveActivePhoneHubCohort(
   const allLiveCourses = getAllVerifiedLiveCourses(ctx);
   const candidateDepartments = getCandidateCohortDepartments(ctx);
   const selectedCourse = getSelectedCourse(ctx);
-
-  const levelsInCatalog = Array.from(
-    new Set(allLiveCourses.map((c) => canonicalizeAcademicLevel(c.level)).filter(Boolean))
-  ).sort((a, b) => Number(a) - Number(b));
-  const candidateLevels = levelsInCatalog.length > 0 ? levelsInCatalog : ['100'];
-  const candidateSemesters: ('1st Semester' | '2nd Semester')[] = ['1st Semester', '2nd Semester'];
+  const candidateLevels = getCandidateCohortLevels(ctx);
+  const candidateSemesters = getCandidateCohortSemesters(ctx);
 
   const scoreCohort = (dept: string, lvl: string, sem: '1st Semester' | '2nd Semester'): number => {
     const courses = getEligibleCoursesForCohort(ctx, dept, lvl, sem);
@@ -585,15 +637,22 @@ export function resolveActivePhoneHubCohort(
       const s = String(c.scope || '').toUpperCase();
       return s === 'DEPARTMENT' || s === 'FACULTY';
     });
-    const hasFacultyScope = courses.some((c) => String(c.scope || '').toUpperCase() === 'FACULTY');
-    // Reward cohorts that fill the 8-card (4x2) Course Hub grid and mix global + faculty/department courses
-    const countScore = Math.min(courses.length, 8) * 100 + (courses.length === 8 ? 15 : 0);
-    const scopeBonus = (hasSpecificScope ? 45 : 0) + (hasFacultyScope ? 10 : 0);
-    const firstSemBonus = sem === '1st Semester' ? 8 : 0;
-    const hundredLevelBonus = lvl === '100' ? 6 : 0;
-    const preferredProgramBonus = /electrical\s+engineering/i.test(dept) ? 4 : 0;
-    return countScore + scopeBonus + firstSemBonus + hundredLevelBonus + preferredProgramBonus;
+    const totalModules = courses
+      .slice(0, 8)
+      .reduce((sum, c) => sum + (c.syllabus?.length || 0), 0);
+    // Purely dynamic curriculum completeness score (up to 8 cards for the 4x2 grid + module depth + scope diversity)
+    const countScore = Math.min(courses.length, 8) * 100 + (courses.length >= 8 ? 15 : 0);
+    const scopeBonus = hasSpecificScope ? 45 : 0;
+    const moduleDepthBonus = Math.min(totalModules, 40) * 0.5;
+    return countScore + scopeBonus + moduleDepthBonus;
   };
+
+  const fallbackDepartment =
+    ctx.selectedDepartment ||
+    candidateDepartments[0] ||
+    ctx.selectedFaculty ||
+    allLiveCourses[0]?.department ||
+    '';
 
   let chosenDept = override?.department?.trim() || '';
   let chosenLevel = override?.level?.trim() ? canonicalizeAcademicLevel(override.level) : '';
@@ -611,8 +670,7 @@ export function resolveActivePhoneHubCohort(
           chosenDept =
             selectedCourse.departments?.[0]?.trim() ||
             selectedCourse.department?.trim() ||
-            candidateDepartments[0] ||
-            'Electrical Engineering';
+            fallbackDepartment;
         } else if (scope === 'FACULTY') {
           const targetFacKey = normalizeFacultyKey(
             selectedCourse.faculties?.[0] || selectedCourse.faculty || ''
@@ -621,7 +679,7 @@ export function resolveActivePhoneHubCohort(
             (d) => normalizeFacultyKey(resolveCohortFaculty(d, ctx, allLiveCourses)) === targetFacKey
           );
           const pool = matchingDepts.length > 0 ? matchingDepts : candidateDepartments;
-          let bestDept = pool[0] || 'Electrical Engineering';
+          let bestDept = pool[0] || fallbackDepartment;
           let bestScore = -1;
           for (const d of pool) {
             const sc = scoreCohort(d, chosenLevel, chosenSem);
@@ -632,8 +690,8 @@ export function resolveActivePhoneHubCohort(
           }
           chosenDept = bestDept;
         } else {
-          // GLOBAL course selected: pick the department with the fullest curriculum for this exact level & semester
-          let bestDept = candidateDepartments[0] || 'Electrical Engineering';
+          // GLOBAL course selected: dynamically pick the department with the richest curriculum at this level & semester
+          let bestDept = fallbackDepartment;
           let bestScore = -1;
           for (const d of candidateDepartments) {
             const sc = scoreCohort(d, chosenLevel, chosenSem);
@@ -648,8 +706,8 @@ export function resolveActivePhoneHubCohort(
     } else if (ctx.targetScope === 'department' && ctx.selectedDepartment) {
       chosenDept = chosenDept || ctx.selectedDepartment;
       if (!chosenLevel || !chosenSem) {
-        let bestLvl = chosenLevel || candidateLevels[0] || '100';
-        let bestSem: '1st Semester' | '2nd Semester' = chosenSem || '1st Semester';
+        let bestLvl = chosenLevel || candidateLevels[0] || '';
+        let bestSem: '1st Semester' | '2nd Semester' = chosenSem || candidateSemesters[0] || '1st Semester';
         let bestScore = -1;
         for (const lvl of chosenLevel ? [chosenLevel] : candidateLevels) {
           for (const sem of chosenSem ? [chosenSem] : candidateSemesters) {
@@ -671,8 +729,8 @@ export function resolveActivePhoneHubCohort(
       );
       const pool = chosenDept ? [chosenDept] : matchingDepts.length > 0 ? matchingDepts : candidateDepartments;
       let bestDept = pool[0] || ctx.selectedFaculty;
-      let bestLvl = chosenLevel || candidateLevels[0] || '100';
-      let bestSem: '1st Semester' | '2nd Semester' = chosenSem || '1st Semester';
+      let bestLvl = chosenLevel || candidateLevels[0] || '';
+      let bestSem: '1st Semester' | '2nd Semester' = chosenSem || candidateSemesters[0] || '1st Semester';
       let bestScore = -1;
       for (const d of pool) {
         for (const lvl of chosenLevel ? [chosenLevel] : candidateLevels) {
@@ -691,11 +749,11 @@ export function resolveActivePhoneHubCohort(
       chosenLevel = bestLvl;
       chosenSem = bestSem;
     } else {
-      // full_ecosystem or exam_readiness: discover the richest 8-course student cohort
+      // full_ecosystem or exam_readiness: dynamically discover the richest student cohort from live catalog data
       const pool = chosenDept ? [chosenDept] : candidateDepartments;
-      let bestDept = pool[0] || 'Electrical Engineering';
-      let bestLvl = chosenLevel || candidateLevels[0] || '100';
-      let bestSem: '1st Semester' | '2nd Semester' = chosenSem || '1st Semester';
+      let bestDept = pool[0] || fallbackDepartment;
+      let bestLvl = chosenLevel || candidateLevels[0] || '';
+      let bestSem: '1st Semester' | '2nd Semester' = chosenSem || candidateSemesters[0] || '1st Semester';
       let bestScore = -1;
       for (const d of pool) {
         for (const lvl of chosenLevel ? [chosenLevel] : candidateLevels) {
@@ -716,9 +774,9 @@ export function resolveActivePhoneHubCohort(
     }
   }
 
-  const finalSemester = chosenSem || '1st Semester';
-  const finalLevel = chosenLevel || '100';
-  const finalDepartment = chosenDept || candidateDepartments[0] || 'Electrical Engineering';
+  const finalSemester = chosenSem || candidateSemesters[0] || '1st Semester';
+  const finalLevel = chosenLevel || candidateLevels[0] || '100';
+  const finalDepartment = chosenDept || fallbackDepartment;
   const priorityCourseId = ctx.targetScope === 'course' ? selectedCourse?.id : undefined;
   const cohortCourses = getEligibleCoursesForCohort(
     ctx,
@@ -869,7 +927,7 @@ export function resolveDynamicCapabilities(ctx: PlatformMarketingContext): Dynam
     switch (definition.id) {
       case 'ai_tutor':
         enabled = aiReady && liveCourses.length > 0;
-        availability = enabled ? 'data_available' : 'data_unavailable';
+        availability = enabled ? 'data_available' : 'implemented';
         phoneDescription = selectedCourse
           ? `Step-by-step AI explanations for ${selectedCourse.id}.`
           : `Step-by-step AI guidance across ${liveCourses.length} live courses.`;
@@ -877,7 +935,7 @@ export function resolveDynamicCapabilities(ctx: PlatformMarketingContext): Dynam
         break;
       case 'chat_with_notes':
         enabled = aiReady && totalLessons > 0;
-        availability = enabled ? 'data_available' : 'data_unavailable';
+        availability = enabled ? 'data_available' : 'implemented';
         phoneDescription = totalLessons > 0
           ? `Ask questions across ${totalLessons} published study lessons.`
           : 'Ask questions about uploaded study materials.';
@@ -885,21 +943,21 @@ export function resolveDynamicCapabilities(ctx: PlatformMarketingContext): Dynam
         break;
       case 'question_generator':
         enabled = (aiReady && liveCourses.length > 0) || (quizInventoryVerified && (totalQuizzes || 0) > 0);
-        availability = enabled ? 'data_available' : 'data_unavailable';
+        availability = enabled ? 'data_available' : 'implemented';
         phoneDescription = `Practise custom questions for ${scopeLabel}.`;
         gridDescription = 'Practise course topics';
         break;
       case 'theory_questions':
         enabled = (pastPaperInventoryVerified && (totalPastPapers || 0) > 0) || (aiReady && liveCourses.length > 0);
-        availability = enabled ? 'data_available' : 'data_unavailable';
+        availability = enabled ? 'data_available' : 'implemented';
         phoneDescription = (totalPastPapers || 0) > 0
           ? `Review ${totalPastPapers} verified past paper record(s).`
           : `Practise theory & derivations for ${scopeLabel}.`;
         gridDescription = 'Review past & theory questions';
         break;
       case 'flashcards':
-        enabled = totalModules > 0 && (aiReady || totalLessons > 0);
-        availability = enabled ? 'data_available' : 'data_unavailable';
+        enabled = aiReady && totalModules > 0;
+        availability = enabled ? 'data_available' : 'implemented';
         phoneDescription = totalModules > 0
           ? `Active-recall flashcards across ${totalModules} modules.`
           : 'Use flashcards for active-recall practice.';
@@ -907,23 +965,23 @@ export function resolveDynamicCapabilities(ctx: PlatformMarketingContext): Dynam
         break;
       case 'exam_mode':
         enabled = (quizInventoryVerified && (totalQuizzes || 0) > 0) || (aiReady && totalModules > 0);
-        availability = enabled ? 'data_available' : 'data_unavailable';
+        availability = enabled ? 'data_available' : 'implemented';
         phoneDescription = (totalQuizzes || 0) > 0
           ? `Practise with ${totalQuizzes} published module quizzes.`
           : `Timed quiz practice across ${totalModules} course modules.`;
         gridDescription = 'Course quiz practice';
         break;
       case 'my_notes':
-        enabled = totalModules > 0 && totalLessons > 0;
-        availability = enabled ? 'data_available' : 'data_unavailable';
+        enabled = aiReady && totalModules > 0 && totalLessons > 0;
+        availability = enabled ? 'data_available' : 'implemented';
         phoneDescription = totalModules > 0
           ? `Browse ${totalModules} modules & ${totalLessons} lessons.`
           : 'Keep personal study notes together.';
         gridDescription = 'Organise study notes';
         break;
       case 'study_planner':
-        enabled = liveCourses.length > 0 && totalModules > 0;
-        availability = enabled ? 'data_available' : 'data_unavailable';
+        enabled = aiReady && liveCourses.length > 0 && totalModules > 0;
+        availability = enabled ? 'data_available' : 'implemented';
         phoneDescription = `Plan study sessions across ${liveCourses.length} live courses.`;
         gridDescription = 'Plan study sessions';
         break;
@@ -937,18 +995,16 @@ export function resolveDynamicCapabilities(ctx: PlatformMarketingContext): Dynam
         break;
       case 'battle_arena': {
         const switchEnabled = ctx.featureSwitches?.arena === true;
-        enabled = switchEnabled && liveCourses.length > 0;
-        availability = enabled
-          ? 'data_available'
-          : switchEnabled
-            ? 'switch_enabled'
-            : ctx.featureSwitches && typeof ctx.featureSwitches.arena === 'boolean'
-              ? 'switch_disabled'
-              : 'data_unavailable';
-        phoneDescription = enabled
+        enabled = false;
+        availability = switchEnabled
+          ? 'switch_enabled'
+          : ctx.featureSwitches && typeof ctx.featureSwitches.arena === 'boolean'
+            ? 'switch_disabled'
+            : 'data_unavailable';
+        phoneDescription = switchEnabled
           ? `Live academic challenges across ${liveCourses.length} courses.`
           : 'Academic Arena is disabled or its configuration is unavailable.';
-        gridDescription = enabled
+        gridDescription = switchEnabled
           ? 'Live academic arena'
           : 'Not enabled for students';
         break;
@@ -969,6 +1025,135 @@ export function resolveDynamicCapabilities(ctx: PlatformMarketingContext): Dynam
 
     return { ...definition, phoneDescription, gridDescription, enabled, availability };
   }).filter((item) => MARKETING_VIEWS.includes(item.view));
+}
+
+export const ALL_FLYER_THEMES: FlyerThemeId[] = [
+  'emerald_gold',
+  'royal_indigo',
+  'cyber_slate',
+  'crimson_scholar',
+  'obsidian_amber',
+  'violet_cosmos',
+];
+
+export const ALL_FLYER_LAYOUTS: FlyerLayoutVariant[] = [
+  'classic_campus_split',
+  'modern_bento_showcase',
+  'executive_spotlight',
+  'academic_crest_editorial',
+];
+
+export const ALL_FLYER_WAVES: FlyerWaveStyle[] = [
+  'curved',
+  'diagonal',
+  'stepped',
+  'architectural_arch',
+];
+
+export const ALL_FLYER_HERO_MODES: FlyerHeroVisualMode[] = [
+  'campus_scholar_svg',
+  'academic_cohort_card',
+  'custom_photo',
+];
+
+function computeContextHash(input: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return Math.abs(hash >>> 0);
+}
+
+export function resolveDynamicDesignTokens(
+  ctx: PlatformMarketingContext,
+  activeCohort?: PhoneHubCohort,
+  selectedCourse?: MarketingCourse,
+  seedOffset = 0
+): {
+  themeId: FlyerThemeId;
+  layoutVariant: FlyerLayoutVariant;
+  waveStyle: FlyerWaveStyle;
+  phoneTiltDeg: number;
+  topScriptCallout: string;
+  midScriptCallout: string;
+} {
+  const scope = ctx.targetScope;
+  const targetIdentity = [
+    scope,
+    scope === 'faculty' ? ctx.selectedFaculty : '',
+    scope === 'department' ? ctx.selectedDepartment : '',
+    scope === 'course' ? selectedCourse?.id || ctx.selectedCourseId : '',
+    activeCohort?.department || '',
+    activeCohort?.level || '',
+    activeCohort?.semester || '',
+  ]
+    .filter(Boolean)
+    .join(':');
+
+  const baseHash = computeContextHash(targetIdentity || 'uniace:dynamic') + Math.max(0, seedOffset);
+
+  // Scope-aware dynamic layout & theme resolution with deterministic discipline affinity
+  const disciplineText = `${ctx.selectedFaculty || ''} ${ctx.selectedDepartment || ''} ${selectedCourse?.department || ''} ${activeCohort?.faculty || ''}`.toLowerCase();
+
+  let preferredThemeIndex = baseHash % ALL_FLYER_THEMES.length;
+  if (seedOffset === 0) {
+    if (scope === 'full_ecosystem') {
+      preferredThemeIndex = 0; // emerald_gold
+    } else if (scope === 'exam_readiness') {
+      preferredThemeIndex = 4; // obsidian_amber
+    } else if (/med|health|nurs|anat|physio|pharm|clin/i.test(disciplineText)) {
+      preferredThemeIndex = 3; // crimson_scholar
+    } else if (/comput|cyber|soft|data|info/i.test(disciplineText)) {
+      preferredThemeIndex = 2; // cyber_slate
+    } else if (/law|art|human|social|manag/i.test(disciplineText)) {
+      preferredThemeIndex = 5; // violet_cosmos
+    } else if (/eng|tech|math|phys/i.test(disciplineText)) {
+      preferredThemeIndex = 1; // royal_indigo
+    }
+  } else {
+    preferredThemeIndex = (preferredThemeIndex + seedOffset) % ALL_FLYER_THEMES.length;
+  }
+
+  let layoutIndex = baseHash % ALL_FLYER_LAYOUTS.length;
+  if (seedOffset === 0) {
+    if (scope === 'full_ecosystem') layoutIndex = 0; // classic_campus_split
+    else if (scope === 'course') layoutIndex = 1; // modern_bento_showcase
+    else if (scope === 'department') layoutIndex = 2; // executive_spotlight
+    else if (scope === 'faculty') layoutIndex = 3; // academic_crest_editorial
+    else if (scope === 'exam_readiness') layoutIndex = 1; // modern_bento_showcase
+  } else {
+    layoutIndex = (layoutIndex + seedOffset) % ALL_FLYER_LAYOUTS.length;
+  }
+
+  const waveIndex = (baseHash + seedOffset * 3) % ALL_FLYER_WAVES.length;
+  const tiltOptions = [2, -2, 1.5, -1.5, 0];
+  const phoneTiltDeg = tiltOptions[(baseHash + seedOffset) % tiltOptions.length];
+
+  const topCalloutByScope: Record<MarketingTargetScope, string> = {
+    full_ecosystem: 'Your Study Companion',
+    faculty: `${ctx.selectedFaculty || activeCohort?.faculty || 'Faculty'} Focus`,
+    department: `${activeCohort?.levelLabel || 'University'} Cohort Hub`,
+    course: selectedCourse ? `${selectedCourse.id} Course Focus` : 'Course Spotlight',
+    exam_readiness: 'Structured Exam Revision',
+  };
+
+  const midCalloutByScope: Record<MarketingTargetScope, string> = {
+    full_ecosystem: 'Build your understanding',
+    faculty: 'Structured faculty curriculum',
+    department: `${activeCohort?.semesterLabel || 'Semester'} course mastery`,
+    course: selectedCourse ? `${selectedCourse.syllabus.length || 'Live'} course modules` : 'Step-by-step mastery',
+    exam_readiness: 'Practise with clarity',
+  };
+
+  return {
+    themeId: ALL_FLYER_THEMES[preferredThemeIndex],
+    layoutVariant: ALL_FLYER_LAYOUTS[layoutIndex],
+    waveStyle: ALL_FLYER_WAVES[waveIndex],
+    phoneTiltDeg,
+    topScriptCallout: topCalloutByScope[scope] || 'Your Study Companion',
+    midScriptCallout: midCalloutByScope[scope] || 'Build your understanding',
+  };
 }
 
 export function buildDynamicFlyerConfig(ctx: PlatformMarketingContext): DynamicFlyerConfig {
@@ -1048,12 +1233,13 @@ export function buildDynamicFlyerConfig(ctx: PlatformMarketingContext): DynamicF
   const resolvedProgramLabel = activeCohort.department;
   const resolvedLevelLabel = activeCohort.levelLabel;
   const resolvedSemesterLabel = activeCohort.semesterLabel;
+  const designTokens = resolveDynamicDesignTokens(ctx, activeCohort, selectedCourse, 0);
 
   return {
     brandName: 'UniAce Mastery Hub',
     brandSubline: ['Learn', 'Practise', 'Revise'],
-    topScriptCallout: 'Your Study Companion',
-    midScriptCallout: 'Build your understanding',
+    topScriptCallout: designTokens.topScriptCallout,
+    midScriptCallout: designTokens.midScriptCallout,
     headlineLine1,
     headlineLine2,
     leadBoldParagraph,
@@ -1073,7 +1259,10 @@ export function buildDynamicFlyerConfig(ctx: PlatformMarketingContext): DynamicF
     supportContact,
     supportSublabel: supportContact ? (isPhone ? '(Support Line)' : '(Official Support)') : '',
     footerPillars: ['COURSE-BASED LEARNING', 'PRACTICE & REVISION', 'STUDENT STUDY TOOLS'],
-    themeId: 'emerald_gold',
+    themeId: designTokens.themeId,
+    layoutVariant: designTokens.layoutVariant,
+    waveStyle: designTokens.waveStyle,
+    phoneTiltDeg: designTokens.phoneTiltDeg,
     studentPortraitMode: 'campus_scholar_svg',
     captions: {
       whatsapp: `🎓 *${headlineLine1} ${headlineLine2}*\n\n${leadBoldParagraph}\n\nAvailable tools:\n${featureList}\n\n🔗 Explore: ${url}`,
@@ -1149,11 +1338,14 @@ export async function synthesizeFlyerWithAI(
       title: capability.title,
       description: capability.phoneDescription
     })),
+    allowedVisualThemes: ALL_FLYER_THEMES,
+    allowedLayoutVariants: ALL_FLYER_LAYOUTS,
+    allowedWaveStyles: ALL_FLYER_WAVES,
     liveWebsiteUrl: currentConfig.qrTargetUrl,
     customCampaignAngle: customCampaignAngle?.trim() || null
   };
 
-  const prompt = `You are UniAce Mastery Hub's marketing copy editor.
+  const prompt = `You are UniAce Mastery Hub's marketing copy editor and visual art director.
 Use only the exact factual information supplied in this verified platform snapshot:
 
 ${JSON.stringify(contextSummary, null, 2)}
@@ -1168,6 +1360,8 @@ Rules:
   * If targetScope is "department", tailor the headlines and captions dynamically to that selectedDepartment and its live courses.
   * If targetScope is "course", spotlight the selectedCourse and mention companion live courses shown in phoneCourseHubPreview for that level and semester.
   * If customCampaignAngle is provided, follow that campaign angle while staying strictly within verified facts.
+- Visual design selection rules:
+  * Select a "themeId" from allowedVisualThemes, a "layoutVariant" from allowedLayoutVariants, and a "waveStyle" from allowedWaveStyles that best fit the campaign angle and academic focus.
 - Do not claim that all students can access a department- or faculty-restricted course; scope restrictions apply.
 - Return complete copy as a DRAFT for administrator review, not as independently verified fact.
 
@@ -1180,6 +1374,9 @@ Return only a JSON object with this structure:
   "leadBoldParagraph": "One concise value proposition based only on the supplied snapshot",
   "subParagraph": "One or two concise supporting sentences",
   "phoneGreeting": "Short greeting",
+  "themeId": "one of allowedVisualThemes",
+  "layoutVariant": "one of allowedLayoutVariants",
+  "waveStyle": "one of allowedWaveStyles",
   "featureBlurbs": [
     {
       "id": "exact capability ID from availableCapabilityIdsAndNames",
@@ -1243,6 +1440,16 @@ Return only a JSON object with this structure:
     };
   });
 
+  const nextThemeId = ALL_FLYER_THEMES.includes(parsed.themeId)
+    ? (parsed.themeId as FlyerThemeId)
+    : currentConfig.themeId;
+  const nextLayoutVariant = ALL_FLYER_LAYOUTS.includes(parsed.layoutVariant)
+    ? (parsed.layoutVariant as FlyerLayoutVariant)
+    : currentConfig.layoutVariant;
+  const nextWaveStyle = ALL_FLYER_WAVES.includes(parsed.waveStyle)
+    ? (parsed.waveStyle as FlyerWaveStyle)
+    : currentConfig.waveStyle;
+
   return {
     ...currentConfig,
     headlineLine1: parsed.headlineLine1.trim(),
@@ -1252,6 +1459,9 @@ Return only a JSON object with this structure:
     leadBoldParagraph: parsed.leadBoldParagraph.trim(),
     subParagraph: parsed.subParagraph.trim(),
     phoneGreeting: parsed.phoneGreeting.trim(),
+    themeId: nextThemeId,
+    layoutVariant: nextLayoutVariant,
+    waveStyle: nextWaveStyle,
     capabilities,
     captions: {
       whatsapp: parsed.captions.whatsapp.trim(),

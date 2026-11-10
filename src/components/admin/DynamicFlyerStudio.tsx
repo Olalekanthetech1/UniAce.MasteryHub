@@ -51,9 +51,16 @@ import {
 import { useMarketingSnapshot } from '../../hooks/useMarketingSnapshot';
 import { toMarketingCourseMap } from '../../services/marketingSnapshot';
 import {
+  ALL_FLYER_LAYOUTS,
+  ALL_FLYER_THEMES,
+  ALL_FLYER_WAVES,
   DynamicCapabilityItem,
   DynamicFlyerConfig,
+  FlyerHeroVisualMode,
+  FlyerLayoutVariant,
   FlyerPhoneScreenMode,
+  FlyerThemeId,
+  FlyerWaveStyle,
   MarketingTargetScope,
   PlatformMarketingContext,
   buildDynamicFlyerConfig,
@@ -63,8 +70,11 @@ import {
   formatAcademicSemesterBadge,
   formatCourseScopeBadge,
   getCandidateCohortDepartments,
+  getCandidateCohortLevels,
+  getCandidateCohortSemesters,
   getEligibleCoursesForCohort,
   resolveActivePhoneHubCohort,
+  resolveDynamicDesignTokens,
   resolvePhoneHubCourses,
   synthesizeFlyerWithAI,
 } from '../../services/demoReelService';
@@ -80,42 +90,176 @@ import {
   saveMarketingAssetVersion,
 } from '../../services/marketingAssetHistory';
 
-const THEME_PALETTES = {
+export interface FlyerThemePalette {
+  name: string;
+  shortLabel: string;
+  topBg: string;
+  bokehGradient: string;
+  accentText: string;
+  accentLight: string;
+  accentMuted: string;
+  accentSoftBg: string;
+  accentBorder: string;
+  darkHeadline: string;
+  deckWaveFill: string;
+  deckGradient: string;
+  footerStripBg: string;
+  ctaBg: string;
+  ctaText: string;
+  scriptColor: string;
+  hoodiePrimary: string;
+  hoodieSecondary: string;
+  hoodieDark: string;
+}
+
+const THEME_PALETTES: Record<FlyerThemeId, FlyerThemePalette> = {
   emerald_gold: {
     name: 'UniAce Emerald & Gold',
+    shortLabel: 'Emerald',
     topBg: '#f6faf7',
+    bokehGradient:
+      'radial-gradient(circle at 28% 58%, rgba(254, 243, 199, 0.55) 0%, rgba(209, 250, 229, 0.35) 38%, rgba(246, 250, 247, 0.95) 78%)',
     accentText: '#0d7a3e',
+    accentLight: '#6ee7b7',
+    accentMuted: '#d1fae5',
+    accentSoftBg: '#ecfdf5',
+    accentBorder: '#a7f3d0',
     darkHeadline: '#0b2919',
+    deckWaveFill: '#085c2f',
     deckGradient: 'linear-gradient(160deg, #0b6b37 0%, #064e28 55%, #04351b 100%)',
     footerStripBg: '#032613',
     ctaBg: '#f4b928',
     ctaText: '#062814',
     scriptColor: '#0d6835',
+    hoodiePrimary: '#0b6b37',
+    hoodieSecondary: '#064e28',
+    hoodieDark: '#033018',
   },
   royal_indigo: {
     name: 'Royal Academic Indigo',
+    shortLabel: 'Indigo',
     topBg: '#f6f8fc',
+    bokehGradient:
+      'radial-gradient(circle at 28% 58%, rgba(224, 231, 255, 0.65) 0%, rgba(199, 210, 254, 0.38) 38%, rgba(246, 248, 252, 0.95) 78%)',
     accentText: '#3730a3',
+    accentLight: '#a5b4fc',
+    accentMuted: '#e0e7ff',
+    accentSoftBg: '#eef2ff',
+    accentBorder: '#c7d2fe',
     darkHeadline: '#0f172a',
+    deckWaveFill: '#1e1b4b',
     deckGradient: 'linear-gradient(160deg, #1e1b4b 0%, #1e3a8a 55%, #0f172a 100%)',
     footerStripBg: '#090d16',
     ctaBg: '#f59e0b',
     ctaText: '#0f172a',
     scriptColor: '#3730a3',
+    hoodiePrimary: '#312e81',
+    hoodieSecondary: '#1e3a8a',
+    hoodieDark: '#0f172a',
   },
   cyber_slate: {
     name: 'Prestige Slate & Teal',
+    shortLabel: 'Teal',
     topBg: '#f4f7f8',
+    bokehGradient:
+      'radial-gradient(circle at 28% 58%, rgba(204, 251, 241, 0.6) 0%, rgba(224, 242, 254, 0.38) 38%, rgba(244, 247, 248, 0.95) 78%)',
     accentText: '#0f766e',
+    accentLight: '#5eead4',
+    accentMuted: '#ccfbf1',
+    accentSoftBg: '#f0fdfa',
+    accentBorder: '#99f6e4',
     darkHeadline: '#091518',
+    deckWaveFill: '#0f524d',
     deckGradient: 'linear-gradient(160deg, #0f524d 0%, #0b3b3c 55%, #072227 100%)',
     footerStripBg: '#041518',
     ctaBg: '#fbbf24',
     ctaText: '#041518',
     scriptColor: '#0f766e',
+    hoodiePrimary: '#0f766e',
+    hoodieSecondary: '#115e59',
+    hoodieDark: '#042f2e',
+  },
+  crimson_scholar: {
+    name: 'Crimson Clinical & Sciences',
+    shortLabel: 'Crimson',
+    topBg: '#fcf7f8',
+    bokehGradient:
+      'radial-gradient(circle at 28% 58%, rgba(254, 226, 226, 0.58) 0%, rgba(254, 243, 199, 0.35) 38%, rgba(252, 247, 248, 0.95) 78%)',
+    accentText: '#9f1239',
+    accentLight: '#fda4af',
+    accentMuted: '#ffe4e6',
+    accentSoftBg: '#fff1f2',
+    accentBorder: '#fecdd3',
+    darkHeadline: '#2a0813',
+    deckWaveFill: '#881337',
+    deckGradient: 'linear-gradient(160deg, #881337 0%, #650d28 55%, #3b0616 100%)',
+    footerStripBg: '#26040e',
+    ctaBg: '#fbbf24',
+    ctaText: '#2a0813',
+    scriptColor: '#9f1239',
+    hoodiePrimary: '#9f1239',
+    hoodieSecondary: '#881337',
+    hoodieDark: '#4c0519',
+  },
+  obsidian_amber: {
+    name: 'Obsidian & Honours Gold',
+    shortLabel: 'Obsidian',
+    topBg: '#f8fafc',
+    bokehGradient:
+      'radial-gradient(circle at 28% 58%, rgba(254, 243, 199, 0.65) 0%, rgba(226, 232, 240, 0.45) 38%, rgba(248, 250, 252, 0.95) 78%)',
+    accentText: '#b45309',
+    accentLight: '#fcd34d',
+    accentMuted: '#fef3c7',
+    accentSoftBg: '#fffbeb',
+    accentBorder: '#fde68a',
+    darkHeadline: '#0f172a',
+    deckWaveFill: '#1e293b',
+    deckGradient: 'linear-gradient(160deg, #1e293b 0%, #0f172a 55%, #020617 100%)',
+    footerStripBg: '#020617',
+    ctaBg: '#f59e0b',
+    ctaText: '#0f172a',
+    scriptColor: '#b45309',
+    hoodiePrimary: '#334155',
+    hoodieSecondary: '#1e293b',
+    hoodieDark: '#0f172a',
+  },
+  violet_cosmos: {
+    name: 'Imperial Violet & Gold',
+    shortLabel: 'Violet',
+    topBg: '#faf7fc',
+    bokehGradient:
+      'radial-gradient(circle at 28% 58%, rgba(243, 232, 255, 0.65) 0%, rgba(224, 231, 255, 0.38) 38%, rgba(250, 247, 252, 0.95) 78%)',
+    accentText: '#6d28d9',
+    accentLight: '#c4b5fd',
+    accentMuted: '#ede9fe',
+    accentSoftBg: '#f5f3ff',
+    accentBorder: '#ddd6fe',
+    darkHeadline: '#1e1035',
+    deckWaveFill: '#4c1d95',
+    deckGradient: 'linear-gradient(160deg, #5b21b6 0%, #3b0764 55%, #240442 100%)',
+    footerStripBg: '#17022b',
+    ctaBg: '#fbbf24',
+    ctaText: '#1e1035',
+    scriptColor: '#6d28d9',
+    hoodiePrimary: '#6d28d9',
+    hoodieSecondary: '#4c1d95',
+    hoodieDark: '#2e1065',
   },
 };
 
+const LAYOUT_VARIANT_LABELS: Record<FlyerLayoutVariant, { label: string; badge: string }> = {
+  classic_campus_split: { label: 'Editorial Split', badge: 'Left Copy • Right Phone' },
+  modern_bento_showcase: { label: 'Bento Mirrored', badge: 'Left Phone • Right Bento' },
+  executive_spotlight: { label: 'Executive Ribbon', badge: 'Scope Ribbon • Framed Copy' },
+  academic_crest_editorial: { label: 'University Crest', badge: 'Crest Header • Metric Deck' },
+};
+
+const WAVE_STYLE_LABELS: Record<FlyerWaveStyle, string> = {
+  curved: 'Curved Sweep',
+  diagonal: 'Angular Slash',
+  stepped: 'Architectural Step',
+  architectural_arch: 'Symmetric Arch',
+};
 
 type FlyerExportFormat = 'square' | 'vertical' | 'landscape';
 
@@ -221,14 +365,7 @@ function composeFlyerExport(
   format: FlyerExportFormat,
   config: DynamicFlyerConfig,
   qrMatrix: boolean[][],
-  palette: {
-    topBg: string;
-    accentText: string;
-    darkHeadline: string;
-    footerStripBg: string;
-    ctaBg: string;
-    ctaText: string;
-  }
+  palette: FlyerThemePalette
 ): HTMLCanvasElement {
   const size = FLYER_EXPORT_SIZES[format];
   const canvas = document.createElement('canvas');
@@ -237,39 +374,16 @@ function composeFlyerExport(
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas rendering is unavailable in this browser.');
 
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
   ctx.fillStyle = palette.topBg;
   ctx.fillRect(0, 0, size.width, size.height);
   ctx.textBaseline = 'top';
 
   if (format === 'vertical') {
-    ctx.fillStyle = palette.footerStripBg;
-    ctx.fillRect(0, 0, size.width, 156);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '900 44px Arial, sans-serif';
-    ctx.fillText('UniAce Mastery Hub', 58, 38, 960);
-    ctx.fillStyle = '#d1fae5';
-    ctx.font = '600 20px Arial, sans-serif';
-    ctx.fillText(config.brandSubline.filter(Boolean).join('  •  '), 60, 98, 960);
-
-    const marginX = 54;
-    const top = 176;
-    const bottom = 1748;
-    const scale = Math.min((size.width - marginX * 2) / source.width, (bottom - top) / source.height);
-    const drawWidth = source.width * scale;
-    const drawHeight = source.height * scale;
-    ctx.drawImage(source, (size.width - drawWidth) / 2, top + (bottom - top - drawHeight) / 2, drawWidth, drawHeight);
-
-    ctx.fillStyle = palette.footerStripBg;
-    ctx.fillRect(0, 1770, size.width, 150);
-    ctx.fillStyle = palette.ctaBg;
-    ctx.fillRect(54, 1800, 310, 64);
-    ctx.fillStyle = palette.ctaText;
-    ctx.font = '900 25px Arial, sans-serif';
-    ctx.fillText(config.ctaText, 76, 1818, 270);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '700 23px Arial, sans-serif';
-    ctx.fillText(config.websiteDisplayUrl, 396, 1817, 625);
-    return canvas;
+    // Export the complete, edge-to-edge Ultra-HD flyer directly without any duplicate
+    // top header bar, outer white border, or duplicate bottom "Explore UniAce" strip.
+    return source;
   }
 
   if (format === 'square') {
@@ -284,13 +398,13 @@ function composeFlyerExport(
     ctx.fillStyle = palette.footerStripBg;
     ctx.fillRect(rightX - 12, 28, rightWidth + 22, 1024);
 
-    ctx.fillStyle = '#d1fae5';
+    ctx.fillStyle = palette.accentMuted;
     ctx.font = '800 17px Arial, sans-serif';
-    ctx.fillText('UNIACE MASTERY HUB', rightX + 8, 66, rightWidth - 16);
+    ctx.fillText(config.brandName.toUpperCase(), rightX + 8, 66, rightWidth - 16);
     ctx.fillStyle = '#ffffff';
     ctx.font = '900 29px Arial, sans-serif';
     let y = drawWrappedCanvasText(ctx, config.headlineLine1, rightX + 8, 126, rightWidth - 18, 36, 3);
-    ctx.fillStyle = '#6ee7b7';
+    ctx.fillStyle = palette.accentLight;
     y = drawWrappedCanvasText(ctx, config.headlineLine2, rightX + 8, y + 4, rightWidth - 18, 36, 4);
     ctx.fillStyle = '#ffffff';
     ctx.font = '700 16px Arial, sans-serif';
@@ -324,13 +438,13 @@ function composeFlyerExport(
 
   ctx.fillStyle = palette.footerStripBg;
   ctx.fillRect(contentX - 28, 34, size.width - contentX + 28, size.height - 68);
-  ctx.fillStyle = '#a7f3d0';
+  ctx.fillStyle = palette.accentLight;
   ctx.font = '900 20px Arial, sans-serif';
-  ctx.fillText('UNIACE MASTERY HUB', contentX, 86, contentWidth);
+  ctx.fillText(config.brandName.toUpperCase(), contentX, 86, contentWidth);
   ctx.fillStyle = '#ffffff';
   ctx.font = '900 64px Arial, sans-serif';
   let y = drawWrappedCanvasText(ctx, config.headlineLine1, contentX, 160, contentWidth, 74, 3);
-  ctx.fillStyle = '#6ee7b7';
+  ctx.fillStyle = palette.accentLight;
   y = drawWrappedCanvasText(ctx, config.headlineLine2, contentX, y + 4, contentWidth, 74, 3);
   ctx.fillStyle = '#ffffff';
   ctx.font = '800 27px Arial, sans-serif';
@@ -338,12 +452,6 @@ function composeFlyerExport(
   ctx.fillStyle = '#d1d5db';
   ctx.font = '500 21px Arial, sans-serif';
   y = drawWrappedCanvasText(ctx, config.subParagraph, contentX, y + 20, contentWidth, 30, 4);
-
-  ctx.fillStyle = palette.ctaBg;
-  ctx.fillRect(contentX, 870, Math.min(360, contentWidth), 74);
-  ctx.fillStyle = palette.ctaText;
-  ctx.font = '900 28px Arial, sans-serif';
-  ctx.fillText(config.ctaText, contentX + 22, 892, Math.min(320, contentWidth - 30));
 
   drawCanvasQr(ctx, qrMatrix, qrX, 650, qrSize);
   ctx.fillStyle = '#ffffff';
@@ -355,7 +463,7 @@ function composeFlyerExport(
   ctx.textAlign = 'left';
 
   if (config.supportContact) {
-    ctx.fillStyle = '#d1fae5';
+    ctx.fillStyle = palette.accentMuted;
     ctx.font = '600 16px Arial, sans-serif';
     ctx.fillText(config.supportContact, contentX, 974, Math.max(0, contentWidth));
   }
@@ -485,6 +593,7 @@ export default function DynamicFlyerStudio() {
   );
 
   const [flyerConfig, setFlyerConfig] = useState<DynamicFlyerConfig | null>(null);
+  const [designSeedOffset, setDesignSeedOffset] = useState<number>(0);
 
   useEffect(() => {
     if (!snapshot) {
@@ -496,10 +605,12 @@ export default function DynamicFlyerStudio() {
       return prev
         ? {
             ...next,
-            themeId: prev.themeId,
             studentPortraitMode: prev.studentPortraitMode,
             customPhotoDataUrl: prev.customPhotoDataUrl,
-            phoneScreenMode: prev.phoneScreenMode || next.phoneScreenMode,
+            phoneScreenMode:
+              prev.phoneScreenMode === 'capabilities_list'
+                ? 'capabilities_list'
+                : next.phoneScreenMode,
             customPhoneScreenDataUrl: prev.customPhoneScreenDataUrl,
           }
         : next;
@@ -513,6 +624,16 @@ export default function DynamicFlyerStudio() {
 
   const candidateCohortDepartments = useMemo(
     () => getCandidateCohortDepartments(marketingContext),
+    [marketingContext]
+  );
+
+  const candidateCohortLevels = useMemo(
+    () => getCandidateCohortLevels(marketingContext),
+    [marketingContext]
+  );
+
+  const candidateCohortSemesters = useMemo(
+    () => getCandidateCohortSemesters(marketingContext),
     [marketingContext]
   );
 
@@ -530,6 +651,38 @@ export default function DynamicFlyerStudio() {
       flyerConfig?.phoneSemesterLabel,
     ]
   );
+
+  const handleShuffleDynamicDesign = () => {
+    const nextSeed = designSeedOffset + 1;
+    setDesignSeedOffset(nextSeed);
+    const selectedCourse = courses[selectedCourseId] || courseList[0];
+    const tokens = resolveDynamicDesignTokens(
+      marketingContext,
+      activePhoneCohort,
+      selectedCourse,
+      nextSeed
+    );
+    setFlyerConfig((prev) => {
+      if (!prev) return prev;
+      const nextHeroMode: FlyerHeroVisualMode =
+        prev.studentPortraitMode === 'custom_photo' && prev.customPhotoDataUrl
+          ? 'custom_photo'
+          : nextSeed % 3 === 1
+            ? 'academic_cohort_card'
+            : 'campus_scholar_svg';
+      return {
+        ...prev,
+        themeId: tokens.themeId,
+        layoutVariant: tokens.layoutVariant,
+        waveStyle: tokens.waveStyle,
+        phoneTiltDeg: tokens.phoneTiltDeg,
+        studentPortraitMode: nextHeroMode,
+      };
+    });
+    toast.success(
+      `Applied dynamic design: ${THEME_PALETTES[tokens.themeId].name} · ${LAYOUT_VARIANT_LABELS[tokens.layoutVariant].label}`
+    );
+  };
 
   const phoneHubCourses = useMemo(
     () =>
@@ -799,31 +952,30 @@ export default function DynamicFlyerStudio() {
       const image = new Image();
       image.onerror = () => toast.error('The selected screen image could not be decoded.');
       image.onload = () => {
-        const maxDimension = 1400;
+        const maxDimension = 2400;
         const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
         const canvas = document.createElement('canvas');
         canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
         canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
         const context = canvas.getContext('2d');
         if (!context) {
-          toast.error('Image compression is unavailable in this browser.');
+          toast.error('Image processing is unavailable in this browser.');
           return;
         }
+        context.imageSmoothingEnabled = true;
+        context.imageSmoothingQuality = 'high';
         context.drawImage(image, 0, 0, canvas.width, canvas.height);
-        let compressed = canvas.toDataURL('image/webp', 0.86);
-        if (!compressed.startsWith('data:image/webp;')) {
-          compressed = canvas.toDataURL('image/jpeg', 0.86);
-        }
+        const losslessPng = canvas.toDataURL('image/png');
         setFlyerConfig((prev) =>
           prev
             ? {
                 ...prev,
                 phoneScreenMode: 'custom_screen_upload',
-                customPhoneScreenDataUrl: compressed,
+                customPhoneScreenDataUrl: losslessPng,
               }
             : prev
         );
-        toast.success('Phone screen capture applied to 3D phone mockup.');
+        toast.success('High-resolution screen capture applied to 3D phone mockup.');
       };
       image.src = reader.result;
     };
@@ -919,7 +1071,7 @@ export default function DynamicFlyerStudio() {
     setIsExportingPng(true);
     try {
       const source = await renderElementToCanvasSafe(posterRef.current, {
-        scale: 2.5,
+        scale: 3.5,
         useCORS: true,
         allowTaint: true,
         logging: false,
@@ -941,7 +1093,7 @@ export default function DynamicFlyerStudio() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      toast.success(`PNG exported at ${FLYER_EXPORT_SIZES[exportFormat].width} × ${FLYER_EXPORT_SIZES[exportFormat].height}px.`);
+      toast.success(`Ultra-HD PNG exported at ${canvas.width} × ${canvas.height}px.`);
     } catch (err: any) {
       console.error('Flyer PNG export failed:', err);
       toast.error(err?.message || 'Could not export PNG flyer. Please try again.');
@@ -1319,65 +1471,164 @@ export default function DynamicFlyerStudio() {
             </div>
           </div>
 
-          {/* Theme Palette & Student Photo Upload */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+          {/* Dynamic Visual Architecture, Palette, Wave & Hero Mode */}
+          <div className="pt-3 border-t border-slate-100 dark:border-slate-700/60 space-y-3.5">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <label className="text-[11px] font-bold text-slate-600 dark:text-slate-300 uppercase block">
+                  Dynamic Visual Architecture & Palette
+                </label>
+                <p className="text-[10px] text-slate-500">
+                  Auto-adapts to scope & discipline, or shuffle/select any combination.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleShuffleDynamicDesign}
+                className="px-3 py-1.5 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[11px] font-black flex items-center gap-1.5 shadow-xs hover:opacity-90 active:scale-95 transition-all shrink-0"
+              >
+                <RefreshCw size={12} />
+                <span>Shuffle Design</span>
+              </button>
+            </div>
+
+            {/* 6 Dynamic Academic Color Palettes */}
             <div>
-              <label className="text-[11px] font-bold text-slate-500 uppercase block mb-1.5">
-                Poster Color Palette
+              <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">
+                Color Theme ({THEME_PALETTES[flyerConfig.themeId]?.name})
               </label>
-              <div className="flex gap-2">
-                {(['emerald_gold', 'royal_indigo', 'cyber_slate'] as const).map((tId) => (
-                  <button
-                    key={tId}
-                    type="button"
-                    onClick={() => setFlyerConfig({ ...flyerConfig, themeId: tId })}
-                    className={`flex-1 py-2 px-2 rounded-xl text-[11px] font-bold border transition-all ${
-                      flyerConfig.themeId === tId
-                        ? 'border-slate-900 dark:border-white bg-slate-900 text-white dark:bg-white dark:text-slate-900'
-                        : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
-                    }`}
-                  >
-                    {tId === 'emerald_gold' ? 'Emerald' : tId === 'royal_indigo' ? 'Indigo' : 'Teal'}
-                  </button>
-                ))}
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+                {ALL_FLYER_THEMES.map((tId) => {
+                  const p = THEME_PALETTES[tId];
+                  const isSelected = flyerConfig.themeId === tId;
+                  return (
+                    <button
+                      key={tId}
+                      type="button"
+                      onClick={() => setFlyerConfig({ ...flyerConfig, themeId: tId })}
+                      className={`py-1.5 px-2 rounded-xl text-[10.5px] font-bold border transition-all flex items-center justify-center gap-1.5 ${
+                        isSelected
+                          ? 'border-slate-900 dark:border-white bg-slate-900 text-white dark:bg-white dark:text-slate-900 shadow-xs'
+                          : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-slate-400'
+                      }`}
+                    >
+                      <span
+                        className="w-2.5 h-2.5 rounded-full shrink-0 border border-white/50"
+                        style={{ backgroundColor: p.accentText }}
+                      />
+                      <span className="truncate">{p.shortLabel}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
+            {/* 4 Dynamic Structural Layout Variants */}
             <div>
-              <label className="text-[11px] font-bold text-slate-500 uppercase block mb-1.5">
-                Campus Scholar Visual
+              <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">
+                Poster Layout Architecture
               </label>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                onChange={handlePhotoUpload}
-                className="hidden"
-              />
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="flex-1 py-2 px-3 rounded-xl bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-800 dark:text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
+              <div className="grid grid-cols-2 gap-1.5">
+                {ALL_FLYER_LAYOUTS.map((lId) => {
+                  const meta = LAYOUT_VARIANT_LABELS[lId];
+                  const activeLayout = flyerConfig.layoutVariant || 'classic_campus_split';
+                  return (
+                    <button
+                      key={lId}
+                      type="button"
+                      onClick={() => setFlyerConfig({ ...flyerConfig, layoutVariant: lId })}
+                      className={`p-2 rounded-xl text-left border transition-all ${
+                        activeLayout === lId
+                          ? 'border-emerald-600 bg-emerald-50/80 dark:bg-emerald-950/40 text-slate-900 dark:text-white'
+                          : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      <div className="text-[11px] font-extrabold leading-tight">{meta.label}</div>
+                      <div className="text-[9.5px] text-slate-500 dark:text-slate-400 mt-0.5">{meta.badge}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Dynamic Wave Geometry + Hero Visual Mode */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">
+                  Deck Wave Geometry
+                </label>
+                <select
+                  value={flyerConfig.waveStyle || 'curved'}
+                  onChange={(e) =>
+                    setFlyerConfig({
+                      ...flyerConfig,
+                      waveStyle: e.target.value as FlyerWaveStyle,
+                    })
+                  }
+                  className="w-full px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-900 dark:text-white"
                 >
-                  <Upload size={13} />
-                  <span>Upload Photo</span>
-                </button>
-                {flyerConfig.customPhotoDataUrl && (
+                  {ALL_FLYER_WAVES.map((wId) => (
+                    <option key={wId} value={wId}>
+                      {WAVE_STYLE_LABELS[wId]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">
+                  Hero Visual Showcase
+                </label>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handlePhotoUpload}
+                  className="hidden"
+                />
+                <div className="flex gap-1.5">
                   <button
                     type="button"
                     onClick={() =>
                       setFlyerConfig({
                         ...flyerConfig,
-                        studentPortraitMode: 'campus_scholar_svg',
-                        customPhotoDataUrl: undefined,
+                        studentPortraitMode:
+                          flyerConfig.studentPortraitMode === 'campus_scholar_svg'
+                            ? 'academic_cohort_card'
+                            : 'campus_scholar_svg',
                       })
                     }
-                    className="py-2 px-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-300 text-xs font-bold"
+                    className="flex-1 py-2 px-2.5 rounded-xl bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-800 dark:text-white text-[11px] font-bold transition-colors truncate"
                   >
-                    Reset
+                    {flyerConfig.studentPortraitMode === 'academic_cohort_card'
+                      ? 'Mode: Cohort Card'
+                      : 'Mode: Scholar Vector'}
                   </button>
-                )}
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="py-2 px-2.5 rounded-xl bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-800 dark:text-white text-[11px] font-bold flex items-center justify-center gap-1 transition-colors shrink-0"
+                    title="Upload custom scholar photo"
+                  >
+                    <Upload size={12} />
+                    <span>Photo</span>
+                  </button>
+                  {flyerConfig.customPhotoDataUrl && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setFlyerConfig({
+                          ...flyerConfig,
+                          studentPortraitMode: 'campus_scholar_svg',
+                          customPhotoDataUrl: undefined,
+                        })
+                      }
+                      className="py-2 px-2 rounded-xl bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-300 text-[10px] font-bold"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -1518,7 +1769,7 @@ export default function DynamicFlyerStudio() {
                       onChange={(e) => handleSelectPhoneCohort({ level: e.target.value })}
                       className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-white"
                     >
-                      {(['100', '200', '300', '400', '500'] as const).map((lvl) => {
+                      {candidateCohortLevels.map((lvl) => {
                         const count = getEligibleCoursesForCohort(
                           marketingContext,
                           activePhoneCohort.department,
@@ -1542,7 +1793,7 @@ export default function DynamicFlyerStudio() {
                       onChange={(e) => handleSelectPhoneCohort({ semester: e.target.value })}
                       className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-white"
                     >
-                      {(['1st Semester', '2nd Semester'] as const).map((sem) => {
+                      {candidateCohortSemesters.map((sem) => {
                         const count = getEligibleCoursesForCohort(
                           marketingContext,
                           activePhoneCohort.department,
@@ -1568,12 +1819,12 @@ export default function DynamicFlyerStudio() {
                   {isSynthesizingAI ? (
                     <>
                       <RefreshCw size={12} className="animate-spin" />
-                      <span>AI Synthesizing Dynamic Copy & Captions...</span>
+                      <span>AI Synthesizing Dynamic Copy & Design...</span>
                     </>
                   ) : (
                     <>
                       <Sparkles size={12} />
-                      <span>AI-Generate Dynamic Flyer Copy & Captions for Current Scope</span>
+                      <span>AI-Generate Dynamic Flyer Copy, Captions & Design</span>
                     </>
                   )}
                 </button>
@@ -1918,813 +2169,1164 @@ export default function DynamicFlyerStudio() {
 
         {/* POSTER CANVAS WRAPPER */}
         <div className="w-full overflow-x-auto pb-4 flex justify-center">
-          <div
-            ref={posterRef}
-            style={{
-              width: '760px',
-              minWidth: '760px',
-              height: '1080px',
-              backgroundColor: palette.topBg,
-              fontFamily: "'Plus Jakarta Sans', 'DM Sans', sans-serif",
-            }}
-            className="relative overflow-hidden rounded-[24px] shadow-2xl border border-slate-200/80 select-none flex flex-col justify-between text-slate-900"
-          >
-            {/* Subtle warm sunlit campus bokeh background in upper section */}
-            <div
-              className="absolute inset-x-0 top-0 h-[690px] pointer-events-none"
-              style={{
-                background:
-                  'radial-gradient(circle at 28% 58%, rgba(254, 243, 199, 0.55) 0%, rgba(209, 250, 229, 0.35) 38%, rgba(246, 250, 247, 0.95) 78%)',
-              }}
-            />
+          {(() => {
+            const activeLayout: FlyerLayoutVariant =
+              flyerConfig.layoutVariant || 'classic_campus_split';
+            const activeWave: FlyerWaveStyle = flyerConfig.waveStyle || 'curved';
+            const isMirroredBento = activeLayout === 'modern_bento_showcase';
+            const isFramedEditorial =
+              activeLayout === 'modern_bento_showcase' ||
+              activeLayout === 'executive_spotlight';
+            const showScopeRibbon =
+              activeLayout === 'executive_spotlight' ||
+              activeLayout === 'academic_crest_editorial';
+            const rawTilt =
+              typeof flyerConfig.phoneTiltDeg === 'number' ? flyerConfig.phoneTiltDeg : 2;
+            const effectivePhoneTilt = isMirroredBento && rawTilt > 0 ? -rawTilt : rawTilt;
+            const totalCohortModules = activePhoneCohort.courses.reduce(
+              (sum, c) => sum + (c.syllabus?.length || 0),
+              0
+            );
+            const wavePathByStyle: Record<FlyerWaveStyle, string> = {
+              curved: 'M 0 50 L 0 20 Q 260 48, 520 11 L 760 0 L 760 50 Z',
+              diagonal: 'M 0 50 L 0 36 L 760 0 L 760 50 Z',
+              stepped: 'M 0 50 L 0 32 L 260 32 L 310 16 L 540 16 L 590 2 L 760 2 L 760 50 Z',
+              architectural_arch: 'M 0 50 L 0 34 Q 380 -10, 760 34 L 760 50 Z',
+            };
 
-            {/* Soft green geometric wave accent on right side behind phone */}
-            <svg
-              viewBox="0 0 760 720"
-              className="absolute inset-x-0 top-0 w-full h-[720px] pointer-events-none"
-              preserveAspectRatio="none"
-            >
-              <path
-                d="M 520 120 C 640 180, 720 260, 760 220 L 760 700 L 340 700 Z"
-                fill={palette.accentText}
-                fillOpacity="0.16"
-              />
-              <path
-                d="M 440 310 C 570 340, 680 280, 760 330 L 760 720 L 240 720 Z"
-                fill={palette.accentText}
-                fillOpacity="0.22"
-              />
-            </svg>
+            return (
+              <div
+                ref={posterRef}
+                style={{
+                  width: '760px',
+                  minWidth: '760px',
+                  height: '1080px',
+                  backgroundColor: palette.topBg,
+                  fontFamily: "'Plus Jakarta Sans', 'DM Sans', sans-serif",
+                }}
+                className="relative overflow-hidden rounded-[24px] shadow-2xl border border-slate-200/80 select-none flex flex-col justify-between text-slate-900"
+              >
+                {/* Dynamic Palette Bokeh Backdrop */}
+                <div
+                  className="absolute inset-x-0 top-0 h-[690px] pointer-events-none"
+                  style={{
+                    background: palette.bokehGradient,
+                  }}
+                />
 
-            {/* ================= TOP & MIDDLE CONTENT AREA ================= */}
-            <div className="relative z-10 px-10 pt-9 flex-1 flex flex-col">
-              {/* Top Header Row: Brand Emblem + Handwritten Callout */}
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-4">
-                  {/* Brand Icon Box */}
-                  <div
-                    className="w-[74px] h-[74px] rounded-[20px] flex items-center justify-center shadow-lg relative overflow-hidden shrink-0"
-                    style={{ background: palette.deckGradient }}
-                  >
-                    {/* Open Book + Golden Sparkle SVG matching reference aesthetic */}
-                    <svg viewBox="0 0 64 64" className="w-12 h-12">
+                {/* Dynamic Geometric Backdrop Accents Adapting to Layout Variant & Palette */}
+                <svg
+                  viewBox="0 0 760 720"
+                  className="absolute inset-x-0 top-0 w-full h-[720px] pointer-events-none"
+                  preserveAspectRatio="none"
+                >
+                  {isMirroredBento ? (
+                    <>
                       <path
-                        d="M10 18 C18 15, 26 17, 32 22 C38 17, 46 15, 54 18 L54 48 C46 45, 38 47, 32 52 C26 47, 18 45, 10 48 Z"
-                        fill="#ffffff"
+                        d="M 0 110 C 140 175, 240 250, 390 210 L 430 700 L 0 700 Z"
+                        fill={palette.accentText}
+                        fillOpacity="0.14"
                       />
                       <path
-                        d="M32 22 L32 51"
-                        stroke="#a7f3d0"
-                        strokeWidth="2.5"
-                        strokeLinecap="round"
+                        d="M 0 300 C 180 340, 310 270, 490 330 L 520 720 L 0 720 Z"
+                        fill={palette.accentText}
+                        fillOpacity="0.2"
+                      />
+                    </>
+                  ) : activeLayout === 'academic_crest_editorial' ? (
+                    <>
+                      <circle
+                        cx="610"
+                        cy="260"
+                        r="230"
+                        fill={palette.accentText}
+                        fillOpacity="0.11"
                       />
                       <path
-                        d="M48 8 L50.5 14.5 L57 17 L50.5 19.5 L48 26 L45.5 19.5 L39 17 L45.5 14.5 Z"
-                        fill="#fbbf24"
+                        d="M 380 240 L 760 120 L 760 720 L 240 720 Z"
+                        fill={palette.accentText}
+                        fillOpacity="0.18"
                       />
-                    </svg>
-                  </div>
+                    </>
+                  ) : (
+                    <>
+                      <path
+                        d="M 520 120 C 640 180, 720 260, 760 220 L 760 700 L 340 700 Z"
+                        fill={palette.accentText}
+                        fillOpacity="0.16"
+                      />
+                      <path
+                        d="M 440 310 C 570 340, 680 280, 760 330 L 760 720 L 240 720 Z"
+                        fill={palette.accentText}
+                        fillOpacity="0.22"
+                      />
+                    </>
+                  )}
+                </svg>
 
-                  <div>
-                    <div className="flex items-baseline gap-2">
-                      <span
-                        className="text-[36px] font-black tracking-tight leading-none"
-                        style={{ color: palette.darkHeadline }}
+                {/* ================= TOP & MIDDLE CONTENT AREA ================= */}
+                <div className="relative z-10 px-10 pt-8 flex-1 flex flex-col">
+                  {/* Top Header Row: Dynamic Brand Emblem + Dynamic Script Callout / Scope Badge */}
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-center gap-4">
+                      {/* Dynamic Brand Icon Box */}
+                      <div
+                        className="w-[70px] h-[70px] rounded-[20px] flex items-center justify-center shadow-lg relative overflow-hidden shrink-0"
+                        style={{ background: palette.deckGradient }}
                       >
-                        UniAce
-                      </span>
-                      <span
-                        className="text-[36px] font-black tracking-tight leading-none"
-                        style={{ color: palette.accentText }}
-                      >
-                        Mastery AI
-                      </span>
+                        <svg viewBox="0 0 64 64" className="w-11 h-11">
+                          <path
+                            d="M10 18 C18 15, 26 17, 32 22 C38 17, 46 15, 54 18 L54 48 C46 45, 38 47, 32 52 C26 47, 18 45, 10 48 Z"
+                            fill="#ffffff"
+                          />
+                          <path
+                            d="M32 22 L32 51"
+                            stroke={palette.accentLight}
+                            strokeWidth="2.5"
+                            strokeLinecap="round"
+                          />
+                          <path
+                            d="M48 8 L50.5 14.5 L57 17 L50.5 19.5 L48 26 L45.5 19.5 L39 17 L45.5 14.5 Z"
+                            fill={palette.ctaBg}
+                          />
+                        </svg>
+                      </div>
+
+                      <div>
+                        <div className="flex items-baseline gap-2">
+                          <span
+                            className="text-[35px] font-black tracking-tight leading-none"
+                            style={{ color: palette.darkHeadline }}
+                          >
+                            UniAce
+                          </span>
+                          <span
+                            className="text-[35px] font-black tracking-tight leading-none"
+                            style={{ color: palette.accentText }}
+                          >
+                            Mastery AI
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3 mt-1.5 text-[13.5px] font-semibold tracking-[0.16em] text-slate-700 uppercase">
+                          <span>{flyerConfig.brandSubline[0] || 'Learn'}</span>
+                          <span style={{ color: palette.accentText }}>•</span>
+                          <span>{flyerConfig.brandSubline[1] || 'Practise'}</span>
+                          <span style={{ color: palette.accentText }}>•</span>
+                          <span>{flyerConfig.brandSubline[2] || 'Revise'}</span>
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-3 mt-2 text-[14px] font-semibold tracking-[0.16em] text-slate-700 uppercase">
-                      <span>{flyerConfig.brandSubline[0] || 'Learn'}</span>
-                      <span style={{ color: palette.accentText }}>•</span>
-                      <span>{flyerConfig.brandSubline[1] || 'Practise'}</span>
-                      <span style={{ color: palette.accentText }}>•</span>
-                      <span>{flyerConfig.brandSubline[2] || 'Excel'}</span>
-                    </div>
-                  </div>
-                </div>
 
-                {/* Top Right Handwritten Script Callout */}
-                <div className="text-right -rotate-[7deg] pr-2 pt-1">
-                  <div
-                    style={{
-                      fontFamily: "'Caveat', 'Comic Sans MS', 'Bradley Hand', cursive",
-                      color: palette.scriptColor,
-                    }}
-                    className="text-[28px] font-bold leading-tight"
-                  >
-                    {flyerConfig.topScriptCallout}
-                  </div>
-                  <svg viewBox="0 0 180 18" className="w-36 h-4 ml-auto -mt-1">
-                    <path
-                      d="M 6 12 Q 90 2, 174 8"
-                      fill="none"
-                      stroke={palette.accentText}
-                      strokeWidth="3.5"
-                      strokeLinecap="round"
-                    />
-                  </svg>
-                </div>
-              </div>
-
-              {/* Main Split Grid: Left Copy + Campus Student | Right 3D Tilted Phone */}
-              <div className="grid grid-cols-12 gap-4 mt-7 flex-1 relative">
-                {/* LEFT COLUMN (7 Cols) */}
-                <div className="col-span-7 flex flex-col justify-between pr-2 z-10">
-                  <div className="space-y-4">
-                    <h1 className="text-[52px] font-black leading-[1.04] tracking-tight">
-                      <span className="block" style={{ color: palette.darkHeadline }}>
-                        {flyerConfig.headlineLine1}
-                      </span>
-                      <span className="block" style={{ color: palette.accentText }}>
-                        {flyerConfig.headlineLine2}
-                      </span>
-                    </h1>
-
-                    <p
-                      className="text-[19px] font-extrabold leading-[1.35] max-w-[400px]"
-                      style={{ color: palette.darkHeadline }}
-                    >
-                      {flyerConfig.leadBoldParagraph}
-                    </p>
-
-                    <p className="text-[15.5px] font-medium text-slate-700 leading-[1.45] max-w-[395px]">
-                      {flyerConfig.subParagraph}
-                    </p>
-                  </div>
-
-                  {/* Campus Student Studying on Phone + "Your goals are valid" Callout */}
-                  <div className="relative mt-2 h-[335px] flex items-end">
-                    {/* Handwritten Note next to Student */}
-                    <div className="absolute right-2 top-10 -rotate-[8deg] z-20 text-center">
+                    {/* Top Right Dynamic Callout */}
+                    <div className="text-right -rotate-[6deg] pr-1 pt-0.5">
                       <div
                         style={{
                           fontFamily: "'Caveat', 'Comic Sans MS', 'Bradley Hand', cursive",
-                          color: palette.darkHeadline,
+                          color: palette.scriptColor,
                         }}
-                        className="text-[23px] font-bold leading-none"
+                        className="text-[27px] font-bold leading-tight"
                       >
-                        {flyerConfig.midScriptCallout}
+                        {flyerConfig.topScriptCallout}
                       </div>
-                      <svg viewBox="0 0 120 16" className="w-24 h-3.5 mx-auto mt-0.5">
+                      <svg viewBox="0 0 180 18" className="w-36 h-4 ml-auto -mt-1">
                         <path
-                          d="M 8 7 Q 60 2, 112 6 M 18 13 Q 65 9, 104 12"
+                          d="M 6 12 Q 90 2, 174 8"
                           fill="none"
                           stroke={palette.accentText}
-                          strokeWidth="2.5"
+                          strokeWidth="3.5"
                           strokeLinecap="round"
                         />
                       </svg>
                     </div>
-
-                    {/* Student Visual Container */}
-                    <div className="relative w-[330px] h-[325px] flex items-end justify-start">
-                      {flyerConfig.studentPortraitMode === 'custom_photo' &&
-                      flyerConfig.customPhotoDataUrl ? (
-                        <div className="w-[290px] h-[305px] rounded-t-[36px] rounded-b-[18px] overflow-hidden shadow-2xl border-4 border-white relative bg-emerald-950">
-                          <img
-                            src={flyerConfig.customPhotoDataUrl}
-                            alt="University Scholar"
-                            className="w-full h-full object-cover"
-                          />
-                        </div>
-                      ) : (
-                        /* High-Craft Illustrated Nigerian/African University Student with Hoodie, Headphones, Backpack, Books & Smartphone */
-                        <svg viewBox="0 0 360 340" className="w-full h-full drop-shadow-xl">
-                          <defs>
-                            <linearGradient id="hoodieGrad" x1="0" y1="0" x2="1" y2="1">
-                              <stop offset="0%" stopColor="#0b6b37" />
-                              <stop offset="60%" stopColor="#064e28" />
-                              <stop offset="100%" stopColor="#033018" />
-                            </linearGradient>
-                            <linearGradient id="skinGrad" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="0%" stopColor="#8d5524" />
-                              <stop offset="100%" stopColor="#6b3e17" />
-                            </linearGradient>
-                            <linearGradient id="tableGrad" x1="0" y1="0" x2="1" y2="0">
-                              <stop offset="0%" stopColor="#d97706" />
-                              <stop offset="100%" stopColor="#92400e" />
-                            </linearGradient>
-                          </defs>
-
-                          {/* Soft Campus Trees & Building Silhouette in Background */}
-                          <circle cx="75" cy="120" r="55" fill="#15803d" fillOpacity="0.18" />
-                          <circle cx="255" cy="145" r="45" fill="#166534" fillOpacity="0.14" />
-
-                          {/* Backpack Straps & Bag */}
-                          <path
-                            d="M62 155 C42 175, 38 235, 48 285 L88 285 Z"
-                            fill="#1e293b"
-                          />
-
-                          {/* Hoodie Body & Shoulders */}
-                          <path
-                            d="M52 295 C52 210, 82 162, 148 162 C214 162, 246 210, 252 295 Z"
-                            fill="url(#hoodieGrad)"
-                          />
-
-                          {/* Backpack Shoulder Straps over Hoodie */}
-                          <path
-                            d="M95 168 C86 205, 84 250, 90 290"
-                            stroke="#0f172a"
-                            strokeWidth="13"
-                            strokeLinecap="round"
-                            fill="none"
-                          />
-                          <path
-                            d="M202 170 C212 205, 214 250, 208 290"
-                            stroke="#0f172a"
-                            strokeWidth="12"
-                            strokeLinecap="round"
-                            fill="none"
-                          />
-
-                          {/* Hood Collar & White Drawstrings */}
-                          <path
-                            d="M112 156 Q150 185 188 156"
-                            fill="#064e28"
-                            stroke="#04351b"
-                            strokeWidth="4"
-                          />
-                          <path
-                            d="M136 174 L134 224 M164 174 L166 220"
-                            stroke="#f8fafc"
-                            strokeWidth="3"
-                            strokeLinecap="round"
-                          />
-
-                          {/* Headphones Around Neck */}
-                          <path
-                            d="M108 156 C108 192, 192 192, 192 156"
-                            stroke="#1e293b"
-                            strokeWidth="9"
-                            fill="none"
-                          />
-                          <ellipse cx="116" cy="168" rx="14" ry="18" transform="rotate(-20 116 168)" fill="#0f172a" stroke="#334155" strokeWidth="2" />
-                          <ellipse cx="184" cy="168" rx="14" ry="18" transform="rotate(20 184 168)" fill="#0f172a" stroke="#334155" strokeWidth="2" />
-
-                          {/* Neck & Head */}
-                          <rect x="133" y="124" width="34" height="38" rx="12" fill="url(#skinGrad)" />
-                          {/* Ears */}
-                          <circle cx="112" cy="96" r="10" fill="#6b3e17" />
-                          <circle cx="192" cy="94" r="10" fill="#6b3e17" />
-                          {/* Head Shape (slightly tilted looking at phone) */}
-                          <path
-                            d="M114 74 C114 44, 188 44, 190 74 C192 114, 178 142, 152 144 C126 142, 112 114, 114 74 Z"
-                            fill="url(#skinGrad)"
-                          />
-
-                          {/* Textured Short Taper Fade Hair */}
-                          <path
-                            d="M113 76 C110 42, 134 26, 154 27 C178 27, 195 44, 191 75 C184 62, 168 56, 152 56 C134 56, 120 62, 113 76 Z"
-                            fill="#111827"
-                          />
-
-                          {/* Eyebrows, Focused Eyes Looking Down at Phone & Warm Smile */}
-                          <path d="M128 82 Q137 78 145 81" stroke="#111827" strokeWidth="3" strokeLinecap="round" fill="none" />
-                          <path d="M161 81 Q170 78 178 82" stroke="#111827" strokeWidth="3" strokeLinecap="round" fill="none" />
-                          <path d="M130 92 Q137 96 144 92" stroke="#111827" strokeWidth="2.8" strokeLinecap="round" fill="none" />
-                          <path d="M162 92 Q169 96 176 92" stroke="#111827" strokeWidth="2.8" strokeLinecap="round" fill="none" />
-                          {/* Nose */}
-                          <path d="M153 92 L150 107 L158 109" stroke="#4a290d" strokeWidth="2.5" strokeLinecap="round" fill="none" />
-                          {/* Warm Confident Smile */}
-                          <path
-                            d="M137 117 Q153 130 169 116 Z"
-                            fill="#ffffff"
-                            stroke="#4a290d"
-                            strokeWidth="2"
-                          />
-
-                          {/* Arms & Hands Holding Smartphone */}
-                          <path
-                            d="M74 225 C68 260, 95 288, 162 272"
-                            stroke="url(#hoodieGrad)"
-                            strokeWidth="36"
-                            strokeLinecap="round"
-                            fill="none"
-                          />
-                          {/* Smartphone in Student's Hands */}
-                          <rect
-                            x="184"
-                            y="206"
-                            width="42"
-                            height="68"
-                            rx="7"
-                            transform="rotate(16 205 240)"
-                            fill="#0f172a"
-                            stroke="#475569"
-                            strokeWidth="2"
-                          />
-                          {/* Student Hands Holding Phone */}
-                          <ellipse cx="176" cy="256" rx="18" ry="12" fill="url(#skinGrad)" />
-                          <ellipse cx="212" cy="252" rx="16" ry="11" fill="url(#skinGrad)" />
-
-                          {/* Study Desk, Stacked Textbooks & Open Notebook at Bottom */}
-                          <rect x="4" y="294" width="320" height="22" rx="4" fill="url(#tableGrad)" />
-                          {/* Stacked Books on Left */}
-                          <rect x="8" y="262" width="88" height="16" rx="3" fill="#f59e0b" stroke="#78350f" strokeWidth="1.5" />
-                          <rect x="14" y="265" width="78" height="10" rx="1" fill="#fef3c7" />
-                          <rect x="4" y="278" width="96" height="16" rx="3" fill="#0284c7" stroke="#0c4a6e" strokeWidth="1.5" />
-                          <rect x="10" y="281" width="86" height="10" rx="1" fill="#f0f9ff" />
-                          {/* Open Notebook & Pen */}
-                          <path d="M118 286 L256 286 L268 296 L108 296 Z" fill="#ffffff" stroke="#cbd5e1" strokeWidth="2" />
-                          <line x1="188" y1="286" x2="188" y2="296" stroke="#94a3b8" strokeWidth="2" />
-                        </svg>
-                      )}
-                    </div>
                   </div>
-                </div>
 
-                {/* RIGHT COLUMN (5 Cols): Tilted 3D Smartphone Showcasing Live UniAce Course Hub or Capabilities */}
-                <div className="col-span-5 relative flex items-start justify-end pr-1 pt-1 z-20">
-                  <div
-                    className="w-[308px] rounded-[42px] p-[10px] shadow-[0_28px_60px_rgba(0,0,0,0.45)] relative"
-                    style={{
-                      transform: 'rotate(3.5deg)',
-                      background: 'linear-gradient(145deg, #334155 0%, #0f172a 50%, #020617 100%)',
-                      border: '2px solid #64748b',
-                    }}
-                  >
-                    {/* Inner Phone Screen */}
-                    <div className="bg-[#f8fafc] rounded-[33px] overflow-hidden flex flex-col justify-between h-[615px] border border-slate-200">
-                      {/* Phone Top Status Bar + Dynamic Island */}
-                      <div className="px-5 pt-2.5 pb-1 flex items-center justify-between text-[10.5px] font-bold text-slate-900 bg-white shrink-0">
-                        <span>9:41</span>
-                        <div className="w-18 h-3.5 bg-black rounded-full" />
-                        <div className="flex items-center gap-1 text-slate-800">
-                          <Signal size={10} />
-                          <Wifi size={10} />
-                          <BatteryCharging size={11} />
-                        </div>
-                      </div>
-
-                      {(flyerConfig.phoneScreenMode || 'course_hub_ui') === 'custom_screen_upload' &&
-                      flyerConfig.customPhoneScreenDataUrl ? (
-                        <div className="flex-1 w-full overflow-hidden bg-white relative">
-                          <img
-                            src={flyerConfig.customPhoneScreenDataUrl}
-                            alt="UniAce App Interface"
-                            className="w-full h-full object-cover object-top"
-                          />
-                        </div>
-                      ) : (flyerConfig.phoneScreenMode || 'course_hub_ui') === 'course_hub_ui' &&
-                        phoneHubCourses.length > 0 ? (
-                        <>
-                          {/* LIVE COURSE HUB INTERFACE (Matching Authentic Full-Height 8-Card 4x2 Mobile Hub Layout) */}
-                          <div className="px-2.5 pt-1 pb-1 bg-[#f8fafc] flex-1 min-h-0 flex flex-col justify-between overflow-hidden relative">
-                            {/* Top Greeting + Current Program Banner + Your Courses + Search Toolbar */}
-                            <div className="space-y-1 shrink-0">
-                              <div
-                                data-flyer-unclip="true"
-                                className="text-[12.5px] font-black text-slate-900 tracking-tight leading-[1.18] px-0.5"
-                              >
-                                {flyerConfig.phoneGreeting || 'Hello, Scholar 👋'}
-                              </div>
-
-                              {/* Current Program Card */}
-                              <div className="bg-white rounded-xl border border-slate-200/90 px-2.5 py-1.5 shadow-2xs flex items-start justify-between gap-2">
-                                <div className="min-w-0 flex-1">
-                                  <div
-                                    data-flyer-unclip="true"
-                                    className="text-[5.8px] font-bold uppercase tracking-[0.08em] text-slate-400 leading-[1.15]"
-                                  >
-                                    CURRENT PROGRAM
-                                  </div>
-                                  <div
-                                    data-flyer-unclip="true"
-                                    className="text-[9.8px] font-extrabold text-slate-900 leading-[1.2] mt-0.5 truncate"
-                                  >
-                                    {activePhoneCohort.department}
-                                  </div>
-                                  <div className="flex items-center gap-1.5 mt-1">
-                                    <span
-                                      data-flyer-unclip="true"
-                                      className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-md bg-indigo-50 text-indigo-700 border border-indigo-100 text-[6.3px] font-bold leading-[1.15]"
-                                    >
-                                      <GraduationCap size={7.5} />
-                                      <span>{activePhoneCohort.levelLabel}</span>
-                                    </span>
-                                    <span
-                                      data-flyer-unclip="true"
-                                      className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-md bg-emerald-50 text-emerald-700 border border-emerald-100 text-[6.3px] font-bold leading-[1.15]"
-                                    >
-                                      <Calendar size={7.5} />
-                                      <span>{activePhoneCohort.semesterLabel}</span>
-                                    </span>
-                                  </div>
-                                </div>
-                                <div className="w-4.5 h-4.5 rounded-full bg-slate-50 border border-slate-200/70 flex items-center justify-center text-slate-400 shrink-0 mt-0.5">
-                                  <Pencil size={7.5} />
-                                </div>
-                              </div>
-
-                              {/* Standalone "Your Courses" Dark Pill Row */}
-                              <div className="pt-0.5">
-                                <div className="bg-[#0f172a] text-white rounded-lg px-2.5 py-1 inline-flex items-center gap-1 shadow-2xs">
-                                  <Sparkles size={7.5} className="text-amber-400" />
-                                  <span
-                                    data-flyer-unclip="true"
-                                    className="text-[7px] font-extrabold leading-[1.15]"
-                                  >
-                                    Your Courses
-                                  </span>
-                                </div>
-                              </div>
-
-                              {/* Search Bar + Explore All + Notification Bell + Avatar Row */}
-                              <div className="flex items-center justify-between gap-1.5">
-                                <div className="flex-1 bg-white rounded-lg border border-slate-200/90 px-2 py-1 flex items-center gap-1 text-slate-400 min-w-0 shadow-2xs">
-                                  <Search size={7.5} className="shrink-0" />
-                                  <span
-                                    data-flyer-unclip="true"
-                                    className="text-[6.6px] font-medium truncate leading-[1.15]"
-                                  >
-                                    Search courses...
-                                  </span>
-                                </div>
-
-                                <div className="inline-flex items-center gap-0.5 text-slate-600 shrink-0">
-                                  <Globe size={7.5} />
-                                  <span
-                                    data-flyer-unclip="true"
-                                    className="text-[6.4px] font-bold leading-[1.15]"
-                                  >
-                                    Explore All
-                                  </span>
-                                </div>
-
-                                <div className="relative text-slate-600 shrink-0">
-                                  <Bell size={8.5} />
-                                  <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-rose-500 text-white text-[5px] font-black flex items-center justify-center">
-                                    2
-                                  </span>
-                                </div>
-
-                                <div className="w-4.5 h-4.5 rounded-full bg-slate-800 text-white text-[6.5px] font-black flex items-center justify-center border border-slate-200 shrink-0">
-                                  🎓
-                                </div>
-                              </div>
-                            </div>
-
-                            {/* 2-Column × 4-Row (8 Cards) Full-Height Course Grid Filling Screen to Bottom Nav */}
-                            <div className="grid grid-cols-2 grid-rows-4 gap-1.5 mt-1.5 flex-1 min-h-0">
-                              {phoneHubCourses.slice(0, 8).map((course, idx) => {
-                                const levelCompact = formatAcademicLevelBadge(course.level).compact;
-                                const semCompact = formatAcademicSemesterBadge(course.semester).compact;
-                                const scopeBadge = formatCourseScopeBadge(course);
-                                const cleanCode = course.id.replace(/\s+/g, '').toUpperCase();
-                                const hasCodeInTitle =
-                                  course.title
-                                    .toUpperCase()
-                                    .replace(/\s+/g, '')
-                                    .startsWith(cleanCode.slice(0, 6)) ||
-                                  /^[A-Z]{2,4}\s*\d{3}/i.test(course.title.trim());
-                                const displayTitle = hasCodeInTitle
-                                  ? course.title
-                                  : `${course.id}: ${course.title}`;
-                                const rawDesc =
-                                  course.description?.trim() ||
-                                  `Comprehensive ${levelCompact} university course covering ${course.syllabus?.length || 4} structured academic modules.`;
-                                const shortDesc =
-                                  rawDesc.length > 92 ? `${rawDesc.slice(0, 90).trimEnd()}…` : rawDesc;
-                                const isContinue =
-                                  idx < 2 || (targetScope === 'course' && course.id === selectedCourseId);
-
-                                return (
-                                  <div
-                                    key={course.id}
-                                    className="bg-white rounded-xl border border-slate-200/90 p-2 shadow-2xs flex flex-col justify-between min-w-0 h-full"
-                                  >
-                                    <div>
-                                      {/* Scope Badge + Course Code Pill */}
-                                      <div className="flex items-center justify-between gap-1">
-                                        <span
-                                          data-flyer-unclip="true"
-                                          className="text-[5.2px] font-extrabold uppercase tracking-wider text-slate-400 truncate leading-[1.15]"
-                                        >
-                                          {scopeBadge}
-                                        </span>
-                                        <span
-                                          data-flyer-unclip="true"
-                                          className="px-1.5 py-[0.5px] rounded bg-slate-100 text-slate-700 text-[5.6px] font-extrabold shrink-0 leading-[1.15]"
-                                        >
-                                          {course.id}
-                                        </span>
-                                      </div>
-
-                                      {/* Course Title */}
-                                      <div
-                                        data-flyer-unclip="true"
-                                        className="text-[7.5px] font-extrabold text-slate-900 leading-[1.18] mt-0.5 line-clamp-2"
-                                      >
-                                        {displayTitle.length > 46
-                                          ? `${displayTitle.slice(0, 44).trimEnd()}…`
-                                          : displayTitle}
-                                      </div>
-
-                                      {/* Course Description Snippet */}
-                                      <div
-                                        data-flyer-unclip="true"
-                                        className="text-[5.8px] text-slate-500 font-medium leading-[1.22] mt-0.5 line-clamp-3"
-                                      >
-                                        {shortDesc}
-                                      </div>
-                                    </div>
-
-                                    {/* Card Footer: L 100 • Sem 1 + Continue/Start Learning CTA */}
-                                    <div className="pt-1 border-t border-slate-100 flex items-center justify-between gap-1 shrink-0">
-                                      <div className="flex items-center gap-0.5 text-[5.4px] font-bold text-slate-400 whitespace-nowrap leading-[1.15]">
-                                        <Users size={6} className="shrink-0" />
-                                        <span data-flyer-unclip="true">{levelCompact}</span>
-                                        <Calendar size={5.8} className="shrink-0 ml-0.5" />
-                                        <span data-flyer-unclip="true">{semCompact}</span>
-                                      </div>
-                                      <div
-                                        data-flyer-unclip="true"
-                                        className="bg-[#0f172a] text-white rounded-md px-1.5 py-[2.5px] text-[5.5px] font-extrabold whitespace-nowrap leading-[1.1] shrink-0"
-                                      >
-                                        {isContinue ? 'Continue Learning' : 'Start Learning'}
-                                      </div>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-
-                          {/* Authentic UniAce Bottom Navigation Bar with Floating AI Chat Button */}
-                          <div className="px-4 py-1.5 bg-white/95 backdrop-blur-xs border-t border-slate-200 flex items-center justify-between text-[7.5px] font-bold text-slate-400 leading-[1.2] shrink-0 relative z-10">
-                            <div
-                              className="flex flex-col items-center gap-0.5"
-                              style={{ color: palette.accentText }}
-                            >
-                              <LayoutGrid size={11} />
-                              <span data-flyer-unclip="true">Hub</span>
-                            </div>
-                            <div className="flex flex-col items-center gap-0.5">
-                              <Home size={11} />
-                              <span data-flyer-unclip="true">Home</span>
-                            </div>
-                            <div className="flex flex-col items-center -mt-3.5">
-                              <div className="w-7 h-7 rounded-full bg-emerald-500 text-white shadow-md shadow-emerald-500/30 border-2 border-white flex items-center justify-center">
-                                <MessageSquare size={12} />
-                              </div>
-                            </div>
-                            <div className="flex flex-col items-center gap-0.5">
-                              <Trophy size={11} />
-                              <span data-flyer-unclip="true">Arena</span>
-                            </div>
-                            <div className="flex flex-col items-center gap-0.5">
-                              <User size={11} />
-                              <span data-flyer-unclip="true">Profile</span>
-                            </div>
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          {/* 8-CAPABILITY LIST PHONE SCREEN MODE */}
-                          <div className="px-4 pt-1 pb-1.5 bg-white border-b border-slate-100 shrink-0">
-                            <div className="flex items-center gap-2">
-                              <div
-                                className="w-5 h-5 rounded-md flex items-center justify-center text-white text-[11px] font-black shrink-0"
-                                style={{ backgroundColor: palette.accentText }}
-                              >
-                                🎓
-                              </div>
-                              <span
-                                data-flyer-unclip="true"
-                                className="text-[12.5px] font-black text-slate-900 leading-[1.3]"
-                              >
-                                UniAce <span style={{ color: palette.accentText }}>Mastery AI</span>
-                              </span>
-                            </div>
-                            <div className="mt-1">
-                              <div
-                                data-flyer-unclip="true"
-                                className="text-[13px] font-black text-slate-900 leading-[1.3]"
-                              >
-                                {flyerConfig.phoneGreeting}
-                              </div>
-                              <div
-                                data-flyer-unclip="true"
-                                className="text-[10px] text-slate-500 font-medium leading-[1.3]"
-                              >
-                                {flyerConfig.phonePrompt}
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="px-2.5 py-1.5 space-y-1 flex-1 flex flex-col justify-center bg-[#f1f5f9]">
-                            {enabledCapabilities.map((cap) => (
-                              <div
-                                key={cap.id}
-                                className="bg-white rounded-xl px-2.5 py-1 border border-slate-200/80 shadow-2xs flex items-center justify-between gap-2"
-                              >
-                                <div className="flex items-center gap-2 min-w-0 flex-1">
-                                  <div
-                                    className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 shadow-2xs"
-                                    style={{ backgroundColor: cap.accentHex }}
-                                  >
-                                    {renderCapabilityIcon(cap.iconKey, 14)}
-                                  </div>
-                                  <div className="min-w-0 flex-1 overflow-visible">
-                                    <div
-                                      data-flyer-unclip="true"
-                                      className="text-[10.5px] font-extrabold text-slate-900 leading-[1.32] pb-[1px] whitespace-nowrap"
-                                    >
-                                      {cap.title}
-                                    </div>
-                                    <div
-                                      data-flyer-unclip="true"
-                                      className="text-[8.5px] text-slate-500 font-medium leading-[1.32] pb-[1px] whitespace-nowrap"
-                                    >
-                                      {cap.phoneDescription.length > 42
-                                        ? `${cap.phoneDescription.slice(0, 40).trimEnd()}…`
-                                        : cap.phoneDescription}
-                                    </div>
-                                  </div>
-                                </div>
-                                <ChevronRight size={11} className="text-slate-400 shrink-0" />
-                              </div>
-                            ))}
-                          </div>
-
-                          <div className="px-5 py-1.5 bg-white border-t border-slate-200 flex items-center justify-between text-[8.5px] font-bold text-slate-400 leading-[1.3] shrink-0">
-                            <div
-                              className="flex flex-col items-center gap-0.5"
-                              style={{ color: palette.accentText }}
-                            >
-                              <Home size={12} />
-                              <span data-flyer-unclip="true">Home</span>
-                            </div>
-                            <div className="flex flex-col items-center gap-0.5">
-                              <Library size={12} />
-                              <span data-flyer-unclip="true">Library</span>
-                            </div>
-                            <div className="flex flex-col items-center gap-0.5">
-                              <Calendar size={12} />
-                              <span data-flyer-unclip="true">Planner</span>
-                            </div>
-                            <div className="flex flex-col items-center gap-0.5">
-                              <User size={12} />
-                              <span data-flyer-unclip="true">Profile</span>
-                            </div>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* ================= LOWER DIAGONAL / CURVED DEEP EMERALD FEATURE DECK ================= */}
-            <div className="relative z-30 -mt-12">
-              {/* Diagonal Sweep Header Wave */}
-              <svg
-                viewBox="0 0 760 50"
-                className="w-full h-[50px] block -mb-1"
-                preserveAspectRatio="none"
-              >
-                <path
-                  d="M 0 50 L 0 20 Q 260 48, 520 11 L 760 0 L 760 50 Z"
-                  fill={flyerConfig.themeId === 'emerald_gold' ? '#085c2f' : palette.accentText}
-                />
-              </svg>
-
-              <div
-                style={{ background: palette.deckGradient }}
-                className="px-9 pt-3.5 pb-4 text-white space-y-4"
-              >
-                {/* 8-Feature Grid (2 Rows x 4 Columns) */}
-                <div className="grid grid-cols-4 gap-x-4 gap-y-3.5">
-                  {enabledCapabilities.map((cap, idx) => (
+                  {/* Dynamic Scope & Cohort Ribbon for Executive / Crest Layouts */}
+                  {showScopeRibbon && (
                     <div
-                      key={cap.id}
-                      className={`flex items-start gap-2.5 pr-2 ${
-                        idx % 4 !== 3 ? 'border-r border-white/15' : ''
+                      style={{
+                        backgroundColor: palette.accentSoftBg,
+                        borderColor: palette.accentBorder,
+                        color: palette.darkHeadline,
+                      }}
+                      className="mt-3 px-3.5 py-1.5 rounded-xl border flex items-center justify-between text-[11px] font-extrabold shadow-2xs"
+                    >
+                      <div className="flex items-center gap-2 truncate">
+                        <span
+                          style={{ backgroundColor: palette.accentText }}
+                          className="px-2 py-0.5 rounded-md text-white text-[9.5px] font-black uppercase tracking-wider"
+                        >
+                          {targetScope.replace('_', ' ')}
+                        </span>
+                        <span className="truncate">
+                          {activePhoneCohort.department} • {activePhoneCohort.levelLabel} •{' '}
+                          {activePhoneCohort.semesterLabel}
+                        </span>
+                      </div>
+                      <span
+                        style={{ color: palette.accentText }}
+                        className="font-black shrink-0 ml-2"
+                      >
+                        {activePhoneCohort.courses.length} Live Courses • {totalCohortModules}{' '}
+                        Modules
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Main Dynamic Split Grid (Adapts Column Order & Card Framing by Layout Variant) */}
+                  <div
+                    className={`grid grid-cols-12 gap-4 ${
+                      showScopeRibbon ? 'mt-4' : 'mt-6'
+                    } flex-1 relative`}
+                  >
+                    {/* EDITORIAL + HERO COLUMN (7 Cols) */}
+                    <div
+                      className={`col-span-7 flex flex-col justify-between z-10 ${
+                        isMirroredBento ? 'order-2 pl-2' : 'order-1 pr-2'
                       }`}
                     >
                       <div
-                        className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 border-2 border-white shadow-md"
-                        style={{ backgroundColor: cap.badgeBgHex }}
+                        style={
+                          isFramedEditorial
+                            ? {
+                                backgroundColor: 'rgba(255, 255, 255, 0.84)',
+                                borderColor: palette.accentBorder,
+                              }
+                            : undefined
+                        }
+                        className={
+                          isFramedEditorial
+                            ? 'space-y-3.5 p-4 rounded-2xl border shadow-sm'
+                            : 'space-y-4'
+                        }
                       >
-                        {renderCapabilityIcon(cap.iconKey, 16)}
-                      </div>
-                      <div className="min-w-0">
-                        <div data-flyer-unclip="true" className="text-[12.5px] font-extrabold text-white leading-[1.3]">
-                          {cap.title}
-                        </div>
-                        <div data-flyer-unclip="true" className="text-[10px] text-emerald-100/90 font-medium leading-[1.32] mt-0.5">
-                          {cap.gridDescription}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* CTA Bar: Visit Now Button + Live Domain + Scannable Vector QR Code + Support Line */}
-                <div className="pt-2 flex items-center justify-between gap-3 border-t border-white/15">
-                  {/* Left: Visit Now CTA + Website URL */}
-                  <div className="flex items-center gap-3 min-w-0 flex-1">
-                    <div
-                      style={{ backgroundColor: palette.ctaBg, color: palette.ctaText }}
-                      className="px-5 py-2.5 rounded-full font-black text-[17px] leading-[1.25] shadow-lg flex items-center justify-center gap-1.5 shrink-0"
-                    >
-                      <span data-flyer-unclip="true" className="pb-[1px]">{flyerConfig.ctaText}</span>
-                      <ChevronRight size={19} strokeWidth={3} />
-                    </div>
-                    <span
-                      data-flyer-unclip="true"
-                      style={{
-                        fontSize:
-                          flyerConfig.websiteDisplayUrl.length > 32
-                            ? '13.5px'
-                            : flyerConfig.websiteDisplayUrl.length > 26
-                              ? '15px'
-                              : flyerConfig.websiteDisplayUrl.length > 20
-                                ? '17px'
-                                : '19.5px',
-                      }}
-                      className="font-extrabold tracking-tight text-white leading-[1.35] pb-[2px] whitespace-nowrap overflow-visible"
-                    >
-                      {flyerConfig.websiteDisplayUrl}
-                    </span>
-                  </div>
-
-                  {/* Right: Real Vector SVG QR Code + Support Contact */}
-                  <div className="flex items-center gap-3.5 shrink-0">
-                    {/* Scannable QR Code Box */}
-                    <div className="bg-white p-1.5 rounded-xl shadow-lg w-[64px] h-[64px] flex items-center justify-center">
-                      {qrMatrix.length > 0 ? (
-                        <svg
-                          viewBox={`0 0 ${qrMatrix.length} ${qrMatrix.length}`}
-                          className="w-full h-full"
-                          shapeRendering="crispEdges"
+                        <h1
+                          className={`${
+                            isFramedEditorial ? 'text-[46px]' : 'text-[50px]'
+                          } font-black leading-[1.04] tracking-tight`}
                         >
-                          <rect width={qrMatrix.length} height={qrMatrix.length} fill="#ffffff" />
-                          {qrMatrix.map((row, rIdx) =>
-                            row.map((isDark, cIdx) =>
-                              isDark ? (
-                                <rect
-                                  key={`${rIdx}-${cIdx}`}
-                                  x={cIdx}
-                                  y={rIdx}
-                                  width={1}
-                                  height={1}
-                                  fill="#0f172a"
-                                />
-                              ) : null
-                            )
-                          )}
-                        </svg>
-                      ) : (
-                        <span className="text-[8px] text-center font-bold text-rose-600">QR unavailable</span>
-                      )}
-                    </div>
+                          <span className="block" style={{ color: palette.darkHeadline }}>
+                            {flyerConfig.headlineLine1}
+                          </span>
+                          <span className="block" style={{ color: palette.accentText }}>
+                            {flyerConfig.headlineLine2}
+                          </span>
+                        </h1>
 
-                    {/* Support details appear only when an administrator has configured a real contact. */}
-                    {flyerConfig.supportContact && (
-                      <div className="flex items-center gap-2">
-                        <div className="w-9 h-9 rounded-full bg-white/10 border border-white/25 flex items-center justify-center text-white shrink-0">
-                          <Headphones size={18} />
+                        <p
+                          className="text-[18px] font-extrabold leading-[1.34] max-w-[400px]"
+                          style={{ color: palette.darkHeadline }}
+                        >
+                          {flyerConfig.leadBoldParagraph}
+                        </p>
+
+                        <p className="text-[15px] font-medium text-slate-700 leading-[1.42] max-w-[395px]">
+                          {flyerConfig.subParagraph}
+                        </p>
+                      </div>
+
+                      {/* Dynamic Hero Visual Section (Scholar Vector OR Live Cohort Curriculum Card OR Custom Photo) */}
+                      <div className="relative mt-2 h-[325px] flex items-end">
+                        {/* Dynamic Handwritten Callout */}
+                        <div
+                          className={`absolute ${
+                            flyerConfig.studentPortraitMode === 'academic_cohort_card'
+                              ? 'right-3 -top-3'
+                              : 'right-2 top-8'
+                          } -rotate-[7deg] z-20 text-center`}
+                        >
+                          <div
+                            style={{
+                              fontFamily: "'Caveat', 'Comic Sans MS', 'Bradley Hand', cursive",
+                              color: palette.darkHeadline,
+                            }}
+                            className="text-[22px] font-bold leading-none"
+                          >
+                            {flyerConfig.midScriptCallout}
+                          </div>
+                          <svg viewBox="0 0 120 16" className="w-24 h-3.5 mx-auto mt-0.5">
+                            <path
+                              d="M 8 7 Q 60 2, 112 6 M 18 13 Q 65 9, 104 12"
+                              fill="none"
+                              stroke={palette.accentText}
+                              strokeWidth="2.5"
+                              strokeLinecap="round"
+                            />
+                          </svg>
                         </div>
-                        <div>
-                          <div data-flyer-unclip="true" className="text-[10.5px] text-emerald-200 font-semibold leading-[1.3]">
-                            {flyerConfig.supportLabel}
-                          </div>
-                          <div data-flyer-unclip="true" className="text-[14.5px] font-black text-white leading-[1.3] tracking-tight">
-                            {flyerConfig.supportContact}
-                          </div>
-                          <div data-flyer-unclip="true" className="text-[10px] text-emerald-200/80 font-medium leading-[1.3]">
-                            {flyerConfig.supportSublabel}
-                          </div>
+
+                        {/* Hero Visual Container */}
+                        <div className="relative w-full h-[315px] flex items-end justify-start">
+                          {flyerConfig.studentPortraitMode === 'custom_photo' &&
+                          flyerConfig.customPhotoDataUrl ? (
+                            <div
+                              style={{ backgroundColor: palette.footerStripBg }}
+                              className="w-[290px] h-[300px] rounded-t-[36px] rounded-b-[18px] overflow-hidden shadow-2xl border-4 border-white relative"
+                            >
+                              <img
+                                src={flyerConfig.customPhotoDataUrl}
+                                alt="University Scholar"
+                                className="w-full h-full object-cover"
+                              />
+                            </div>
+                          ) : flyerConfig.studentPortraitMode === 'academic_cohort_card' ? (
+                            /* 100% Data-Driven Live Cohort & Curriculum Showcase Card (Zero Static Character Illustration) */
+                            <div
+                              style={{
+                                borderColor: palette.accentBorder,
+                                background: 'rgba(255, 255, 255, 0.94)',
+                              }}
+                              className="w-[385px] rounded-2xl border-2 p-4 shadow-xl space-y-3 mb-3"
+                            >
+                              <div className="flex items-center justify-between gap-2 border-b border-slate-200 pb-2.5">
+                                <div>
+                                  <div
+                                    style={{ color: palette.accentText }}
+                                    className="text-[10px] font-black uppercase tracking-wider"
+                                  >
+                                    LIVE COHORT CURRICULUM SNAPSHOT
+                                  </div>
+                                  <div
+                                    style={{ color: palette.darkHeadline }}
+                                    className="text-[15px] font-black leading-tight mt-0.5"
+                                  >
+                                    {activePhoneCohort.department}
+                                  </div>
+                                </div>
+                                <span
+                                  style={{
+                                    backgroundColor: palette.accentSoftBg,
+                                    color: palette.accentText,
+                                    borderColor: palette.accentBorder,
+                                  }}
+                                  className="px-2.5 py-1 rounded-lg border text-[10px] font-black shrink-0"
+                                >
+                                  {activePhoneCohort.levelLabel} • {activePhoneCohort.semesterLabel}
+                                </span>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-1.5">
+                                {phoneHubCourses.slice(0, 6).map((course) => (
+                                  <div
+                                    key={course.id}
+                                    className="px-2.5 py-1.5 rounded-xl bg-slate-50 border border-slate-200/90 flex items-center justify-between gap-1.5"
+                                  >
+                                    <div className="min-w-0">
+                                      <div
+                                        style={{ color: palette.darkHeadline }}
+                                        className="text-[10.5px] font-black leading-tight truncate"
+                                      >
+                                        {course.id}
+                                      </div>
+                                      <div className="text-[8.5px] font-semibold text-slate-600 truncate">
+                                        {course.title}
+                                      </div>
+                                    </div>
+                                    <span
+                                      style={{
+                                        backgroundColor: palette.accentSoftBg,
+                                        color: palette.accentText,
+                                      }}
+                                      className="px-1.5 py-0.5 rounded text-[7.5px] font-black shrink-0"
+                                    >
+                                      {course.syllabus?.length || 0}M
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+
+                              <div className="pt-1 flex items-center justify-between text-[10px] font-bold text-slate-600">
+                                <span>
+                                  Verified Offerings: {activePhoneCohort.courses.length} Courses
+                                </span>
+                                <span style={{ color: palette.accentText }} className="font-black">
+                                  {totalCohortModules} Published Modules
+                                </span>
+                              </div>
+                            </div>
+                          ) : (
+                            /* Theme-Adaptive Vector University Scholar (Zero Hardcoded Greens) */
+                            <svg viewBox="0 0 360 340" className="w-[330px] h-full drop-shadow-xl">
+                              <defs>
+                                <linearGradient id="hoodieGrad" x1="0" y1="0" x2="1" y2="1">
+                                  <stop offset="0%" stopColor={palette.hoodiePrimary} />
+                                  <stop offset="60%" stopColor={palette.hoodieSecondary} />
+                                  <stop offset="100%" stopColor={palette.hoodieDark} />
+                                </linearGradient>
+                                <linearGradient id="skinGrad" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="0%" stopColor="#8d5524" />
+                                  <stop offset="100%" stopColor="#6b3e17" />
+                                </linearGradient>
+                                <linearGradient id="tableGrad" x1="0" y1="0" x2="1" y2="0">
+                                  <stop offset="0%" stopColor="#d97706" />
+                                  <stop offset="100%" stopColor="#92400e" />
+                                </linearGradient>
+                              </defs>
+
+                              {/* Dynamic Palette Campus Glow Circles in Background */}
+                              <circle
+                                cx="75"
+                                cy="120"
+                                r="55"
+                                fill={palette.accentText}
+                                fillOpacity="0.16"
+                              />
+                              <circle
+                                cx="255"
+                                cy="145"
+                                r="45"
+                                fill={palette.hoodiePrimary}
+                                fillOpacity="0.14"
+                              />
+
+                              {/* Backpack Straps & Bag */}
+                              <path
+                                d="M62 155 C42 175, 38 235, 48 285 L88 285 Z"
+                                fill="#1e293b"
+                              />
+
+                              {/* Hoodie Body & Shoulders */}
+                              <path
+                                d="M52 295 C52 210, 82 162, 148 162 C214 162, 246 210, 252 295 Z"
+                                fill="url(#hoodieGrad)"
+                              />
+
+                              {/* Backpack Shoulder Straps over Hoodie */}
+                              <path
+                                d="M95 168 C86 205, 84 250, 90 290"
+                                stroke="#0f172a"
+                                strokeWidth="13"
+                                strokeLinecap="round"
+                                fill="none"
+                              />
+                              <path
+                                d="M202 170 C212 205, 214 250, 208 290"
+                                stroke="#0f172a"
+                                strokeWidth="12"
+                                strokeLinecap="round"
+                                fill="none"
+                              />
+
+                              {/* Dynamic Hood Collar & White Drawstrings */}
+                              <path
+                                d="M112 156 Q150 185 188 156"
+                                fill={palette.hoodieSecondary}
+                                stroke={palette.hoodieDark}
+                                strokeWidth="4"
+                              />
+                              <path
+                                d="M136 174 L134 224 M164 174 L166 220"
+                                stroke="#f8fafc"
+                                strokeWidth="3"
+                                strokeLinecap="round"
+                              />
+
+                              {/* Headphones Around Neck */}
+                              <path
+                                d="M108 156 C108 192, 192 192, 192 156"
+                                stroke="#1e293b"
+                                strokeWidth="9"
+                                fill="none"
+                              />
+                              <ellipse
+                                cx="116"
+                                cy="168"
+                                rx="14"
+                                ry="18"
+                                transform="rotate(-20 116 168)"
+                                fill="#0f172a"
+                                stroke="#334155"
+                                strokeWidth="2"
+                              />
+                              <ellipse
+                                cx="184"
+                                cy="168"
+                                rx="14"
+                                ry="18"
+                                transform="rotate(20 184 168)"
+                                fill="#0f172a"
+                                stroke="#334155"
+                                strokeWidth="2"
+                              />
+
+                              {/* Neck & Head */}
+                              <rect
+                                x="133"
+                                y="124"
+                                width="34"
+                                height="38"
+                                rx="12"
+                                fill="url(#skinGrad)"
+                              />
+                              <circle cx="112" cy="96" r="10" fill="#6b3e17" />
+                              <circle cx="192" cy="94" r="10" fill="#6b3e17" />
+                              <path
+                                d="M114 74 C114 44, 188 44, 190 74 C192 114, 178 142, 152 144 C126 142, 112 114, 114 74 Z"
+                                fill="url(#skinGrad)"
+                              />
+
+                              {/* Textured Hair */}
+                              <path
+                                d="M113 76 C110 42, 134 26, 154 27 C178 27, 195 44, 191 75 C184 62, 168 56, 152 56 C134 56, 120 62, 113 76 Z"
+                                fill="#111827"
+                              />
+
+                              {/* Eyes & Confident Smile */}
+                              <path
+                                d="M128 82 Q137 78 145 81"
+                                stroke="#111827"
+                                strokeWidth="3"
+                                strokeLinecap="round"
+                                fill="none"
+                              />
+                              <path
+                                d="M161 81 Q170 78 178 82"
+                                stroke="#111827"
+                                strokeWidth="3"
+                                strokeLinecap="round"
+                                fill="none"
+                              />
+                              <path
+                                d="M130 92 Q137 96 144 92"
+                                stroke="#111827"
+                                strokeWidth="2.8"
+                                strokeLinecap="round"
+                                fill="none"
+                              />
+                              <path
+                                d="M162 92 Q169 96 176 92"
+                                stroke="#111827"
+                                strokeWidth="2.8"
+                                strokeLinecap="round"
+                                fill="none"
+                              />
+                              <path
+                                d="M153 92 L150 107 L158 109"
+                                stroke="#4a290d"
+                                strokeWidth="2.5"
+                                strokeLinecap="round"
+                                fill="none"
+                              />
+                              <path
+                                d="M137 117 Q153 130 169 116 Z"
+                                fill="#ffffff"
+                                stroke="#4a290d"
+                                strokeWidth="2"
+                              />
+
+                              {/* Arms & Hands Holding Smartphone */}
+                              <path
+                                d="M74 225 C68 260, 95 288, 162 272"
+                                stroke="url(#hoodieGrad)"
+                                strokeWidth="36"
+                                strokeLinecap="round"
+                                fill="none"
+                              />
+                              <rect
+                                x="184"
+                                y="206"
+                                width="42"
+                                height="68"
+                                rx="7"
+                                transform="rotate(16 205 240)"
+                                fill="#0f172a"
+                                stroke="#475569"
+                                strokeWidth="2"
+                              />
+                              <ellipse cx="176" cy="256" rx="18" ry="12" fill="url(#skinGrad)" />
+                              <ellipse cx="212" cy="252" rx="16" ry="11" fill="url(#skinGrad)" />
+
+                              {/* Study Desk, Stacked Textbooks & Open Notebook */}
+                              <rect
+                                x="4"
+                                y="294"
+                                width="320"
+                                height="22"
+                                rx="4"
+                                fill="url(#tableGrad)"
+                              />
+                              <rect
+                                x="8"
+                                y="262"
+                                width="88"
+                                height="16"
+                                rx="3"
+                                fill={palette.ctaBg}
+                                stroke="#78350f"
+                                strokeWidth="1.5"
+                              />
+                              <rect x="14" y="265" width="78" height="10" rx="1" fill="#fef3c7" />
+                              <rect
+                                x="4"
+                                y="278"
+                                width="96"
+                                height="16"
+                                rx="3"
+                                fill={palette.accentText}
+                                stroke={palette.hoodieDark}
+                                strokeWidth="1.5"
+                              />
+                              <rect x="10" y="281" width="86" height="10" rx="1" fill="#f8fafc" />
+                              <path
+                                d="M118 286 L256 286 L268 296 L108 296 Z"
+                                fill="#ffffff"
+                                stroke="#cbd5e1"
+                                strokeWidth="2"
+                              />
+                              <line
+                                x1="188"
+                                y1="286"
+                                x2="188"
+                                y2="296"
+                                stroke="#94a3b8"
+                                strokeWidth="2"
+                              />
+                            </svg>
+                          )}
                         </div>
                       </div>
-                    )}
+                    </div>
+
+                    {/* 3D SMARTPHONE COLUMN (5 Cols): Crisp High-Clarity 3D Smartphone Showcasing Live UniAce Course Hub */}
+                    <div
+                      className={`col-span-5 relative flex items-start ${
+                        isMirroredBento ? 'order-1 justify-start pl-0' : 'order-2 justify-end pr-0'
+                      } pt-0.5 z-20`}
+                    >
+                      <div
+                        className="w-[330px] rounded-[40px] p-[8px] shadow-[0_28px_60px_rgba(0,0,0,0.45)] relative antialiased"
+                        style={{
+                          transform: `rotate(${effectivePhoneTilt}deg)`,
+                          background:
+                            'linear-gradient(145deg, #334155 0%, #0f172a 50%, #020617 100%)',
+                          border: '2px solid #64748b',
+                        }}
+                      >
+                        {/* Inner Phone Screen */}
+                        <div className="bg-[#f8fafc] rounded-[32px] overflow-hidden flex flex-col justify-between h-[632px] border border-slate-200">
+                          {/* Phone Top Status Bar + Dynamic Island */}
+                          <div className="px-5 pt-2 pb-1 flex items-center justify-between text-[11px] font-black text-slate-900 bg-white shrink-0">
+                            <span>9:41</span>
+                            <div className="w-18 h-3.5 bg-black rounded-full" />
+                            <div className="flex items-center gap-1 text-slate-900">
+                              <Signal size={10.5} />
+                              <Wifi size={10.5} />
+                              <BatteryCharging size={11.5} />
+                            </div>
+                          </div>
+
+                          {(flyerConfig.phoneScreenMode || 'course_hub_ui') ===
+                            'custom_screen_upload' && flyerConfig.customPhoneScreenDataUrl ? (
+                            <div className="flex-1 w-full overflow-hidden bg-white relative">
+                              <img
+                                src={flyerConfig.customPhoneScreenDataUrl}
+                                alt="UniAce App Interface"
+                                className="w-full h-full object-cover object-top"
+                              />
+                            </div>
+                          ) : (flyerConfig.phoneScreenMode || 'course_hub_ui') ===
+                              'course_hub_ui' && phoneHubCourses.length > 0 ? (
+                            <>
+                              {/* LIVE COURSE HUB INTERFACE (High-Contrast Vector 8-Card 4x2 Mobile Hub Layout) */}
+                              <div className="px-2.5 pt-1 pb-1 bg-[#f8fafc] flex-1 min-h-0 flex flex-col justify-between overflow-hidden relative">
+                                {/* Top Greeting + Current Program Banner + Your Courses + Search Toolbar */}
+                                <div className="space-y-1 shrink-0">
+                                  <div
+                                    data-flyer-unclip="true"
+                                    className="text-[13px] font-black text-[#0f172a] tracking-tight leading-[1.18] px-0.5"
+                                  >
+                                    {flyerConfig.phoneGreeting || 'Hello, Scholar 👋'}
+                                  </div>
+
+                                  {/* Current Program Card */}
+                                  <div className="bg-white rounded-xl border border-slate-300/90 px-2.5 py-1.5 shadow-2xs flex items-start justify-between gap-2">
+                                    <div className="min-w-0 flex-1">
+                                      <div
+                                        data-flyer-unclip="true"
+                                        className="text-[6.2px] font-extrabold uppercase tracking-[0.08em] text-slate-500 leading-[1.15]"
+                                      >
+                                        CURRENT PROGRAM
+                                      </div>
+                                      <div
+                                        data-flyer-unclip="true"
+                                        className="text-[10.5px] font-black text-[#0f172a] leading-[1.2] mt-0.5 truncate"
+                                      >
+                                        {activePhoneCohort.department}
+                                      </div>
+                                      <div className="flex items-center gap-1.5 mt-1">
+                                        <span
+                                          data-flyer-unclip="true"
+                                          className="inline-flex items-center gap-1 px-1.5 py-[1.5px] rounded-md bg-indigo-50 text-indigo-800 border border-indigo-200 text-[6.8px] font-extrabold leading-[1.15]"
+                                        >
+                                          <GraduationCap size={8} />
+                                          <span>{activePhoneCohort.levelLabel}</span>
+                                        </span>
+                                        <span
+                                          data-flyer-unclip="true"
+                                          style={{
+                                            backgroundColor: palette.accentSoftBg,
+                                            color: palette.accentText,
+                                            borderColor: palette.accentBorder,
+                                          }}
+                                          className="inline-flex items-center gap-1 px-1.5 py-[1.5px] rounded-md border text-[6.8px] font-extrabold leading-[1.15]"
+                                        >
+                                          <Calendar size={8} />
+                                          <span>{activePhoneCohort.semesterLabel}</span>
+                                        </span>
+                                      </div>
+                                    </div>
+                                    <div className="w-5 h-5 rounded-full bg-slate-100 border border-slate-300 flex items-center justify-center text-slate-600 shrink-0 mt-0.5">
+                                      <Pencil size={8} />
+                                    </div>
+                                  </div>
+
+                                  {/* Standalone "Your Courses" Dark Pill Row */}
+                                  <div className="pt-0.5">
+                                    <div
+                                      style={{ backgroundColor: palette.darkHeadline }}
+                                      className="text-white rounded-lg px-2.5 py-1 inline-flex items-center gap-1 shadow-2xs"
+                                    >
+                                      <Sparkles size={8} style={{ color: palette.ctaBg }} />
+                                      <span
+                                        data-flyer-unclip="true"
+                                        className="text-[7.4px] font-black leading-[1.15]"
+                                      >
+                                        Your Courses
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  {/* Search Bar + Explore All + Dynamic Cohort Course Count Bell + Avatar Row */}
+                                  <div className="flex items-center justify-between gap-1.5">
+                                    <div className="flex-1 bg-white rounded-lg border border-slate-300/90 px-2 py-1 flex items-center gap-1 text-slate-500 min-w-0 shadow-2xs">
+                                      <Search size={8} className="shrink-0 text-slate-500" />
+                                      <span
+                                        data-flyer-unclip="true"
+                                        className="text-[7px] font-semibold truncate leading-[1.15]"
+                                      >
+                                        Search courses...
+                                      </span>
+                                    </div>
+
+                                    <div className="inline-flex items-center gap-0.5 text-slate-700 shrink-0">
+                                      <Globe size={8} />
+                                      <span
+                                        data-flyer-unclip="true"
+                                        className="text-[6.8px] font-extrabold leading-[1.15]"
+                                      >
+                                        Explore All
+                                      </span>
+                                    </div>
+
+                                    <div className="relative text-slate-700 shrink-0">
+                                      <Bell size={9} />
+                                      <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-rose-600 text-white text-[5.2px] font-black flex items-center justify-center">
+                                        {activePhoneCohort.courses.length}
+                                      </span>
+                                    </div>
+
+                                    <div
+                                      style={{ backgroundColor: palette.darkHeadline }}
+                                      className="w-5 h-5 rounded-full text-white text-[7px] font-black flex items-center justify-center border border-slate-300 shrink-0"
+                                    >
+                                      🎓
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* 2-Column × 4-Row (8 Cards) Full-Height High-Clarity Course Grid */}
+                                <div className="grid grid-cols-2 grid-rows-4 gap-1.5 mt-1.5 flex-1 min-h-0">
+                                  {phoneHubCourses.slice(0, 8).map((course, idx) => {
+                                    const levelCompact = formatAcademicLevelBadge(course.level).compact;
+                                    const semCompact = formatAcademicSemesterBadge(course.semester).compact;
+                                    const scopeBadge = formatCourseScopeBadge(course);
+                                    const cleanCode = course.id.replace(/\s+/g, '').toUpperCase();
+                                    const hasCodeInTitle =
+                                      course.title
+                                        .toUpperCase()
+                                        .replace(/\s+/g, '')
+                                        .startsWith(cleanCode.slice(0, 6)) ||
+                                      /^[A-Z]{2,4}\s*\d{3}/i.test(course.title.trim());
+                                    const displayTitle = hasCodeInTitle
+                                      ? course.title
+                                      : `${course.id}: ${course.title}`;
+                                    const rawDesc =
+                                      course.description?.trim() ||
+                                      `Comprehensive ${levelCompact} university course covering ${course.syllabus?.length || 4} structured academic modules.`;
+                                    const shortDesc =
+                                      rawDesc.length > 94
+                                        ? `${rawDesc.slice(0, 92).trimEnd()}…`
+                                        : rawDesc;
+                                    const isContinue =
+                                      idx < 2 ||
+                                      (targetScope === 'course' && course.id === selectedCourseId);
+
+                                    return (
+                                      <div
+                                        key={course.id}
+                                        className="bg-white rounded-xl border border-slate-300/90 p-2 shadow-2xs flex flex-col justify-between min-w-0 h-full"
+                                      >
+                                        <div>
+                                          {/* Scope Badge + Course Code Pill */}
+                                          <div className="flex items-center justify-between gap-1">
+                                            <span
+                                              data-flyer-unclip="true"
+                                              className="text-[5.6px] font-black uppercase tracking-wider text-slate-600 truncate leading-[1.15]"
+                                            >
+                                              {scopeBadge}
+                                            </span>
+                                            <span
+                                              data-flyer-unclip="true"
+                                              className="px-1.5 py-[1px] rounded bg-slate-100 border border-slate-200 text-[#0f172a] text-[6px] font-black shrink-0 leading-[1.15]"
+                                            >
+                                              {course.id}
+                                            </span>
+                                          </div>
+
+                                          {/* Course Title */}
+                                          <div
+                                            data-flyer-unclip="true"
+                                            className="text-[8.1px] font-black text-[#0f172a] leading-[1.18] mt-0.5 line-clamp-2"
+                                          >
+                                            {displayTitle.length > 48
+                                              ? `${displayTitle.slice(0, 46).trimEnd()}…`
+                                              : displayTitle}
+                                          </div>
+
+                                          {/* Course Description Snippet */}
+                                          <div
+                                            data-flyer-unclip="true"
+                                            className="text-[6.2px] text-[#334155] font-semibold leading-[1.2] mt-0.5 line-clamp-3"
+                                          >
+                                            {shortDesc}
+                                          </div>
+                                        </div>
+
+                                        {/* Card Footer: L 100 • Sem 1 + Continue/Start Learning CTA */}
+                                        <div className="pt-1 border-t border-slate-200/80 flex items-center justify-between gap-1 shrink-0">
+                                          <div className="flex items-center gap-0.5 text-[5.8px] font-extrabold text-slate-600 whitespace-nowrap leading-[1.15]">
+                                            <Users size={6.5} className="shrink-0 text-slate-500" />
+                                            <span data-flyer-unclip="true">{levelCompact}</span>
+                                            <Calendar
+                                              size={6.2}
+                                              className="shrink-0 ml-0.5 text-slate-500"
+                                            />
+                                            <span data-flyer-unclip="true">{semCompact}</span>
+                                          </div>
+                                          <div
+                                            data-flyer-unclip="true"
+                                            style={{
+                                              backgroundColor: isContinue
+                                                ? palette.accentText
+                                                : '#0f172a',
+                                            }}
+                                            className="text-white rounded-md px-1.5 py-[2.5px] text-[5.8px] font-black whitespace-nowrap leading-[1.1] shrink-0"
+                                          >
+                                            {isContinue ? 'Continue Learning' : 'Start Learning'}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+
+                              {/* Authentic UniAce Bottom Navigation Bar with Dynamic Palette AI Chat Button */}
+                              <div className="px-4 py-1.5 bg-white/95 backdrop-blur-xs border-t border-slate-200 flex items-center justify-between text-[7.5px] font-bold text-slate-400 leading-[1.2] shrink-0 relative z-10">
+                                <div
+                                  className="flex flex-col items-center gap-0.5"
+                                  style={{ color: palette.accentText }}
+                                >
+                                  <LayoutGrid size={11} />
+                                  <span data-flyer-unclip="true">Hub</span>
+                                </div>
+                                <div className="flex flex-col items-center gap-0.5">
+                                  <Home size={11} />
+                                  <span data-flyer-unclip="true">Home</span>
+                                </div>
+                                <div className="flex flex-col items-center -mt-3.5">
+                                  <div
+                                    style={{ backgroundColor: palette.accentText }}
+                                    className="w-7 h-7 rounded-full text-white shadow-md border-2 border-white flex items-center justify-center"
+                                  >
+                                    <MessageSquare size={12} />
+                                  </div>
+                                </div>
+                                <div className="flex flex-col items-center gap-0.5">
+                                  <Trophy size={11} />
+                                  <span data-flyer-unclip="true">Arena</span>
+                                </div>
+                                <div className="flex flex-col items-center gap-0.5">
+                                  <User size={11} />
+                                  <span data-flyer-unclip="true">Profile</span>
+                                </div>
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              {/* 8-CAPABILITY LIST PHONE SCREEN MODE */}
+                              <div className="px-4 pt-1 pb-1.5 bg-white border-b border-slate-100 shrink-0">
+                                <div className="flex items-center gap-2">
+                                  <div
+                                    className="w-5 h-5 rounded-md flex items-center justify-center text-white text-[11px] font-black shrink-0"
+                                    style={{ backgroundColor: palette.accentText }}
+                                  >
+                                    🎓
+                                  </div>
+                                  <span
+                                    data-flyer-unclip="true"
+                                    className="text-[12.5px] font-black text-slate-900 leading-[1.3]"
+                                  >
+                                    UniAce{' '}
+                                    <span style={{ color: palette.accentText }}>Mastery AI</span>
+                                  </span>
+                                </div>
+                                <div className="mt-1">
+                                  <div
+                                    data-flyer-unclip="true"
+                                    className="text-[13px] font-black text-slate-900 leading-[1.3]"
+                                  >
+                                    {flyerConfig.phoneGreeting}
+                                  </div>
+                                  <div
+                                    data-flyer-unclip="true"
+                                    className="text-[10px] text-slate-500 font-medium leading-[1.3]"
+                                  >
+                                    {flyerConfig.phonePrompt}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="px-2.5 py-1.5 space-y-1 flex-1 flex flex-col justify-center bg-[#f1f5f9]">
+                                {enabledCapabilities.map((cap) => (
+                                  <div
+                                    key={cap.id}
+                                    className="bg-white rounded-xl px-2.5 py-1 border border-slate-200/80 shadow-2xs flex items-center justify-between gap-2"
+                                  >
+                                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                                      <div
+                                        className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 shadow-2xs"
+                                        style={{ backgroundColor: cap.accentHex }}
+                                      >
+                                        {renderCapabilityIcon(cap.iconKey, 14)}
+                                      </div>
+                                      <div className="min-w-0 flex-1 overflow-visible">
+                                        <div
+                                          data-flyer-unclip="true"
+                                          className="text-[10.5px] font-extrabold text-slate-900 leading-[1.32] pb-[1px] whitespace-nowrap"
+                                        >
+                                          {cap.title}
+                                        </div>
+                                        <div
+                                          data-flyer-unclip="true"
+                                          className="text-[8.5px] text-slate-500 font-medium leading-[1.32] pb-[1px] whitespace-nowrap"
+                                        >
+                                          {cap.phoneDescription.length > 42
+                                            ? `${cap.phoneDescription.slice(0, 40).trimEnd()}…`
+                                            : cap.phoneDescription}
+                                        </div>
+                                      </div>
+                                    </div>
+                                    <ChevronRight size={11} className="text-slate-400 shrink-0" />
+                                  </div>
+                                ))}
+                              </div>
+
+                              <div className="px-5 py-1.5 bg-white border-t border-slate-200 flex items-center justify-between text-[8.5px] font-bold text-slate-400 leading-[1.3] shrink-0">
+                                <div
+                                  className="flex flex-col items-center gap-0.5"
+                                  style={{ color: palette.accentText }}
+                                >
+                                  <Home size={12} />
+                                  <span data-flyer-unclip="true">Home</span>
+                                </div>
+                                <div className="flex flex-col items-center gap-0.5">
+                                  <Library size={12} />
+                                  <span data-flyer-unclip="true">Library</span>
+                                </div>
+                                <div className="flex flex-col items-center gap-0.5">
+                                  <Calendar size={12} />
+                                  <span data-flyer-unclip="true">Planner</span>
+                                </div>
+                                <div className="flex flex-col items-center gap-0.5">
+                                  <User size={12} />
+                                  <span data-flyer-unclip="true">Profile</span>
+                                </div>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ================= LOWER DYNAMIC WAVE & FEATURE DECK ================= */}
+                <div className="relative z-30 -mt-12">
+                  {/* Dynamic Wave Geometry */}
+                  <svg
+                    viewBox="0 0 760 50"
+                    className="w-full h-[50px] block -mb-1"
+                    preserveAspectRatio="none"
+                  >
+                    <path d={wavePathByStyle[activeWave]} fill={palette.deckWaveFill} />
+                  </svg>
+
+                  <div
+                    style={{ background: palette.deckGradient }}
+                    className="px-9 pt-3.5 pb-4 text-white space-y-4"
+                  >
+                    {/* 8-Feature Grid (2 Rows x 4 Columns) */}
+                    <div className="grid grid-cols-4 gap-x-4 gap-y-3.5">
+                      {enabledCapabilities.map((cap, idx) => (
+                        <div
+                          key={cap.id}
+                          className={`flex items-start gap-2.5 pr-2 ${
+                            idx % 4 !== 3 ? 'border-r border-white/15' : ''
+                          }`}
+                        >
+                          <div
+                            className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 border-2 border-white shadow-md"
+                            style={{ backgroundColor: cap.badgeBgHex }}
+                          >
+                            {renderCapabilityIcon(cap.iconKey, 16)}
+                          </div>
+                          <div className="min-w-0">
+                            <div
+                              data-flyer-unclip="true"
+                              className="text-[12.5px] font-extrabold text-white leading-[1.3]"
+                            >
+                              {cap.title}
+                            </div>
+                            <div
+                              data-flyer-unclip="true"
+                              style={{ color: palette.accentMuted }}
+                              className="text-[10px] font-medium leading-[1.32] mt-0.5 opacity-95"
+                            >
+                              {cap.gridDescription}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* CTA Bar: Visit Now Button + Live Domain + Scannable Vector QR Code + Support Line */}
+                    <div className="pt-2 flex items-center justify-between gap-3 border-t border-white/15">
+                      {/* Left: Visit Now CTA + Website URL */}
+                      <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <div
+                          style={{ backgroundColor: palette.ctaBg, color: palette.ctaText }}
+                          className="px-5 py-2.5 rounded-full font-black text-[17px] leading-[1.25] shadow-lg flex items-center justify-center gap-1.5 shrink-0"
+                        >
+                          <span data-flyer-unclip="true" className="pb-[1px]">
+                            {flyerConfig.ctaText}
+                          </span>
+                          <ChevronRight size={19} strokeWidth={3} />
+                        </div>
+                        <span
+                          data-flyer-unclip="true"
+                          style={{
+                            fontSize:
+                              flyerConfig.websiteDisplayUrl.length > 32
+                                ? '13.5px'
+                                : flyerConfig.websiteDisplayUrl.length > 26
+                                  ? '15px'
+                                  : flyerConfig.websiteDisplayUrl.length > 20
+                                    ? '17px'
+                                    : '19.5px',
+                          }}
+                          className="font-extrabold tracking-tight text-white leading-[1.35] pb-[2px] whitespace-nowrap overflow-visible"
+                        >
+                          {flyerConfig.websiteDisplayUrl}
+                        </span>
+                      </div>
+
+                      {/* Right: Real Vector SVG QR Code + Support Contact */}
+                      <div className="flex items-center gap-3.5 shrink-0">
+                        <div className="bg-white p-1.5 rounded-xl shadow-lg w-[64px] h-[64px] flex items-center justify-center">
+                          {qrMatrix.length > 0 ? (
+                            <svg
+                              viewBox={`0 0 ${qrMatrix.length} ${qrMatrix.length}`}
+                              className="w-full h-full"
+                              shapeRendering="crispEdges"
+                            >
+                              <rect
+                                width={qrMatrix.length}
+                                height={qrMatrix.length}
+                                fill="#ffffff"
+                              />
+                              {qrMatrix.map((row, rIdx) =>
+                                row.map((isDark, cIdx) =>
+                                  isDark ? (
+                                    <rect
+                                      key={`${rIdx}-${cIdx}`}
+                                      x={cIdx}
+                                      y={rIdx}
+                                      width={1}
+                                      height={1}
+                                      fill="#0f172a"
+                                    />
+                                  ) : null
+                                )
+                              )}
+                            </svg>
+                          ) : (
+                            <span className="text-[8px] text-center font-bold text-rose-600">
+                              QR unavailable
+                            </span>
+                          )}
+                        </div>
+
+                        {flyerConfig.supportContact && (
+                          <div className="flex items-center gap-2">
+                            <div className="w-9 h-9 rounded-full bg-white/10 border border-white/25 flex items-center justify-center text-white shrink-0">
+                              <Headphones size={18} />
+                            </div>
+                            <div>
+                              <div
+                                data-flyer-unclip="true"
+                                style={{ color: palette.accentLight }}
+                                className="text-[10.5px] font-semibold leading-[1.3]"
+                              >
+                                {flyerConfig.supportLabel}
+                              </div>
+                              <div
+                                data-flyer-unclip="true"
+                                className="text-[14.5px] font-black text-white leading-[1.3] tracking-tight"
+                              >
+                                {flyerConfig.supportContact}
+                              </div>
+                              <div
+                                data-flyer-unclip="true"
+                                style={{ color: palette.accentMuted }}
+                                className="text-[10px] font-medium leading-[1.3] opacity-85"
+                              >
+                                {flyerConfig.supportSublabel}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Bottom Footer Strip */}
+                  <div
+                    style={{
+                      backgroundColor: palette.footerStripBg,
+                      color: palette.accentMuted,
+                    }}
+                    className="py-2.5 px-8 text-center text-[10.5px] font-bold tracking-[0.18em] uppercase flex items-center justify-center gap-4 leading-[1.35]"
+                  >
+                    <span data-flyer-unclip="true">{flyerConfig.footerPillars[0]}</span>
+                    <span style={{ color: palette.accentLight }}>|</span>
+                    <span data-flyer-unclip="true">{flyerConfig.footerPillars[1]}</span>
+                    <span style={{ color: palette.accentLight }}>|</span>
+                    <span data-flyer-unclip="true">{flyerConfig.footerPillars[2]}</span>
                   </div>
                 </div>
               </div>
-
-              {/* Bottom Footer Strip */}
-              <div
-                style={{ backgroundColor: palette.footerStripBg }}
-                className="py-2.5 px-8 text-center text-[10.5px] font-bold tracking-[0.18em] text-emerald-100/85 uppercase flex items-center justify-center gap-4 leading-[1.35]"
-              >
-                <span data-flyer-unclip="true">{flyerConfig.footerPillars[0]}</span>
-                <span className="text-emerald-400">|</span>
-                <span data-flyer-unclip="true">{flyerConfig.footerPillars[1]}</span>
-                <span className="text-emerald-400">|</span>
-                <span data-flyer-unclip="true">{flyerConfig.footerPillars[2]}</span>
-              </div>
-            </div>
-          </div>
+            );
+          })()}
         </div>
       </div>
     </div>
