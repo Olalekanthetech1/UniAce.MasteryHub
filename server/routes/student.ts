@@ -1,6 +1,7 @@
 import express from 'express';
 import crypto from 'crypto';
-import { getPostgresPool } from '../postgresPool';
+import { getPostgresPool, isPostgresQuotaExceeded, isPostgresQuotaError } from '../postgresPool';
+import { getSystemConfigDocs } from '../systemConfigStore';
 import { logger } from '../logger';
 import { arenaRealtime } from '../arenaRealtime';
 import { validateRecordedHumanReplay } from '../services/arenaReplay';
@@ -60,54 +61,24 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
         });
       }
 
-      // 1. Check in-memory cache: if valid, overlay fresh live sparks AND live progress so state is NEVER stale
+      // 1. Check in-memory cache: mutations (spark deductions, profile updates, progress syncs)
+      // explicitly call invalidateBootstrapCache(uid), so a valid cache entry can be served with 0 DB queries.
       const cached = bootstrapCache.get(uid);
-      if (cached && (Date.now() - cached.cachedAt < BOOTSTRAP_TTL_MS)) {
-        // Overlay latest sparks and subscription state directly from users table (<1ms)
-        const liveSparksRes = await pool.query(
-          'SELECT ai_sparks, plan_type, role, subscription_status, subscription_expiry, subscription_start_date, created_at FROM users WHERE uid = $1',
-          [uid]
-        );
-        if (liveSparksRes.rows.length > 0) {
-          const u = liveSparksRes.rows[0];
-          let livePlan = u.plan_type || 'free';
-          let liveStatus = u.subscription_status || 'none';
-          const liveExpiry = u.subscription_expiry ? new Date(u.subscription_expiry) : null;
-          if (u.role !== 'admin' && livePlan !== 'free') {
-            if (liveStatus === 'expired' || (liveExpiry && !isNaN(liveExpiry.getTime()) && Date.now() > liveExpiry.getTime()) || !liveExpiry) {
-              livePlan = 'free';
-              liveStatus = 'expired';
-              await pool.query(
-                "UPDATE users SET plan_type = 'free', subscription_status = 'expired', updated_at = NOW() WHERE uid = $1",
-                [uid]
-              ).catch(() => {});
-            }
-          }
-          cached.data.quota.ai_sparks = u.ai_sparks ?? 0;
-          cached.data.quota.plan_type = livePlan;
-          cached.data.quota.subscription_status = liveStatus;
-          cached.data.quota.subscription_expiry = liveExpiry ? liveExpiry.toISOString() : undefined;
-          cached.data.profile.ai_sparks = u.ai_sparks ?? 0;
-          cached.data.profile.plan_type = livePlan;
-          cached.data.profile.subscription_status = liveStatus;
-          cached.data.profile.subscription_expiry = liveExpiry ? liveExpiry.toISOString() : undefined;
-          if (u.created_at) cached.data.profile.created_at = new Date(u.created_at).toISOString();
-        }
-
-        // Overlay latest progress directly from user_course_progress (<1ms)
-        const progressRes = await pool.query(
-          'SELECT course_id, total_study_seconds, last_studied_lesson_id, last_studied_at, completed_lessons_count, completed_modules_count, version ' +
-          'FROM user_course_progress WHERE uid = $1',
-          [uid]
-        );
-        const progressByCourse: Record<string, any> = {};
-        for (const row of progressRes.rows) {
-          progressByCourse[row.course_id] = row;
-        }
-        cached.data.progress = progressByCourse;
-
+      const forceRefresh = req.query.refresh === 'true';
+      if (cached && !forceRefresh && (Date.now() - cached.cachedAt < BOOTSTRAP_TTL_MS)) {
         res.setHeader('Cache-Control', 'private, no-cache, no-store, must-revalidate');
         return res.json({ ...cached.data, fromCache: true });
+      }
+
+      if (isPostgresQuotaExceeded()) {
+        if (cached) {
+          res.setHeader('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+          return res.json({ ...cached.data, fromCache: true });
+        }
+        return res.status(503).json({
+          error: 'Database service unavailable',
+          message: 'Neon PostgreSQL project compute/transfer quota is currently exceeded. Please upgrade or reset your database plan.'
+        });
       }
 
       // 2. Fetch User Profile from Neon
@@ -268,13 +239,16 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
       );
       const unreadNotificationsCount = notifRes.rows[0]?.unread_count || 0;
 
-      // 5. Fetch Key System Configs (Community, Institution, Pricing, Challenges, Feature Switches)
-      const configRes = await pool.query(
-        "SELECT key, data FROM system_config WHERE key IN ('community', 'institution', 'pricing', 'challenges', 'feature_switches')"
+      // 5. Fetch Key System Configs via 30-minute in-memory cache (avoids redundant SQL queries on every bootstrap)
+      const cachedDocs = await getSystemConfigDocs(
+        ['community', 'institution', 'pricing', 'challenges', 'feature_switches'],
+        false
       );
       const systemConfig: Record<string, any> = {};
-      for (const row of configRes.rows) {
-        systemConfig[row.key] = row.data;
+      for (const [k, val] of Object.entries(cachedDocs)) {
+        if (val !== null) {
+          systemConfig[k] = val;
+        }
       }
       systemConfig.feature_switches = {
         arena: false,
@@ -314,6 +288,22 @@ export function setupStudentRoutes(app: express.Application, verifyAuth: any) {
       res.setHeader('Cache-Control', 'private, no-cache, no-store, must-revalidate');
       return res.json(payload);
     } catch (err: any) {
+      const cached = bootstrapCache.get(uid);
+      if (cached) {
+        res.setHeader('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+        return res.json({ ...cached.data, fromCache: true });
+      }
+      const isQuotaOrUnavailable =
+        isPostgresQuotaExceeded() ||
+        isPostgresQuotaError(err) ||
+        /unavailable|exceeded the quota|not connected/i.test(String(err?.message || ''));
+      if (isQuotaOrUnavailable) {
+        logger.warn({ uid, err: err.message }, '[StudentRoutes] Bootstrap temporarily unavailable due to database quota/connectivity');
+        return res.status(503).json({
+          error: 'Database service unavailable',
+          details: err.message
+        });
+      }
       logger.error({ uid, err: err.message }, '[StudentRoutes] Error in bootstrap');
       return res.status(500).json({ error: 'Failed to bootstrap student state', details: err.message });
     }

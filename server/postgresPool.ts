@@ -43,9 +43,50 @@ const MAX_QUERY_SAMPLES = 200;
 const recentQuerySamples: PostgresQuerySample[] = [];
 let totalQueryCount = 0;
 let totalFailedQueryCount = 0;
+let lastQueryActivityAt = 0;
+let quotaExceededUntil = 0;
+let lastQuotaErrorMessage: string | null = null;
+let lastQuotaWarnLoggedAt = 0;
+const QUOTA_COOLDOWN_MS = 60 * 1000; // 60s circuit-breaker cooldown when Neon reports quota exceeded
+const QUOTA_LOG_THROTTLE_MS = 60 * 1000; // Log quota warning at most once per minute
+
+export function isPostgresQuotaError(err: unknown): boolean {
+  const msg = String((err as any)?.message || err || '');
+  return /exceeded the quota|exceeded.*quota|compute time quota|upgrade your plan to increase limits/i.test(msg);
+}
+
+export function isPostgresQuotaExceeded(): boolean {
+  return Date.now() < quotaExceededUntil;
+}
+
+export function getPostgresQuotaError(): string | null {
+  return isPostgresQuotaExceeded() ? lastQuotaErrorMessage : null;
+}
+
+export function markPostgresActivity(): void {
+  lastQueryActivityAt = Date.now();
+}
+
+export function getLastPostgresActivityAt(): number {
+  return lastQueryActivityAt;
+}
+
+function recordQuotaTripIfApplicable(err: any): void {
+  if (isPostgresQuotaError(err)) {
+    const now = Date.now();
+    quotaExceededUntil = now + QUOTA_COOLDOWN_MS;
+    lastQuotaErrorMessage = err?.message || 'Your account or project has exceeded the quota. Upgrade your plan to increase limits.';
+    lastKnownHealth = { connected: false, checkedAt: now, error: lastQuotaErrorMessage || undefined };
+  }
+}
 
 function recordQuerySample(acquireMs: number, execMs: number) {
   totalQueryCount += 1;
+  lastQueryActivityAt = Date.now();
+  if (quotaExceededUntil > 0) {
+    quotaExceededUntil = 0;
+    lastQuotaErrorMessage = null;
+  }
   recentQuerySamples.push({
     acquireMs,
     execMs,
@@ -75,6 +116,8 @@ export function getPostgresPoolTelemetry() {
     totalQueryCount,
     totalFailedQueryCount,
     sampleCount: recentQuerySamples.length,
+    quotaExceeded: isPostgresQuotaExceeded(),
+    lastQueryActivityAt: lastQueryActivityAt ? new Date(lastQueryActivityAt).toISOString() : null,
     poolState: pool
       ? {
           totalClients: pool.totalCount,
@@ -110,20 +153,65 @@ export function getPostgresPool(): pg.Pool | null {
   if (!pool) {
     try {
       const connectionString = normalizePostgresConnectionString(rawConnectionString);
-      pool = new pg.Pool({
+      const rawPool = new pg.Pool({
         connectionString,
         ssl: { rejectUnauthorized: false },
-        connectionTimeoutMillis: 15000,
-        max: 10,
-        idleTimeoutMillis: 30000,
-        keepAlive: true,
-        keepAliveInitialDelayMillis: 10000
+        connectionTimeoutMillis: 10000,
+        max: 5,
+        // Fast 10s idle release with keepAlive disabled so Neon serverless compute can scale-to-zero cleanly
+        idleTimeoutMillis: 10000,
+        keepAlive: false
       });
 
-      pool.on('error', (err) => {
+      rawPool.on('error', (err) => {
+        recordQuotaTripIfApplicable(err);
         logger.warn({ err: err.message }, '[PostgresPool] Unexpected client error on idle pool');
         lastKnownHealth = { connected: false, checkedAt: Date.now(), error: err.message };
       });
+
+      // Wrap pool.query and pool.connect to track activity and respect the quota circuit breaker
+      const origQuery = rawPool.query.bind(rawPool);
+      (rawPool as any).query = async (...args: any[]) => {
+        if (isPostgresQuotaExceeded()) {
+          const quotaErr: any = new Error(
+            `Database service unavailable: ${lastQuotaErrorMessage || 'Neon PostgreSQL project quota exceeded.'}`
+          );
+          quotaErr.code = 'NEON_QUOTA_EXCEEDED';
+          throw quotaErr;
+        }
+        const t0 = Date.now();
+        try {
+          const res = await (origQuery as any)(...args);
+          recordQuerySample(0, Date.now() - t0);
+          return res;
+        } catch (err: any) {
+          totalFailedQueryCount += 1;
+          recordQuotaTripIfApplicable(err);
+          throw err;
+        }
+      };
+
+      const origConnect = rawPool.connect.bind(rawPool);
+      (rawPool as any).connect = async (...args: any[]) => {
+        if (isPostgresQuotaExceeded() && args.length === 0) {
+          const quotaErr: any = new Error(
+            `Database service unavailable: ${lastQuotaErrorMessage || 'Neon PostgreSQL project quota exceeded.'}`
+          );
+          quotaErr.code = 'NEON_QUOTA_EXCEEDED';
+          throw quotaErr;
+        }
+        try {
+          const client = await (origConnect as any)(...args);
+          lastQueryActivityAt = Date.now();
+          return client;
+        } catch (err: any) {
+          totalFailedQueryCount += 1;
+          recordQuotaTripIfApplicable(err);
+          throw err;
+        }
+      };
+
+      pool = rawPool;
     } catch (err: any) {
       logger.error({ err: err.message }, '[PostgresPool] Failed to instantiate pg.Pool');
       pool = null;
@@ -143,6 +231,14 @@ export async function checkPostgresHealth(): Promise<{ connected: boolean; laten
     return { connected: false, latencyMs: 0, error: 'DATABASE_URL is not configured' };
   }
 
+  if (isPostgresQuotaExceeded()) {
+    return {
+      connected: false,
+      latencyMs: 0,
+      error: lastQuotaErrorMessage || 'Neon PostgreSQL quota exceeded'
+    };
+  }
+
   const start = Date.now();
   let client: pg.PoolClient | null = null;
   try {
@@ -157,6 +253,7 @@ export async function checkPostgresHealth(): Promise<{ connected: boolean; laten
     return { connected: true, latencyMs, acquireMs, execMs };
   } catch (err: any) {
     totalFailedQueryCount += 1;
+    recordQuotaTripIfApplicable(err);
     const latencyMs = Date.now() - start;
     lastKnownHealth = { connected: false, checkedAt: Date.now(), error: err.message };
     return { connected: false, latencyMs, error: err.message || String(err) };
@@ -187,6 +284,14 @@ export async function queryPostgres<T = any>(
     throw new Error('PostgreSQL pool unavailable: DATABASE_URL not configured');
   }
 
+  if (isPostgresQuotaExceeded()) {
+    const quotaErr: any = new Error(
+      `Database service unavailable: ${lastQuotaErrorMessage || 'Neon PostgreSQL project quota exceeded.'}`
+    );
+    quotaErr.code = 'NEON_QUOTA_EXCEEDED';
+    throw quotaErr;
+  }
+
   const t0 = Date.now();
   let client: pg.PoolClient | null = null;
   try {
@@ -203,8 +308,15 @@ export async function queryPostgres<T = any>(
     return result;
   } catch (err: any) {
     totalFailedQueryCount += 1;
+    recordQuotaTripIfApplicable(err);
     const durationMs = Date.now() - t0;
-    logger.warn({ durationMs, error: err.message }, '[Postgres] Query failed');
+    const now = Date.now();
+    if (!isPostgresQuotaError(err) || now - lastQuotaWarnLoggedAt >= QUOTA_LOG_THROTTLE_MS) {
+      if (isPostgresQuotaError(err)) {
+        lastQuotaWarnLoggedAt = now;
+      }
+      logger.warn({ durationMs, error: err.message }, '[Postgres] Query failed');
+    }
     throw err;
   } finally {
     if (client) {

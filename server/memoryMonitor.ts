@@ -3,7 +3,7 @@ import os from 'os';
 import v8 from 'v8';
 import admin from 'firebase-admin';
 import { getAdminApp } from './firebaseAdmin';
-import { getPostgresPool } from './postgresPool';
+import { getPostgresPool, isPostgresQuotaExceeded } from './postgresPool';
 
 export interface LiveMemoryStats {
   timestamp: string;
@@ -183,7 +183,7 @@ export async function recordBackendSystemLog(
       recentBackendLogsRingBuffer.pop();
     }
 
-    // Only persist to Firestore system_logs when explicitly forced, or for security/error/admin-mutation events
+    // Only persist to database system_logs when explicitly forced, or for security/error/admin-mutation events
     const shouldPersist =
       options?.forcePersistToFirestore === true ||
       level === 'error' ||
@@ -205,7 +205,7 @@ export async function recordBackendSystemLog(
     recentFirestoreLogDedupeMap.set(dedupeKey, now);
 
     const pool = getPostgresPool();
-    if (pool) {
+    if (pool && !isPostgresQuotaExceeded()) {
       const logId = crypto.randomUUID ? crypto.randomUUID() : `log_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
       await pool.query(
         `INSERT INTO system_logs (log_id, level, category, message, details, user_id, created_at)
@@ -219,8 +219,6 @@ export async function recordBackendSystemLog(
 }
 
 let memoryMonitorInterval: NodeJS.Timeout | null = null;
-let lastMemoryWarningFirestoreWriteAt = 0;
-const MEMORY_WARNING_FIRESTORE_THROTTLE_MS = 30 * 60 * 1000; // Max 1 write per 30 minutes
 
 export function startMemoryMonitoringUtility(getActiveJobsCount: () => number): NodeJS.Timeout {
   if (memoryMonitorInterval) {
@@ -235,14 +233,9 @@ export function startMemoryMonitoringUtility(getActiveJobsCount: () => number): 
 
     if (stats.heapUtilizationPct >= 85 || stats.hostUtilizationPct >= 90) {
       console.warn(summaryMsg);
-      const now = Date.now();
-      if (now - lastMemoryWarningFirestoreWriteAt >= MEMORY_WARNING_FIRESTORE_THROTTLE_MS) {
-        lastMemoryWarningFirestoreWriteAt = now;
-        void recordBackendSystemLog('warning', 'system', summaryMsg, stats, undefined, { forcePersistToFirestore: true });
-      } else {
-        dbTelemetry.recordSuppressedWrite('system_logs', 'throttled_1m_memory_warning', 1);
-      }
-    } else {
+      // Buffer in the in-memory ring buffer only (forcePersistToFirestore: false) so Neon is never woken up while idle
+      void recordBackendSystemLog('warning', 'system', summaryMsg, stats, undefined, { forcePersistToFirestore: false });
+    } else if (isInitial) {
       console.log(summaryMsg);
     }
   };
@@ -252,6 +245,10 @@ export function startMemoryMonitoringUtility(getActiveJobsCount: () => number): 
   memoryMonitorInterval = setInterval(() => {
     logMemorySnapshot(false);
   }, 60 * 1000);
+
+  if (memoryMonitorInterval.unref) {
+    memoryMonitorInterval.unref();
+  }
 
   return memoryMonitorInterval;
 }

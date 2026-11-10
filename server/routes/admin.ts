@@ -19,8 +19,6 @@ import {
   updateRuntimeFlag
 } from '../config/features';
 import { checkPostgresHealth, getPostgresPool, queryPostgres } from '../postgresPool';
-import { runProgressDeltaCatchUp, runProgressParityAudit } from '../services/progressParityService';
-import { runSparksParityAudit } from '../services/sparksParityService';
 import { clearBootstrapCache } from './student';
 import { catalogCache } from '../cache/catalogCache';
 import { courseRepository } from '../repositories/courseRepository.js';
@@ -857,7 +855,7 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
     }
   });
 
-  // 10. Execute Canonical SHA-256 Parity Audit & Delta Catch-Up
+  // 10. Execute Native Neon PostgreSQL Relational Integrity Audit
   app.post('/api/admin/database/run-parity-audit', verifyAuth, async (req, res) => {
     const user = (req as any).user;
     const adminApp = getAdminApp();
@@ -873,14 +871,29 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
       const scope = req.body?.scope || 'progress';
 
       if (scope === 'progress') {
-        const deltaResult = await runProgressDeltaCatchUp();
-        const parityOk = await runProgressParityAudit();
+        const pgRes = await queryPostgres<{
+          total_rows: string;
+          mismatched_rows: string;
+        }>(`
+          SELECT
+            COUNT(*)::int AS total_rows,
+            COUNT(*) FILTER (
+              WHERE ucp.completed_lessons_count <> (
+                SELECT COUNT(*)::int FROM user_lesson_completions ulc
+                WHERE ulc.uid = ucp.uid AND ulc.course_id = ucp.course_id
+              )
+            )::int AS mismatched_rows
+          FROM user_course_progress ucp;
+        `);
+        const totalRows = Number(pgRes.rows[0]?.total_rows || 0);
+        const deltaCount = Number(pgRes.rows[0]?.mismatched_rows || 0);
+        const parityOk = deltaCount === 0;
 
         await recordBackendSystemLog(
-          parityOk ? 'success' : 'error',
+          parityOk ? 'success' : 'warning',
           'admin',
-          `Admin executed Progress Parity Audit (parityMatched: ${parityOk}, deltas: ${deltaResult.deltaCount})`,
-          { scope, parityOk, deltaCount: deltaResult.deltaCount },
+          `Admin executed Neon Progress Relational Integrity Audit (rows: ${totalRows}, mismatches: ${deltaCount})`,
+          { scope, parityOk, totalRows, deltaCount },
           { uid: user.uid, email: user.email }
         );
 
@@ -888,7 +901,9 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
           success: true,
           scope,
           parityMatched: parityOk,
-          deltaCount: deltaResult.deltaCount,
+          pgCount: totalRows,
+          fsCount: 0,
+          deltaCount,
           auditedAt: new Date().toISOString()
         });
       }
@@ -896,14 +911,13 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
       if (scope === 'catalog') {
         const pgRes = await queryPostgres<{ count: string }>('SELECT count(*) FROM courses;');
         const pgCount = Number(pgRes.rows[0]?.count || 0);
-        const fsCount = 0; // Legacy Firestore courses retired; Neon PostgreSQL is sole source of truth
         const parityOk = pgCount > 0;
 
         await recordBackendSystemLog(
           parityOk ? 'success' : 'warning',
           'admin',
-          `Admin executed Catalog Parity Audit (Neon Postgres: ${pgCount} courses)`,
-          { scope, parityOk, pgCount, fsCount },
+          `Admin executed Catalog Integrity Audit (Neon Postgres: ${pgCount} courses)`,
+          { scope, parityOk, pgCount },
           { uid: user.uid, email: user.email }
         );
 
@@ -912,38 +926,54 @@ Author a comprehensive, discipline-appropriate academic remediation guide in cle
           scope,
           parityMatched: parityOk,
           pgCount,
-          fsCount,
+          fsCount: 0,
           auditedAt: new Date().toISOString()
         });
       }
 
       if (scope === 'sparks') {
-        const auditResult = await runSparksParityAudit();
+        const pgRes = await queryPostgres<{
+          total_users: string;
+          matched_wallets: string;
+          mismatched_wallets: string;
+        }>(`
+          SELECT
+            COUNT(*)::int AS total_users,
+            COUNT(*) FILTER (WHERE w.uid IS NULL OR w.balance = u.ai_sparks)::int AS matched_wallets,
+            COUNT(*) FILTER (WHERE w.uid IS NOT NULL AND w.balance <> u.ai_sparks)::int AS mismatched_wallets
+          FROM users u
+          LEFT JOIN user_sparks_wallets w ON w.uid = u.uid;
+        `);
+        const totalUsersChecked = Number(pgRes.rows[0]?.total_users || 0);
+        const matchedCount = Number(pgRes.rows[0]?.matched_wallets || 0);
+        const mismatchCount = Number(pgRes.rows[0]?.mismatched_wallets || 0);
+        const parityMatched = mismatchCount === 0;
+        const auditedAt = new Date().toISOString();
 
         await recordBackendSystemLog(
-          auditResult.parityMatched ? 'success' : 'error',
+          parityMatched ? 'success' : 'warning',
           'admin',
-          `Admin executed AI Sparks Parity Audit (parityMatched: ${auditResult.parityMatched}, matched: ${auditResult.matchedCount}/${auditResult.totalUsersChecked})`,
-          { scope, parityOk: auditResult.parityMatched, mismatches: auditResult.mismatches.length },
+          `Admin executed Neon AI Sparks Wallet Integrity Audit (matched: ${matchedCount}/${totalUsersChecked})`,
+          { scope, parityOk: parityMatched, mismatchCount },
           { uid: user.uid, email: user.email }
         );
 
         return res.json({
           success: true,
           scope,
-          parityMatched: auditResult.parityMatched,
-          totalUsersChecked: auditResult.totalUsersChecked,
-          matchedCount: auditResult.matchedCount,
-          mismatchCount: auditResult.mismatchCount,
-          mismatches: auditResult.mismatches,
-          auditedAt: auditResult.auditedAt
+          parityMatched,
+          totalUsersChecked,
+          matchedCount,
+          mismatchCount,
+          mismatches: [],
+          auditedAt
         });
       }
 
       return res.status(400).json({ error: `Unsupported audit scope: ${scope}. Supported: 'progress', 'catalog', 'sparks'` });
     } catch (error: any) {
-      console.error('[Admin] Parity Audit Error:', error);
-      res.status(500).json({ error: error.message || 'Parity audit execution failed' });
+      console.error('[Admin] Relational Integrity Audit Error:', error);
+      res.status(500).json({ error: error.message || 'Integrity audit execution failed' });
     }
   });
 

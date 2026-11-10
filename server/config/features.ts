@@ -3,12 +3,11 @@
  *
  * Persisted in Neon PostgreSQL table `system_runtime_flags` (Self-Contained Control Plane).
  * Express workers maintain a zero-latency in-memory cache updated via:
- * 1. Initial boot sync
- * 2. Background polling refresh (every 5 seconds)
- * 3. Instant local cache update upon administrative API mutations
+ * 1. Initial boot sync (scale-to-zero friendly: no continuous background polling)
+ * 2. Instant local cache update upon administrative API mutations
  */
 
-import { queryPostgres, getPostgresPool } from '../postgresPool';
+import { queryPostgres, getPostgresPool, isPostgresQuotaExceeded } from '../postgresPool';
 import { logger } from '../logger';
 
 export interface SystemFeatureFlags {
@@ -64,6 +63,7 @@ let cachedFlags: SystemFeatureFlags = {
 let cachedFlagRecords: Map<string, RuntimeFlagRecord> = new Map();
 let syncIntervalId: NodeJS.Timeout | null = null;
 let hasLoggedNoPool = false;
+let hasCompletedInitialSync = false;
 
 // Log startup backend status once
 if (!initialHasPostgres) {
@@ -95,17 +95,6 @@ export function getFeatureFlags(): Readonly<SystemFeatureFlags> {
 }
 
 /**
- * Returns the current migration mode persisted in system_runtime_flags.
- */
-export function getMigrationMode(): string {
-  const record = cachedFlagRecords.get('migration_mode');
-  if (record && record.description) {
-    return record.description;
-  }
-  return 'unconfigured';
-}
-
-/**
  * Returns all runtime flag records with metadata (cutover_at, updated_by, updated_at).
  */
 export function getAllRuntimeFlagRecords(): RuntimeFlagRecord[] {
@@ -134,6 +123,10 @@ export async function refreshRuntimeFlagsFromDb(): Promise<void> {
       logger.info('[RuntimeFlags] PostgreSQL pool unavailable (DATABASE_URL unset or pool uninstantiated). Postgres flags forced to FALSE; running with Firestore/degraded fallbacks.');
       hasLoggedNoPool = true;
     }
+    return;
+  }
+
+  if (isPostgresQuotaExceeded()) {
     return;
   }
 
@@ -175,6 +168,7 @@ export async function refreshRuntimeFlagsFromDb(): Promise<void> {
       ...updatedFlags,
       ENABLE_POSTGRES_SHADOW_WRITE: false // Enforce hardcoded invariant
     };
+    hasCompletedInitialSync = true;
   } catch (err: any) {
     logger.warn({ error: err.message }, '[RuntimeFlags] Failed to refresh flags from Neon PostgreSQL');
   }
@@ -252,31 +246,20 @@ export async function updateRuntimeFlag(
 }
 
 /**
- * Initializes runtime flags synchronization on server start.
- * Starts background 5-second polling loop to propagate mutations across worker processes.
+ * Initializes runtime flags synchronization on server start without continuous background polling
+ * so Neon PostgreSQL can auto-suspend (scale-to-zero) during idle periods.
  */
-export async function initRuntimeFlagsSync(pollIntervalMs = 5000): Promise<void> {
-  // Initial sync attempt
-  await refreshRuntimeFlagsFromDb();
-
-  // Clear any existing timer
+export async function initRuntimeFlagsSync(_pollIntervalMs?: number): Promise<void> {
   if (syncIntervalId) {
     clearInterval(syncIntervalId);
+    syncIntervalId = null;
   }
 
-  // Set background polling loop
-  syncIntervalId = setInterval(() => {
-    refreshRuntimeFlagsFromDb().catch((err) => {
-      logger.warn({ error: err.message }, '[RuntimeFlags] Polling refresh error');
-    });
-  }, pollIntervalMs);
-
-  // Allow process to terminate cleanly without timer hold
-  if (syncIntervalId.unref) {
-    syncIntervalId.unref();
+  if (!hasCompletedInitialSync) {
+    await refreshRuntimeFlagsFromDb();
   }
 
-  logger.info('[RuntimeFlags] Sync engine initialized with 5s background poll.');
+  logger.info('[RuntimeFlags] Initialized scale-to-zero in-memory flag cache (event-driven updates only; continuous polling disabled).');
 }
 
 /**

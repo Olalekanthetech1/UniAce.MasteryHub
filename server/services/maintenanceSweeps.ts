@@ -7,7 +7,7 @@
  * 3. Prune old system logs (>90 days retention policy)
  */
 
-import { getPostgresPool } from '../postgresPool';
+import { getPostgresPool, getLastPostgresActivityAt, isPostgresQuotaExceeded } from '../postgresPool';
 import { logger } from '../logger';
 
 export interface SweepResults {
@@ -16,6 +16,11 @@ export interface SweepResults {
   prunedLogsCount: number;
 }
 
+let lastSweepCompletedAt = 0;
+let lastRetentionPruneAt = 0;
+const RETENTION_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000; // Run 90-day table prunes at most once per 24 hours
+const ACTIVE_WINDOW_MS = 4 * 60 * 1000; // Only run scheduled sweep if DB was already active within the last 4 minutes (never wake a sleeping Neon instance)
+
 export class MaintenanceSweeps {
   /**
    * Sweeps expired escrow locks, refunds sparks atomically using aggregated user SUMs,
@@ -23,7 +28,7 @@ export class MaintenanceSweeps {
    */
   static async expireEscrowLocksWithRefund(): Promise<number> {
     const pool = getPostgresPool();
-    if (!pool) return 0;
+    if (!pool || isPostgresQuotaExceeded()) return 0;
 
     const client = await pool.connect();
     try {
@@ -77,7 +82,7 @@ export class MaintenanceSweeps {
       await client.query('COMMIT');
       return res.rowCount || 0;
     } catch (err: any) {
-      await client.query('ROLLBACK');
+      await client.query('ROLLBACK').catch(() => {});
       logger.error({ err: err.message }, '[MaintenanceSweeps] Escrow expiry sweep failed');
       return 0;
     } finally {
@@ -90,7 +95,7 @@ export class MaintenanceSweeps {
    */
   static async pruneSseTickets(): Promise<number> {
     const pool = getPostgresPool();
-    if (!pool) return 0;
+    if (!pool || isPostgresQuotaExceeded()) return 0;
 
     try {
       const sql = `
@@ -112,7 +117,7 @@ export class MaintenanceSweeps {
    */
   static async pruneOldLogs(): Promise<number> {
     const pool = getPostgresPool();
-    if (!pool) return 0;
+    if (!pool || isPostgresQuotaExceeded()) return 0;
 
     try {
       const sql = `
@@ -135,7 +140,7 @@ export class MaintenanceSweeps {
    */
   static async pruneOldChatAnalytics(limit = 1000): Promise<number> {
     const pool = getPostgresPool();
-    if (!pool) return 0;
+    if (!pool || isPostgresQuotaExceeded()) return 0;
     try {
       const sql = `
         DELETE FROM chat_analytics WHERE id IN (
@@ -157,7 +162,7 @@ export class MaintenanceSweeps {
    */
   static async pruneOldStruggleAnalytics(limit = 1000): Promise<number> {
     const pool = getPostgresPool();
-    if (!pool) return 0;
+    if (!pool || isPostgresQuotaExceeded()) return 0;
     try {
       const sql = `
         DELETE FROM struggle_analytics WHERE id IN (
@@ -179,7 +184,7 @@ export class MaintenanceSweeps {
    */
   static async pruneOldSystemAlerts(limit = 1000): Promise<number> {
     const pool = getPostgresPool();
-    if (!pool) return 0;
+    if (!pool || isPostgresQuotaExceeded()) return 0;
     try {
       const sql = `
         DELETE FROM system_alerts WHERE id IN (
@@ -201,7 +206,7 @@ export class MaintenanceSweeps {
    */
   static async pruneOldMessageReactions(limit = 1000): Promise<number> {
     const pool = getPostgresPool();
-    if (!pool) return 0;
+    if (!pool || isPostgresQuotaExceeded()) return 0;
     try {
       const sql = `
         DELETE FROM message_reactions WHERE id IN (
@@ -219,21 +224,59 @@ export class MaintenanceSweeps {
   }
 
   /**
-   * Runs all maintenance sweeps in sequence
+   * Runs maintenance sweeps only when the database is already awake from recent user activity
+   * (unless force=true is passed by an explicit admin action), preserving Neon Scale-to-Zero.
    */
-  static async runMaintenanceSweep(): Promise<SweepResults & {
+  static async runMaintenanceSweep(force: boolean = false): Promise<SweepResults & {
     prunedChatAnalyticsCount: number;
     prunedStruggleAnalyticsCount: number;
     prunedAlertsCount: number;
     prunedReactionsCount: number;
   }> {
+    const emptyResult = {
+      expiredEscrowsCount: 0,
+      prunedTicketsCount: 0,
+      prunedLogsCount: 0,
+      prunedChatAnalyticsCount: 0,
+      prunedStruggleAnalyticsCount: 0,
+      prunedAlertsCount: 0,
+      prunedReactionsCount: 0
+    };
+
+    if (isPostgresQuotaExceeded()) {
+      return emptyResult;
+    }
+
+    const now = Date.now();
+    const lastActivity = getLastPostgresActivityAt();
+
+    // Scale-to-Zero Guard: Never wake up a sleeping Neon database for background maintenance.
+    // Only execute if there was user query activity since the last sweep AND within the last 4 minutes.
+    if (!force) {
+      if (!lastActivity || lastActivity <= lastSweepCompletedAt || (now - lastActivity > ACTIVE_WINDOW_MS)) {
+        return emptyResult;
+      }
+    }
+
     const expiredEscrowsCount = await this.expireEscrowLocksWithRefund();
     const prunedTicketsCount = await this.pruneSseTickets();
-    const prunedLogsCount = await this.pruneOldLogs();
-    const prunedChatAnalyticsCount = await this.pruneOldChatAnalytics();
-    const prunedStruggleAnalyticsCount = await this.pruneOldStruggleAnalytics();
-    const prunedAlertsCount = await this.pruneOldSystemAlerts();
-    const prunedReactionsCount = await this.pruneOldMessageReactions();
+
+    let prunedLogsCount = 0;
+    let prunedChatAnalyticsCount = 0;
+    let prunedStruggleAnalyticsCount = 0;
+    let prunedAlertsCount = 0;
+    let prunedReactionsCount = 0;
+
+    if (force || now - lastRetentionPruneAt >= RETENTION_PRUNE_INTERVAL_MS) {
+      prunedLogsCount = await this.pruneOldLogs();
+      prunedChatAnalyticsCount = await this.pruneOldChatAnalytics();
+      prunedStruggleAnalyticsCount = await this.pruneOldStruggleAnalytics();
+      prunedAlertsCount = await this.pruneOldSystemAlerts();
+      prunedReactionsCount = await this.pruneOldMessageReactions();
+      lastRetentionPruneAt = Date.now();
+    }
+
+    lastSweepCompletedAt = Date.now();
 
     return {
       expiredEscrowsCount,

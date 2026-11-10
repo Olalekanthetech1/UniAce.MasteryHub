@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { getPostgresPool } from './postgresPool';
+import { getPostgresPool, isPostgresQuotaExceeded } from './postgresPool';
 
 interface CachedConfigEntry {
   data: Record<string, any> | null;
@@ -8,7 +8,8 @@ interface CachedConfigEntry {
 }
 
 const configMemoryCache = new Map<string, CachedConfigEntry>();
-const CONFIG_TTL_MS = 5 * 60 * 1000; // 5 minutes TTL
+// 30-minute TTL because setSystemConfigDoc and invalidateSystemConfigCache update memory immediately on admin writes
+const CONFIG_TTL_MS = 30 * 60 * 1000;
 
 export function invalidateSystemConfigCache(key?: string): void {
   if (key) {
@@ -24,16 +25,21 @@ export async function getSystemConfigDoc(
   forceRefresh: boolean = false
 ): Promise<Record<string, any> | null> {
   const now = Date.now();
-  if (!forceRefresh) {
-    const cached = configMemoryCache.get(key);
-    if (cached && now - cached.fetchedAt < CONFIG_TTL_MS) {
-      return cached.data ? { ...cached.data } : null;
-    }
+  const cached = configMemoryCache.get(key);
+  if (!forceRefresh && cached && now - cached.fetchedAt < CONFIG_TTL_MS) {
+    return cached.data ? { ...cached.data } : null;
   }
 
   const pool = getPostgresPool();
   if (!pool) {
     throw new Error(`Cannot verify system configuration '${key}': Neon PostgreSQL is unavailable.`);
+  }
+
+  if (isPostgresQuotaExceeded()) {
+    if (cached) {
+      return cached.data ? { ...cached.data } : null;
+    }
+    throw new Error(`Cannot verify system configuration '${key}' from the authoritative database: Database service unavailable (Neon PostgreSQL project quota exceeded).`);
   }
 
   try {
@@ -47,7 +53,10 @@ export async function getSystemConfigDoc(
     configMemoryCache.set(key, { data, updatedAtIso, fetchedAt: now });
     return data ? { ...data } : null;
   } catch (err: any) {
-    console.error(`[SystemConfigStore] Cannot verify system_config key '${key}' from Neon:`, err);
+    if (cached) {
+      return cached.data ? { ...cached.data } : null;
+    }
+    console.error(`[SystemConfigStore] Cannot verify system_config key '${key}' from Neon:`, err?.message || err);
     throw new Error(`Cannot verify system configuration '${key}' from the authoritative database: ${err?.message || String(err)}`);
   }
 }
@@ -83,20 +92,32 @@ export async function getSystemConfigDocs(
     throw new Error(`Cannot verify system configurations (${uniqueKeys.join(', ')}): Neon PostgreSQL is unavailable.`);
   }
 
-  const res = await pool.query<{ key: string; data: Record<string, any>; updated_at?: Date | string }>(
-    `SELECT key, data, updated_at FROM system_config WHERE key = ANY($1::text[]);`,
-    [uniqueKeys]
-  );
+  try {
+    const res = await pool.query<{ key: string; data: Record<string, any>; updated_at?: Date | string }>(
+      `SELECT key, data, updated_at FROM system_config WHERE key = ANY($1::text[]);`,
+      [uniqueKeys]
+    );
 
-  const byKey = new Map(res.rows.map(r => [r.key, r] as const));
-  for (const k of uniqueKeys) {
-    const row = byKey.get(k);
-    const data = row?.data ? row.data : null;
-    const updatedAtIso = row?.updated_at ? new Date(row.updated_at).toISOString() : null;
-    configMemoryCache.set(k, { data, updatedAtIso, fetchedAt: now });
-    result[k] = data ? { ...data } : null;
+    const byKey = new Map(res.rows.map(r => [r.key, r] as const));
+    for (const k of uniqueKeys) {
+      const row = byKey.get(k);
+      const data = row?.data ? row.data : null;
+      const updatedAtIso = row?.updated_at ? new Date(row.updated_at).toISOString() : null;
+      configMemoryCache.set(k, { data, updatedAtIso, fetchedAt: now });
+      result[k] = data ? { ...data } : null;
+    }
+    return result;
+  } catch (err: any) {
+    const allPresentInCache = uniqueKeys.every(k => configMemoryCache.has(k));
+    if (allPresentInCache) {
+      for (const k of uniqueKeys) {
+        const entry = configMemoryCache.get(k);
+        result[k] = entry?.data ? { ...entry.data } : null;
+      }
+      return result;
+    }
+    throw new Error(`Cannot verify system configurations (${uniqueKeys.join(', ')}) from the authoritative database: ${err?.message || String(err)}`);
   }
-  return result;
 }
 
 export async function setSystemConfigDoc(
@@ -163,7 +184,7 @@ export async function insertSystemLog(params: {
   userId?: string | null;
 }): Promise<void> {
   const pool = getPostgresPool();
-  if (!pool) return;
+  if (!pool || isPostgresQuotaExceeded()) return;
 
   try {
     const logId = `log_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
@@ -179,8 +200,8 @@ export async function insertSystemLog(params: {
         params.userId || null
       ]
     );
-  } catch (err) {
-    console.warn('[SystemConfigStore] Failed to insert system_log into Neon:', err);
+  } catch (err: any) {
+    console.warn('[SystemConfigStore] Failed to insert system_log into Neon:', err?.message || err);
   }
 }
 
@@ -194,13 +215,13 @@ export async function insertChatAnalytics(params: {
   piiRedacted?: boolean;
 }): Promise<void> {
   const pool = getPostgresPool();
-  if (!pool) return;
+  if (!pool || isPostgresQuotaExceeded()) return;
 
   try {
     const id = crypto.randomUUID();
     await pool.query(
-      `INSERT INTO chat_analytics (id, uid, query, context, complexity, tokens, provider_used, pii_redacted, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW());`,
+      `INSERT INTO chat_analytics (id, uid, query, context, complexity, tokens, provider_used, piiRedacted, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW());`.replace('piiRedacted', 'pii_redacted'),
       [
         id,
         params.uid,
@@ -212,7 +233,7 @@ export async function insertChatAnalytics(params: {
         params.piiRedacted !== false
       ]
     );
-  } catch (err) {
-    console.warn('[SystemConfigStore] Failed to insert chat_analytics into Neon:', err);
+  } catch (err: any) {
+    console.warn('[SystemConfigStore] Failed to insert chat_analytics into Neon:', err?.message || err);
   }
 }

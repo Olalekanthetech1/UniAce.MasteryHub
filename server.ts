@@ -115,10 +115,9 @@ import { setupStudentRoutes, invalidateBootstrapCache } from './server/routes/st
 import { setupDemoNarrationRoutes } from './server/routes/demoNarration.js';
 import { setupCloudinaryMediaRoutes } from './server/routes/cloudinaryMedia.js';
 import { arenaRealtime } from './server/arenaRealtime.js';
-import { getPostgresPool } from './server/postgresPool.js';
+import { getPostgresPool, isPostgresQuotaExceeded, isPostgresQuotaError, getLastPostgresActivityAt } from './server/postgresPool.js';
 import { LogRepository } from './server/repositories/logRepository.js';
 import { MaintenanceSweeps } from './server/services/maintenanceSweeps.js';
-import { getMigrationMode } from './server/services/transitionEngine.js';
 import { ensureCourseReviewSchema } from './server/services/courseReviewSchema.js';
 
 
@@ -226,14 +225,9 @@ ${VISUALIZATION_AND_DIAGRAM_DIRECTIVE}
 `;
 
 async function checkFeatureSwitchEnabled(featureKey: 'arena' | 'tutor_dashboard'): Promise<boolean> {
-  const switches = await getSystemConfigDoc('feature_switches', true);
+  const switches = await getSystemConfigDoc('feature_switches', false);
   return switches?.[featureKey] === true;
 }
-
-// Initialize Neon PostgreSQL system_runtime_flags in-memory sync engine (5s background poll)
-initRuntimeFlagsSync().catch((err) => {
-  logger.warn({ error: err.message }, '[Server] Runtime flags initial sync notice');
-});
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
@@ -1082,16 +1076,14 @@ app.use('/api', (req: any, res, next) => {
   next();
 });
 
-// --- Health Check with Live Dynamic Memory Telemetry ---
-app.get('/api/health', async (req, res) => {
+// --- Health Check with Live Dynamic Memory Telemetry (100% in-memory, 0 DB queries) ---
+app.get('/api/health', (_req, res) => {
   const memory = getLiveMemoryTelemetry(activeRunningCourseJobs.size);
   const flags = getFeatureFlags();
-  const migrationMode = await getMigrationMode();
   res.status(200).json({
     status: 'ok',
     timestamp: memory.timestamp,
     build_time: process.env.BUILD_TIME || new Date(Date.now() - process.uptime() * 1000).toISOString(),
-    migration_mode: migrationMode,
     flags: {
       ...flags,
       RAG_VECTORS: flags.ENABLE_POSTGRES_RAG_VECTORS ?? true,
@@ -1280,10 +1272,20 @@ app.get('/api/catalog/full', verifyAuth, async (req: any, res: any) => {
     res.set('Content-Type', 'application/json');
     return res.send(rawBuffer);
   } catch (err: any) {
-    logger.error({ err: err.message, uid }, '[GET /api/catalog/full] Failed to fetch authorized catalog');
-    const statusCode = (err.message?.includes('Database service unavailable') ||
-      err.message?.includes('unavailable') || err.message?.includes('configuration') ||
-      err.message?.includes('unreachable')) ? 503 : 500;
+    const isQuotaOrUnavailable =
+      isPostgresQuotaExceeded() ||
+      isPostgresQuotaError(err) ||
+      err.message?.includes('Database service unavailable') ||
+      err.message?.includes('unavailable') ||
+      err.message?.includes('configuration') ||
+      err.message?.includes('unreachable') ||
+      err.message?.includes('exceeded the quota');
+    if (isQuotaOrUnavailable) {
+      logger.warn({ err: err.message, uid }, '[GET /api/catalog/full] Catalog temporarily unavailable due to database quota/connectivity');
+    } else {
+      logger.error({ err: err.message, uid }, '[GET /api/catalog/full] Failed to fetch authorized catalog');
+    }
+    const statusCode = isQuotaOrUnavailable ? 503 : 500;
     return res.status(statusCode).json({
       error: statusCode === 503
         ? 'Course catalog access is temporarily unavailable because an authoritative data source could not be verified.'
@@ -3155,8 +3157,16 @@ app.get('/api/user/quota', verifyAuth, async (req, res) => {
     const quotaWithProfile = await getAndValidateSparks(user.uid, user.email, req);
     res.json(quotaWithProfile);
   } catch (error: any) {
-    console.error(`Error fetching quota for ${user.uid}:`, error);
-    const unavailable = !getPostgresPool() || /not connected|unavailable|record is missing|incomplete or invalid/i.test(String(error?.message || ''));
+    const unavailable =
+      !getPostgresPool() ||
+      isPostgresQuotaExceeded() ||
+      isPostgresQuotaError(error) ||
+      /not connected|unavailable|record is missing|incomplete or invalid|exceeded the quota/i.test(String(error?.message || ''));
+    if (unavailable) {
+      logger.warn({ uid: user.uid, err: error?.message }, '[GET /api/user/quota] Quota lookup temporarily unavailable');
+    } else {
+      console.error(`Error fetching quota for ${user.uid}:`, error);
+    }
     res.status(unavailable ? 503 : 500).json({
       error: unavailable ? 'Authoritative quota is unavailable or unverified.' : 'Failed to fetch quota.',
       message: error.message
@@ -7444,8 +7454,11 @@ Return strictly valid JSON matching:
 async function resumeInterruptedCourseJobs(_db: admin.firestore.Firestore | null) {
   try {
     const pool = getPostgresPool();
-    if (!pool) return;
-    const coursesRes = await pool.query(`SELECT id FROM courses WHERE status = 'published' ORDER BY updated_at DESC`);
+    if (!pool || isPostgresQuotaExceeded()) return;
+    // Only query courses that were actively generating when the server restarted (never scan the entire published catalog on boot)
+    const coursesRes = await pool.query(
+      `SELECT id FROM courses WHERE status = 'published' AND generation_status = 'generating' ORDER BY updated_at DESC`
+    );
     for (const row of coursesRes.rows) {
       const courseId = row.id;
       const audit = await auditCourseHealthInPostgres(courseId);
@@ -7457,7 +7470,7 @@ async function resumeInterruptedCourseJobs(_db: admin.firestore.Firestore | null
       }
     }
   } catch (err: any) {
-    console.warn('[Startup Health Audit] Error scanning courses:', err?.message);
+    console.warn('[Startup Health Audit] Error scanning interrupted course jobs:', err?.message);
   }
 }
 
@@ -10785,11 +10798,16 @@ async function sweepAndSyncPublicLeaderboard(_firestore: any) {
   dbTelemetry.recordBackgroundTaskRun('sweepAndSyncPublicLeaderboard', 0);
 }
 
-// Background absence study reminder dispatcher (Neon PostgreSQL)
+// Background absence study reminder dispatcher (Neon PostgreSQL — scale-to-zero aware)
 async function checkAndSendAbsenceStudyReminders(_firestore: any) {
   try {
     const pool = getPostgresPool();
-    if (!pool) return;
+    if (!pool || isPostgresQuotaExceeded()) return;
+    // Never wake a sleeping Neon instance just for background reminder checks
+    const lastActivity = getLastPostgresActivityAt();
+    if (!lastActivity || Date.now() - lastActivity > 4 * 60 * 1000) {
+      return;
+    }
 
     const absentRes = await pool.query(
       `SELECT uid, display_name, learning_profile
