@@ -39,15 +39,33 @@ import {
   Save,
   History,
   BarChart3,
+  LayoutGrid,
+  Search,
+  Bell,
+  ArrowUp,
+  ArrowDown,
+  Smartphone,
+  Pencil,
+  Users,
 } from 'lucide-react';
 import { useMarketingSnapshot } from '../../hooks/useMarketingSnapshot';
 import { toMarketingCourseMap } from '../../services/marketingSnapshot';
 import {
   DynamicCapabilityItem,
   DynamicFlyerConfig,
+  FlyerPhoneScreenMode,
   MarketingTargetScope,
   PlatformMarketingContext,
   buildDynamicFlyerConfig,
+  canonicalizeAcademicLevel,
+  canonicalizeAcademicSemester,
+  formatAcademicLevelBadge,
+  formatAcademicSemesterBadge,
+  formatCourseScopeBadge,
+  getCandidateCohortDepartments,
+  getEligibleCoursesForCohort,
+  resolveActivePhoneHubCohort,
+  resolvePhoneHubCourses,
   synthesizeFlyerWithAI,
 } from '../../services/demoReelService';
 import { generateQrMatrix } from '../../utils/qrCodeSvg';
@@ -415,6 +433,7 @@ export default function DynamicFlyerStudio() {
 
   const posterRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const phoneScreenFileInputRef = useRef<HTMLInputElement>(null);
 
   const courseList = useMemo(() => Object.values(courses || {}), [courses]);
 
@@ -480,6 +499,8 @@ export default function DynamicFlyerStudio() {
             themeId: prev.themeId,
             studentPortraitMode: prev.studentPortraitMode,
             customPhotoDataUrl: prev.customPhotoDataUrl,
+            phoneScreenMode: prev.phoneScreenMode || next.phoneScreenMode,
+            customPhoneScreenDataUrl: prev.customPhoneScreenDataUrl,
           }
         : next;
     });
@@ -488,6 +509,42 @@ export default function DynamicFlyerStudio() {
   const enabledCapabilities = useMemo(
     () => (flyerConfig?.capabilities || []).filter((c) => c.enabled).slice(0, 8),
     [flyerConfig?.capabilities]
+  );
+
+  const candidateCohortDepartments = useMemo(
+    () => getCandidateCohortDepartments(marketingContext),
+    [marketingContext]
+  );
+
+  const activePhoneCohort = useMemo(
+    () =>
+      resolveActivePhoneHubCohort(marketingContext, {
+        department: flyerConfig?.phoneProgramLabel,
+        level: flyerConfig?.phoneLevelLabel,
+        semester: flyerConfig?.phoneSemesterLabel,
+      }),
+    [
+      marketingContext,
+      flyerConfig?.phoneProgramLabel,
+      flyerConfig?.phoneLevelLabel,
+      flyerConfig?.phoneSemesterLabel,
+    ]
+  );
+
+  const phoneHubCourses = useMemo(
+    () =>
+      resolvePhoneHubCourses(marketingContext, flyerConfig?.phonePinnedCourseIds, 8, {
+        department: flyerConfig?.phoneProgramLabel,
+        level: flyerConfig?.phoneLevelLabel,
+        semester: flyerConfig?.phoneSemesterLabel,
+      }),
+    [
+      marketingContext,
+      flyerConfig?.phonePinnedCourseIds,
+      flyerConfig?.phoneProgramLabel,
+      flyerConfig?.phoneLevelLabel,
+      flyerConfig?.phoneSemesterLabel,
+    ]
   );
 
   const currentAssetKey = buildFlyerCampaignId(
@@ -722,6 +779,127 @@ export default function DynamicFlyerStudio() {
       image.src = reader.result;
     };
     reader.readAsDataURL(file);
+  };
+
+  const handlePhoneScreenUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      toast.error('Please select a PNG, JPG or WebP screenshot.');
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      toast.error('Please use an image smaller than 8 MB.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => toast.error('The selected screen image could not be read.');
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') return;
+      const image = new Image();
+      image.onerror = () => toast.error('The selected screen image could not be decoded.');
+      image.onload = () => {
+        const maxDimension = 1400;
+        const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        const context = canvas.getContext('2d');
+        if (!context) {
+          toast.error('Image compression is unavailable in this browser.');
+          return;
+        }
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        let compressed = canvas.toDataURL('image/webp', 0.86);
+        if (!compressed.startsWith('data:image/webp;')) {
+          compressed = canvas.toDataURL('image/jpeg', 0.86);
+        }
+        setFlyerConfig((prev) =>
+          prev
+            ? {
+                ...prev,
+                phoneScreenMode: 'custom_screen_upload',
+                customPhoneScreenDataUrl: compressed,
+              }
+            : prev
+        );
+        toast.success('Phone screen capture applied to 3D phone mockup.');
+      };
+      image.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSelectPhoneCohort = (nextOverride: {
+    department?: string;
+    level?: string;
+    semester?: string;
+  }) => {
+    setFlyerConfig((prev) => {
+      if (!prev) return prev;
+      const merged = {
+        department: nextOverride.department ?? prev.phoneProgramLabel,
+        level: nextOverride.level ?? prev.phoneLevelLabel,
+        semester: nextOverride.semester ?? prev.phoneSemesterLabel,
+      };
+      const resolvedCohort = resolveActivePhoneHubCohort(marketingContext, merged);
+      return {
+        ...prev,
+        phoneProgramLabel: resolvedCohort.department,
+        phoneLevelLabel: resolvedCohort.levelLabel,
+        phoneSemesterLabel: resolvedCohort.semesterLabel,
+        phonePinnedCourseIds: resolvedCohort.courses.slice(0, 8).map((c) => c.id),
+      };
+    });
+  };
+
+  const handleTogglePinnedPhoneCourse = (courseId: string) => {
+    setFlyerConfig((prev) => {
+      if (!prev) return prev;
+      const currentIds =
+        Array.isArray(prev.phonePinnedCourseIds) && prev.phonePinnedCourseIds.length > 0
+          ? [...prev.phonePinnedCourseIds]
+          : phoneHubCourses.map((c) => c.id);
+      const exists = currentIds.includes(courseId);
+      if (exists) {
+        if (currentIds.length <= 1) {
+          toast.error('At least 1 live course must remain displayed in the Course Hub phone screen.');
+          return prev;
+        }
+        return {
+          ...prev,
+          phonePinnedCourseIds: currentIds.filter((id) => id !== courseId),
+        };
+      }
+      if (currentIds.length >= 8) {
+        toast.error('Maximum 8 courses fit in the 4×2 phone screen grid. Unpin one first.');
+        return prev;
+      }
+      return {
+        ...prev,
+        phonePinnedCourseIds: [...currentIds, courseId],
+      };
+    });
+  };
+
+  const handleMovePinnedPhoneCourse = (courseId: string, direction: 'up' | 'down') => {
+    setFlyerConfig((prev) => {
+      if (!prev) return prev;
+      const currentIds =
+        Array.isArray(prev.phonePinnedCourseIds) && prev.phonePinnedCourseIds.length > 0
+          ? [...prev.phonePinnedCourseIds]
+          : phoneHubCourses.map((c) => c.id);
+      const index = currentIds.indexOf(courseId);
+      if (index === -1) return prev;
+      const targetIndex = direction === 'up' ? index - 1 : index + 1;
+      if (targetIndex < 0 || targetIndex >= currentIds.length) return prev;
+      const swapped = [...currentIds];
+      [swapped[index], swapped[targetIndex]] = [swapped[targetIndex], swapped[index]];
+      return {
+        ...prev,
+        phonePinnedCourseIds: swapped,
+      };
+    });
   };
 
   const handleExportPng = async () => {
@@ -1202,6 +1380,283 @@ export default function DynamicFlyerStudio() {
                 )}
               </div>
             </div>
+          </div>
+
+          {/* Mock Phone Screen Display Mode & Live Course Hub Pinning */}
+          <div className="pt-4 border-t border-slate-100 dark:border-slate-700/60 space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-[11px] font-bold text-slate-500 uppercase flex items-center gap-1.5">
+                <Smartphone size={13} className="text-emerald-600" />
+                3D Phone Screen Display Mode
+              </label>
+              <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                100% Vector HD Export
+              </span>
+            </div>
+
+            <input
+              ref={phoneScreenFileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handlePhoneScreenUpload}
+              className="hidden"
+            />
+
+            <div className="grid grid-cols-3 gap-2">
+              {(
+                [
+                  { id: 'course_hub_ui', label: 'Course Hub UI' },
+                  { id: 'capabilities_list', label: '8-Feature List' },
+                  { id: 'custom_screen_upload', label: 'Upload Screen' },
+                ] as { id: FlyerPhoneScreenMode; label: string }[]
+              ).map((modeOpt) => {
+                const activeMode = flyerConfig.phoneScreenMode || 'course_hub_ui';
+                return (
+                  <button
+                    key={modeOpt.id}
+                    type="button"
+                    onClick={() => {
+                      if (modeOpt.id === 'custom_screen_upload' && !flyerConfig.customPhoneScreenDataUrl) {
+                        phoneScreenFileInputRef.current?.click();
+                        return;
+                      }
+                      setFlyerConfig({ ...flyerConfig, phoneScreenMode: modeOpt.id });
+                    }}
+                    className={`py-2 px-2.5 rounded-xl text-[11px] font-bold border transition-all ${
+                      activeMode === modeOpt.id
+                        ? 'border-emerald-600 bg-emerald-600 text-white shadow-xs'
+                        : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 text-slate-600 dark:text-slate-300 hover:border-emerald-400'
+                    }`}
+                  >
+                    {modeOpt.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {(flyerConfig.phoneScreenMode || 'course_hub_ui') === 'custom_screen_upload' && (
+              <div className="flex items-center justify-between gap-2 rounded-xl bg-slate-50 dark:bg-slate-900 p-2.5 border border-slate-200 dark:border-slate-700">
+                <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300 truncate">
+                  {flyerConfig.customPhoneScreenDataUrl
+                    ? 'Custom mobile screen image active'
+                    : 'No custom screen uploaded yet'}
+                </span>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => phoneScreenFileInputRef.current?.click()}
+                    className="px-2.5 py-1 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[10px] font-bold"
+                  >
+                    Change Image
+                  </button>
+                  {flyerConfig.customPhoneScreenDataUrl && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setFlyerConfig({
+                          ...flyerConfig,
+                          phoneScreenMode: 'course_hub_ui',
+                          customPhoneScreenDataUrl: undefined,
+                        })
+                      }
+                      className="px-2 py-1 rounded-lg bg-rose-50 text-rose-600 text-[10px] font-bold"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {(flyerConfig.phoneScreenMode || 'course_hub_ui') === 'course_hub_ui' && (
+              <div className="space-y-3 rounded-2xl bg-slate-50/80 dark:bg-slate-900/50 p-3 border border-slate-200/80 dark:border-slate-700">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 uppercase">
+                      Phone Greeting Header
+                    </label>
+                    <input
+                      type="text"
+                      value={flyerConfig.phoneGreeting}
+                      onChange={(e) => setFlyerConfig({ ...flyerConfig, phoneGreeting: e.target.value })}
+                      className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-900 dark:text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 uppercase">
+                      Simulated Student Program (Department)
+                    </label>
+                    <select
+                      value={activePhoneCohort.department}
+                      onChange={(e) => handleSelectPhoneCohort({ department: e.target.value })}
+                      className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-900 dark:text-white"
+                    >
+                      {candidateCohortDepartments.map((dept) => {
+                        const count = getEligibleCoursesForCohort(
+                          marketingContext,
+                          dept,
+                          activePhoneCohort.level,
+                          activePhoneCohort.semester
+                        ).length;
+                        return (
+                          <option key={dept} value={dept}>
+                            {dept} ({count} live in {activePhoneCohort.level}L {activePhoneCohort.semester === '1st Semester' ? 'Sem 1' : 'Sem 2'})
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 uppercase">
+                      Academic Level Cohort
+                    </label>
+                    <select
+                      value={canonicalizeAcademicLevel(activePhoneCohort.level)}
+                      onChange={(e) => handleSelectPhoneCohort({ level: e.target.value })}
+                      className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-white"
+                    >
+                      {(['100', '200', '300', '400', '500'] as const).map((lvl) => {
+                        const count = getEligibleCoursesForCohort(
+                          marketingContext,
+                          activePhoneCohort.department,
+                          lvl,
+                          activePhoneCohort.semester
+                        ).length;
+                        return (
+                          <option key={lvl} value={lvl}>
+                            {lvl} Level ({count} courses)
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 uppercase">
+                      Semester Cohort
+                    </label>
+                    <select
+                      value={canonicalizeAcademicSemester(activePhoneCohort.semester)}
+                      onChange={(e) => handleSelectPhoneCohort({ semester: e.target.value })}
+                      className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-900 dark:text-white"
+                    >
+                      {(['1st Semester', '2nd Semester'] as const).map((sem) => {
+                        const count = getEligibleCoursesForCohort(
+                          marketingContext,
+                          activePhoneCohort.department,
+                          activePhoneCohort.level,
+                          sem
+                        ).length;
+                        return (
+                          <option key={sem} value={sem}>
+                            {sem} ({count} courses)
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleSynthesizeWithAI}
+                  disabled={isSynthesizingAI}
+                  className="w-full py-2 px-3 rounded-xl bg-emerald-600/10 hover:bg-emerald-600/20 border border-emerald-500/40 text-emerald-800 dark:text-emerald-300 text-[11px] font-extrabold flex items-center justify-center gap-1.5 transition-all disabled:opacity-50"
+                >
+                  {isSynthesizingAI ? (
+                    <>
+                      <RefreshCw size={12} className="animate-spin" />
+                      <span>AI Synthesizing Dynamic Copy & Captions...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles size={12} />
+                      <span>AI-Generate Dynamic Flyer Copy & Captions for Current Scope</span>
+                    </>
+                  )}
+                </button>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase">
+                      Cohort Eligible Courses ({phoneHubCourses.length}/8 in Phone 4×2 Grid)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleSelectPhoneCohort({
+                          department: activePhoneCohort.department,
+                          level: activePhoneCohort.level,
+                          semester: activePhoneCohort.semester,
+                        })
+                      }
+                      className="text-[9.5px] font-bold text-emerald-600 hover:underline"
+                    >
+                      Reset cohort order
+                    </button>
+                  </div>
+                  <div className="space-y-1 max-h-44 overflow-y-auto pr-1">
+                    {activePhoneCohort.courses.map((course) => {
+                      const pinnedIdx = phoneHubCourses.findIndex((c) => c.id === course.id);
+                      const isPinned = pinnedIdx !== -1;
+                      return (
+                        <div
+                          key={course.id}
+                          className={`flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl border text-xs transition-all ${
+                            isPinned
+                              ? 'bg-white dark:bg-slate-800 border-emerald-500/60 text-slate-900 dark:text-white shadow-2xs'
+                              : 'bg-slate-100/60 dark:bg-slate-900/30 border-slate-200/70 dark:border-slate-800 text-slate-500'
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => handleTogglePinnedPhoneCourse(course.id)}
+                            className="flex items-center gap-2 min-w-0 flex-1 text-left"
+                          >
+                            <span
+                              className={`w-4 h-4 rounded flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                                isPinned
+                                  ? 'bg-emerald-600 text-white'
+                                  : 'border border-slate-300 dark:border-slate-600'
+                              }`}
+                            >
+                              {isPinned ? pinnedIdx + 1 : ''}
+                            </span>
+                            <span className="font-extrabold shrink-0">{course.id}</span>
+                            <span className="truncate text-[11px] font-medium">{course.title}</span>
+                          </button>
+
+                          {isPinned && (
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => handleMovePinnedPhoneCourse(course.id, 'up')}
+                                disabled={pinnedIdx === 0}
+                                title="Move earlier in phone grid"
+                                className="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-30"
+                              >
+                                <ArrowUp size={11} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleMovePinnedPhoneCourse(course.id, 'down')}
+                                disabled={pinnedIdx === phoneHubCourses.length - 1}
+                                title="Move later in phone grid"
+                                className="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-30"
+                              >
+                                <ArrowDown size={11} />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1786,7 +2241,7 @@ export default function DynamicFlyerStudio() {
                   </div>
                 </div>
 
-                {/* RIGHT COLUMN (5 Cols): Tilted 3D Smartphone Showcasing Live UniAce Features */}
+                {/* RIGHT COLUMN (5 Cols): Tilted 3D Smartphone Showcasing Live UniAce Course Hub or Capabilities */}
                 <div className="col-span-5 relative flex items-start justify-end pr-1 pt-1 z-20">
                   <div
                     className="w-[308px] rounded-[42px] p-[10px] shadow-[0_28px_60px_rgba(0,0,0,0.45)] relative"
@@ -1799,97 +2254,325 @@ export default function DynamicFlyerStudio() {
                     {/* Inner Phone Screen */}
                     <div className="bg-[#f8fafc] rounded-[33px] overflow-hidden flex flex-col justify-between h-[615px] border border-slate-200">
                       {/* Phone Top Status Bar + Dynamic Island */}
-                      <div className="px-5 pt-2.5 pb-1.5 flex items-center justify-between text-[11px] font-bold text-slate-900 bg-white">
+                      <div className="px-5 pt-2.5 pb-1 flex items-center justify-between text-[10.5px] font-bold text-slate-900 bg-white shrink-0">
                         <span>9:41</span>
-                        <div className="w-20 h-4 bg-black rounded-full" />
+                        <div className="w-18 h-3.5 bg-black rounded-full" />
                         <div className="flex items-center gap-1 text-slate-800">
-                          <Signal size={11} />
-                          <Wifi size={11} />
-                          <BatteryCharging size={12} />
+                          <Signal size={10} />
+                          <Wifi size={10} />
+                          <BatteryCharging size={11} />
                         </div>
                       </div>
 
-                      {/* App Header & Greeting */}
-                      <div className="px-4 pt-1 pb-1.5 bg-white border-b border-slate-100 shrink-0">
-                        <div className="flex items-center gap-2">
-                          <div
-                            className="w-5 h-5 rounded-md flex items-center justify-center text-white text-[11px] font-black shrink-0"
-                            style={{ backgroundColor: palette.accentText }}
-                          >
-                            🎓
-                          </div>
-                          <span data-flyer-unclip="true" className="text-[12.5px] font-black text-slate-900 leading-[1.3]">
-                            UniAce <span style={{ color: palette.accentText }}>Mastery AI</span>
-                          </span>
+                      {(flyerConfig.phoneScreenMode || 'course_hub_ui') === 'custom_screen_upload' &&
+                      flyerConfig.customPhoneScreenDataUrl ? (
+                        <div className="flex-1 w-full overflow-hidden bg-white relative">
+                          <img
+                            src={flyerConfig.customPhoneScreenDataUrl}
+                            alt="UniAce App Interface"
+                            className="w-full h-full object-cover object-top"
+                          />
                         </div>
-                        <div className="mt-1">
-                          <div data-flyer-unclip="true" className="text-[13px] font-black text-slate-900 leading-[1.3]">
-                            {flyerConfig.phoneGreeting}
-                          </div>
-                          <div data-flyer-unclip="true" className="text-[10px] text-slate-500 font-medium leading-[1.3]">
-                            {flyerConfig.phonePrompt}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* 8 Dynamic Feature Cards inside Phone Screen */}
-                      <div className="px-2.5 py-1.5 space-y-1 flex-1 flex flex-col justify-center bg-[#f1f5f9]">
-                        {enabledCapabilities.map((cap) => (
-                          <div
-                            key={cap.id}
-                            className="bg-white rounded-xl px-2.5 py-1 border border-slate-200/80 shadow-2xs flex items-center justify-between gap-2"
-                          >
-                            <div className="flex items-center gap-2 min-w-0 flex-1">
+                      ) : (flyerConfig.phoneScreenMode || 'course_hub_ui') === 'course_hub_ui' &&
+                        phoneHubCourses.length > 0 ? (
+                        <>
+                          {/* LIVE COURSE HUB INTERFACE (Matching Authentic 8-Card 4x2 Mobile Hub Layout) */}
+                          <div className="px-2.5 pt-1 pb-0 bg-[#f8fafc] flex-1 flex flex-col justify-start overflow-hidden relative">
+                            {/* Top Greeting + Current Program Banner + Toolbar */}
+                            <div className="space-y-1 shrink-0">
                               <div
-                                className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 shadow-2xs"
-                                style={{ backgroundColor: cap.accentHex }}
+                                data-flyer-unclip="true"
+                                className="text-[12.5px] font-black text-slate-900 tracking-tight leading-[1.2] px-0.5"
                               >
-                                {renderCapabilityIcon(cap.iconKey, 14)}
+                                {flyerConfig.phoneGreeting || 'Hello, Scholar 👋'}
                               </div>
-                              <div className="min-w-0 flex-1 overflow-visible">
-                                <div
-                                  data-flyer-unclip="true"
-                                  className="text-[10.5px] font-extrabold text-slate-900 leading-[1.32] pb-[1px] whitespace-nowrap"
-                                >
-                                  {cap.title}
+
+                              {/* Current Program Card */}
+                              <div className="bg-white rounded-xl border border-slate-200/90 px-2.5 py-1.5 shadow-2xs flex items-start justify-between gap-2">
+                                <div className="min-w-0 flex-1">
+                                  <div
+                                    data-flyer-unclip="true"
+                                    className="text-[6px] font-bold uppercase tracking-[0.08em] text-slate-400 leading-[1.15]"
+                                  >
+                                    CURRENT PROGRAM
+                                  </div>
+                                  <div
+                                    data-flyer-unclip="true"
+                                    className="text-[10px] font-extrabold text-slate-900 leading-[1.2] mt-0.5 truncate"
+                                  >
+                                    {activePhoneCohort.department}
+                                  </div>
+                                  <div className="flex items-center gap-1.5 mt-1">
+                                    <span
+                                      data-flyer-unclip="true"
+                                      className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-md bg-indigo-50 text-indigo-700 border border-indigo-100 text-[6.5px] font-bold leading-[1.15]"
+                                    >
+                                      <GraduationCap size={7.5} />
+                                      <span>{activePhoneCohort.levelLabel}</span>
+                                    </span>
+                                    <span
+                                      data-flyer-unclip="true"
+                                      className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-md bg-emerald-50 text-emerald-700 border border-emerald-100 text-[6.5px] font-bold leading-[1.15]"
+                                    >
+                                      <Calendar size={7.5} />
+                                      <span>{activePhoneCohort.semesterLabel}</span>
+                                    </span>
+                                  </div>
                                 </div>
-                                <div
-                                  data-flyer-unclip="true"
-                                  className="text-[8.5px] text-slate-500 font-medium leading-[1.32] pb-[1px] whitespace-nowrap"
-                                >
-                                  {cap.phoneDescription.length > 42
-                                    ? `${cap.phoneDescription.slice(0, 40).trimEnd()}…`
-                                    : cap.phoneDescription}
+                                <div className="w-4.5 h-4.5 rounded-full bg-slate-50 border border-slate-200/70 flex items-center justify-center text-slate-400 shrink-0 mt-0.5">
+                                  <Pencil size={7.5} />
+                                </div>
+                              </div>
+
+                              {/* Your Courses Pill + Search Bar & Explore All Row */}
+                              <div className="flex items-center justify-between gap-1 pt-0.5">
+                                <div className="bg-[#0f172a] text-white rounded-lg px-2 py-1 inline-flex items-center gap-1 shadow-2xs shrink-0">
+                                  <Sparkles size={7.5} className="text-amber-400" />
+                                  <span
+                                    data-flyer-unclip="true"
+                                    className="text-[7px] font-extrabold leading-[1.15]"
+                                  >
+                                    Your Courses
+                                  </span>
+                                </div>
+
+                                <div className="flex-1 bg-white rounded-lg border border-slate-200/90 px-2 py-1 flex items-center gap-1 text-slate-400 min-w-0">
+                                  <Search size={7.5} className="shrink-0" />
+                                  <span
+                                    data-flyer-unclip="true"
+                                    className="text-[6.6px] font-medium truncate leading-[1.15]"
+                                  >
+                                    Search courses...
+                                  </span>
+                                </div>
+
+                                <div className="inline-flex items-center gap-0.5 text-slate-600 shrink-0">
+                                  <Globe size={7.5} />
+                                  <span
+                                    data-flyer-unclip="true"
+                                    className="text-[6.4px] font-bold leading-[1.15]"
+                                  >
+                                    Explore All
+                                  </span>
+                                </div>
+
+                                <div className="relative text-slate-600 shrink-0">
+                                  <Bell size={8.5} />
+                                  <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-rose-500 text-white text-[5px] font-black flex items-center justify-center">
+                                    2
+                                  </span>
+                                </div>
+
+                                <div className="w-4 h-4 rounded-full bg-slate-800 text-white text-[6px] font-black flex items-center justify-center border border-slate-200 shrink-0">
+                                  🎓
                                 </div>
                               </div>
                             </div>
-                            <ChevronRight size={11} className="text-slate-400 shrink-0" />
-                          </div>
-                        ))}
-                      </div>
 
-                      {/* Phone Bottom Navigation Bar */}
-                      <div className="px-5 py-1.5 bg-white border-t border-slate-200 flex items-center justify-between text-[8.5px] font-bold text-slate-400 leading-[1.3] shrink-0">
-                        <div
-                          className="flex flex-col items-center gap-0.5"
-                          style={{ color: palette.accentText }}
-                        >
-                          <Home size={12} />
-                          <span data-flyer-unclip="true">Home</span>
-                        </div>
-                        <div className="flex flex-col items-center gap-0.5">
-                          <Library size={12} />
-                          <span data-flyer-unclip="true">Library</span>
-                        </div>
-                        <div className="flex flex-col items-center gap-0.5">
-                          <Calendar size={12} />
-                          <span data-flyer-unclip="true">Planner</span>
-                        </div>
-                        <div className="flex flex-col items-center gap-0.5">
-                          <User size={12} />
-                          <span data-flyer-unclip="true">Profile</span>
-                        </div>
-                      </div>
+                            {/* 2-Column × 4-Row (8 Cards) Tight Live Course Grid — Zero Vertical Stretching */}
+                            <div className="grid grid-cols-2 gap-1.5 mt-1.5 content-start">
+                              {phoneHubCourses.slice(0, 8).map((course, idx) => {
+                                const levelCompact = formatAcademicLevelBadge(course.level).compact;
+                                const semCompact = formatAcademicSemesterBadge(course.semester).compact;
+                                const scopeBadge = formatCourseScopeBadge(course);
+                                const cleanCode = course.id.replace(/\s+/g, '').toUpperCase();
+                                const hasCodeInTitle = course.title
+                                  .toUpperCase()
+                                  .replace(/\s+/g, '')
+                                  .startsWith(cleanCode.slice(0, 6));
+                                const displayTitle = hasCodeInTitle
+                                  ? course.title
+                                  : `${course.id}: ${course.title}`;
+                                const rawDesc =
+                                  course.description?.trim() ||
+                                  `Comprehensive ${levelCompact} university course covering ${course.syllabus?.length || 4} structured academic modules.`;
+                                const shortDesc =
+                                  rawDesc.length > 74 ? `${rawDesc.slice(0, 72).trimEnd()}…` : rawDesc;
+                                const isContinue =
+                                  idx < 2 || (targetScope === 'course' && course.id === selectedCourseId);
+
+                                return (
+                                  <div
+                                    key={course.id}
+                                    className="bg-white rounded-xl border border-slate-200/90 p-1.5 shadow-2xs flex flex-col justify-between min-w-0"
+                                  >
+                                    <div>
+                                      {/* Scope Badge + Course Code Pill */}
+                                      <div className="flex items-center justify-between gap-1">
+                                        <span
+                                          data-flyer-unclip="true"
+                                          className="text-[5.2px] font-extrabold uppercase tracking-wider text-slate-400 truncate leading-[1.15]"
+                                        >
+                                          {scopeBadge}
+                                        </span>
+                                        <span
+                                          data-flyer-unclip="true"
+                                          className="px-1.5 py-[0.5px] rounded bg-slate-100 text-slate-700 text-[5.6px] font-extrabold shrink-0 leading-[1.15]"
+                                        >
+                                          {course.id}
+                                        </span>
+                                      </div>
+
+                                      {/* Course Title */}
+                                      <div
+                                        data-flyer-unclip="true"
+                                        className="text-[7.4px] font-extrabold text-slate-900 leading-[1.18] mt-0.5 line-clamp-2"
+                                      >
+                                        {displayTitle.length > 44
+                                          ? `${displayTitle.slice(0, 42).trimEnd()}…`
+                                          : displayTitle}
+                                      </div>
+
+                                      {/* Course Description Snippet */}
+                                      <div
+                                        data-flyer-unclip="true"
+                                        className="text-[5.8px] text-slate-500 font-medium leading-[1.2] mt-0.5 line-clamp-2"
+                                      >
+                                        {shortDesc}
+                                      </div>
+                                    </div>
+
+                                    {/* Card Footer: L 100 • Sem 1 + Continue/Start Learning CTA */}
+                                    <div className="pt-1 mt-1 border-t border-slate-100 flex items-center justify-between gap-1">
+                                      <div className="flex items-center gap-0.5 text-[5.4px] font-bold text-slate-400 whitespace-nowrap leading-[1.15]">
+                                        <Users size={6} className="shrink-0" />
+                                        <span data-flyer-unclip="true">{levelCompact}</span>
+                                        <Calendar size={5.8} className="shrink-0 ml-0.5" />
+                                        <span data-flyer-unclip="true">{semCompact}</span>
+                                      </div>
+                                      <div
+                                        data-flyer-unclip="true"
+                                        className="bg-[#0f172a] text-white rounded-md px-1.5 py-[2px] text-[5.4px] font-extrabold whitespace-nowrap leading-[1.1] shrink-0"
+                                      >
+                                        {isContinue ? 'Continue Learning' : 'Start Learning'}
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {/* Authentic UniAce Bottom Navigation Bar with Floating AI Chat Button */}
+                          <div className="px-4 py-1.5 bg-white/95 backdrop-blur-xs border-t border-slate-200 flex items-center justify-between text-[7.5px] font-bold text-slate-400 leading-[1.2] shrink-0 relative z-10">
+                            <div
+                              className="flex flex-col items-center gap-0.5"
+                              style={{ color: palette.accentText }}
+                            >
+                              <LayoutGrid size={11} />
+                              <span data-flyer-unclip="true">Hub</span>
+                            </div>
+                            <div className="flex flex-col items-center gap-0.5">
+                              <Home size={11} />
+                              <span data-flyer-unclip="true">Home</span>
+                            </div>
+                            <div className="flex flex-col items-center -mt-3.5">
+                              <div className="w-7 h-7 rounded-full bg-emerald-500 text-white shadow-md shadow-emerald-500/30 border-2 border-white flex items-center justify-center">
+                                <MessageSquare size={12} />
+                              </div>
+                            </div>
+                            <div className="flex flex-col items-center gap-0.5">
+                              <Trophy size={11} />
+                              <span data-flyer-unclip="true">Arena</span>
+                            </div>
+                            <div className="flex flex-col items-center gap-0.5">
+                              <User size={11} />
+                              <span data-flyer-unclip="true">Profile</span>
+                            </div>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          {/* 8-CAPABILITY LIST PHONE SCREEN MODE */}
+                          <div className="px-4 pt-1 pb-1.5 bg-white border-b border-slate-100 shrink-0">
+                            <div className="flex items-center gap-2">
+                              <div
+                                className="w-5 h-5 rounded-md flex items-center justify-center text-white text-[11px] font-black shrink-0"
+                                style={{ backgroundColor: palette.accentText }}
+                              >
+                                🎓
+                              </div>
+                              <span
+                                data-flyer-unclip="true"
+                                className="text-[12.5px] font-black text-slate-900 leading-[1.3]"
+                              >
+                                UniAce <span style={{ color: palette.accentText }}>Mastery AI</span>
+                              </span>
+                            </div>
+                            <div className="mt-1">
+                              <div
+                                data-flyer-unclip="true"
+                                className="text-[13px] font-black text-slate-900 leading-[1.3]"
+                              >
+                                {flyerConfig.phoneGreeting}
+                              </div>
+                              <div
+                                data-flyer-unclip="true"
+                                className="text-[10px] text-slate-500 font-medium leading-[1.3]"
+                              >
+                                {flyerConfig.phonePrompt}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="px-2.5 py-1.5 space-y-1 flex-1 flex flex-col justify-center bg-[#f1f5f9]">
+                            {enabledCapabilities.map((cap) => (
+                              <div
+                                key={cap.id}
+                                className="bg-white rounded-xl px-2.5 py-1 border border-slate-200/80 shadow-2xs flex items-center justify-between gap-2"
+                              >
+                                <div className="flex items-center gap-2 min-w-0 flex-1">
+                                  <div
+                                    className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 shadow-2xs"
+                                    style={{ backgroundColor: cap.accentHex }}
+                                  >
+                                    {renderCapabilityIcon(cap.iconKey, 14)}
+                                  </div>
+                                  <div className="min-w-0 flex-1 overflow-visible">
+                                    <div
+                                      data-flyer-unclip="true"
+                                      className="text-[10.5px] font-extrabold text-slate-900 leading-[1.32] pb-[1px] whitespace-nowrap"
+                                    >
+                                      {cap.title}
+                                    </div>
+                                    <div
+                                      data-flyer-unclip="true"
+                                      className="text-[8.5px] text-slate-500 font-medium leading-[1.32] pb-[1px] whitespace-nowrap"
+                                    >
+                                      {cap.phoneDescription.length > 42
+                                        ? `${cap.phoneDescription.slice(0, 40).trimEnd()}…`
+                                        : cap.phoneDescription}
+                                    </div>
+                                  </div>
+                                </div>
+                                <ChevronRight size={11} className="text-slate-400 shrink-0" />
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="px-5 py-1.5 bg-white border-t border-slate-200 flex items-center justify-between text-[8.5px] font-bold text-slate-400 leading-[1.3] shrink-0">
+                            <div
+                              className="flex flex-col items-center gap-0.5"
+                              style={{ color: palette.accentText }}
+                            >
+                              <Home size={12} />
+                              <span data-flyer-unclip="true">Home</span>
+                            </div>
+                            <div className="flex flex-col items-center gap-0.5">
+                              <Library size={12} />
+                              <span data-flyer-unclip="true">Library</span>
+                            </div>
+                            <div className="flex flex-col items-center gap-0.5">
+                              <Calendar size={12} />
+                              <span data-flyer-unclip="true">Planner</span>
+                            </div>
+                            <div className="flex flex-col items-center gap-0.5">
+                              <User size={12} />
+                              <span data-flyer-unclip="true">Profile</span>
+                            </div>
+                          </div>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>

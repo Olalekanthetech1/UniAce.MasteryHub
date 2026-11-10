@@ -123,6 +123,8 @@ export interface DynamicCapabilityItem {
   featureSwitchKey?: string;
 }
 
+export type FlyerPhoneScreenMode = 'course_hub_ui' | 'capabilities_list' | 'custom_screen_upload';
+
 export interface DynamicFlyerConfig {
   brandName: string;
   brandSubline: string[];
@@ -134,6 +136,12 @@ export interface DynamicFlyerConfig {
   subParagraph: string;
   phoneGreeting: string;
   phonePrompt: string;
+  phoneScreenMode?: FlyerPhoneScreenMode;
+  phoneProgramLabel?: string;
+  phoneLevelLabel?: string;
+  phoneSemesterLabel?: string;
+  phonePinnedCourseIds?: string[];
+  customPhoneScreenDataUrl?: string;
   capabilities: DynamicCapabilityItem[];
   ctaText: string;
   websiteDisplayUrl: string;
@@ -274,6 +282,487 @@ function getSelectedCourse(ctx: PlatformMarketingContext): MarketingCourse | und
     if (selected) return selected;
   }
   return eligible[0];
+}
+
+export function formatAcademicLevelBadge(rawLevel?: string): { full: string; compact: string } {
+  const trimmed = String(rawLevel || '').trim();
+  if (!trimmed) return { full: 'All Levels', compact: 'L All' };
+  const numMatch = trimmed.match(/(\d{3})/);
+  if (numMatch) {
+    return { full: `${numMatch[1]} Level`, compact: `L ${numMatch[1]}` };
+  }
+  const singleDigitMatch = trimmed.match(/\b([1-6])\b/);
+  if (singleDigitMatch) {
+    const hundredLevel = Number(singleDigitMatch[1]) * 100;
+    return { full: `${hundredLevel} Level`, compact: `L ${hundredLevel}` };
+  }
+  return {
+    full: /level/i.test(trimmed) ? trimmed : `${trimmed} Level`,
+    compact: trimmed.length <= 6 ? trimmed : trimmed.slice(0, 6),
+  };
+}
+
+export function formatAcademicSemesterBadge(rawSemester?: string): { full: string; compact: string } {
+  const trimmed = String(rawSemester || '').trim();
+  if (!trimmed) return { full: '1st Semester', compact: 'Sem 1' };
+  if (/^(?:1|1st|first)(?:\s+semester)?$/i.test(trimmed)) {
+    return { full: '1st Semester', compact: 'Sem 1' };
+  }
+  if (/^(?:2|2nd|second)(?:\s+semester)?$/i.test(trimmed)) {
+    return { full: '2nd Semester', compact: 'Sem 2' };
+  }
+  return {
+    full: /semester/i.test(trimmed) ? trimmed : `${trimmed} Semester`,
+    compact: /2|second/i.test(trimmed) ? 'Sem 2' : 'Sem 1',
+  };
+}
+
+export function canonicalizeAcademicLevel(rawLevel?: string): string {
+  const trimmed = String(rawLevel || '').trim();
+  if (!trimmed) return '100';
+  const numMatch = trimmed.match(/(\d{3})/);
+  if (numMatch) return numMatch[1];
+  const singleDigitMatch = trimmed.match(/\b([1-6])\b/);
+  if (singleDigitMatch) return String(Number(singleDigitMatch[1]) * 100);
+  return trimmed;
+}
+
+export function canonicalizeAcademicSemester(rawSemester?: string): '1st Semester' | '2nd Semester' {
+  const trimmed = String(rawSemester || '').trim();
+  if (/2|2nd|second/i.test(trimmed)) return '2nd Semester';
+  return '1st Semester';
+}
+
+export function formatCourseScopeBadge(course: MarketingCourse): string {
+  const scope = String(course.scope || '').trim().toUpperCase();
+  if (scope === 'GLOBAL') return 'GLOBAL COURSE';
+  if (scope === 'FACULTY') {
+    const facList =
+      Array.isArray(course.faculties) && course.faculties.length > 0
+        ? course.faculties.map((f) => f.trim()).filter(Boolean)
+        : course.faculty?.trim()
+          ? [course.faculty.trim()]
+          : [];
+    const fac = facList.join(', ');
+    if (!fac) return 'FACULTY COURSE';
+    return /faculty/i.test(fac) ? fac.toUpperCase() : `${fac.toUpperCase()} FACULTY`;
+  }
+  if (scope === 'DEPARTMENT') {
+    const depts =
+      Array.isArray(course.departments) && course.departments.length > 0
+        ? course.departments.map((d) => d.trim()).filter(Boolean)
+        : course.department?.trim()
+          ? [course.department.trim()]
+          : [];
+    if (depts.length === 1) return depts[0].toUpperCase();
+    if (depts.length > 1) return `${depts.length} DEPARTMENTS`;
+    return 'DEPARTMENT COURSE';
+  }
+  return 'PUBLISHED COURSE';
+}
+
+const normalizeFacultyKey = (value: unknown): string =>
+  normalize(value).replace(/\bfaculty\s+of\b/g, '').replace(/\bfaculty\b/g, '').trim();
+
+const normalizeDepartmentKey = (value: unknown): string =>
+  normalize(value).replace(/\bmaterials\b/g, 'material').trim();
+
+export function resolveCohortFaculty(
+  department: string,
+  ctx: PlatformMarketingContext,
+  allLiveCourses: MarketingCourse[] = []
+): string {
+  const deptKey = normalizeDepartmentKey(department);
+  if (!deptKey) return '';
+
+  const mappedEntry = Object.entries(ctx.departmentToFaculty || {}).find(
+    ([name]) => normalizeDepartmentKey(name) === deptKey
+  );
+  if (mappedEntry?.[1]?.trim()) {
+    return mappedEntry[1].trim();
+  }
+
+  for (const course of allLiveCourses) {
+    const depts = [
+      ...(Array.isArray(course.departments) ? course.departments : []),
+      ...(course.department ? [course.department] : []),
+    ];
+    if (depts.some((d) => normalizeDepartmentKey(d) === deptKey)) {
+      const fac = course.faculty?.trim() || course.faculties?.[0]?.trim();
+      if (fac && normalizeFacultyKey(fac) !== 'general') {
+        return fac;
+      }
+    }
+  }
+
+  if (deptKey.includes('engineering')) return 'Engineering';
+  if (
+    /\b(medicine|surgery|nursing|anatomy|physiology|medical|dentistry|pharmacy|public health)\b/.test(
+      deptKey
+    )
+  ) {
+    const matchedFac = (ctx.faculties || []).find((f) =>
+      /\b(med|health|clinical|basic|pharm|dent)\b/i.test(f)
+    );
+    return matchedFac || 'Basic Medical Sciences';
+  }
+  if (/\b(computer science|software|cyber|information)\b/.test(deptKey)) {
+    const matchedFac = (ctx.faculties || []).find((f) => /\b(comput|science|tech)\b/i.test(f));
+    return matchedFac || 'Computing';
+  }
+  if (/\b(physics|chemistry|biology|mathematics|zoology)\b/.test(deptKey)) {
+    const matchedFac = (ctx.faculties || []).find((f) => /\b(science)\b/i.test(f));
+    return matchedFac || 'Science';
+  }
+
+  return '';
+}
+
+export function isCourseEligibleForStudentCohort(
+  course: MarketingCourse,
+  department: string,
+  level: string,
+  semester: string,
+  ctx: PlatformMarketingContext,
+  allLiveCourses: MarketingCourse[] = []
+): boolean {
+  if (!course) return false;
+  const targetLevel = canonicalizeAcademicLevel(level);
+  const targetSemester = canonicalizeAcademicSemester(semester);
+  const courseLevel = canonicalizeAcademicLevel(course.level);
+  const courseSemester = canonicalizeAcademicSemester(course.semester);
+
+  // Strict Level & Semester match (matches CourseHub.tsx / courseEligibility.ts)
+  if (courseLevel !== targetLevel || courseSemester !== targetSemester) {
+    return false;
+  }
+
+  const scope = String(course.scope || '').trim().toUpperCase();
+  if (scope === 'GLOBAL') {
+    return true;
+  }
+
+  if (scope === 'FACULTY') {
+    const userFacultyKey = normalizeFacultyKey(
+      resolveCohortFaculty(department, ctx, allLiveCourses)
+    );
+    if (!userFacultyKey) return false;
+    const courseFaculties = [
+      ...(Array.isArray(course.faculties) ? course.faculties : []),
+      ...(course.faculty ? [course.faculty] : []),
+    ];
+    return courseFaculties.some((f) => {
+      const fKey = normalizeFacultyKey(f);
+      return Boolean(fKey && (fKey === userFacultyKey || fKey.includes(userFacultyKey) || userFacultyKey.includes(fKey)));
+    });
+  }
+
+  if (scope === 'DEPARTMENT') {
+    const targetDeptKey = normalizeDepartmentKey(department);
+    if (!targetDeptKey) return false;
+    const courseDepts = [
+      ...(Array.isArray(course.departments) ? course.departments : []),
+      ...(course.department ? [course.department] : []),
+    ];
+    return courseDepts.some((d) => normalizeDepartmentKey(d) === targetDeptKey);
+  }
+
+  return false;
+}
+
+export interface PhoneHubCohort {
+  department: string;
+  faculty: string;
+  level: string;
+  semester: '1st Semester' | '2nd Semester';
+  levelLabel: string;
+  semesterLabel: string;
+  courses: MarketingCourse[];
+}
+
+export interface PhoneHubCohortOverride {
+  department?: string;
+  level?: string;
+  semester?: string;
+}
+
+function getAllVerifiedLiveCourses(ctx: PlatformMarketingContext): MarketingCourse[] {
+  return Object.values(ctx.courses || {}).filter(
+    (course) =>
+      course &&
+      course.status === 'published' &&
+      course.studentVisibility === 'live' &&
+      course.levelAvailability === 'live' &&
+      hasVerifiedCourseAudience(course)
+  );
+}
+
+export function getCandidateCohortDepartments(ctx: PlatformMarketingContext): string[] {
+  const allLiveCourses = getAllVerifiedLiveCourses(ctx);
+  const set = new Set<string>();
+  const addDept = (raw?: string) => {
+    const trimmed = String(raw || '').trim();
+    if (!trimmed) return;
+    if (/^(general|global|all|none|university|faculty|general studies|general engineering training)$/i.test(trimmed)) {
+      return;
+    }
+    set.add(trimmed);
+  };
+
+  for (const d of ctx.departments || []) addDept(d);
+  for (const d of Object.keys(ctx.departmentToFaculty || {})) addDept(d);
+  for (const c of allLiveCourses) {
+    if (String(c.scope || '').toUpperCase() === 'DEPARTMENT') {
+      addDept(c.department);
+      for (const d of c.departments || []) addDept(d);
+    }
+  }
+  return Array.from(set).sort((a, b) => a.localeCompare(b));
+}
+
+export function getEligibleCoursesForCohort(
+  ctx: PlatformMarketingContext,
+  department: string,
+  level: string,
+  semester: string,
+  priorityCourseId?: string
+): MarketingCourse[] {
+  const allLiveCourses = getAllVerifiedLiveCourses(ctx);
+  if (allLiveCourses.length === 0) return [];
+
+  const eligible = allLiveCourses.filter((c) =>
+    isCourseEligibleForStudentCohort(c, department, level, semester, ctx, allLiveCourses)
+  );
+
+  // Order to match authentic CourseHub feed; if priorityCourseId is set, place it first
+  if (priorityCourseId) {
+    const idx = eligible.findIndex((c) => c.id === priorityCourseId);
+    if (idx > 0) {
+      const [picked] = eligible.splice(idx, 1);
+      eligible.unshift(picked);
+    } else if (idx === -1) {
+      const selected = allLiveCourses.find((c) => c.id === priorityCourseId);
+      if (
+        selected &&
+        canonicalizeAcademicLevel(selected.level) === canonicalizeAcademicLevel(level) &&
+        canonicalizeAcademicSemester(selected.semester) === canonicalizeAcademicSemester(semester)
+      ) {
+        eligible.unshift(selected);
+      }
+    }
+  }
+
+  return eligible;
+}
+
+export function resolveActivePhoneHubCohort(
+  ctx: PlatformMarketingContext,
+  override?: PhoneHubCohortOverride
+): PhoneHubCohort {
+  const allLiveCourses = getAllVerifiedLiveCourses(ctx);
+  const candidateDepartments = getCandidateCohortDepartments(ctx);
+  const selectedCourse = getSelectedCourse(ctx);
+
+  const levelsInCatalog = Array.from(
+    new Set(allLiveCourses.map((c) => canonicalizeAcademicLevel(c.level)).filter(Boolean))
+  ).sort((a, b) => Number(a) - Number(b));
+  const candidateLevels = levelsInCatalog.length > 0 ? levelsInCatalog : ['100'];
+  const candidateSemesters: ('1st Semester' | '2nd Semester')[] = ['1st Semester', '2nd Semester'];
+
+  const scoreCohort = (dept: string, lvl: string, sem: '1st Semester' | '2nd Semester'): number => {
+    const courses = getEligibleCoursesForCohort(ctx, dept, lvl, sem);
+    if (courses.length === 0) return -1;
+    const hasSpecificScope = courses.some((c) => {
+      const s = String(c.scope || '').toUpperCase();
+      return s === 'DEPARTMENT' || s === 'FACULTY';
+    });
+    const hasFacultyScope = courses.some((c) => String(c.scope || '').toUpperCase() === 'FACULTY');
+    // Reward cohorts that fill the 8-card (4x2) Course Hub grid and mix global + faculty/department courses
+    const countScore = Math.min(courses.length, 8) * 100 + (courses.length === 8 ? 15 : 0);
+    const scopeBonus = (hasSpecificScope ? 45 : 0) + (hasFacultyScope ? 10 : 0);
+    const firstSemBonus = sem === '1st Semester' ? 8 : 0;
+    const hundredLevelBonus = lvl === '100' ? 6 : 0;
+    const preferredProgramBonus = /electrical\s+engineering/i.test(dept) ? 4 : 0;
+    return countScore + scopeBonus + firstSemBonus + hundredLevelBonus + preferredProgramBonus;
+  };
+
+  let chosenDept = override?.department?.trim() || '';
+  let chosenLevel = override?.level?.trim() ? canonicalizeAcademicLevel(override.level) : '';
+  let chosenSem = override?.semester?.trim()
+    ? canonicalizeAcademicSemester(override.semester)
+    : ('' as '' | '1st Semester' | '2nd Semester');
+
+  if (!chosenDept || !chosenLevel || !chosenSem) {
+    if (ctx.targetScope === 'course' && selectedCourse) {
+      chosenLevel = chosenLevel || canonicalizeAcademicLevel(selectedCourse.level);
+      chosenSem = chosenSem || canonicalizeAcademicSemester(selectedCourse.semester);
+      const scope = String(selectedCourse.scope || '').toUpperCase();
+      if (!chosenDept) {
+        if (scope === 'DEPARTMENT') {
+          chosenDept =
+            selectedCourse.departments?.[0]?.trim() ||
+            selectedCourse.department?.trim() ||
+            candidateDepartments[0] ||
+            'Electrical Engineering';
+        } else if (scope === 'FACULTY') {
+          const targetFacKey = normalizeFacultyKey(
+            selectedCourse.faculties?.[0] || selectedCourse.faculty || ''
+          );
+          const matchingDepts = candidateDepartments.filter(
+            (d) => normalizeFacultyKey(resolveCohortFaculty(d, ctx, allLiveCourses)) === targetFacKey
+          );
+          const pool = matchingDepts.length > 0 ? matchingDepts : candidateDepartments;
+          let bestDept = pool[0] || 'Electrical Engineering';
+          let bestScore = -1;
+          for (const d of pool) {
+            const sc = scoreCohort(d, chosenLevel, chosenSem);
+            if (sc > bestScore) {
+              bestScore = sc;
+              bestDept = d;
+            }
+          }
+          chosenDept = bestDept;
+        } else {
+          // GLOBAL course selected: pick the department with the fullest curriculum for this exact level & semester
+          let bestDept = candidateDepartments[0] || 'Electrical Engineering';
+          let bestScore = -1;
+          for (const d of candidateDepartments) {
+            const sc = scoreCohort(d, chosenLevel, chosenSem);
+            if (sc > bestScore) {
+              bestScore = sc;
+              bestDept = d;
+            }
+          }
+          chosenDept = bestDept;
+        }
+      }
+    } else if (ctx.targetScope === 'department' && ctx.selectedDepartment) {
+      chosenDept = chosenDept || ctx.selectedDepartment;
+      if (!chosenLevel || !chosenSem) {
+        let bestLvl = chosenLevel || candidateLevels[0] || '100';
+        let bestSem: '1st Semester' | '2nd Semester' = chosenSem || '1st Semester';
+        let bestScore = -1;
+        for (const lvl of chosenLevel ? [chosenLevel] : candidateLevels) {
+          for (const sem of chosenSem ? [chosenSem] : candidateSemesters) {
+            const sc = scoreCohort(chosenDept, lvl, sem);
+            if (sc > bestScore) {
+              bestScore = sc;
+              bestLvl = lvl;
+              bestSem = sem;
+            }
+          }
+        }
+        chosenLevel = bestLvl;
+        chosenSem = bestSem;
+      }
+    } else if (ctx.targetScope === 'faculty' && ctx.selectedFaculty) {
+      const targetFacKey = normalizeFacultyKey(ctx.selectedFaculty);
+      const matchingDepts = candidateDepartments.filter(
+        (d) => normalizeFacultyKey(resolveCohortFaculty(d, ctx, allLiveCourses)) === targetFacKey
+      );
+      const pool = chosenDept ? [chosenDept] : matchingDepts.length > 0 ? matchingDepts : candidateDepartments;
+      let bestDept = pool[0] || ctx.selectedFaculty;
+      let bestLvl = chosenLevel || candidateLevels[0] || '100';
+      let bestSem: '1st Semester' | '2nd Semester' = chosenSem || '1st Semester';
+      let bestScore = -1;
+      for (const d of pool) {
+        for (const lvl of chosenLevel ? [chosenLevel] : candidateLevels) {
+          for (const sem of chosenSem ? [chosenSem] : candidateSemesters) {
+            const sc = scoreCohort(d, lvl, sem);
+            if (sc > bestScore) {
+              bestScore = sc;
+              bestDept = d;
+              bestLvl = lvl;
+              bestSem = sem;
+            }
+          }
+        }
+      }
+      chosenDept = bestDept;
+      chosenLevel = bestLvl;
+      chosenSem = bestSem;
+    } else {
+      // full_ecosystem or exam_readiness: discover the richest 8-course student cohort
+      const pool = chosenDept ? [chosenDept] : candidateDepartments;
+      let bestDept = pool[0] || 'Electrical Engineering';
+      let bestLvl = chosenLevel || candidateLevels[0] || '100';
+      let bestSem: '1st Semester' | '2nd Semester' = chosenSem || '1st Semester';
+      let bestScore = -1;
+      for (const d of pool) {
+        for (const lvl of chosenLevel ? [chosenLevel] : candidateLevels) {
+          for (const sem of chosenSem ? [chosenSem] : candidateSemesters) {
+            const sc = scoreCohort(d, lvl, sem);
+            if (sc > bestScore) {
+              bestScore = sc;
+              bestDept = d;
+              bestLvl = lvl;
+              bestSem = sem;
+            }
+          }
+        }
+      }
+      chosenDept = bestDept;
+      chosenLevel = bestLvl;
+      chosenSem = bestSem;
+    }
+  }
+
+  const finalSemester = chosenSem || '1st Semester';
+  const finalLevel = chosenLevel || '100';
+  const finalDepartment = chosenDept || candidateDepartments[0] || 'Electrical Engineering';
+  const priorityCourseId = ctx.targetScope === 'course' ? selectedCourse?.id : undefined;
+  const cohortCourses = getEligibleCoursesForCohort(
+    ctx,
+    finalDepartment,
+    finalLevel,
+    finalSemester,
+    priorityCourseId
+  );
+
+  return {
+    department: finalDepartment,
+    faculty: resolveCohortFaculty(finalDepartment, ctx, allLiveCourses),
+    level: finalLevel,
+    semester: finalSemester,
+    levelLabel: formatAcademicLevelBadge(finalLevel).full,
+    semesterLabel: formatAcademicSemesterBadge(finalSemester).full,
+    courses: cohortCourses,
+  };
+}
+
+export function resolvePhoneHubCourses(
+  ctx: PlatformMarketingContext,
+  pinnedCourseIds?: string[],
+  maxCards = 8,
+  cohortOverride?: PhoneHubCohortOverride
+): MarketingCourse[] {
+  const cohort = resolveActivePhoneHubCohort(ctx, cohortOverride);
+  if (cohort.courses.length === 0) return [];
+
+  const byId = new Map(cohort.courses.map((c) => [c.id, c]));
+  const result: MarketingCourse[] = [];
+  const seen = new Set<string>();
+
+  const addCourse = (course?: MarketingCourse) => {
+    if (!course || seen.has(course.id) || result.length >= maxCards) return;
+    seen.add(course.id);
+    result.push(course);
+  };
+
+  if (Array.isArray(pinnedCourseIds) && pinnedCourseIds.length > 0) {
+    for (const id of pinnedCourseIds) {
+      addCourse(byId.get(id));
+    }
+    if (result.length > 0) {
+      return result;
+    }
+  }
+
+  for (const course of cohort.courses) {
+    addCourse(course);
+  }
+
+  return result;
 }
 
 function getCourseAudienceLabel(course: MarketingCourse): string | null {
@@ -545,6 +1034,12 @@ export function buildDynamicFlyerConfig(ctx: PlatformMarketingContext): DynamicF
     blockingReasons.push('The authoritative catalog contains no published course marked live for student access.');
   }
 
+  const activeCohort = resolveActivePhoneHubCohort(ctx);
+  const hubCourses = activeCohort.courses.slice(0, 8);
+  const resolvedProgramLabel = activeCohort.department;
+  const resolvedLevelLabel = activeCohort.levelLabel;
+  const resolvedSemesterLabel = activeCohort.semesterLabel;
+
   return {
     brandName: 'UniAce Mastery Hub',
     brandSubline: ['Learn', 'Practise', 'Revise'],
@@ -556,6 +1051,11 @@ export function buildDynamicFlyerConfig(ctx: PlatformMarketingContext): DynamicF
     subParagraph,
     phoneGreeting,
     phonePrompt: 'Explore the tools available in UniAce',
+    phoneScreenMode: hubCourses.length > 0 ? 'course_hub_ui' : 'capabilities_list',
+    phoneProgramLabel: resolvedProgramLabel,
+    phoneLevelLabel: resolvedLevelLabel,
+    phoneSemesterLabel: resolvedSemesterLabel,
+    phonePinnedCourseIds: hubCourses.map((c) => c.id),
     capabilities,
     ctaText: 'Explore UniAce',
     websiteDisplayUrl: displayHost,
@@ -585,6 +1085,16 @@ export async function synthesizeFlyerWithAI(
   const selectedCourse = getSelectedCourse(ctx);
   const scopedCourses = getCoursesForMarketingScope(ctx);
   const activeCaps = currentConfig.capabilities.filter((capability) => capability.enabled);
+  const phonePreviewCourses = resolvePhoneHubCourses(
+    ctx,
+    currentConfig.phonePinnedCourseIds,
+    8,
+    {
+      department: currentConfig.phoneProgramLabel,
+      level: currentConfig.phoneLevelLabel,
+      semester: currentConfig.phoneSemesterLabel,
+    }
+  );
 
   const contextSummary = {
     targetScope: ctx.targetScope,
@@ -601,7 +1111,21 @@ export async function synthesizeFlyerWithAI(
           moduleCount: selectedCourse.syllabus.length
         }
       : null,
-    scopedCourseOfferings: scopedCourses.map((course) => ({
+    facultiesInCatalog: ctx.faculties,
+    departmentsInCatalog: ctx.departments,
+    phoneCourseHubPreview: {
+      programLabel: currentConfig.phoneProgramLabel || null,
+      levelLabel: currentConfig.phoneLevelLabel || null,
+      semesterLabel: currentConfig.phoneSemesterLabel || null,
+      displayedCourseCards: phonePreviewCourses.map((c) => ({
+        id: c.id,
+        title: c.title,
+        scope: c.scope,
+        level: c.level,
+        semester: c.semester,
+      })),
+    },
+    scopedCourseOfferings: scopedCourses.slice(0, 24).map((course) => ({
       id: course.id,
       title: course.title,
       scope: course.scope,
@@ -629,8 +1153,13 @@ Rules:
 - Do not invent course counts, module counts, prices, student numbers, ratings, outcomes, accreditations, guarantees, service hours, performance claims or feature availability.
 - Do not describe a capability unless its exact ID and name appear in availableCapabilityIdsAndNames.
 - Preserve course names, codes, faculty names and department names exactly.
-- Do not claim that all students can access a targeted course; scope restrictions apply.
-- You may improve tone, clarity, structure and campaign relevance.
+- Scope adaptation rules:
+  * If targetScope is "full_ecosystem" or "exam_readiness" (and customCampaignAngle does not ask for a single department), write inclusive university-wide headlines, value propositions, and social captions that appeal across faculties and departments — NEVER make the flyer headline or social captions depend on or sound restricted to a single department.
+  * If targetScope is "faculty", tailor the headlines and captions dynamically to that selectedFaculty and its live courses.
+  * If targetScope is "department", tailor the headlines and captions dynamically to that selectedDepartment and its live courses.
+  * If targetScope is "course", spotlight the selectedCourse and mention companion live courses shown in phoneCourseHubPreview for that level and semester.
+  * If customCampaignAngle is provided, follow that campaign angle while staying strictly within verified facts.
+- Do not claim that all students can access a department- or faculty-restricted course; scope restrictions apply.
 - Return complete copy as a DRAFT for administrator review, not as independently verified fact.
 
 Return only a JSON object with this structure:
