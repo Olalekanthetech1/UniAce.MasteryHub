@@ -29,7 +29,7 @@ import { autoHealQuestion } from './validators/aiSchemas';
 import { sanitizeForFirestore } from './courseService';
 import { auth } from '../firebase';
 import { LogService } from './logService';
-import { normalizeMathDelimiters } from '../shared/mathText';
+import { ensureMathDelimiters, normalizeMathDelimiters } from '../shared/mathText';
 import {
   StructuredDiagramSpecSchema,
   serializeStructuredDiagramToMermaid,
@@ -153,17 +153,17 @@ export function sanitizeLatex(content: any): any {
   sanitized = sanitized.replace(/\\n(?![a-zA-Z])/g, '\n');
   sanitized = sanitized.replace(/\\t(?![a-zA-Z])/g, '\t');
 
-  // Normalize delimiters through the shared renderer-safe path
-  sanitized = normalizeMathDelimiters(sanitized);
+  // Normalize delimiters and wrap bare LaTeX expressions through the shared renderer-safe path
+  sanitized = ensureMathDelimiters(normalizeMathDelimiters(sanitized));
 
   // Collapse double-escaped backslashes inside math spans that survived JSON decoding
   sanitized = sanitized.replace(/\$\$([\s\S]+?)\$\$/g, (_match, inner) => {
-    const normalizedInner = inner.replace(/\\\\([a-zA-Z{}_^])/g, '\\$1').trim();
+    const normalizedInner = inner.replace(/\\\\([a-zA-Z{}_^|])/g, '\\$1').trim();
     return `$$\n${normalizedInner}\n$$`;
   });
 
   sanitized = sanitized.replace(/\$([^$\n]+?)\$/g, (_match, inner) => {
-    const normalizedInner = inner.replace(/\\\\([a-zA-Z{}_^])/g, '\\$1').trim();
+    const normalizedInner = inner.replace(/\\\\([a-zA-Z{}_^|])/g, '\\$1').trim();
     return `$${normalizedInner}$`;
   });
 

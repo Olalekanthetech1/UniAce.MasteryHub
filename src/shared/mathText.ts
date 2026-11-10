@@ -48,8 +48,160 @@ export function asDisplayMath(latex: string): string {
   return '$$\n' + normalizeMathBody(unwrapped) + '\n$$';
 }
 
-const RAW_LATEX_COMMAND_REGEX =
-  /\\(?:int|iint|iiint|oint|sum|prod|frac|dfrac|tfrac|sqrt|lim|partial|nabla|infty|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|iota|kappa|lambda|mu|nu|xi|pi|rho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega|pm|mp|times|div|cdot|circ|approx|neq|ne|equiv|le|leq|ge|geq|in|notin|subset|subseteq|cup|cap|to|rightarrow|leftarrow|implies|iff|forall|exists|sin|cos|tan|csc|sec|cot|ln|log|exp|vec|hat|bar|dot|ddot|mathbf|mathrm|mathcal|mathbb|text|quad|qquad|left|right|lvert|rvert|lVert|rVert)\b|\\\|[\s\S]*?\\\||\|[A-Za-z0-9\\{}]+\|\s*(?:\^\{[^{}]+\}|_\{[^{}]+\}|\^[A-Za-z0-9]|_[A-Za-z0-9])|[A-Za-z0-9)\]}]\s*(?:\^\{[^}]+\}|_\{[^}]+\}|\^[A-Za-z0-9]|_[A-Za-z0-9])|\b(?:[0-9]*[a-z]{1,2}\s*[+\-]\s*)+[0-9]*[a-z]{1,2}\s*=\s*[+-]?[0-9A-Za-z]+\b|\b[A-Z]\(\s*[a-z](?:_[0-9a-zA-Z]+)?\s*,\s*[a-z](?:_[0-9a-zA-Z]+)?(?:\s*,\s*[a-z](?:_[0-9a-zA-Z]+)?)?\s*\)/;
+const BRACED_GROUP_PATTERN = '\\{(?:[^{}]|\\{(?:[^{}]|\\{[^{}]*\\})*\\})*\\}';
+
+const KNOWN_LATEX_COMMANDS_PATTERN =
+  'int|iint|iiint|oint|sum|prod|frac|dfrac|tfrac|sqrt|lim|partial|nabla|infty|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|iota|kappa|lambda|mu|nu|xi|pi|rho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega|pm|mp|times|div|cdot|circ|approx|neq|ne|equiv|le|leq|ge|geq|in|notin|subset|subseteq|cup|cap|to|rightarrow|leftarrow|implies|iff|forall|exists|sin|cos|tan|csc|sec|cot|ln|log|exp|vec|hat|bar|dot|ddot|mathbf|mathrm|mathcal|mathbb|text|quad|qquad|left|right|lvert|rvert|lVert|rVert|binom|choose|overline|underline|tilde|widetilde|widehat';
+
+const DOUBLE_ESCAPED_LATEX_CMD_REGEX = new RegExp(
+  `\\\\\\\\(?=(?:${KNOWN_LATEX_COMMANDS_PATTERN})\\b|[|{}])`,
+  'g'
+);
+
+const RAW_LATEX_COMMAND_REGEX = new RegExp(
+  `\\\\(?:${KNOWN_LATEX_COMMANDS_PATTERN})\\b|\\\\\\|[\\s\\S]*?\\\\\\||\\|(?=\\S)(?:\\\\[A-Za-z]+|[A-Za-z0-9_^+\\-*/.,\\s{}()]+?)(?<=\\S)\\|\\s*(?:\\^${BRACED_GROUP_PATTERN}|_${BRACED_GROUP_PATTERN}|\\^[+-]?[A-Za-z0-9]+|_[A-Za-z0-9]{1,4})?|\\b[A-Za-z][0-9]*\\s*(?:\\^${BRACED_GROUP_PATTERN}|_${BRACED_GROUP_PATTERN}|\\^[+-]?[A-Za-z0-9]+|_[A-Za-z0-9]{1,4})\\b|[\\]0-9)}|]\\s*(?:\\^${BRACED_GROUP_PATTERN}|_${BRACED_GROUP_PATTERN}|\\^[+-]?[A-Za-z0-9]+|_[A-Za-z0-9]{1,4})|[\\]A-Za-z0-9)}|]+\\s*(?:\\^${BRACED_GROUP_PATTERN}|_${BRACED_GROUP_PATTERN})|\\b(?:[0-9]*[a-z]{1,2}\\s*[+\\-]\\s*)+[0-9]*[a-z]{1,2}\\s*=\\s*[+-]?[0-9A-Za-z]+\\b|\\b[A-Z](?:_[0-9a-zA-Z]+|_${BRACED_GROUP_PATTERN})?\\(\\s*[a-z](?:_[0-9a-zA-Z]+|_${BRACED_GROUP_PATTERN})?\\s*,\\s*[a-z](?:_[0-9a-zA-Z]+|_${BRACED_GROUP_PATTERN})?(?:\\s*,\\s*[a-z](?:_[0-9a-zA-Z]+|_${BRACED_GROUP_PATTERN})?)?\\s*\\)|(?<!\\\\)\\bsqrt\\s*\\(`
+);
+
+/**
+ * Converts bare ASCII sqrt(...) calls (outside code blocks) into \sqrt{...} using balanced parenthesis scanning.
+ */
+function convertBareSqrtToLatex(input: string): string {
+  if (!/\bsqrt\s*\(/.test(input)) return input;
+  let result = '';
+  let i = 0;
+  const len = input.length;
+
+  while (i < len) {
+    const rest = input.slice(i);
+    const match = rest.match(/^(?<!\\)\bsqrt\s*\(/);
+    if (match && (i === 0 || !/[A-Za-z0-9_\\]/.test(input[i - 1]))) {
+      const openParenIdx = i + match[0].length - 1;
+      let depth = 0;
+      let closeIdx = -1;
+      for (let j = openParenIdx; j < len; j++) {
+        if (input[j] === '(') depth++;
+        else if (input[j] === ')') {
+          depth--;
+          if (depth === 0) {
+            closeIdx = j;
+            break;
+          }
+        }
+      }
+      if (closeIdx !== -1) {
+        const inner = convertBareSqrtToLatex(input.slice(openParenIdx + 1, closeIdx).trim());
+        result += `\\sqrt{${inner}}`;
+        i = closeIdx + 1;
+        continue;
+      }
+    }
+    result += input[i];
+    i++;
+  }
+  return result;
+}
+
+const SCRIPT_SUFFIX_PATTERN = `(?:\\s*(?:\\^${BRACED_GROUP_PATTERN}|_${BRACED_GROUP_PATTERN}|\\^[+-]?[A-Za-z0-9]+|_[A-Za-z0-9]{1,4}))+`;
+const ABS_OR_NORM_GROUP_PATTERN = `(?:\\\\\\|[\\s\\S]*?\\\\\\||\\|(?=\\S)(?:\\\\[A-Za-z]+|[A-Za-z0-9_^+\\-*/.,\\s{}()]+?)(?<=\\S)\\|)(?:${SCRIPT_SUFFIX_PATTERN})?`;
+const LATEX_CMD_GROUP_PATTERN = `\\\\[A-Za-z]+(?:\\s*\\[[^\\]]*\\])*(?:\\s*[_^]?\\s*${BRACED_GROUP_PATTERN}|\\s*[_^][A-Za-z0-9]|\\s*\\\\[,;!: ])*(?:${SCRIPT_SUFFIX_PATTERN})?`;
+const SCRIPTED_ATOM_PATTERN = `(?:(?:\\b[A-Za-z][0-9]*|[0-9]+|[\\])}])(?:${SCRIPT_SUFFIX_PATTERN})|[\\]A-Za-z0-9)}]+(?:\\s*(?:\\^${BRACED_GROUP_PATTERN}|_${BRACED_GROUP_PATTERN}))+)`;
+const MATH_PAREN_GROUP_PATTERN = `\\((?:\\\\[A-Za-z]+|\\s*${BRACED_GROUP_PATTERN}|[0-9]+|[A-Za-z](?![A-Za-z])|[+\\-*/=<>^_{},\\s|])+\\)(?:${SCRIPT_SUFFIX_PATTERN})?`;
+const ATOMIC_MATH_TOKEN_PATTERN = `(?:${ABS_OR_NORM_GROUP_PATTERN}|${LATEX_CMD_GROUP_PATTERN}|${SCRIPTED_ATOM_PATTERN}|${MATH_PAREN_GROUP_PATTERN})`;
+const OPTIONAL_EQUATION_LHS_PATTERN = `(?:(?:\\b[A-Za-z](?:_[A-Za-z0-9]{1,4}|_${BRACED_GROUP_PATTERN})?|\\|[A-Za-z0-9\\\\{}]+\\|)\\s*[=<>]\\s*)?`;
+
+const COMPOUND_MATH_REGEX = new RegExp(
+  `${OPTIONAL_EQUATION_LHS_PATTERN}${ATOMIC_MATH_TOKEN_PATTERN}(?:\\s*(?:[+\\-*/=<>]|,[\\s]*(?=\\\\[A-Za-z]+|[A-Za-z0-9|\\\\]+\\s*[=<>_^])|\\\\(?:quad|qquad|cdot|times|div|pm|mp|frac|dfrac|tfrac|sqrt|alpha|beta|gamma|theta|pi|cos|sin|tan|leq|geq|neq|approx|equiv|to|rightarrow|implies|iff)\\b|${ATOMIC_MATH_TOKEN_PATTERN}|[0-9]+(?:\\.[0-9]+)?|\\b[A-Za-z]\\b(?=\\s*(?:[+\\-*/=<>^_)|]|$))))*`,
+  'g'
+);
+
+function wrapBareMathInSingleLine(line: string): string {
+  if (!line || !line.trim()) return line;
+
+  // Preserve Markdown table separator lines verbatim
+  if (/^\s*\|?[\s:-]+\|[\s|:-]*$/.test(line)) {
+    return line;
+  }
+
+  // If the line is a Markdown table row (starts and ends with | and has multiple cells), process each cell
+  if (/^\s*\|.*\|\s*$/.test(line) && (line.match(/\s\|\s|^\s*\||\|\s*$/g) || []).length >= 2) {
+    return line.replace(/(^\s*\||\|\s*$|\s+\|\s+)/g, '\u0000TABLE_PIPE\u0000$& \u0000TABLE_PIPE\u0000')
+      .split('\u0000TABLE_PIPE\u0000')
+      .map((chunk) => (/^\s*\|/.test(chunk) ? chunk : wrapBareMathInSingleLine(chunk)))
+      .join('')
+      .replace(/\| \u0000TABLE_PIPE\u0000/g, '|');
+  }
+
+  // Peel off leading Markdown block prefixes (- , * , 1. , ### , > ) or option prefixes (A. , (a) )
+  const prefixMatch = line.match(/^((?:\s*(?:(?:[-*+]|\d+[.)]|#{1,6}|>)\s+|(?:[A-Da-d][.)]|\([A-Da-d1-4]\))\s+))*\s*)/);
+  const leadingPrefix = prefixMatch ? prefixMatch[0] : '';
+  const body = line.slice(leadingPrefix.length);
+
+  if (!body.trim() || !RAW_LATEX_COMMAND_REGEX.test(body)) {
+    return line;
+  }
+
+  const normalizedBody = convertBareSqrtToLatex(body.replace(DOUBLE_ESCAPED_LATEX_CMD_REGEX, '\\'));
+  const trimmed = normalizedBody.trim();
+
+  // Check if the entire line body is a standalone mathematical formula/equation (e.g. a quiz option)
+  if (!trimmed.includes('\u0000UNIACE_PROTECTED_SPAN_') && !/\*\*|__/.test(trimmed)) {
+    const plainWords = trimmed
+      .replace(new RegExp(`\\\\(?:text|mathrm|mathbf|mathcal|mathbb)\\s*${BRACED_GROUP_PATTERN}`, 'g'), ' ')
+      .replace(/\\[A-Za-z]+/g, ' ')
+      .replace(new RegExp(`(?:_|\\^)(?:${BRACED_GROUP_PATTERN}|[A-Za-z0-9]+)`, 'g'), ' ')
+      .replace(/\b[A-Za-z]\b/g, ' ')
+      .replace(/[^A-Za-z\s]/g, ' ')
+      .trim()
+      .split(/\s+/)
+      .filter(
+        (w) =>
+          w.length > 2 &&
+          !/^(?:sin|cos|tan|csc|sec|cot|sinh|cosh|tanh|arcsin|arccos|arctan|log|exp|lim|max|min|sup|inf|det|dim|ker|mod|gcd|lcm|arg|deg|and|for|where)$/i.test(w)
+      );
+
+    if (plainWords.length <= 1) {
+      const trailingSpace = normalizedBody.match(/\s*$/)?.[0] || '';
+      const trailingPunctMatch = trimmed.match(/([.;])$/);
+      const cleanFormula = trailingPunctMatch ? trimmed.slice(0, -trailingPunctMatch[0].length).trim() : trimmed;
+      const trailingPunct = trailingPunctMatch ? trailingPunctMatch[0] : '';
+      return `${leadingPrefix}$${cleanFormula}$${trailingPunct}${trailingSpace}`;
+    }
+  }
+
+  // Mixed prose + math line: first wrap standalone algebraic equations ("ax + by + c = 0") and point coordinates ("P_1(x_1, y_1)")
+  const workingBody = normalizedBody
+    .replace(
+      /\b((?:[0-9]*[a-z]{1,2}\s*[+\-]\s*)+[0-9]*[a-z]{1,2}\s*=\s*[+-]?[0-9A-Za-z]+)\b/g,
+      '$$$1$$'
+    )
+    .replace(
+      new RegExp(
+        `\\b([A-Z](?:_[0-9a-zA-Z]+|_${BRACED_GROUP_PATTERN})?\\(\\s*[a-z](?:_[0-9a-zA-Z]+|_${BRACED_GROUP_PATTERN})?\\s*,\\s*[a-z](?:_[0-9a-zA-Z]+|_${BRACED_GROUP_PATTERN})?(?:\\s*,\\s*[a-z](?:_[0-9a-zA-Z]+|_${BRACED_GROUP_PATTERN})?)?\\s*\\))`,
+        'g'
+      ),
+      '$$$1$$'
+    );
+
+  const subParts = workingBody.split(/(\$[^$\n]+?\$)/g);
+  const wrappedBody = subParts
+    .map((sub, sIdx) => {
+      if (sIdx % 2 === 1) return sub;
+      return sub.replace(COMPOUND_MATH_REGEX, (match) => {
+        const m = match.trim();
+        if (!m || !RAW_LATEX_COMMAND_REGEX.test(m)) return match;
+        const lead = match.match(/^\s*/)?.[0] || '';
+        const trail = match.match(/\s*$/)?.[0] || '';
+        const trailingPunctMatch = m.match(/([.,;:])+$/);
+        const cleanMath = trailingPunctMatch ? m.slice(0, -trailingPunctMatch[0].length).trim() : m;
+        const trailingPunct = trailingPunctMatch ? trailingPunctMatch[0] : '';
+        if (!cleanMath) return match;
+        return `${lead}$${cleanMath}$${trailingPunct}${trail}`;
+      });
+    })
+    .join('');
+
+  return `${leadingPrefix}${wrappedBody}`;
+}
 
 /**
  * Returns true when a user input string contains either explicit math delimiters
@@ -65,13 +217,14 @@ export function containsLatexMath(raw: string): boolean {
 
 /**
  * Ensures bare LaTeX expressions typed or inserted by a student or stored in structured
- * academic fields are wrapped in $...$ so KaTeX renders them properly, while leaving
- * already-delimited math ($...$, $$...$$), fenced code blocks, inline code, and SVG blocks untouched.
+ * academic fields (including QuickCheck, Quiz options, Flashcards, and prose) are wrapped in $...$
+ * so KaTeX renders them properly, while leaving already-delimited math ($...$, $$...$$),
+ * fenced code blocks, inline code, URLs, HTML tags, and SVG blocks untouched.
  */
 export function ensureMathDelimiters(raw: string): string {
   if (typeof raw !== 'string' || !raw.trim()) return raw || '';
 
-  // Mask fenced code blocks, inline SVG markup, and inline backtick code spans before delimiter wrapping
+  // Mask fenced code blocks, inline SVG markup, inline backtick code spans, Markdown links/URLs, and HTML tags
   const protectedSpans: string[] = [];
   const maskSpan = (match: string): string => {
     const token = `\u0000UNIACE_PROTECTED_SPAN_${protectedSpans.length}\u0000`;
@@ -80,78 +233,32 @@ export function ensureMathDelimiters(raw: string): string {
   };
 
   const maskedInput = raw
-    .replace(/(^|\n)(\x60{3,}|~{3,})([^\n]*)\n([\s\S]*?)\n\2[ \t]*(?=\n|$)/g, (m) => maskSpan(m))
+    .replace(/(^|\n)(\x60{3,}|~{3,})([^\n]*)\n([\s\S]*?)\n\2[ \t]*(?=\n|$)/g, (m, _l, _f, info: string) => {
+      const lang = String(info || '').trim().toLowerCase().split(/\s+/)[0];
+      if (lang === 'math' || lang === 'latex') return m;
+      return maskSpan(m);
+    })
     .replace(/<svg[\s\S]*?<\/svg>/gi, (m) => maskSpan(m))
-    .replace(/\x60[^\n\x60]+\x60/g, (m) => maskSpan(m));
+    .replace(/\x60[^\n\x60]+\x60/g, (m) => maskSpan(m))
+    .replace(/!?\[[^\]]*\]\([^)\n]+\)/g, (m) => maskSpan(m))
+    .replace(/https?:\/\/[^\s)]+/g, (m) => maskSpan(m))
+    .replace(/<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[^>\n]*)?>/g, (m) => maskSpan(m));
 
   const normalized = normalizeMathDelimiters(maskedInput);
 
-  // Preserve segments already inside $...$ or $$...$$ delimiters and only wrap
-  // undelimited segments that contain bare LaTeX commands, norms, algebraic equations, or scripts.
+  // Preserve segments already inside $...$ or $$...$$ delimiters (collapsing any surviving \\ inside them)
+  // and process undelimited segments line-by-line so inline $...$ never spans across newlines.
   const parts = normalized.split(/(\$\$[\s\S]+?\$\$|\$[^$\n]+?\$)/g);
   const processed = parts
     .map((segment, idx) => {
-      // Odd indices are already-delimited math segments
-      if (idx % 2 === 1) return segment;
-      if (!RAW_LATEX_COMMAND_REGEX.test(segment)) return segment;
-
-      // If the entire segment is a mathematical expression (no multi-word plain prose sentence),
-      // wrap the whole trimmed segment in $...$
-      const trimmed = segment.trim();
-      if (!trimmed.includes('\u0000UNIACE_PROTECTED_SPAN_')) {
-        const plainWords = trimmed
-          .replace(/\\text\s*\{[^{}]*\}/g, ' ')
-          .replace(/\\[A-Za-z]+/g, ' ')
-          .replace(/[^A-Za-z\s]/g, ' ')
-          .trim()
-          .split(/\s+/)
-          .filter((w) => w.length > 2 && !/^(?:sin|cos|tan|csc|sec|cot|log|exp|lim|max|min|det|mod|and|for)$/i.test(w));
-
-        if (plainWords.length <= 1) {
-          const leadingSpace = segment.match(/^\s*/)?.[0] || '';
-          const trailingSpace = segment.match(/\s*$/)?.[0] || '';
-          return `${leadingSpace}$${trimmed}$${trailingSpace}`;
-        }
+      if (idx % 2 === 1) {
+        return segment.replace(DOUBLE_ESCAPED_LATEX_CMD_REGEX, '\\');
       }
-
-      // First wrap standalone algebraic equations like "ax + by + c = 0" and symbolic point tuples like "P(x, y)"
-      let workingSegment = segment
-        .replace(
-          /\b((?:[0-9]*[a-z]{1,2}\s*[+\-]\s*)+[0-9]*[a-z]{1,2}\s*=\s*[+-]?[0-9A-Za-z]+)\b/g,
-          '$$$1$$'
-        )
-        .replace(
-          /\b([A-Z]\(\s*[a-z](?:_[0-9a-zA-Z]+)?\s*,\s*[a-z](?:_[0-9a-zA-Z]+)?(?:\s*,\s*[a-z](?:_[0-9a-zA-Z]+)?)?\s*\))/g,
-          '$$$1$$'
-        );
-
-      // Next wrap contiguous LaTeX command/formula/norm/exponent spans within prose on remaining undelimited pieces
-      const subParts = workingSegment.split(/(\$[^$\n]+?\$)/g);
-      const atomicMathToken =
-        '(?:\\\\\\|[\\s\\S]+?\\\\\\||\\|[A-Za-z0-9\\\\{}]+\\|(?:\\s*(?:\\^\\{[^{}]+\\}|_\\{[^{}]+\\}|\\^[A-Za-z0-9]|_[A-Za-z0-9]))?|\\\\(?:text|mathbf|mathrm|mathcal|mathbb|vec|hat|bar|sqrt)\\s*\\{[^{}]*\\}(?:\\s*(?:\\^\\{[^{}]+\\}|_\\{[^{}]+\\}|\\^[A-Za-z0-9]|_[A-Za-z0-9]))*|\\\\[A-Za-z]+(?:\\s*[_^]?\\{[^{}]*\\}|\\s*[_^][A-Za-z0-9]|\\s*\\\\[,;!: ])*|[A-Za-z0-9)\\]}]+(?:\\^\\{[^{}]+\\}|_\\{[^{}]+\\}|\\^[A-Za-z0-9]|_[A-Za-z0-9])+)';
-      const mathParenGroup =
-        '\\((?:\\\\[A-Za-z]+|[0-9]+|[A-Za-z](?![A-Za-z])|[+\\-*/=<>^_{},\\s|])+\\)(?:\\s*(?:\\^\\{[^{}]+\\}|_\\{[^{}]+\\}|\\^[A-Za-z0-9]|_[A-Za-z0-9]))?';
-      const compoundMathRegex = new RegExp(
-        `${atomicMathToken}(?:\\s*(?:[+\\-*/=<>]|,[\\s]*(?=\\\\[A-Za-z]+|[A-Za-z0-9|\\\\]+\\s*[=<>_^])|\\\\(?:quad|qquad|cdot|times|pm|mp|frac|dfrac|tfrac|sqrt|alpha|beta|gamma|theta|pi|cos|sin|tan)\\b|${mathParenGroup}|${atomicMathToken}|[0-9]+(?:\\.[0-9]+)?))*`,
-        'g'
-      );
-
-      return subParts
-        .map((sub, sIdx) => {
-          if (sIdx % 2 === 1) return sub;
-          return sub.replace(compoundMathRegex, (match) => {
-            const m = match.trim();
-            if (!m || !RAW_LATEX_COMMAND_REGEX.test(m)) return match;
-            const lead = match.match(/^\s*/)?.[0] || '';
-            const trail = match.match(/\s*$/)?.[0] || '';
-            const trailingPunctMatch = m.match(/([.,;:])+$/);
-            const cleanMath = trailingPunctMatch ? m.slice(0, -trailingPunctMatch[0].length).trim() : m;
-            const trailingPunct = trailingPunctMatch ? trailingPunctMatch[0] : '';
-            if (!cleanMath) return match;
-            return `${lead}$${cleanMath}$${trailingPunct}${trail}`;
-          });
-        })
-        .join('');
+      if (!RAW_LATEX_COMMAND_REGEX.test(segment)) return segment;
+      return segment
+        .split('\n')
+        .map((line) => wrapBareMathInSingleLine(line))
+        .join('\n');
     })
     .join('');
 

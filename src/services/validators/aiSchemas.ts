@@ -41,10 +41,27 @@ export function autoHealQuestion(q: any): any {
       throw new Error('Multiple-choice question contains duplicate options; refusing to invent replacements.');
     }
 
+    const stripOuterMathDelimiters = (val: string) =>
+      val
+        .trim()
+        .replace(/^\$\$([\s\S]*)\$\$$/, '$1')
+        .replace(/^\$([\s\S]*)\$$/, '$1')
+        .replace(/^\\\[([\s\S]*)\\\]$/, '$1')
+        .replace(/^\\\(([\s\S]*)\\\)$/, '$1')
+        .replace(/\\\\([a-zA-Z{}_^|])/g, '\\$1')
+        .trim()
+        .toLocaleLowerCase();
+
     let matchedOption = options.find((option: string) => option === correctAnswer);
     if (!matchedOption) {
       matchedOption = options.find(
         (option: string) => option.toLocaleLowerCase() === correctAnswer.toLocaleLowerCase()
+      );
+    }
+    if (!matchedOption) {
+      const canonicalCorrect = stripOuterMathDelimiters(correctAnswer);
+      matchedOption = options.find(
+        (option: string) => stripOuterMathDelimiters(option) === canonicalCorrect
       );
     }
 

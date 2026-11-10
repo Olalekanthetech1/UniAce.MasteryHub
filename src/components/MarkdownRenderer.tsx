@@ -6,7 +6,7 @@ import MermaidViewer from './renderers/MermaidViewer';
 import FunctionPlotViewer from './renderers/FunctionPlotViewer';
 import VennDiagramViewer from './renderers/VennDiagramViewer';
 import SvgDiagramViewer from './renderers/SvgDiagramViewer';
-import { normalizeMathDelimiters as normalizeSharedMathDelimiters } from '../shared/mathText';
+import { ensureMathDelimiters, normalizeMathDelimiters as normalizeSharedMathDelimiters } from '../shared/mathText';
 import { convertLatexLabelToReadableText } from '../services/mermaidRepairService';
 
 interface ErrorBoundaryProps {
@@ -381,7 +381,7 @@ export function sanitizeSvgMarkup(rawSvg: string): { cleanSvg: string; error?: s
  */
 export function renderMarkdownToSanitizedHtml(content: string, inline: boolean = false): string {
   if (typeof content !== 'string' || !content.trim()) return '';
-  const normalized = normalizeMathDelimiters(content);
+  const normalized = ensureMathDelimiters(content);
   const rawHtml = inline
     ? (sharedMarked.parseInline(normalized) as string)
     : (sharedMarked.parse(normalized) as string);
@@ -436,7 +436,7 @@ function segmentMarkdownContent(content: string, inline: boolean): RenderSegment
     }
   );
 
-  const normalized = normalizeMathDelimiters(maskedContent);
+  const normalized = ensureMathDelimiters(maskedContent);
   const tokens = sharedMarked.lexer(normalized);
   const segments: RenderSegment[] = [];
   let pendingTokens: any[] = [];

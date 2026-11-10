@@ -1172,15 +1172,23 @@ export default function QuizGenerator({
                                 {isCorrect ? <CheckCircle2 size={16} /> : <XCircle size={16} />}
                               </div>
                               <div className="flex-1">
-                                <p className="font-semibold text-slate-900 dark:text-white">Q{i+1}: {q.question}</p>
+                                <div className="font-semibold text-slate-900 dark:text-white">
+                                  Q{i + 1}: <MarkdownRenderer content={q.question} inline />
+                                </div>
                                 <div className="mt-2 text-xs space-y-1">
-                                  <p className="text-slate-600 dark:text-zinc-400">
-                                    <span className="font-bold">Your Answer:</span> {userAnswers[q.id] || <span className="italic text-slate-400">Unanswered</span>}
-                                  </p>
+                                  <div className="text-slate-600 dark:text-zinc-400">
+                                    <span className="font-bold">Your Answer:</span>{' '}
+                                    {userAnswers[q.id] ? (
+                                      <MarkdownRenderer content={userAnswers[q.id]} inline />
+                                    ) : (
+                                      <span className="italic text-slate-400">Unanswered</span>
+                                    )}
+                                  </div>
                                   {q.type === 'multiple-choice' ? (
-                                    <p className="text-emerald-600 dark:text-emerald-400">
-                                      <span className="font-bold">Model Answer:</span> {q.correctAnswer}
-                                    </p>
+                                    <div className="text-emerald-600 dark:text-emerald-400">
+                                      <span className="font-bold">Model Answer:</span>{' '}
+                                      <MarkdownRenderer content={q.correctAnswer} inline />
+                                    </div>
                                   ) : (
                                     <div className="space-y-1 mt-1 bg-white dark:bg-zinc-900 p-3 rounded-xl border border-slate-100 dark:border-zinc-800">
                                       {score !== null && (

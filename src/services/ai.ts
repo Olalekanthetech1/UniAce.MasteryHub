@@ -734,9 +734,8 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
     Ensure questions are technically accurate and mathematically rigorous for the given subject (Math, Physics, Zoology, GST, etc.) as detailed in the content material.
     CRITICAL: Calibrate difficulty only when the student's academic level is supplied (${level || 'not supplied; do not infer'}).
     Include mathematical formulas in LaTeX format.
-    LATEX SQUARE ROOTS: You MUST use \\\\sqrt{...} for all square roots. NEVER use the Unicode symbol √.
-    IMPORTANT: You are generating a JSON string. Use $ for inline LaTeX (e.g., $x$) and $$ for block LaTeX (e.g., $$x^2$$). For any LaTeX commands that use a backslash (e.g., \\\\mathbf), you MUST output them with double backslashes (e.g., \\\\\\\\mathbf).
-    CRITICAL: You are outputting data to a JSON parser. You MUST double-escape all LaTeX commands. For example, output \\\\frac instead of \\frac, and \\\\right) instead of \\right).
+    LATEX SQUARE ROOTS: You MUST use \\sqrt{...} for all square roots. NEVER use the Unicode symbol √.
+    IMPORTANT: Every mathematical expression in "question", every item of "options", "correctAnswer", "explanation", and "hint" MUST be wrapped in $...$ inline LaTeX delimiters (e.g., "$d = \\sqrt{(x_2 - x_1)^2 + (y_2 - y_1)^2}$"). Because you are outputting JSON, escape each LaTeX backslash once for JSON (e.g., "\\frac", "\\sqrt", "\\mathbf").
     For multiple-choice, provide 4 options.
     Also provide a short "hint" for each question that guides the user without giving the answer.
     Return the response as a VALID JSON object containing a "questions" array.
@@ -854,11 +853,10 @@ Generate a university-level quiz for ${subTopic ? 'the specific subtopic' : 'the
     
     The question should test a key concept from the content. 
     CRITICAL: Calibrate the difficulty and complexity to the student's level (${level?.trim() || 'not supplied; do not infer'}).
-    LATEX SQUARE ROOTS: You MUST use \\\\sqrt{...} for all square roots. NEVER use the Unicode symbol √.
+    LATEX SQUARE ROOTS: You MUST use \\sqrt{...} for all square roots. NEVER use the Unicode symbol √.
     Provide 4 options, the correct answer, and a short, helpful explanation.
     Return the response as a VALID JSON object.
-    IMPORTANT: You are generating a JSON string. Use $ for inline LaTeX (e.g., $x$) and $$ for block LaTeX (e.g., $$x^2$$). For any LaTeX commands that use a backslash (e.g., \\\\mathbf), you MUST output them with double backslashes (e.g., \\\\\\\\mathbf).
-    CRITICAL: You are outputting data to a JSON parser. You MUST double-escape all LaTeX commands (e.g., \\\\frac, \\\\right).
+    IMPORTANT: Every mathematical expression in "question", every item of "options", "correctAnswer", "explanation", and "hint" MUST be wrapped in $...$ inline LaTeX delimiters (e.g., "$d = \\sqrt{(x_2 - x_1)^2 + (y_2 - y_1)^2}$"). Because you are outputting JSON, escape each LaTeX backslash once for JSON (e.g., "\\frac", "\\sqrt", "\\mathbf").
     Format your response EXACTLY like this JSON object:
     {
       "id": "quick-check-${subTopic.id}",
