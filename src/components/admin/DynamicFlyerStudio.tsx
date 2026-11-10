@@ -2276,13 +2276,13 @@ export default function DynamicFlyerStudio() {
                       ) : (flyerConfig.phoneScreenMode || 'course_hub_ui') === 'course_hub_ui' &&
                         phoneHubCourses.length > 0 ? (
                         <>
-                          {/* LIVE COURSE HUB INTERFACE (Matching Authentic 8-Card 4x2 Mobile Hub Layout) */}
-                          <div className="px-2.5 pt-1 pb-0 bg-[#f8fafc] flex-1 flex flex-col justify-start overflow-hidden relative">
-                            {/* Top Greeting + Current Program Banner + Toolbar */}
+                          {/* LIVE COURSE HUB INTERFACE (Matching Authentic Full-Height 8-Card 4x2 Mobile Hub Layout) */}
+                          <div className="px-2.5 pt-1 pb-1 bg-[#f8fafc] flex-1 min-h-0 flex flex-col justify-between overflow-hidden relative">
+                            {/* Top Greeting + Current Program Banner + Your Courses + Search Toolbar */}
                             <div className="space-y-1 shrink-0">
                               <div
                                 data-flyer-unclip="true"
-                                className="text-[12.5px] font-black text-slate-900 tracking-tight leading-[1.2] px-0.5"
+                                className="text-[12.5px] font-black text-slate-900 tracking-tight leading-[1.18] px-0.5"
                               >
                                 {flyerConfig.phoneGreeting || 'Hello, Scholar 👋'}
                               </div>
@@ -2292,27 +2292,27 @@ export default function DynamicFlyerStudio() {
                                 <div className="min-w-0 flex-1">
                                   <div
                                     data-flyer-unclip="true"
-                                    className="text-[6px] font-bold uppercase tracking-[0.08em] text-slate-400 leading-[1.15]"
+                                    className="text-[5.8px] font-bold uppercase tracking-[0.08em] text-slate-400 leading-[1.15]"
                                   >
                                     CURRENT PROGRAM
                                   </div>
                                   <div
                                     data-flyer-unclip="true"
-                                    className="text-[10px] font-extrabold text-slate-900 leading-[1.2] mt-0.5 truncate"
+                                    className="text-[9.8px] font-extrabold text-slate-900 leading-[1.2] mt-0.5 truncate"
                                   >
                                     {activePhoneCohort.department}
                                   </div>
                                   <div className="flex items-center gap-1.5 mt-1">
                                     <span
                                       data-flyer-unclip="true"
-                                      className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-md bg-indigo-50 text-indigo-700 border border-indigo-100 text-[6.5px] font-bold leading-[1.15]"
+                                      className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-md bg-indigo-50 text-indigo-700 border border-indigo-100 text-[6.3px] font-bold leading-[1.15]"
                                     >
                                       <GraduationCap size={7.5} />
                                       <span>{activePhoneCohort.levelLabel}</span>
                                     </span>
                                     <span
                                       data-flyer-unclip="true"
-                                      className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-md bg-emerald-50 text-emerald-700 border border-emerald-100 text-[6.5px] font-bold leading-[1.15]"
+                                      className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-md bg-emerald-50 text-emerald-700 border border-emerald-100 text-[6.3px] font-bold leading-[1.15]"
                                     >
                                       <Calendar size={7.5} />
                                       <span>{activePhoneCohort.semesterLabel}</span>
@@ -2324,9 +2324,9 @@ export default function DynamicFlyerStudio() {
                                 </div>
                               </div>
 
-                              {/* Your Courses Pill + Search Bar & Explore All Row */}
-                              <div className="flex items-center justify-between gap-1 pt-0.5">
-                                <div className="bg-[#0f172a] text-white rounded-lg px-2 py-1 inline-flex items-center gap-1 shadow-2xs shrink-0">
+                              {/* Standalone "Your Courses" Dark Pill Row */}
+                              <div className="pt-0.5">
+                                <div className="bg-[#0f172a] text-white rounded-lg px-2.5 py-1 inline-flex items-center gap-1 shadow-2xs">
                                   <Sparkles size={7.5} className="text-amber-400" />
                                   <span
                                     data-flyer-unclip="true"
@@ -2335,8 +2335,11 @@ export default function DynamicFlyerStudio() {
                                     Your Courses
                                   </span>
                                 </div>
+                              </div>
 
-                                <div className="flex-1 bg-white rounded-lg border border-slate-200/90 px-2 py-1 flex items-center gap-1 text-slate-400 min-w-0">
+                              {/* Search Bar + Explore All + Notification Bell + Avatar Row */}
+                              <div className="flex items-center justify-between gap-1.5">
+                                <div className="flex-1 bg-white rounded-lg border border-slate-200/90 px-2 py-1 flex items-center gap-1 text-slate-400 min-w-0 shadow-2xs">
                                   <Search size={7.5} className="shrink-0" />
                                   <span
                                     data-flyer-unclip="true"
@@ -2363,23 +2366,25 @@ export default function DynamicFlyerStudio() {
                                   </span>
                                 </div>
 
-                                <div className="w-4 h-4 rounded-full bg-slate-800 text-white text-[6px] font-black flex items-center justify-center border border-slate-200 shrink-0">
+                                <div className="w-4.5 h-4.5 rounded-full bg-slate-800 text-white text-[6.5px] font-black flex items-center justify-center border border-slate-200 shrink-0">
                                   🎓
                                 </div>
                               </div>
                             </div>
 
-                            {/* 2-Column × 4-Row (8 Cards) Tight Live Course Grid — Zero Vertical Stretching */}
-                            <div className="grid grid-cols-2 gap-1.5 mt-1.5 content-start">
+                            {/* 2-Column × 4-Row (8 Cards) Full-Height Course Grid Filling Screen to Bottom Nav */}
+                            <div className="grid grid-cols-2 grid-rows-4 gap-1.5 mt-1.5 flex-1 min-h-0">
                               {phoneHubCourses.slice(0, 8).map((course, idx) => {
                                 const levelCompact = formatAcademicLevelBadge(course.level).compact;
                                 const semCompact = formatAcademicSemesterBadge(course.semester).compact;
                                 const scopeBadge = formatCourseScopeBadge(course);
                                 const cleanCode = course.id.replace(/\s+/g, '').toUpperCase();
-                                const hasCodeInTitle = course.title
-                                  .toUpperCase()
-                                  .replace(/\s+/g, '')
-                                  .startsWith(cleanCode.slice(0, 6));
+                                const hasCodeInTitle =
+                                  course.title
+                                    .toUpperCase()
+                                    .replace(/\s+/g, '')
+                                    .startsWith(cleanCode.slice(0, 6)) ||
+                                  /^[A-Z]{2,4}\s*\d{3}/i.test(course.title.trim());
                                 const displayTitle = hasCodeInTitle
                                   ? course.title
                                   : `${course.id}: ${course.title}`;
@@ -2387,14 +2392,14 @@ export default function DynamicFlyerStudio() {
                                   course.description?.trim() ||
                                   `Comprehensive ${levelCompact} university course covering ${course.syllabus?.length || 4} structured academic modules.`;
                                 const shortDesc =
-                                  rawDesc.length > 74 ? `${rawDesc.slice(0, 72).trimEnd()}…` : rawDesc;
+                                  rawDesc.length > 92 ? `${rawDesc.slice(0, 90).trimEnd()}…` : rawDesc;
                                 const isContinue =
                                   idx < 2 || (targetScope === 'course' && course.id === selectedCourseId);
 
                                 return (
                                   <div
                                     key={course.id}
-                                    className="bg-white rounded-xl border border-slate-200/90 p-1.5 shadow-2xs flex flex-col justify-between min-w-0"
+                                    className="bg-white rounded-xl border border-slate-200/90 p-2 shadow-2xs flex flex-col justify-between min-w-0 h-full"
                                   >
                                     <div>
                                       {/* Scope Badge + Course Code Pill */}
@@ -2416,24 +2421,24 @@ export default function DynamicFlyerStudio() {
                                       {/* Course Title */}
                                       <div
                                         data-flyer-unclip="true"
-                                        className="text-[7.4px] font-extrabold text-slate-900 leading-[1.18] mt-0.5 line-clamp-2"
+                                        className="text-[7.5px] font-extrabold text-slate-900 leading-[1.18] mt-0.5 line-clamp-2"
                                       >
-                                        {displayTitle.length > 44
-                                          ? `${displayTitle.slice(0, 42).trimEnd()}…`
+                                        {displayTitle.length > 46
+                                          ? `${displayTitle.slice(0, 44).trimEnd()}…`
                                           : displayTitle}
                                       </div>
 
                                       {/* Course Description Snippet */}
                                       <div
                                         data-flyer-unclip="true"
-                                        className="text-[5.8px] text-slate-500 font-medium leading-[1.2] mt-0.5 line-clamp-2"
+                                        className="text-[5.8px] text-slate-500 font-medium leading-[1.22] mt-0.5 line-clamp-3"
                                       >
                                         {shortDesc}
                                       </div>
                                     </div>
 
                                     {/* Card Footer: L 100 • Sem 1 + Continue/Start Learning CTA */}
-                                    <div className="pt-1 mt-1 border-t border-slate-100 flex items-center justify-between gap-1">
+                                    <div className="pt-1 border-t border-slate-100 flex items-center justify-between gap-1 shrink-0">
                                       <div className="flex items-center gap-0.5 text-[5.4px] font-bold text-slate-400 whitespace-nowrap leading-[1.15]">
                                         <Users size={6} className="shrink-0" />
                                         <span data-flyer-unclip="true">{levelCompact}</span>
@@ -2442,7 +2447,7 @@ export default function DynamicFlyerStudio() {
                                       </div>
                                       <div
                                         data-flyer-unclip="true"
-                                        className="bg-[#0f172a] text-white rounded-md px-1.5 py-[2px] text-[5.4px] font-extrabold whitespace-nowrap leading-[1.1] shrink-0"
+                                        className="bg-[#0f172a] text-white rounded-md px-1.5 py-[2.5px] text-[5.5px] font-extrabold whitespace-nowrap leading-[1.1] shrink-0"
                                       >
                                         {isContinue ? 'Continue Learning' : 'Start Learning'}
                                       </div>

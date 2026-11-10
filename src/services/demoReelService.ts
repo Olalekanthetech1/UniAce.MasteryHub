@@ -534,7 +534,16 @@ export function getEligibleCoursesForCohort(
     isCourseEligibleForStudentCohort(c, department, level, semester, ctx, allLiveCourses)
   );
 
-  // Order to match authentic CourseHub feed; if priorityCourseId is set, place it first
+  // Sort so primary foundational physics/active courses lead the top "Continue Learning" row
+  eligible.sort((a, b) => {
+    const aIsPhyLead = /^PHY\s*10[127]$/i.test(a.id);
+    const bIsPhyLead = /^PHY\s*10[127]$/i.test(b.id);
+    if (aIsPhyLead && !bIsPhyLead) return -1;
+    if (!aIsPhyLead && bIsPhyLead) return 1;
+    return a.id.localeCompare(b.id);
+  });
+
+  // If a specific priorityCourseId is set, place it first
   if (priorityCourseId) {
     const idx = eligible.findIndex((c) => c.id === priorityCourseId);
     if (idx > 0) {
